@@ -1,4 +1,5 @@
 import { Link, useLocation, useParams } from 'react-router-dom'
+import { WebUpdateBadge } from './WebUpdateBadge'
 
 function tinyId(id: string): string {
   if (!id) return ''
@@ -35,10 +36,9 @@ export function Topbar() {
           {location.pathname}
         </span>
       </div>
-      <div style={{ marginLeft: 'auto' }} className="pill">
-        mock UI
+      <div style={{ marginLeft: 'auto' }}>
+        <WebUpdateBadge />
       </div>
     </header>
   )
 }
-
