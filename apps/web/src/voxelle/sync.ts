@@ -1,5 +1,5 @@
 import type { EventV1 } from './rfc/types'
-import { validateEvent } from './rfc/validate'
+import { acceptEvent } from './accept'
 import { appendRoomEvent, getRoomEvents, getRoomHeads } from './store'
 import type { JsonValue, WebRtcTransport } from './webrtc'
 
@@ -101,7 +101,7 @@ export function startRoomSync(params: {
     if (msg.t === 'have') {
       let accepted = 0
       for (const ev of msg.events.slice(0, 256)) {
-        const ok = await validateEvent(ev)
+        const ok = await acceptEvent(ev, getRoomEvents)
         if (!ok.ok) continue
         appendRoomEvent(spaceId, roomId, ok.value)
         accepted++
@@ -132,4 +132,3 @@ export function startRoomSync(params: {
     window.removeEventListener('voxelle-room-event-appended', onAppended)
   }
 }
-

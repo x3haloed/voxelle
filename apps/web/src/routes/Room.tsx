@@ -7,6 +7,7 @@ import { validateEvent } from '../voxelle/rfc/validate'
 import type { EventV1 } from '../voxelle/rfc/types'
 import { computeHeads } from '../voxelle/dag'
 import { ConnectionPanel } from '../components/ConnectionPanel'
+import { acceptEvent } from '../voxelle/accept'
 
 function fmtTs(ts: number) {
   const d = new Date(ts)
@@ -106,8 +107,8 @@ export function RoomRoute() {
         prev,
         text,
       })
-      const checked = await validateEvent(ev)
-      if (!checked.ok) throw new Error(`refusing to store invalid event: ${checked.error}`)
+      const checked = await acceptEvent(ev, getRoomEvents)
+      if (!checked.ok) throw new Error(`refusing to store rejected event: ${checked.error}`)
       appendRoomEvent(spaceOk.id, roomOk.id, checked.value)
       setDraft('')
       setRev((r) => r + 1)

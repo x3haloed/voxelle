@@ -6,6 +6,7 @@ import { createSpaceGenesis, createSpaceRootKeypair, validateSpaceGenesis } from
 import type { InviteV1 } from './rfc/invite'
 import { createInvite, newInviteId, validateInvite } from './rfc/invite'
 import { ensureIdentity, ensureDelegationForSpace, createEventV1 } from './rfc/signing'
+import { acceptEvent } from './accept'
 import { createDelegationCert, deviceIdFromDevicePubSpkiB64 } from './rfc/delegation'
 import { bytesToBase64 } from './rfc/util_b64'
 import { spkiDerBase64FromEd25519PublicKey } from './rfc/spki'
@@ -228,7 +229,9 @@ export async function joinSpaceFromInvite(invite: InviteV1): Promise<Space> {
       invite,
     },
   })
-  appendRoomEvent(invite.space_id, governanceRoomId, ev)
+  const accepted = await acceptEvent(ev, getRoomEvents)
+  if (!accepted.ok) throw new Error(`join rejected: ${accepted.error}`)
+  appendRoomEvent(invite.space_id, governanceRoomId, accepted.value)
 
   return { id: invite.space_id, name: nm }
 }
