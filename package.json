@@ -1,0 +1,14 @@
+{
+  "name": "voxelle",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w @voxelle/web",
+    "build:web": "npm run build -w @voxelle/web",
+    "dev:desktop": "npm run tauri dev -w @voxelle/desktop",
+    "build:desktop": "npm run tauri build -w @voxelle/desktop"
+  }
+}
+

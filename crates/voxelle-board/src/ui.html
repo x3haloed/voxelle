@@ -1,0 +1,249 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Voxelle Work Board (derived)</title>
+    <style>
+      :root { --bg:#0b1020; --panel:#121a33; --text:#e6e9f2; --muted:#a8b0c6; --card:#1a2550; --accent:#7aa2f7; --warn:#f7768e; }
+      * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; }
+      body { margin:0; background:var(--bg); color:var(--text); }
+      header { padding:12px 16px; border-bottom:1px solid rgba(255,255,255,.08); display:flex; gap:16px; align-items:center; }
+      header .badge { padding:2px 8px; border:1px solid rgba(255,255,255,.15); border-radius:999px; color:var(--muted); font-size:12px; }
+      header .warn { color:var(--warn); border-color: rgba(247,118,142,.4); }
+      main { padding:16px; }
+      .cols { display:grid; grid-template-columns: repeat(6, 1fr); gap:12px; }
+      .col { background:var(--panel); border:1px solid rgba(255,255,255,.08); border-radius:12px; padding:10px; min-height: 60vh; }
+      .col h2 { margin:0 0 8px 0; font-size:14px; color:var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+      .card { background:var(--card); border:1px solid rgba(255,255,255,.10); border-radius:10px; padding:10px; margin:8px 0; cursor:pointer; }
+      .card small { color:var(--muted); display:block; margin-top:4px; }
+      .row { display:flex; gap:10px; align-items:center; }
+      .pill { padding:2px 8px; border-radius:999px; border:1px solid rgba(255,255,255,.18); font-size:12px; color:var(--muted); }
+      .pill.unread { border-color: rgba(247,118,142,.55); color: var(--warn); }
+      .toolbar { display:flex; gap:8px; margin-top:8px; }
+      button { background:transparent; border:1px solid rgba(255,255,255,.18); color:var(--text); border-radius:10px; padding:8px 10px; cursor:pointer; }
+      button.primary { border-color: rgba(122,162,247,.6); color: var(--accent); }
+      input, select { background:transparent; color:var(--text); border:1px solid rgba(255,255,255,.18); border-radius:10px; padding:8px 10px; }
+      dialog { background:var(--panel); color:var(--text); border:1px solid rgba(255,255,255,.18); border-radius:12px; padding:14px; width: min(720px, 92vw); }
+      dialog::backdrop { background: rgba(0,0,0,.6); }
+      .muted { color: var(--muted); }
+      .kv { display:grid; grid-template-columns: 120px 1fr; gap:6px 10px; }
+      .kv code { color: var(--accent); }
+      .actions { display:flex; justify-content:flex-end; gap:8px; margin-top:10px; }
+      a { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Voxelle Board</strong>
+      <span class="badge">Derived UI (does not edit ledger)</span>
+      <span id="meta" class="badge"></span>
+      <span id="pending" class="badge warn" style="display:none;"></span>
+      <span style="margin-left:auto" class="badge muted">Auto-refresh: 2s</span>
+    </header>
+    <main>
+      <div class="toolbar">
+        <button class="primary" id="newTask">Create task</button>
+        <button id="foldNow">Fold now</button>
+      </div>
+      <div style="height:10px"></div>
+      <div id="cols" class="cols"></div>
+    </main>
+
+    <dialog id="taskDialog">
+      <form method="dialog">
+        <h3 id="taskTitle" style="margin:0 0 10px 0;"></h3>
+        <div class="kv">
+          <div class="muted">Task</div><div><code id="taskId"></code></div>
+          <div class="muted">Status</div>
+          <div>
+            <select id="statusSel">
+              <option value="backlog">backlog</option>
+              <option value="next">next</option>
+              <option value="doing">doing</option>
+              <option value="blocked">blocked</option>
+              <option value="done">done</option>
+              <option value="rejected">rejected</option>
+            </select>
+          </div>
+          <div class="muted">Priority</div>
+          <div>
+            <select id="prioSel">
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="urgent">urgent</option>
+            </select>
+          </div>
+          <div class="muted">Unread</div><div><span id="unreadCount"></span></div>
+        </div>
+        <div style="height:12px"></div>
+        <label class="muted">Note (appends directive)</label>
+        <input id="noteText" placeholder="Optional note…" style="width:100%; margin-top:6px" />
+        <div class="actions">
+          <button value="cancel">Close</button>
+          <button id="save" class="primary" value="default">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="newTaskDialog">
+      <form method="dialog">
+        <h3 style="margin:0 0 10px 0;">Create task</h3>
+        <label class="muted">Title</label>
+        <input id="newTitle" placeholder="Short, verb-led title" style="width:100%; margin-top:6px" />
+        <div style="height:10px"></div>
+        <div class="row">
+          <select id="newStatus">
+            <option value="backlog">backlog</option>
+            <option value="next">next</option>
+            <option value="doing">doing</option>
+            <option value="blocked">blocked</option>
+          </select>
+          <select id="newPrio">
+            <option value="medium">medium</option>
+            <option value="low">low</option>
+            <option value="high">high</option>
+            <option value="urgent">urgent</option>
+          </select>
+        </div>
+        <div class="actions">
+          <button value="cancel">Cancel</button>
+          <button id="create" class="primary" value="default">Create</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script>
+      const colsEl = document.getElementById('cols');
+      const metaEl = document.getElementById('meta');
+      const pendingEl = document.getElementById('pending');
+      const taskDialog = document.getElementById('taskDialog');
+      const newTaskDialog = document.getElementById('newTaskDialog');
+
+      let board = null;
+      let selected = null;
+
+      function pill(text, cls='pill') {
+        const s = document.createElement('span');
+        s.className = cls;
+        s.textContent = text;
+        return s;
+      }
+
+      function render() {
+        if (!board) return;
+        colsEl.innerHTML = '';
+
+        const ack = board.last_ack_directive_id ? `last ack: ${board.last_ack_directive_id}` : 'last ack: (none)';
+        metaEl.textContent = `fold: ${board.generated_at} • ${ack}`;
+
+        const totalUnread = Object.values(board.unread_directives || {}).reduce((n, arr) => n + (arr?.length || 0), 0);
+        if (totalUnread > 0) {
+          pendingEl.style.display = 'inline-block';
+          pendingEl.textContent = `pending directives: ${totalUnread}`;
+        } else {
+          pendingEl.style.display = 'none';
+        }
+
+        const statuses = ['backlog','next','doing','blocked','done','rejected'];
+        for (const st of statuses) {
+          const col = document.createElement('div');
+          col.className = 'col';
+          const h2 = document.createElement('h2');
+          h2.textContent = st;
+          col.appendChild(h2);
+
+          const cards = (board.columns?.[st] || []);
+          for (const c of cards) {
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.onclick = () => openTask(c.task_id);
+
+            const top = document.createElement('div');
+            top.className = 'row';
+            top.appendChild(document.createTextNode(`[${c.task_id}] ${c.title}${c.provisional ? ' (provisional)' : ''}`));
+            card.appendChild(top);
+
+            const row = document.createElement('div');
+            row.className = 'row';
+            row.style.marginTop = '8px';
+            row.appendChild(pill(c.priority));
+            if (c.unread_directive_count) row.appendChild(pill(`unread:${c.unread_directive_count}`, 'pill unread'));
+            card.appendChild(row);
+
+            const sm = document.createElement('small');
+            sm.textContent = c.updated_at ? `updated: ${c.updated_at}` : '';
+            card.appendChild(sm);
+
+            col.appendChild(card);
+          }
+
+          colsEl.appendChild(col);
+        }
+      }
+
+      async function fetchBoard() {
+        const res = await fetch('/api/board');
+        board = await res.json();
+        render();
+      }
+
+      async function postJson(url, body) {
+        const res = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
+        if (!res.ok) throw new Error(await res.text());
+        return await res.json();
+      }
+
+      function openTask(taskId) {
+        selected = board.cards[taskId];
+        document.getElementById('taskTitle').textContent = selected.title;
+        document.getElementById('taskId').textContent = selected.task_id;
+        document.getElementById('statusSel').value = selected.status;
+        document.getElementById('prioSel').value = selected.priority;
+        document.getElementById('unreadCount').textContent = String(selected.unread_directive_count || 0);
+        document.getElementById('noteText').value = '';
+        taskDialog.showModal();
+      }
+
+      document.getElementById('save').addEventListener('click', async (e) => {
+        e.preventDefault();
+        if (!selected) return;
+        const status = document.getElementById('statusSel').value;
+        const priority = document.getElementById('prioSel').value;
+        const note = document.getElementById('noteText').value.trim();
+        await postJson('/api/directives', { type:'set_status', task_id:selected.task_id, payload:{status} });
+        await postJson('/api/directives', { type:'set_priority', task_id:selected.task_id, payload:{priority} });
+        if (note) await postJson('/api/directives', { type:'note', task_id:selected.task_id, payload:{text:note} });
+        taskDialog.close();
+        await fetchBoard();
+      });
+
+      document.getElementById('newTask').addEventListener('click', () => {
+        document.getElementById('newTitle').value = '';
+        document.getElementById('newStatus').value = 'backlog';
+        document.getElementById('newPrio').value = 'medium';
+        newTaskDialog.showModal();
+      });
+
+      document.getElementById('create').addEventListener('click', async (e) => {
+        e.preventDefault();
+        const title = document.getElementById('newTitle').value.trim();
+        const status = document.getElementById('newStatus').value;
+        const priority = document.getElementById('newPrio').value;
+        const payload = { title: title || 'Untitled task', status, priority };
+        await postJson('/api/open_task', { payload });
+        newTaskDialog.close();
+        await fetchBoard();
+      });
+
+      document.getElementById('foldNow').addEventListener('click', async () => {
+        await fetchBoard();
+      });
+
+      fetchBoard();
+      setInterval(fetchBoard, 2000);
+    </script>
+  </body>
+</html>
+

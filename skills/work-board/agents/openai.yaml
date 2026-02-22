@@ -1,0 +1,7 @@
+interface:
+  display_name: "Work Board"
+  short_description: "Steer work via directives + receipts"
+  default_prompt: "Use $work-board to log work in an append-only evidence ledger, accept human directives via a control inbox with receipts, and generate a derived Work Board view (web UI preferred, TUI fallback)."
+
+policy:
+  allow_implicit_invocation: true

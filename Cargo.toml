@@ -1,0 +1,8 @@
+[workspace]
+members = [
+  "crates/isnad",
+  "crates/voxelle-board",
+  "crates/voxelle-protocol",
+]
+exclude = ["apps/desktop/src-tauri"]
+resolver = "2"
