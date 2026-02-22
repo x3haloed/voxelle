@@ -45,6 +45,11 @@ export function appendRoomEvent(spaceId: string, roomId: string, ev: EventV1): v
   if (existing.some((e) => e?.event_id === ev.event_id)) return
   const next = [...existing, ev]
   localStorage.setItem(keyForRoom(spaceId, roomId), JSON.stringify(next))
+  window.dispatchEvent(
+    new CustomEvent('voxelle-room-event-appended', {
+      detail: { v: 1, spaceId, roomId, eventId: ev.event_id },
+    }),
+  )
 }
 
 export function getRoomHeads(spaceId: string, roomId: string): string[] {

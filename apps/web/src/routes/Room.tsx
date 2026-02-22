@@ -6,6 +6,7 @@ import { ensureIdentity, ensureDelegationForSpace, createMsgPostEvent } from '..
 import { validateEvent } from '../voxelle/rfc/validate'
 import type { EventV1 } from '../voxelle/rfc/types'
 import { computeHeads } from '../voxelle/dag'
+import { ConnectionPanel } from '../components/ConnectionPanel'
 
 function fmtTs(ts: number) {
   const d = new Date(ts)
@@ -28,6 +29,18 @@ export function RoomRoute() {
   const [validEvents, setValidEvents] = useState<EventV1[]>([])
   const [invalidCount, setInvalidCount] = useState(0)
   const [invalidErrors, setInvalidErrors] = useState<string[]>([])
+
+  useEffect(() => {
+    const onAppended = (ev: Event) => {
+      const ce = ev as CustomEvent<any>
+      const d = ce?.detail
+      if (d?.v !== 1) return
+      if (d.spaceId !== decodedSpaceId || d.roomId !== decodedRoomId) return
+      setRev((r) => r + 1)
+    }
+    window.addEventListener('voxelle-room-event-appended', onAppended)
+    return () => window.removeEventListener('voxelle-room-event-appended', onAppended)
+  }, [decodedSpaceId, decodedRoomId])
 
   useEffect(() => {
     let cancelled = false
@@ -107,6 +120,7 @@ export function RoomRoute() {
 
   return (
     <div className="chat">
+      <ConnectionPanel spaceId={spaceOk.id} roomId={roomOk.id} />
       <div className="item">
         <div className="itemTop">
           <div className="itemTitle">
