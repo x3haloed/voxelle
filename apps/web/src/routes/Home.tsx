@@ -1,17 +1,36 @@
 import { Link, useNavigate } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
-import { createSpace, getState, onStateChanged } from '../voxelle/store'
+import { createSpace, getState, joinSpaceFromInvite, onStateChanged } from '../voxelle/store'
+import { decodeInviteFromUrl } from '../voxelle/invite_link'
 
 export function Home() {
   const nav = useNavigate()
   const [rev, setRev] = useState(0)
   const [name, setName] = useState('')
+  const [inviteText, setInviteText] = useState('')
   const [creating, setCreating] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [joining, setJoining] = useState(false)
 
   useEffect(() => onStateChanged(() => setRev((r) => r + 1)), [])
 
   const { spaces } = useMemo(() => getState(), [rev])
+
+  useEffect(() => {
+    // Auto-consume invite links.
+    const inv = decodeInviteFromUrl(window.location.href)
+    if (!inv) return
+    setJoining(true)
+    joinSpaceFromInvite(inv)
+      .then((s) => {
+        // clear fragment so refresh doesn't re-join
+        window.history.replaceState({}, '', window.location.pathname)
+        nav(`/s/${encodeURIComponent(s.id)}`)
+      })
+      .catch((e) => setErr(e instanceof Error ? e.message : String(e)))
+      .finally(() => setJoining(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <div>
@@ -52,6 +71,35 @@ export function Home() {
               {err}
             </span>
           ) : null}
+        </div>
+        <div style={{ height: 12 }} />
+        <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+          <input
+            value={inviteText}
+            onChange={(e) => setInviteText(e.target.value)}
+            placeholder="Paste invite link (or #invite=...)"
+            style={{ minWidth: 320 }}
+          />
+          <button
+            disabled={joining || !inviteText.trim()}
+            onClick={async () => {
+              setJoining(true)
+              setErr(null)
+              try {
+                const inv = decodeInviteFromUrl(inviteText.trim())
+                if (!inv) throw new Error('could not parse invite')
+                const s = await joinSpaceFromInvite(inv)
+                setInviteText('')
+                nav(`/s/${encodeURIComponent(s.id)}`)
+              } catch (e) {
+                setErr(e instanceof Error ? e.message : String(e))
+              } finally {
+                setJoining(false)
+              }
+            }}
+          >
+            {joining ? 'Joining…' : 'Join Space'}
+          </button>
         </div>
       </div>
 

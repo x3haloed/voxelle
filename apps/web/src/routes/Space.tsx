@@ -1,6 +1,7 @@
 import { Link, useParams } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
-import { exportSpaceGenesis, getState, onStateChanged, roomsForSpace } from '../voxelle/store'
+import { exportSpaceGenesis, getState, isSpaceOwner, issueInviteFromOwner, onStateChanged, roomsForSpace } from '../voxelle/store'
+import { encodeInviteToFragment } from '../voxelle/invite_link'
 
 export function SpaceRoute() {
   const { spaceId } = useParams()
@@ -12,6 +13,11 @@ export function SpaceRoute() {
 
   const space = spaces.find((s) => s.id === decoded)
   const spaceRooms = useMemo(() => roomsForSpace(decoded), [decoded, rev])
+  const owner = useMemo(() => isSpaceOwner(decoded), [decoded, rev])
+  const [relayWs, setRelayWs] = useState(() => localStorage.getItem('voxelle.relay.ws') ?? '')
+  const [inviteLink, setInviteLink] = useState('')
+  const [issuing, setIssuing] = useState(false)
+  const [err, setErr] = useState<string | null>(null)
 
   if (!space) {
     return <div className="emptyState">Unknown space: {decoded || '(missing)'}.</div>
@@ -45,6 +51,68 @@ export function SpaceRoute() {
         </div>
       </div>
 
+      {owner ? (
+        <>
+          <div className="sectionTitle">Invite</div>
+          <div className="item">
+            <div className="muted" style={{ fontSize: 13 }}>
+              Create an invite capability (signed by this Space Root’s delegated device).
+            </div>
+            <div style={{ height: 10 }} />
+            <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+              <input
+                value={relayWs}
+                onChange={(e) => setRelayWs(e.target.value)}
+                placeholder="Optional relay ws://…/ws (for bootstrap rendezvous)"
+                style={{ minWidth: 360 }}
+              />
+              <button
+                className="primary"
+                disabled={issuing}
+                onClick={async () => {
+                  setIssuing(true)
+                  setErr(null)
+                  try {
+                    if (relayWs.trim()) localStorage.setItem('voxelle.relay.ws', relayWs.trim())
+                    const inv = await issueInviteFromOwner({
+                      spaceId: space.id,
+                      spaceNameHint: space.name,
+                      relayWsUrl: relayWs.trim() || undefined,
+                      expiresInHours: 24 * 7,
+                      allowPost: true,
+                    })
+                    const frag = encodeInviteToFragment(inv)
+                    const link = `${window.location.origin}/?${''}${frag}`
+                    setInviteLink(link)
+                    await navigator.clipboard.writeText(link)
+                  } catch (e) {
+                    setErr(e instanceof Error ? e.message : String(e))
+                  } finally {
+                    setIssuing(false)
+                  }
+                }}
+              >
+                {issuing ? 'Issuing…' : 'Create Invite (copy link)'}
+              </button>
+            </div>
+            {inviteLink ? (
+              <>
+                <div style={{ height: 10 }} />
+                <div className="muted" style={{ fontSize: 12 }}>
+                  Invite link
+                </div>
+                <textarea value={inviteLink} readOnly style={{ ...taStyle, minHeight: 70 }} />
+              </>
+            ) : null}
+            {err ? (
+              <div className="muted" style={{ marginTop: 8, fontSize: 12, color: 'var(--danger)' }}>
+                {err}
+              </div>
+            ) : null}
+          </div>
+        </>
+      ) : null}
+
       <div className="sectionTitle">Rooms</div>
       <div className="list">
         {spaceRooms.map((r) => (
@@ -65,4 +133,18 @@ export function SpaceRoute() {
       </div>
     </div>
   )
+}
+
+const taStyle: React.CSSProperties = {
+  width: '100%',
+  minHeight: 90,
+  resize: 'vertical',
+  background: 'rgba(22, 33, 74, 0.55)',
+  border: '1px solid rgba(255, 255, 255, 0.12)',
+  color: 'var(--text)',
+  borderRadius: 12,
+  padding: '10px 12px',
+  outline: 'none',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+  fontSize: 12,
 }

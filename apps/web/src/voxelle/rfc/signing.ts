@@ -151,43 +151,15 @@ export async function createMsgPostEvent(params: {
   prev: string[]
   text: string
 }): Promise<EventV1> {
-  const deviceSk = base64ToBytes(params.identity.device_sk_b64)
-  const devicePk = base64ToBytes(params.identity.device_pk_b64)
-
-  const ts = nowMs()
-  const body = { text: params.text }
-  const unsigned = {
-    v: 1 as const,
-    space_id: params.spaceId,
-    room_id: params.roomId,
-    author_principal_id: params.identity.principal_id,
-    author_device_id: params.identity.device_id,
-    author_device_pub: spkiDerBase64FromEd25519PublicKey(devicePk),
+  return createEventV1({
+    identity: params.identity,
     delegation: params.delegation,
-    ts,
+    spaceId: params.spaceId,
+    roomId: params.roomId,
+    prev: params.prev,
     kind: 'MSG_POST',
-    prev: [...params.prev].sort(),
-    body,
-  }
-
-  const sigInput = eventSignatureInput(unsigned)
-  const sig = await ed.signAsync(sigInput, deviceSk)
-  const eventId = await eventIdFromSignatureInput(sigInput)
-
-  const event: EventV1 = {
-    ...unsigned,
-    event_id: eventId,
-    sig: bytesToBase64(sig),
-  }
-
-  const ok = await ed.verifyAsync(sig, sigInput, devicePk)
-  if (!ok) throw new Error('event signature did not verify')
-
-  if (event.event_id !== (await eventIdFromSignatureInput(sigInput))) {
-    throw new Error('event_id mismatch')
-  }
-
-  return event
+    body: { text: params.text },
+  })
 }
 
 type UnsignedEventForSig = Omit<EventV1, 'sig' | 'event_id'>
@@ -213,4 +185,51 @@ function eventSignatureInput(unsigned: UnsignedEventForSig): Uint8Array {
 async function eventIdFromSignatureInput(sigInput: Uint8Array): Promise<string> {
   const digest = await sha256(sigInput)
   return `e:${base64UrlNoPad(digest)}`
+}
+
+export async function createEventV1(params: {
+  identity: VoxelleIdentityV1
+  delegation: DelegationCertV1
+  spaceId: string
+  roomId: string
+  prev: string[]
+  kind: string
+  body: unknown
+}): Promise<EventV1> {
+  const deviceSk = base64ToBytes(params.identity.device_sk_b64)
+  const devicePk = base64ToBytes(params.identity.device_pk_b64)
+
+  const ts = nowMs()
+  const unsigned = {
+    v: 1 as const,
+    space_id: params.spaceId,
+    room_id: params.roomId,
+    author_principal_id: params.identity.principal_id,
+    author_device_id: params.identity.device_id,
+    author_device_pub: spkiDerBase64FromEd25519PublicKey(devicePk),
+    delegation: params.delegation,
+    ts,
+    kind: params.kind,
+    prev: [...params.prev].sort(),
+    body: params.body ?? {},
+  }
+
+  const sigInput = eventSignatureInput(unsigned)
+  const sig = await ed.signAsync(sigInput, deviceSk)
+  const eventId = await eventIdFromSignatureInput(sigInput)
+
+  const event: EventV1 = {
+    ...unsigned,
+    event_id: eventId,
+    sig: bytesToBase64(sig),
+  }
+
+  const ok = await ed.verifyAsync(sig, sigInput, devicePk)
+  if (!ok) throw new Error('event signature did not verify')
+
+  if (event.event_id !== (await eventIdFromSignatureInput(sigInput))) {
+    throw new Error('event_id mismatch')
+  }
+
+  return event
 }
