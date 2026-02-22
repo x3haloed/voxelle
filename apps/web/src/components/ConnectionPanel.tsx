@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TransportStatus, WebRtcTransportWithSignaling } from '../voxelle/webrtc'
 import { createWebRtcTransport } from '../voxelle/webrtc'
 import { startRoomSync } from '../voxelle/sync'
+import { createSignalClient, newSessionId, type SignalClient, type SignalState } from '../voxelle/signal_ws'
 
 function setUrlParam(name: string, value: string | null) {
   const url = new URL(window.location.href)
@@ -21,7 +22,10 @@ async function copyToClipboard(text: string) {
 }
 
 export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
+  const [mode, setMode] = useState<'manual' | 'relay'>('manual')
   const [stun, setStun] = useState('stun:stun.l.google.com:19302')
+  const [relayUrl, setRelayUrl] = useState(() => localStorage.getItem('voxelle.relay.ws') ?? '')
+  const [sid, setSid] = useState(() => getUrlParam('sid'))
   const [offerIn, setOfferIn] = useState('')
   const [answerIn, setAnswerIn] = useState('')
   const [offerOut, setOfferOut] = useState('')
@@ -31,8 +35,13 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   const [copied, setCopied] = useState<string | null>(null)
 
   const transportRef = useRef<WebRtcTransportWithSignaling | null>(null)
+  const signalRef = useRef<SignalClient | null>(null)
   const stopSyncRef = useRef<null | (() => void)>(null)
   const autoJoinRan = useRef(false)
+  const autoAcceptAnswerRan = useRef(false)
+  const modeRef = useRef(mode)
+  const sidRef = useRef(sid)
+  const answerOutRef = useRef(answerOut)
 
   const iceServers = useMemo(() => {
     const urls = stun
@@ -45,19 +54,44 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   const log = (s: string) => setLogLines((l) => [...l.slice(-40), `${new Date().toLocaleTimeString()} ${s}`])
 
   useEffect(() => {
+    modeRef.current = mode
+  }, [mode])
+  useEffect(() => {
+    sidRef.current = sid
+  }, [sid])
+  useEffect(() => {
+    answerOutRef.current = answerOut
+  }, [answerOut])
+
+  useEffect(() => {
     const offerFromUrl = getUrlParam('offer')
     const answerFromUrl = getUrlParam('answer')
+    const relayFromUrl = getUrlParam('relay')
+    const sidFromUrl = getUrlParam('sid')
+    const roleFromUrl = getUrlParam('role')
     if (offerFromUrl && !offerIn) setOfferIn(offerFromUrl)
     if (answerFromUrl && !answerIn) setAnswerIn(answerFromUrl)
+    if (relayFromUrl) {
+      setMode('relay')
+      setRelayUrl(relayFromUrl)
+    }
+    if (sidFromUrl) setSid(sidFromUrl)
+    if (roleFromUrl === 'join') setMode('relay')
 
     return () => {
       stopSyncRef.current?.()
       stopSyncRef.current = null
       transportRef.current?.close()
       transportRef.current = null
+      signalRef.current?.close()
+      signalRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    localStorage.setItem('voxelle.relay.ws', relayUrl)
+  }, [relayUrl])
 
   async function ensureTransport(): Promise<WebRtcTransportWithSignaling> {
     if (transportRef.current) return transportRef.current
@@ -65,6 +99,64 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     transportRef.current = t
     t.onState((s) => setStatus(s))
     return t
+  }
+
+  function resetAll() {
+    stopSyncRef.current?.()
+    stopSyncRef.current = null
+    transportRef.current?.close()
+    transportRef.current = null
+    signalRef.current?.close()
+    signalRef.current = null
+    autoAcceptAnswerRan.current = false
+  }
+
+  function ensureSignal(): SignalClient {
+    if (signalRef.current) return signalRef.current
+    if (!relayUrl.trim()) throw new Error('missing relay URL')
+    const c = createSignalClient(relayUrl)
+    signalRef.current = c
+    c.onError((e) => log(`relay: ${e}`))
+    c.onState((s) => onRelayState(s))
+    return c
+  }
+
+  async function onRelayState(s: SignalState) {
+    const currentSid = sidRef.current
+    const currentMode = modeRef.current
+    if (!s.sid || !currentSid || s.sid !== currentSid) return
+
+    if (s.offer && currentMode === 'relay') {
+      // If this tab is in join role, create answer once we see offer.
+      const role = getUrlParam('role')
+      if (role === 'join' && !answerOutRef.current) {
+        try {
+          const t = await ensureTransport()
+          const code = await t.acceptOfferAndMakeAnswer(s.offer)
+          setAnswerOut(code)
+          ensureSignal().setAnswer(s.sid, code)
+          setUrlParam('answer', code)
+          log('relay: posted answer')
+        } catch (e) {
+          log(`relay: failed to answer: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    }
+    if (s.answer && currentMode === 'relay') {
+      // If this tab is host role, accept answer once.
+      const role = getUrlParam('role')
+      if (role === 'host' && !autoAcceptAnswerRan.current) {
+        autoAcceptAnswerRan.current = true
+        try {
+          setAnswerIn(s.answer)
+          const t = await ensureTransport()
+          await t.acceptAnswer(s.answer)
+          log('relay: accepted answer')
+        } catch (e) {
+          log(`relay: failed to accept answer: ${e instanceof Error ? e.message : String(e)}`)
+        }
+      }
+    }
   }
 
   function startSyncIfConnected(t: WebRtcTransportWithSignaling) {
@@ -80,6 +172,7 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   }
 
   async function host() {
+    resetAll()
     setOfferOut('')
     setAnswerOut('')
     setOfferIn('')
@@ -90,10 +183,14 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     setOfferOut(code)
     setUrlParam('offer', code)
     setUrlParam('answer', null)
+    setUrlParam('relay', null)
+    setUrlParam('sid', null)
+    setUrlParam('role', null)
     log('local: offer created (share with peer)')
   }
 
   async function join() {
+    resetAll()
     setOfferOut('')
     setAnswerOut('')
     setAnswerIn('')
@@ -105,6 +202,56 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     log('local: answer created (send back to host)')
   }
 
+  async function hostRelay() {
+    resetAll()
+    setOfferOut('')
+    setAnswerOut('')
+    setOfferIn('')
+    setAnswerIn('')
+    setLogLines([])
+
+    const nextSid = newSessionId()
+    setSid(nextSid)
+    sidRef.current = nextSid
+    setUrlParam('relay', relayUrl)
+    setUrlParam('sid', nextSid)
+    setUrlParam('role', 'host')
+    setUrlParam('offer', null)
+    setUrlParam('answer', null)
+
+    const signal = ensureSignal()
+    signal.join(nextSid)
+
+    const t = await ensureTransport()
+    const offerCode = await t.startOffer()
+    setOfferOut(offerCode)
+    signal.setOffer(nextSid, offerCode)
+    log('relay: posted offer (share link with peer)')
+  }
+
+  async function joinRelay() {
+    resetAll()
+    setOfferOut('')
+    setAnswerOut('')
+    setAnswerIn('')
+    setLogLines([])
+
+    const sidTrim = sid.trim()
+    if (!sidTrim) {
+      log('relay: missing sid')
+      return
+    }
+    setUrlParam('relay', relayUrl)
+    setUrlParam('sid', sidTrim)
+    setUrlParam('role', 'join')
+    setUrlParam('offer', null)
+
+    const signal = ensureSignal()
+    signal.join(sidTrim)
+    signal.getState(sidTrim)
+    log('relay: joined; waiting for offer')
+  }
+
   async function acceptAnswer() {
     const t = await ensureTransport()
     await t.acceptAnswer(answerIn.trim())
@@ -112,10 +259,7 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   }
 
   async function disconnect() {
-    stopSyncRef.current?.()
-    stopSyncRef.current = null
-    transportRef.current?.close()
-    transportRef.current = null
+    resetAll()
     setStatus({ state: 'closed' })
     log('local: closed')
   }
@@ -136,6 +280,21 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offerIn])
 
+  useEffect(() => {
+    // If user opened a link with ?relay= & ?sid= & role=join, auto-join relay once.
+    if (autoJoinRan.current) return
+    const relay = getUrlParam('relay')
+    const sid0 = getUrlParam('sid')
+    const role = getUrlParam('role')
+    if (!relay || !sid0 || role !== 'join') return
+    autoJoinRan.current = true
+    setMode('relay')
+    setRelayUrl(relay)
+    setSid(sid0)
+    joinRelay().catch((e) => log(`error: ${e instanceof Error ? e.message : String(e)}`))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid, relayUrl])
+
   return (
     <div className="item" style={{ marginBottom: 10 }}>
       <div className="itemTop">
@@ -144,12 +303,17 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
       </div>
 
       <div className="muted" style={{ fontSize: 13 }}>
-        Signaling is manual for now: copy/paste offer/answer codes (or share links).
+        Signaling modes: manual (copy/paste) or optional untrusted relay (WebSocket).
       </div>
 
       <div style={{ height: 10 }} />
 
       <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <span className="pill">Mode</span>
+        <select value={mode} onChange={(e) => setMode(e.target.value as any)}>
+          <option value="manual">manual</option>
+          <option value="relay">relay</option>
+        </select>
         <span className="pill">STUN</span>
         <input
           value={stun}
@@ -157,16 +321,42 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
           placeholder="stun:host:port (comma-separated)"
           style={{ minWidth: 360 }}
         />
-        <button onClick={host}>Host</button>
+        {mode === 'manual' ? (
+          <button onClick={host}>Host</button>
+        ) : (
+          <button onClick={hostRelay} disabled={!relayUrl.trim()}>
+            Host (relay)
+          </button>
+        )}
         <button onClick={disconnect}>Disconnect</button>
         {copied ? <span className="muted" style={{ fontSize: 12 }}>{copied}</span> : null}
       </div>
+
+      {mode === 'relay' ? (
+        <>
+          <div style={{ height: 10 }} />
+          <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+            <span className="pill">Relay</span>
+            <input
+              value={relayUrl}
+              onChange={(e) => setRelayUrl(e.target.value)}
+              placeholder="ws://host:port/ws"
+              style={{ minWidth: 360 }}
+            />
+            <span className="pill">sid</span>
+            <input value={sid} onChange={(e) => setSid(e.target.value)} placeholder="session id" style={{ minWidth: 220 }} />
+            <button onClick={joinRelay} disabled={!sid.trim() || !relayUrl.trim()}>
+              Join (relay)
+            </button>
+          </div>
+        </>
+      ) : null}
 
       {offerOut ? (
         <>
           <div style={{ height: 10 }} />
           <div className="muted" style={{ fontSize: 12 }}>
-            Offer code (send to peer)
+            Offer code {mode === 'relay' ? '(relay also has it)' : '(send to peer)'}
           </div>
           <textarea value={offerOut} readOnly style={taStyle} />
           <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
@@ -182,31 +372,47 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
             <button
               onClick={async () => {
                 const url = new URL(window.location.href)
-                url.searchParams.set('offer', offerOut)
-                url.searchParams.delete('answer')
+                if (mode === 'manual') {
+                  url.searchParams.set('offer', offerOut)
+                  url.searchParams.delete('answer')
+                  url.searchParams.delete('relay')
+                  url.searchParams.delete('sid')
+                  url.searchParams.delete('role')
+                } else {
+                  url.searchParams.set('relay', relayUrl)
+                  url.searchParams.set('sid', sid)
+                  url.searchParams.set('role', 'join')
+                  url.searchParams.delete('offer')
+                }
                 await copyToClipboard(url.toString())
-                setCopied('Copied offer link')
+                setCopied(mode === 'manual' ? 'Copied offer link' : 'Copied join link')
                 window.setTimeout(() => setCopied(null), 1200)
               }}
             >
-              Copy offer link
+              {mode === 'manual' ? 'Copy offer link' : 'Copy join link'}
             </button>
           </div>
-          <div className="row" style={{ gap: 8 }}>
-            <input
-              value={answerIn}
-              onChange={(e) => setAnswerIn(e.target.value)}
-              placeholder="Paste answer code here"
-              style={{ flex: 1 }}
-            />
-            <button onClick={acceptAnswer} disabled={!answerIn.trim()}>
-              Accept answer
-            </button>
-          </div>
+          {mode === 'manual' ? (
+            <div className="row" style={{ gap: 8 }}>
+              <input
+                value={answerIn}
+                onChange={(e) => setAnswerIn(e.target.value)}
+                placeholder="Paste answer code here"
+                style={{ flex: 1 }}
+              />
+              <button onClick={acceptAnswer} disabled={!answerIn.trim()}>
+                Accept answer
+              </button>
+            </div>
+          ) : (
+            <div className="muted" style={{ fontSize: 12 }}>
+              Waiting for peer to join and post an answer…
+            </div>
+          )}
         </>
       ) : null}
 
-      {!offerOut ? (
+      {!offerOut && mode === 'manual' ? (
         <>
           <div style={{ height: 10 }} />
           <div className="muted" style={{ fontSize: 12 }}>

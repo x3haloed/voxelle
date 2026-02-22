@@ -3,6 +3,7 @@ members = [
   "crates/isnad",
   "crates/voxelle-board",
   "crates/voxelle-protocol",
+  "crates/voxelle-signal",
 ]
 exclude = ["apps/desktop/src-tauri"]
 resolver = "2"
