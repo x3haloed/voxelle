@@ -1,9 +1,15 @@
 import type { EventV1 } from './rfc/types'
 import type { Message } from './types'
+import { topoSortDeterministic } from './dag'
 
 export function messagesFromEvents(events: EventV1[]): Message[] {
+  const byId = new Map(events.map((e) => [e.event_id, e]))
+  const order = topoSortDeterministic(events)
   const out: Message[] = []
-  for (const ev of events) {
+
+  for (const id of order) {
+    const ev = byId.get(id)
+    if (!ev) continue
     if (ev.kind !== 'MSG_POST') continue
     const body = ev.body as any
     const text = typeof body?.text === 'string' ? body.text : ''
@@ -21,7 +27,6 @@ export function messagesFromEvents(events: EventV1[]): Message[] {
       },
     })
   }
-  out.sort((a, b) => a.ts - b.ts || a.id.localeCompare(b.id))
   return out
 }
 
@@ -30,4 +35,3 @@ function tiny(id: string): string {
   if (id.length <= 24) return id
   return `${id.slice(0, 12)}…${id.slice(-8)}`
 }
-

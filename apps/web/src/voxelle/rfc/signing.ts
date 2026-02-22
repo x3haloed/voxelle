@@ -1,11 +1,12 @@
 import * as ed from '@noble/ed25519'
-import { base64Encode, base64UrlNoPad } from './base64'
+import { base64UrlNoPad } from './base64'
 import { idFromSpkiDer } from './ids'
 import { jcsBytes } from './jcs'
 import { NetstringWriter } from './netstring'
 import { ed25519SpkiDerFromPublicKey, spkiDerBase64FromEd25519PublicKey } from './spki'
 import { sha256 } from './hash'
 import type { DelegationCertV1, EventV1 } from './types'
+import { base64ToBytes, bytesToBase64 } from './util_b64'
 
 export type VoxelleIdentityV1 = {
   v: 1
@@ -18,17 +19,6 @@ export type VoxelleIdentityV1 = {
   device_pub_spki_b64: string
   device_id: string
   delegations_by_space: Record<string, DelegationCertV1>
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  return base64Encode(bytes)
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64)
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
 }
 
 function nowMs(): number {
@@ -176,7 +166,7 @@ export async function createMsgPostEvent(params: {
     delegation: params.delegation,
     ts,
     kind: 'MSG_POST',
-    prev: params.prev,
+    prev: [...params.prev].sort(),
     body,
   }
 

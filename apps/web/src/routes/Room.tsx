@@ -1,8 +1,11 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { getState, getRoomEvents, appendRoomEvent } from '../voxelle/store'
 import { messagesFromEvents } from '../voxelle/events'
 import { ensureIdentity, ensureDelegationForSpace, createMsgPostEvent } from '../voxelle/rfc/signing'
+import { validateEvent } from '../voxelle/rfc/validate'
+import type { EventV1 } from '../voxelle/rfc/types'
+import { computeHeads } from '../voxelle/dag'
 
 function fmtTs(ts: number) {
   const d = new Date(ts)
@@ -21,14 +24,36 @@ export function RoomRoute() {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [rev, setRev] = useState(0)
+  const [validEvents, setValidEvents] = useState<EventV1[]>([])
+  const [invalidCount, setInvalidCount] = useState(0)
+  const [invalidErrors, setInvalidErrors] = useState<string[]>([])
 
-  const feed = useMemo(
-    () => {
-      const evs = getRoomEvents(decodedSpaceId, decodedRoomId)
-      return messagesFromEvents(evs)
-    },
-    [decodedSpaceId, decodedRoomId],
-  )
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      const raw = getRoomEvents(decodedSpaceId, decodedRoomId) as unknown as EventV1[]
+      const results = await Promise.all(raw.map((e) => validateEvent(e)))
+      const ok: EventV1[] = []
+      const errs: string[] = []
+      for (const r of results) {
+        if (r.ok) ok.push(r.value)
+        else if (errs.length < 3) errs.push(r.error)
+      }
+      if (cancelled) return
+      setValidEvents(ok)
+      setInvalidCount(raw.length - ok.length)
+      setInvalidErrors(errs)
+    })().catch((e) => {
+      if (cancelled) return
+      setErr(e instanceof Error ? e.message : String(e))
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [decodedSpaceId, decodedRoomId, rev])
+
+  const feed = useMemo(() => messagesFromEvents(validEvents), [validEvents])
 
   if (!space) {
     return <div className="emptyState">Unknown space: {decodedSpaceId || '(missing)'}.</div>
@@ -58,8 +83,8 @@ export function RoomRoute() {
       const identity0 = await ensureIdentity()
       const { identity, delegation } = await ensureDelegationForSpace(identity0, spaceOk.id)
 
-      const existing = getRoomEvents(spaceOk.id, roomOk.id)
-      const prev = existing.length > 0 ? [existing[existing.length - 1]!.event_id] : []
+      const heads = computeHeads(validEvents)
+      const prev = heads.slice(0, 8).sort()
       const ev = await createMsgPostEvent({
         identity,
         delegation,
@@ -68,8 +93,11 @@ export function RoomRoute() {
         prev,
         text,
       })
-      appendRoomEvent(spaceOk.id, roomOk.id, ev)
+      const checked = await validateEvent(ev)
+      if (!checked.ok) throw new Error(`refusing to store invalid event: ${checked.error}`)
+      appendRoomEvent(spaceOk.id, roomOk.id, checked.value)
       setDraft('')
+      setRev((r) => r + 1)
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e))
     } finally {
@@ -92,6 +120,18 @@ export function RoomRoute() {
       </div>
 
       <div className="chatFeed" role="log" aria-label="chat feed">
+        {invalidCount > 0 ? (
+          <div className="emptyState" style={{ marginBottom: 10, borderStyle: 'solid' }}>
+            <div style={{ fontWeight: 700, color: 'var(--danger)' }}>
+              {invalidCount} invalid event{invalidCount === 1 ? '' : 's'} hidden
+            </div>
+            {invalidErrors.length > 0 ? (
+              <div style={{ marginTop: 6, fontSize: 12 }} className="muted">
+                {invalidErrors.join(' • ')}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {feed.length === 0 ? (
           <div className="emptyState">No messages yet.</div>
         ) : (

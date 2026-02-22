@@ -1,5 +1,6 @@
 import type { Room, Space } from './types'
 import type { EventV1 } from './rfc/types'
+import { computeHeads, topoSortDeterministic } from './dag'
 
 type State = {
   spaces: Space[]
@@ -41,6 +42,15 @@ export function getRoomEvents(spaceId: string, roomId: string): EventV1[] {
 
 export function appendRoomEvent(spaceId: string, roomId: string, ev: EventV1): void {
   const existing = getRoomEvents(spaceId, roomId)
+  if (existing.some((e) => e?.event_id === ev.event_id)) return
   const next = [...existing, ev]
   localStorage.setItem(keyForRoom(spaceId, roomId), JSON.stringify(next))
+}
+
+export function getRoomHeads(spaceId: string, roomId: string): string[] {
+  return computeHeads(getRoomEvents(spaceId, roomId))
+}
+
+export function getRoomEventOrder(spaceId: string, roomId: string): string[] {
+  return topoSortDeterministic(getRoomEvents(spaceId, roomId))
 }
