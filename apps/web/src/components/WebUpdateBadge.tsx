@@ -38,7 +38,14 @@ export function WebUpdateBadge() {
       <button
         className="pill"
         onClick={async () => {
-          const next = window.prompt('Web update feed URL (manifest JSON). Leave empty to disable.', feed) ?? feed
+          const raw =
+            window.prompt(
+              'Web update feed (manifest URL, or GitHub shorthand like "gh:owner/repo", or just "owner/repo"). Leave empty to disable.',
+              feed,
+            ) ?? feed
+          const next = raw.includes('://') || raw.trim() === '' || raw.trim().startsWith('gh:') || raw.trim().startsWith('github:')
+            ? raw
+            : `gh:${raw.trim()}`
           setErr(null)
           try {
             setBusy('setting')

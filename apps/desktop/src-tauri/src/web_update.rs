@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 
 pub const EVENT_WEB_UPDATE_READY: &str = "voxelle:web-update-ready";
+pub const DEFAULT_FEED: &str = "gh:x3haloed/voxelle";
 
 // Update feed manifest (JSON), fetched from `feed_url`:
 // {
@@ -173,7 +174,12 @@ fn read_text_file(path: &Path) -> String {
 }
 
 pub fn load_persisted_feed_url(app: &tauri::AppHandle) -> Result<String, String> {
-    Ok(read_text_file(&feed_file(app)?))
+    let p = feed_file(app)?;
+    if !p.exists() {
+        // Default to this repo's GitHub Releases if the user has never configured a feed.
+        return Ok(DEFAULT_FEED.to_string());
+    }
+    Ok(read_text_file(&p))
 }
 
 pub fn load_persisted_active_version(app: &tauri::AppHandle) -> Result<String, String> {
@@ -229,8 +235,9 @@ fn parse_version(s: &str) -> Option<semver::Version> {
 }
 
 async fn fetch_manifest(url: &str) -> Result<WebBundleManifestV1, String> {
+    let feed = normalize_feed_url(url);
     let resp = reqwest::Client::new()
-        .get(url)
+        .get(feed)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -245,6 +252,27 @@ async fn fetch_manifest(url: &str) -> Result<WebBundleManifestV1, String> {
         return Err("manifest missing fields".into());
     }
     Ok(m)
+}
+
+fn normalize_feed_url(feed: &str) -> String {
+    let s = feed.trim();
+    if s.is_empty() {
+        return "".to_string();
+    }
+
+    // Shorthand: `gh:owner/repo` (or `github:owner/repo`) resolves to the latest GitHub Release asset:
+    // https://github.com/<owner>/<repo>/releases/latest/download/voxelle-web-manifest.json
+    if let Some(rest) = s.strip_prefix("gh:").or_else(|| s.strip_prefix("github:")) {
+        let slug = rest.trim().trim_matches('/');
+        if !slug.is_empty() {
+            return format!(
+                "https://github.com/{}/releases/latest/download/voxelle-web-manifest.json",
+                slug
+            );
+        }
+    }
+
+    s.to_string()
 }
 
 pub fn status(state: &WebUpdateState) -> WebUpdateStatus {
