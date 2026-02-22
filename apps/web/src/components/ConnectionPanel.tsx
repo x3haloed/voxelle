@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { TransportStatus, WebRtcTransportWithSignaling } from '../voxelle/webrtc'
 import { createWebRtcTransport } from '../voxelle/webrtc'
-import { startRoomSync } from '../voxelle/sync'
+import { startRoomSync, type SyncStats } from '../voxelle/sync'
 import { createSignalClient, newSessionId, type SignalClient, type SignalState } from '../voxelle/signal_ws'
+import { getRoomEvents, getRoomHeads } from '../voxelle/store'
 
 function setUrlParam(name: string, value: string | null) {
   const url = new URL(window.location.href)
@@ -32,6 +33,8 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   const [answerOut, setAnswerOut] = useState('')
   const [status, setStatus] = useState<TransportStatus>({ state: 'idle' })
   const [logLines, setLogLines] = useState<string[]>([])
+  const [syncStats, setSyncStats] = useState<SyncStats>({ phase: 'starting' })
+  const [localRev, setLocalRev] = useState(0)
   const [copied, setCopied] = useState<string | null>(null)
 
   const transportRef = useRef<WebRtcTransportWithSignaling | null>(null)
@@ -54,6 +57,9 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   }, [stun])
 
   const log = (s: string) => setLogLines((l) => [...l.slice(-40), `${new Date().toLocaleTimeString()} ${s}`])
+
+  const localEventCount = useMemo(() => getRoomEvents(props.spaceId, props.roomId).length, [props.spaceId, props.roomId, localRev])
+  const localHeadsCount = useMemo(() => getRoomHeads(props.spaceId, props.roomId).length, [props.spaceId, props.roomId, localRev])
 
   useEffect(() => {
     modeRef.current = mode
@@ -98,6 +104,18 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     localStorage.setItem('voxelle.relay.ws', relayUrl)
   }, [relayUrl])
 
+  useEffect(() => {
+    const onAppended = (ev: Event) => {
+      const ce = ev as CustomEvent<any>
+      const d = ce?.detail
+      if (d?.v !== 1) return
+      if (d.spaceId !== props.spaceId || d.roomId !== props.roomId) return
+      setLocalRev((r) => r + 1)
+    }
+    window.addEventListener('voxelle-room-event-appended', onAppended)
+    return () => window.removeEventListener('voxelle-room-event-appended', onAppended)
+  }, [props.spaceId, props.roomId])
+
   async function ensureTransport(): Promise<WebRtcTransportWithSignaling> {
     if (transportRef.current) return transportRef.current
     const t = createWebRtcTransport({ iceServers }) as WebRtcTransportWithSignaling
@@ -114,6 +132,7 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     signalRef.current?.close()
     signalRef.current = null
     autoAcceptAnswerRan.current = false
+    setSyncStats({ phase: 'starting' })
   }
 
   function ensureSignal(): SignalClient {
@@ -173,6 +192,7 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
       spaceId: props.spaceId,
       roomId: props.roomId,
       onLog: (line) => log(`sync: ${line}`),
+      onStats: (st) => setSyncStats(st),
     })
     log('sync: started')
   }
@@ -330,6 +350,33 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
 
       <div className="muted" style={{ fontSize: 13 }}>
         Signaling modes: manual (copy/paste) or optional untrusted relay (WebSocket).
+      </div>
+
+      <div style={{ height: 10 }} />
+
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <span className="pill">Local events</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {localEventCount}
+        </span>
+        <span className="pill">Local heads</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {localHeadsCount}
+        </span>
+        <span className="pill">Peer heads</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {syncStats.lastPeerHeadsCount ?? '—'}
+        </span>
+        <span className="pill">Last want</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {syncStats.lastWantCount ?? '—'}
+        </span>
+        <span className="pill">Last have</span>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {syncStats.lastHaveAccepted !== undefined && syncStats.lastHaveReceived !== undefined
+            ? `${syncStats.lastHaveAccepted}/${syncStats.lastHaveReceived}`
+            : '—'}
+        </span>
       </div>
 
       <div style={{ height: 10 }} />

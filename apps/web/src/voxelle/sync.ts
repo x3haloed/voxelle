@@ -3,6 +3,17 @@ import { acceptEvent } from './accept'
 import { appendRoomEvent, getRoomEvents, getRoomHeads } from './store'
 import type { JsonValue, WebRtcTransport } from './webrtc'
 
+export type SyncStats = {
+  phase: 'starting' | 'running' | 'stopped'
+  lastPeerHelloTs?: number
+  lastPeerHeadsCount?: number
+  lastWantCount?: number
+  lastHaveReceived?: number
+  lastHaveAccepted?: number
+  lastSentHeadsTs?: number
+  lastSentHaveTs?: number
+}
+
 export type SyncMsg =
   | {
       t: 'hello'
@@ -49,14 +60,24 @@ export function startRoomSync(params: {
   spaceId: string
   roomId: string
   onLog?: (line: string) => void
+  onStats?: (stats: SyncStats) => void
 }) {
   const log = (s: string) => params.onLog?.(s)
   const { transport, spaceId, roomId } = params
 
+  let stats: SyncStats = { phase: 'starting' }
+  const emitStats = (patch: Partial<SyncStats>) => {
+    stats = { ...stats, ...patch }
+    params.onStats?.(stats)
+  }
+
   const send = (msg: SyncMsg) => transport.send(msg as unknown as JsonValue)
 
   const sendHello = () => send({ t: 'hello', v: 1, spaceId, roomId })
-  const sendHeads = () => send({ t: 'heads', v: 1, spaceId, roomId, heads: getRoomHeads(spaceId, roomId) })
+  const sendHeads = () => {
+    emitStats({ lastSentHeadsTs: Date.now() })
+    send({ t: 'heads', v: 1, spaceId, roomId, heads: getRoomHeads(spaceId, roomId) })
+  }
 
   const knownIds = () => new Set(getRoomEvents(spaceId, roomId).map((e) => e.event_id))
 
@@ -72,15 +93,18 @@ export function startRoomSync(params: {
 
     if (msg.t === 'hello') {
       log('peer: hello')
+      emitStats({ phase: 'running', lastPeerHelloTs: Date.now() })
       sendHeads()
       return
     }
 
     if (msg.t === 'heads') {
       log(`peer: heads(${msg.heads.length})`)
+      emitStats({ phase: 'running', lastPeerHeadsCount: msg.heads.length })
       const missing = computeMissingFromHeads(msg.heads)
       if (missing.length > 0) {
         log(`local: want(${missing.length})`)
+        emitStats({ lastWantCount: missing.length })
         send({ t: 'want', v: 1, spaceId, roomId, ids: missing })
       }
       return
@@ -94,7 +118,10 @@ export function startRoomSync(params: {
         if (ev) events.push(ev)
       }
       log(`peer: want(${msg.ids.length}) -> have(${events.length})`)
-      if (events.length > 0) send({ t: 'have', v: 1, spaceId, roomId, events })
+      if (events.length > 0) {
+        emitStats({ lastSentHaveTs: Date.now() })
+        send({ t: 'have', v: 1, spaceId, roomId, events })
+      }
       return
     }
 
@@ -107,6 +134,7 @@ export function startRoomSync(params: {
         accepted++
       }
       log(`peer: have(${msg.events.length}) accepted(${accepted})`)
+      emitStats({ lastHaveReceived: msg.events.length, lastHaveAccepted: accepted })
       return
     }
   })
@@ -120,15 +148,20 @@ export function startRoomSync(params: {
     const ids = [String(d.eventId)].slice(0, 1)
     const all = new Map(getRoomEvents(spaceId, roomId).map((e) => [e.event_id, e]))
     const events = ids.map((id) => all.get(id)).filter(Boolean) as EventV1[]
-    if (events.length > 0) send({ t: 'have', v: 1, spaceId, roomId, events })
+    if (events.length > 0) {
+      emitStats({ lastSentHaveTs: Date.now() })
+      send({ t: 'have', v: 1, spaceId, roomId, events })
+    }
   }
   window.addEventListener('voxelle-room-event-appended', onAppended)
 
+  emitStats({ phase: 'running' })
   sendHello()
   sendHeads()
 
   return () => {
     unsubMsg()
     window.removeEventListener('voxelle-room-event-appended', onAppended)
+    emitStats({ phase: 'stopped' })
   }
 }
