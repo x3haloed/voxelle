@@ -1,17 +1,21 @@
 import { Link, Route, Routes, useParams } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
 import './index.css'
 import { Topbar } from './components/Topbar'
 import { Home } from './routes/Home'
 import { RoomRoute } from './routes/Room'
 import { SpaceRoute } from './routes/Space'
-import { getState } from './voxelle/store'
+import { getState, onStateChanged } from './voxelle/store'
 
 function App() {
   const { spaceId, roomId } = useParams()
   const decodedSpaceId = spaceId ? decodeURIComponent(spaceId) : ''
   const decodedRoomId = roomId ? decodeURIComponent(roomId) : ''
 
-  const { rooms, spaces } = getState()
+  const [rev, setRev] = useState(0)
+  useEffect(() => onStateChanged(() => setRev((r) => r + 1)), [])
+
+  const { rooms, spaces } = useMemo(() => getState(), [rev])
   const activeSpace = spaces.find((s) => s.id === decodedSpaceId)
   const activeRooms = activeSpace ? rooms.filter((r) => r.spaceId === activeSpace.id) : []
   const activeRoom = activeRooms.find((r) => r.id === decodedRoomId)
