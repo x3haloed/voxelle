@@ -7,6 +7,7 @@ import { ed25519SpkiDerFromPublicKey, spkiDerBase64FromEd25519PublicKey } from '
 import { sha256 } from './hash'
 import type { DelegationCertV1, EventV1 } from './types'
 import { base64ToBytes, bytesToBase64 } from './util_b64'
+import { secretGet, secretSet, secretsAvailable } from '../secrets'
 
 export type VoxelleIdentityV1 = {
   v: 1
@@ -50,7 +51,7 @@ export async function createIdentity(): Promise<VoxelleIdentityV1> {
   }
 }
 
-export function loadIdentity(): VoxelleIdentityV1 | null {
+function loadIdentityLocal(): VoxelleIdentityV1 | null {
   const raw = localStorage.getItem('voxelle.identity.v1')
   if (!raw) return null
   try {
@@ -62,15 +63,47 @@ export function loadIdentity(): VoxelleIdentityV1 | null {
   }
 }
 
-export function saveIdentity(identity: VoxelleIdentityV1) {
+function saveIdentityLocal(identity: VoxelleIdentityV1) {
   localStorage.setItem('voxelle.identity.v1', JSON.stringify(identity))
 }
 
+async function loadIdentityFromSecrets(): Promise<VoxelleIdentityV1 | null> {
+  const raw = await secretGet('identity.v1')
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as VoxelleIdentityV1
+    if (parsed?.v !== 1) return null
+    return parsed
+  } catch {
+    return null
+  }
+}
+
+async function saveIdentityToSecrets(identity: VoxelleIdentityV1) {
+  await secretSet('identity.v1', JSON.stringify(identity))
+}
+
 export async function ensureIdentity(): Promise<VoxelleIdentityV1> {
-  const existing = loadIdentity()
+  // Desktop (Tauri): store identity secrets in OS keychain via `keyring`.
+  // Browser: fall back to localStorage.
+  if (secretsAvailable()) {
+    const fromSecrets = await loadIdentityFromSecrets()
+    if (fromSecrets) return fromSecrets
+
+    // One-time migration from old localStorage.
+    const fromLocal = loadIdentityLocal()
+    if (fromLocal) {
+      await saveIdentityToSecrets(fromLocal)
+      localStorage.removeItem('voxelle.identity.v1')
+      return fromLocal
+    }
+  }
+
+  const existing = loadIdentityLocal()
   if (existing) return existing
   const id = await createIdentity()
-  saveIdentity(id)
+  if (secretsAvailable()) await saveIdentityToSecrets(id)
+  else saveIdentityLocal(id)
   return id
 }
 
@@ -124,7 +157,8 @@ export async function ensureDelegationForSpace(
     ...identity,
     delegations_by_space: { ...identity.delegations_by_space, [spaceId]: delegation },
   }
-  saveIdentity(nextIdentity)
+  if (secretsAvailable()) await saveIdentityToSecrets(nextIdentity)
+  else saveIdentityLocal(nextIdentity)
   return { identity: nextIdentity, delegation }
 }
 

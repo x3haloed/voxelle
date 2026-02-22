@@ -8,6 +8,52 @@ fn greet(name: &str) -> String {
 
 mod web_update;
 
+fn keyring_entry(key: &str) -> Result<keyring::Entry, String> {
+    if key.trim().is_empty() {
+        return Err("key must be non-empty".into());
+    }
+    if key.len() > 256 {
+        return Err("key too long".into());
+    }
+    Ok(keyring::Entry::new("voxelle", key).map_err(|e| e.to_string())?)
+}
+
+#[tauri::command]
+fn voxelle_secret_get(key: String) -> Result<Option<String>, String> {
+    let entry = keyring_entry(&key)?;
+    match entry.get_password() {
+        Ok(v) => Ok(Some(v)),
+        Err(e) => {
+            // Treat "missing" as None; anything else is an error.
+            let msg = e.to_string();
+            let msg_l = msg.to_lowercase();
+            if msg_l.contains("no entry") || msg_l.contains("not found") || msg_l.contains("item not found") {
+                Ok(None)
+            } else {
+                Err(msg)
+            }
+        }
+    }
+}
+
+#[tauri::command]
+fn voxelle_secret_set(key: String, value: String) -> Result<(), String> {
+    if value.len() > 256 * 1024 {
+        return Err("value too large".into());
+    }
+    let entry = keyring_entry(&key)?;
+    entry.set_password(&value).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn voxelle_secret_delete(key: String) -> Result<(), String> {
+    let entry = keyring_entry(&key)?;
+    // Ignore if not found.
+    let _ = entry.delete_credential();
+    Ok(())
+}
+
 #[tauri::command]
 fn web_update_status(state: tauri::State<web_update::WebUpdateState>) -> web_update::WebUpdateStatus {
     web_update::status(&state)
@@ -88,6 +134,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             greet,
+            voxelle_secret_get,
+            voxelle_secret_set,
+            voxelle_secret_delete,
             web_update_status,
             web_update_set_feed,
             web_update_check,

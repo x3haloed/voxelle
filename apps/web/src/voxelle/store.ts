@@ -11,6 +11,7 @@ import { createDelegationCert, deviceIdFromDevicePubSpkiB64 } from './rfc/delega
 import { bytesToBase64 } from './rfc/util_b64'
 import { spkiDerBase64FromEd25519PublicKey } from './rfc/spki'
 import * as ed from '@noble/ed25519'
+import { secretGet, secretSet, secretsAvailable } from './secrets'
 
 type State = {
   spaces: Space[]
@@ -33,6 +34,7 @@ type SpaceRecordV1 = {
 
 const SPACES_KEY = 'voxelle.spaces.v1'
 const ROOMS_KEY = 'voxelle.rooms.v1'
+const SPACE_ROOT_SK_KEY_PREFIX = 'space.'
 
 function emitStateChanged() {
   window.dispatchEvent(new CustomEvent('voxelle-state-changed', { detail: { v: 1 } }))
@@ -82,6 +84,65 @@ function loadSpaceRecords(): SpaceRecordV1[] {
 function saveSpaceRecords(records: SpaceRecordV1[]) {
   localStorage.setItem(SPACES_KEY, JSON.stringify(records))
   emitStateChanged()
+}
+
+function replaceSpaceRecord(spaceId: string, next: SpaceRecordV1) {
+  const all = loadSpaceRecords()
+  const out: SpaceRecordV1[] = []
+  let replaced = false
+  for (const r of all) {
+    if (r.space_id === spaceId) {
+      out.push(next)
+      replaced = true
+    } else out.push(r)
+  }
+  if (!replaced) out.push(next)
+  saveSpaceRecords(out)
+}
+
+function spaceSecretKey(spaceId: string, name: 'space_root_sk_b64' | 'space_root_device_sk_b64'): string {
+  return `${SPACE_ROOT_SK_KEY_PREFIX}${encodeURIComponent(spaceId)}.${name}`
+}
+
+async function getOwnerSpaceSecrets(spaceId: string): Promise<{
+  space_root_sk_b64?: string
+  space_root_device_sk_b64?: string
+}> {
+  const rec = getSpaceRecord(spaceId)
+  if (!rec || !rec.owner) throw new Error('not an owner space')
+
+  if (!secretsAvailable()) {
+    return { space_root_sk_b64: rec.space_root_sk_b64, space_root_device_sk_b64: rec.space_root_device_sk_b64 }
+  }
+
+  // Migrate any legacy secrets still present in localStorage into keychain.
+  const toPersist: Array<[string, string]> = []
+  if (rec.space_root_sk_b64?.trim()) toPersist.push([spaceSecretKey(spaceId, 'space_root_sk_b64'), rec.space_root_sk_b64])
+  if (rec.space_root_device_sk_b64?.trim())
+    toPersist.push([spaceSecretKey(spaceId, 'space_root_device_sk_b64'), rec.space_root_device_sk_b64])
+  if (toPersist.length > 0) {
+    for (const [k, v] of toPersist) {
+      try {
+        await secretSet(k, v)
+      } catch {
+        // If keychain write fails, keep legacy storage (better than losing the key).
+        return { space_root_sk_b64: rec.space_root_sk_b64, space_root_device_sk_b64: rec.space_root_device_sk_b64 }
+      }
+    }
+    const next: SpaceRecordV1 = {
+      ...rec,
+      space_root_sk_b64: undefined,
+      space_root_device_sk_b64: undefined,
+    }
+    replaceSpaceRecord(spaceId, next)
+  }
+
+  const rootSk = await secretGet(spaceSecretKey(spaceId, 'space_root_sk_b64'))
+  const deviceSk = await secretGet(spaceSecretKey(spaceId, 'space_root_device_sk_b64'))
+  return {
+    space_root_sk_b64: rootSk ?? undefined,
+    space_root_device_sk_b64: deviceSk ?? undefined,
+  }
 }
 
 function loadRooms(): Room[] {
@@ -141,6 +202,18 @@ export async function createSpace(name: string): Promise<Space> {
     space_root_device_pub_spki_b64: rootDevicePubSpkiB64,
     space_root_device_id: rootDeviceId,
     space_root_device_delegation: rootDelegation,
+  }
+
+  // Desktop: store secrets in OS keychain and avoid keeping them in localStorage.
+  if (secretsAvailable()) {
+    try {
+      await secretSet(spaceSecretKey(rec.space_id, 'space_root_sk_b64'), kp.sk_b64)
+      await secretSet(spaceSecretKey(rec.space_id, 'space_root_device_sk_b64'), bytesToBase64(rootDeviceSk))
+      rec.space_root_sk_b64 = undefined
+      rec.space_root_device_sk_b64 = undefined
+    } catch {
+      // If keychain write fails, keep legacy localStorage values (better than losing keys).
+    }
   }
 
   const all = loadSpaceRecords()
@@ -245,7 +318,11 @@ export async function issueInviteFromOwner(params: {
 }): Promise<InviteV1> {
   const rec = getSpaceRecord(params.spaceId)
   if (!rec || !rec.owner) throw new Error('not an owner space')
-  if (!rec.space_root_device_sk_b64 || !rec.space_root_device_delegation || !rec.space_root_device_id || !rec.space_root_device_pub_spki_b64) {
+
+  const secrets = await getOwnerSpaceSecrets(params.spaceId)
+  const spaceRootDeviceSkB64 = secrets.space_root_device_sk_b64
+
+  if (!spaceRootDeviceSkB64 || !rec.space_root_device_delegation || !rec.space_root_device_id || !rec.space_root_device_pub_spki_b64) {
     throw new Error('space root device not configured')
   }
 
@@ -269,7 +346,7 @@ export async function issueInviteFromOwner(params: {
     issuer_device_id: rec.space_root_device_id,
     issuer_device_pub: rec.space_root_device_pub_spki_b64,
     issuer_delegation: rec.space_root_device_delegation,
-    issuer_device_sk_b64: rec.space_root_device_sk_b64,
+    issuer_device_sk_b64: spaceRootDeviceSkB64,
     scopes,
     expires_ts,
     constraints: { principal_type: 'any' },
