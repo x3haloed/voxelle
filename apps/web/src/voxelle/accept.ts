@@ -1,6 +1,7 @@
 import type { EventV1 } from './rfc/types'
 import { validateEvent } from './rfc/validate'
 import { deriveGovernanceState } from './governance'
+import { checkEventLimits } from './limits'
 
 export type AcceptOk<T> = { ok: true; value: T }
 export type AcceptErr = { ok: false; error: string }
@@ -9,6 +10,9 @@ export type AcceptResult<T> = AcceptOk<T> | AcceptErr
 export type RoomEventsProvider = (spaceId: string, roomId: string) => EventV1[]
 
 export async function acceptEvent(ev: EventV1, getRoomEvents: RoomEventsProvider): Promise<AcceptResult<EventV1>> {
+  const limitsOk = checkEventLimits(ev)
+  if (!limitsOk.ok) return { ok: false, error: `limits: ${limitsOk.error}` }
+
   const cryptoOk = await validateEvent(ev)
   if (!cryptoOk.ok) return cryptoOk
 
@@ -42,4 +46,3 @@ export async function acceptEvent(ev: EventV1, getRoomEvents: RoomEventsProvider
 
   return { ok: true, value: ev }
 }
-

@@ -2,6 +2,7 @@ import { Link, useParams } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
 import { exportSpaceGenesis, getState, isSpaceOwner, issueInviteFromOwner, onStateChanged, roomsForSpace } from '../voxelle/store'
 import { encodeInviteToFragment } from '../voxelle/invite_link'
+import { parseInviteRendezvous } from '../voxelle/rfc/invite_bootstrap'
 
 export function SpaceRoute() {
   const { spaceId } = useParams()
@@ -16,6 +17,7 @@ export function SpaceRoute() {
   const owner = useMemo(() => isSpaceOwner(decoded), [decoded, rev])
   const [relayWs, setRelayWs] = useState(() => localStorage.getItem('voxelle.relay.ws') ?? '')
   const [inviteLink, setInviteLink] = useState('')
+  const [hostLink, setHostLink] = useState('')
   const [issuing, setIssuing] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
@@ -84,6 +86,15 @@ export function SpaceRoute() {
                     const frag = encodeInviteToFragment(inv)
                     const link = `${window.location.origin}/?${''}${frag}`
                     setInviteLink(link)
+                    const rv = parseInviteRendezvous(inv)
+                    if (rv?.kind === 'signal-ws') {
+                      const qs = new URLSearchParams({ relay: rv.url, sid: rv.sid, role: 'host' })
+                      setHostLink(
+                        `${window.location.origin}/s/${encodeURIComponent(space.id)}/r/${encodeURIComponent('room:general')}?${qs.toString()}`,
+                      )
+                    } else {
+                      setHostLink('')
+                    }
                     await navigator.clipboard.writeText(link)
                   } catch (e) {
                     setErr(e instanceof Error ? e.message : String(e))
@@ -102,6 +113,23 @@ export function SpaceRoute() {
                   Invite link
                 </div>
                 <textarea value={inviteLink} readOnly style={{ ...taStyle, minHeight: 70 }} />
+                {hostLink ? (
+                  <>
+                    <div style={{ height: 10 }} />
+                    <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+                      <button
+                        onClick={async () => {
+                          await navigator.clipboard.writeText(hostLink)
+                        }}
+                      >
+                        Copy host link
+                      </button>
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        (open in a second tab/device to host the relay session)
+                      </span>
+                    </div>
+                  </>
+                ) : null}
               </>
             ) : null}
             {err ? (

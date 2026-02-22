@@ -38,9 +38,11 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   const signalRef = useRef<SignalClient | null>(null)
   const stopSyncRef = useRef<null | (() => void)>(null)
   const autoJoinRan = useRef(false)
+  const autoHostRan = useRef(false)
   const autoAcceptAnswerRan = useRef(false)
   const modeRef = useRef(mode)
   const sidRef = useRef(sid)
+  const relayUrlRef = useRef(relayUrl)
   const answerOutRef = useRef(answerOut)
 
   const iceServers = useMemo(() => {
@@ -60,6 +62,9 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     sidRef.current = sid
   }, [sid])
   useEffect(() => {
+    relayUrlRef.current = relayUrl
+  }, [relayUrl])
+  useEffect(() => {
     answerOutRef.current = answerOut
   }, [answerOut])
 
@@ -76,7 +81,7 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
       setRelayUrl(relayFromUrl)
     }
     if (sidFromUrl) setSid(sidFromUrl)
-    if (roleFromUrl === 'join') setMode('relay')
+    if (roleFromUrl === 'join' || roleFromUrl === 'host') setMode('relay')
 
     return () => {
       stopSyncRef.current?.()
@@ -113,8 +118,9 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
 
   function ensureSignal(): SignalClient {
     if (signalRef.current) return signalRef.current
-    if (!relayUrl.trim()) throw new Error('missing relay URL')
-    const c = createSignalClient(relayUrl)
+    const url = relayUrlRef.current.trim()
+    if (!url) throw new Error('missing relay URL')
+    const c = createSignalClient(url)
     signalRef.current = c
     c.onError((e) => log(`relay: ${e}`))
     c.onState((s) => onRelayState(s))
@@ -210,10 +216,11 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     setAnswerIn('')
     setLogLines([])
 
-    const nextSid = newSessionId()
+    const existingSid = sidRef.current.trim()
+    const nextSid = existingSid || newSessionId()
     setSid(nextSid)
     sidRef.current = nextSid
-    setUrlParam('relay', relayUrl)
+    setUrlParam('relay', relayUrlRef.current)
     setUrlParam('sid', nextSid)
     setUrlParam('role', 'host')
     setUrlParam('offer', null)
@@ -241,7 +248,7 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
       log('relay: missing sid')
       return
     }
-    setUrlParam('relay', relayUrl)
+    setUrlParam('relay', relayUrlRef.current)
     setUrlParam('sid', sidTrim)
     setUrlParam('role', 'join')
     setUrlParam('offer', null)
@@ -291,7 +298,26 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     setMode('relay')
     setRelayUrl(relay)
     setSid(sid0)
+    relayUrlRef.current = relay
+    sidRef.current = sid0
     joinRelay().catch((e) => log(`error: ${e instanceof Error ? e.message : String(e)}`))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sid, relayUrl])
+
+  useEffect(() => {
+    // If user opened a link with ?relay= & ?sid= & role=host, auto-host relay once.
+    if (autoHostRan.current) return
+    const relay = getUrlParam('relay')
+    const sid0 = getUrlParam('sid')
+    const role = getUrlParam('role')
+    if (!relay || !sid0 || role !== 'host') return
+    autoHostRan.current = true
+    setMode('relay')
+    setRelayUrl(relay)
+    setSid(sid0)
+    relayUrlRef.current = relay
+    sidRef.current = sid0
+    hostRelay().catch((e) => log(`error: ${e instanceof Error ? e.message : String(e)}`))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sid, relayUrl])
 
