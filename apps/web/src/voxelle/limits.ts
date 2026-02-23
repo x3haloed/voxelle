@@ -4,6 +4,15 @@ type LimitOk = { ok: true }
 type LimitErr = { ok: false; error: string }
 export type LimitResult = LimitOk | LimitErr
 
+export const MAX_WIRE_MESSAGE_BYTES_DEFAULT = 256 * 1024
+export const MAX_SIGNAL_WS_MESSAGE_BYTES = 64 * 1024
+export const MAX_SIGNAL_SID_CHARS = 128
+export const MAX_SIGNAL_SDP_CODE_CHARS = 128 * 1024
+
+export const MAX_SYNC_HEADS = 256
+export const MAX_SYNC_WANT_IDS = 256
+export const MAX_SYNC_HAVE_EVENTS = 64
+
 function isObj(x: unknown): x is Record<string, unknown> {
   return typeof x === 'object' && x !== null
 }
@@ -11,6 +20,45 @@ function isObj(x: unknown): x is Record<string, unknown> {
 function maxLen(s: string, n: number, name: string): LimitResult {
   if (s.length > n) return { ok: false, error: `${name} too long` }
   return { ok: true }
+}
+
+export function utf8ByteLen(s: string): number {
+  return new TextEncoder().encode(s).length
+}
+
+export function isSafeWsSid(sid: string): boolean {
+  const s = sid.trim()
+  if (!s) return false
+  if (s.length > MAX_SIGNAL_SID_CHARS) return false
+  // Hex-only session ids (newSessionId()).
+  return /^[0-9a-f]+$/i.test(s)
+}
+
+export class TokenBucket {
+  private tokens: number
+  private lastRefillMs: number
+  private capacity: number
+  private refillPerSec: number
+
+  constructor(capacity: number, refillPerSec: number) {
+    this.capacity = capacity
+    this.refillPerSec = refillPerSec
+    this.tokens = capacity
+    this.lastRefillMs = Date.now()
+  }
+
+  allow(cost = 1): boolean {
+    const now = Date.now()
+    const elapsedSec = Math.max(0, now - this.lastRefillMs) / 1000
+    if (elapsedSec > 0) {
+      this.tokens = Math.min(this.capacity, this.tokens + elapsedSec * this.refillPerSec)
+      this.lastRefillMs = now
+    }
+
+    if (this.tokens < cost) return false
+    this.tokens -= cost
+    return true
+  }
 }
 
 export function checkEventLimits(ev: EventV1): LimitResult {

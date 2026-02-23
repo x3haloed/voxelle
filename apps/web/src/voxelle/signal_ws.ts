@@ -1,3 +1,10 @@
+import {
+  isSafeWsSid,
+  MAX_SIGNAL_SDP_CODE_CHARS,
+  MAX_SIGNAL_WS_MESSAGE_BYTES,
+  utf8ByteLen,
+} from './limits'
+
 export type SignalState = {
   sid: string
   offer?: string
@@ -33,13 +40,30 @@ export function createSignalClient(relayWsUrl: string): SignalClient {
 
   ws.addEventListener('message', (ev) => {
     try {
-      const msg = JSON.parse(String(ev.data)) as ServerMsg
+      const raw = String(ev.data ?? '')
+      if (utf8ByteLen(raw) > MAX_SIGNAL_WS_MESSAGE_BYTES) {
+        emitErr('relay message too large')
+        return
+      }
+      const msg = JSON.parse(raw) as ServerMsg
       if (!msg || msg.v !== 1) return
       if (msg.t === 'error') {
         emitErr(msg.error || 'relay error')
         return
       }
       if (msg.t === 'state') {
+        if (typeof msg.sid !== 'string' || !isSafeWsSid(msg.sid)) {
+          emitErr('invalid sid from relay')
+          return
+        }
+        if (typeof msg.offer === 'string' && msg.offer.length > MAX_SIGNAL_SDP_CODE_CHARS) {
+          emitErr('offer too large from relay')
+          return
+        }
+        if (typeof msg.answer === 'string' && msg.answer.length > MAX_SIGNAL_SDP_CODE_CHARS) {
+          emitErr('answer too large from relay')
+          return
+        }
         emitState({
           sid: msg.sid,
           offer: msg.offer ?? undefined,
@@ -55,6 +79,7 @@ export function createSignalClient(relayWsUrl: string): SignalClient {
 
   const send = (obj: unknown) => {
     const data = JSON.stringify(obj)
+    if (utf8ByteLen(data) > MAX_SIGNAL_WS_MESSAGE_BYTES) throw new Error('relay message too large')
     if (ws.readyState === WebSocket.OPEN) ws.send(data)
     else {
       const onOpen = () => {
@@ -67,10 +92,24 @@ export function createSignalClient(relayWsUrl: string): SignalClient {
 
   return {
     close: () => ws.close(),
-    join: (sid: string) => send({ t: 'join', v: 1, sid }),
-    setOffer: (sid: string, offer: string) => send({ t: 'set_offer', v: 1, sid, offer }),
-    setAnswer: (sid: string, answer: string) => send({ t: 'set_answer', v: 1, sid, answer }),
-    getState: (sid: string) => send({ t: 'get_state', v: 1, sid }),
+    join: (sid: string) => {
+      if (!isSafeWsSid(sid)) throw new Error('invalid sid')
+      send({ t: 'join', v: 1, sid })
+    },
+    setOffer: (sid: string, offer: string) => {
+      if (!isSafeWsSid(sid)) throw new Error('invalid sid')
+      if (offer.length > MAX_SIGNAL_SDP_CODE_CHARS) throw new Error('offer too large')
+      send({ t: 'set_offer', v: 1, sid, offer })
+    },
+    setAnswer: (sid: string, answer: string) => {
+      if (!isSafeWsSid(sid)) throw new Error('invalid sid')
+      if (answer.length > MAX_SIGNAL_SDP_CODE_CHARS) throw new Error('answer too large')
+      send({ t: 'set_answer', v: 1, sid, answer })
+    },
+    getState: (sid: string) => {
+      if (!isSafeWsSid(sid)) throw new Error('invalid sid')
+      send({ t: 'get_state', v: 1, sid })
+    },
     onState: (fn) => {
       stateSubs.add(fn)
       return () => stateSubs.delete(fn)
@@ -87,4 +126,3 @@ export function newSessionId(): string {
   crypto.getRandomValues(bytes)
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
 }
-

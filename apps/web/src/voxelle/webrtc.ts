@@ -71,6 +71,10 @@ function safeJsonParse(s: string): unknown {
   return JSON.parse(s)
 }
 
+function utf8ByteLen(s: string): number {
+  return new TextEncoder().encode(s).length
+}
+
 function waitIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 30_000): Promise<void> {
   return new Promise((resolve, reject) => {
     if (pc.iceGatheringState === 'complete') return resolve()
@@ -150,8 +154,16 @@ export function createWebRtcTransport(opts: WebRtcOptions = {}): WebRtcTransport
     channel.addEventListener('close', () => emitState({ state: 'closed' }))
     channel.addEventListener('message', (ev) => {
       try {
-        const data = typeof ev.data === 'string' ? ev.data : new TextDecoder().decode(new Uint8Array(ev.data))
-        if (data.length > maxMessageBytes) throw new Error('message too large')
+        if (typeof ev.data === 'string') {
+          if (utf8ByteLen(ev.data) > maxMessageBytes) throw new Error('message too large')
+          const msg = safeJsonParse(ev.data) as JsonValue
+          emitMsg(msg)
+          return
+        }
+        // ArrayBuffer path.
+        const ab = ev.data as ArrayBuffer
+        if (ab.byteLength > maxMessageBytes) throw new Error('message too large')
+        const data = new TextDecoder().decode(new Uint8Array(ab))
         const msg = safeJsonParse(data) as JsonValue
         emitMsg(msg)
       } catch (e) {
@@ -163,7 +175,7 @@ export function createWebRtcTransport(opts: WebRtcOptions = {}): WebRtcTransport
   const send = (msg: JsonValue) => {
     if (!dc || dc.readyState !== 'open') throw new Error('data channel not open')
     const s = JSON.stringify(msg)
-    if (s.length > maxMessageBytes) throw new Error('message too large')
+    if (utf8ByteLen(s) > maxMessageBytes) throw new Error('message too large')
     dc.send(s)
   }
 
