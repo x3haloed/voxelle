@@ -4,6 +4,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
+use zip::read::ZipFile;
 
 pub const EVENT_WEB_UPDATE_READY: &str = "voxelle:web-update-ready";
 pub const DEFAULT_FEED: &str = "gh:x3haloed/voxelle";
@@ -197,37 +198,140 @@ pub fn persist_active_version(app: &tauri::AppHandle, version: &str) -> Result<(
 }
 
 pub fn ensure_embedded_bundle(app: &tauri::AppHandle, embedded_zip: &[u8], version: &str) -> Result<PathBuf, String> {
-    let dir = active_bundle_path(app, version)?;
+    let version = validate_bundle_version(version)?;
+    let dir = active_bundle_path(app, &version)?;
     let index = dir.join("index.html");
     if index.exists() {
         return Ok(dir);
     }
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    extract_zip_bytes(embedded_zip, &dir)?;
+    install_bundle_from_zip_bytes(app, embedded_zip, &version)?;
     Ok(dir)
+}
+
+fn validate_bundle_version(version: &str) -> Result<String, String> {
+    let v = version.trim();
+    if v.is_empty() {
+        return Err("bundle version missing".into());
+    }
+    let parsed = semver::Version::parse(v).map_err(|_| "bundle version must be semver".to_string())?;
+    Ok(parsed.to_string())
+}
+
+fn create_unique_tmp_dir(final_dir: &Path) -> Result<PathBuf, String> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "clock before unix epoch".to_string())?;
+    let nonce = now.as_nanos();
+    let pid = std::process::id();
+
+    let parent = final_dir.parent().ok_or_else(|| "bundle dir has no parent".to_string())?;
+    let base = final_dir
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "bundle".to_string());
+
+    for attempt in 0..32u32 {
+        let candidate = parent.join(format!(".tmp-{}-{}-{}-{}", base, pid, nonce, attempt));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => return Ok(candidate),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("failed to create unique temp dir".into())
+}
+
+fn install_bundle_from_zip_bytes(app: &tauri::AppHandle, zip_bytes: &[u8], version: &str) -> Result<PathBuf, String> {
+    let final_dir = active_bundle_path(app, version)?;
+    if final_dir.join("index.html").exists() {
+        return Ok(final_dir);
+    }
+
+    let base = bundles_dir(app)?;
+    let base_can = base.canonicalize().map_err(|e| e.to_string())?;
+    if !final_dir.starts_with(&base_can) && !final_dir.starts_with(&base) {
+        return Err("bundle path invalid".into());
+    }
+
+    let tmp_dir = create_unique_tmp_dir(&final_dir)?;
+    // If we fail, try to clean up, but always return the original error.
+    let extracted = extract_zip_bytes(zip_bytes, &tmp_dir);
+    if let Err(e) = extracted {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err(e);
+    }
+    if !tmp_dir.join("index.html").exists() {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        return Err("bundle missing index.html".into());
+    }
+
+    if final_dir.exists() {
+        let _ = std::fs::remove_dir_all(&final_dir);
+    }
+    std::fs::rename(&tmp_dir, &final_dir).map_err(|e| e.to_string())?;
+    Ok(final_dir)
 }
 
 fn extract_zip_bytes(zip_bytes: &[u8], out_dir: &Path) -> Result<(), String> {
     let mut z = zip::ZipArchive::new(Cursor::new(zip_bytes)).map_err(|e| e.to_string())?;
+    // Defensive limits: prevent zip bombs and pathological archives.
+    // A production web bundle should be far smaller than these.
+    let max_files: usize = 2048;
+    let max_total_uncompressed: u64 = 50 * 1024 * 1024;
+    let max_file_uncompressed: u64 = 10 * 1024 * 1024;
+    if z.len() > max_files {
+        return Err("zip contains too many entries".into());
+    }
+
+    let mut total_uncompressed: u64 = 0;
     for i in 0..z.len() {
-        let mut f = z.by_index(i).map_err(|e| e.to_string())?;
-        let name = f.name().to_string();
-        if name.contains("..") {
-            continue;
-        }
-        let out_path = out_dir.join(name);
+        let f = z.by_index(i).map_err(|e| e.to_string())?;
+        let out_rel = safe_zip_entry_path(&f).ok_or_else(|| "zip entry path invalid".to_string())?;
         if f.is_dir() {
+            let out_path = out_dir.join(out_rel);
             std::fs::create_dir_all(&out_path).map_err(|e| e.to_string())?;
             continue;
         }
+
+        let out_path = out_dir.join(out_rel);
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        let mut buf = Vec::new();
-        f.read_to_end(&mut buf).map_err(|e| e.to_string())?;
-        std::fs::write(&out_path, buf).map_err(|e| e.to_string())?;
+        let mut out = std::fs::File::create(&out_path).map_err(|e| e.to_string())?;
+        let mut limited = f.take(max_file_uncompressed.saturating_add(1));
+        let written = std::io::copy(&mut limited, &mut out).map_err(|e| e.to_string())?;
+        if written > max_file_uncompressed {
+            return Err("zip entry too large".into());
+        }
+        total_uncompressed = total_uncompressed.saturating_add(written);
+        if total_uncompressed > max_total_uncompressed {
+            return Err("zip expands too large".into());
+        }
     }
     Ok(())
+}
+
+fn safe_zip_entry_path(f: &ZipFile<'_>) -> Option<PathBuf> {
+    // `enclosed_name` rejects absolute paths and `..` traversal.
+    let p = f.enclosed_name()?.to_path_buf();
+    // Extra hardening: ignore Windows-y or weird paths that can sneak through.
+    let s = p.to_string_lossy();
+    if s.contains('\\') || s.contains(':') {
+        return None;
+    }
+    // Limit pathological path lengths and components.
+    if s.len() > 1024 {
+        return None;
+    }
+    for c in p.components() {
+        let std::path::Component::Normal(os) = c else { continue };
+        if os.to_string_lossy().len() > 255 {
+            return None;
+        }
+    }
+    Some(p)
 }
 
 fn parse_version(s: &str) -> Option<semver::Version> {
@@ -251,6 +355,8 @@ async fn fetch_manifest(url: &str) -> Result<WebBundleManifestV1, String> {
     if m.version.trim().is_empty() || m.zip_url.trim().is_empty() || m.sha256.trim().is_empty() {
         return Err("manifest missing fields".into());
     }
+    // Also acts as path-hardening (bundle dir names should be safe).
+    let _ = validate_bundle_version(&m.version)?;
     Ok(m)
 }
 
@@ -328,7 +434,8 @@ pub async fn download_and_activate(
         return Err("feed url not set".into());
     }
 
-    let m = fetch_manifest(&feed).await?;
+    let mut m = fetch_manifest(&feed).await?;
+    m.version = validate_bundle_version(&m.version)?;
 
     let resp = reqwest::Client::new()
         .get(&m.zip_url)
@@ -346,15 +453,26 @@ pub async fn download_and_activate(
         return Err("sha256 mismatch".into());
     }
 
-    let dir = active_bundle_path(app, &m.version)?;
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    extract_zip_bytes(&bytes, &dir)?;
+    // Extract into a temp dir first, then atomically rename into place to avoid partial bundles.
+    let final_dir = active_bundle_path(app, &m.version)?;
+    if final_dir.join("index.html").exists() {
+        // Already installed.
+        persist_active_version(app, &m.version)?;
+        if let Ok(mut g) = state.active_version.lock() {
+            *g = m.version.clone();
+        }
+        state.server.set_root(final_dir);
+        let _ = app.emit(EVENT_WEB_UPDATE_READY, m.version.clone());
+        return Ok(WebUpdateDownloadResult { activated_version: m.version });
+    }
+
+    let final_dir = install_bundle_from_zip_bytes(app, &bytes, &m.version)?;
 
     persist_active_version(app, &m.version)?;
     if let Ok(mut g) = state.active_version.lock() {
         *g = m.version.clone();
     }
-    state.server.set_root(dir);
+    state.server.set_root(final_dir);
 
     let _ = app.emit(EVENT_WEB_UPDATE_READY, m.version.clone());
     Ok(WebUpdateDownloadResult { activated_version: m.version })
