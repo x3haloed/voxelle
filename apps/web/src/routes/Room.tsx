@@ -39,8 +39,19 @@ export function RoomRoute() {
       if (d.spaceId !== decodedSpaceId || d.roomId !== decodedRoomId) return
       setRev((r) => r + 1)
     }
+    const onHydrated = (ev: Event) => {
+      const ce = ev as CustomEvent<any>
+      const d = ce?.detail
+      if (d?.v !== 1) return
+      if (d.spaceId !== decodedSpaceId || d.roomId !== decodedRoomId) return
+      setRev((r) => r + 1)
+    }
     window.addEventListener('voxelle-room-event-appended', onAppended)
-    return () => window.removeEventListener('voxelle-room-event-appended', onAppended)
+    window.addEventListener('voxelle-room-events-hydrated', onHydrated)
+    return () => {
+      window.removeEventListener('voxelle-room-event-appended', onAppended)
+      window.removeEventListener('voxelle-room-events-hydrated', onHydrated)
+    }
   }, [decodedSpaceId, decodedRoomId])
 
   useEffect(() => {

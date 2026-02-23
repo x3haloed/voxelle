@@ -5,7 +5,7 @@ import { Topbar } from './components/Topbar'
 import { Home } from './routes/Home'
 import { RoomRoute } from './routes/Room'
 import { SpaceRoute } from './routes/Space'
-import { getState, onStateChanged } from './voxelle/store'
+import { getState, hydrateRoomEventsFromIndexedDb, onStateChanged } from './voxelle/store'
 
 function App() {
   const { spaceId, roomId } = useParams()
@@ -14,6 +14,13 @@ function App() {
 
   const [rev, setRev] = useState(0)
   useEffect(() => onStateChanged(() => setRev((r) => r + 1)), [])
+  useEffect(() => {
+    hydrateRoomEventsFromIndexedDb()
+      .then((n) => {
+        if (n > 0) setRev((r) => r + 1)
+      })
+      .catch(() => {})
+  }, [])
 
   const { rooms, spaces } = useMemo(() => getState(), [rev])
   const activeSpace = spaces.find((s) => s.id === decodedSpaceId)

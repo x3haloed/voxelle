@@ -12,6 +12,7 @@ import { bytesToBase64 } from './rfc/util_b64'
 import { spkiDerBase64FromEd25519PublicKey } from './rfc/spki'
 import * as ed from '@noble/ed25519'
 import { secretGet, secretSet, secretsAvailable } from './secrets'
+import { listRoomKeys, loadRoomEvents as idbLoadRoomEvents, parseRoomKey, roomKey as idbRoomKey, saveRoomEvents } from './idb'
 
 type State = {
   spaces: Space[]
@@ -360,6 +361,45 @@ function keyForRoom(spaceId: string, roomId: string): string {
   return `voxelle.events.v1.${encodeURIComponent(spaceId)}.${encodeURIComponent(roomId)}`
 }
 
+const persistQueues = new Map<string, Promise<void>>()
+
+async function persistRoomEvents(spaceId: string, roomId: string, events: EventV1[]): Promise<void> {
+  if (typeof indexedDB === 'undefined') return
+  const k = idbRoomKey(spaceId, roomId)
+  const prev = persistQueues.get(k) ?? Promise.resolve()
+  const next = prev
+    .catch(() => {})
+    .then(() => saveRoomEvents(k, events))
+    .catch(() => {
+      // ignore persistence errors for MVP
+    })
+  persistQueues.set(k, next)
+  await next
+}
+
+export async function hydrateRoomEventsFromIndexedDb(): Promise<number> {
+  if (typeof indexedDB === 'undefined') return 0
+  let hydrated = 0
+  const keys = await listRoomKeys().catch(() => [])
+  for (const k of keys) {
+    const parsed = parseRoomKey(k)
+    if (!parsed) continue
+    const { spaceId, roomId } = parsed
+    const lsKey = keyForRoom(spaceId, roomId)
+    if (localStorage.getItem(lsKey)) continue
+    const events = await idbLoadRoomEvents(k).catch(() => null)
+    if (!events || events.length === 0) continue
+    localStorage.setItem(lsKey, JSON.stringify(events))
+    hydrated++
+    window.dispatchEvent(
+      new CustomEvent('voxelle-room-events-hydrated', {
+        detail: { v: 1, spaceId, roomId, count: events.length },
+      }),
+    )
+  }
+  return hydrated
+}
+
 export function getRoomEvents(spaceId: string, roomId: string): EventV1[] {
   const raw = localStorage.getItem(keyForRoom(spaceId, roomId))
   if (!raw) return []
@@ -377,6 +417,7 @@ export function appendRoomEvent(spaceId: string, roomId: string, ev: EventV1): v
   if (existing.some((e) => e?.event_id === ev.event_id)) return
   const next = [...existing, ev]
   localStorage.setItem(keyForRoom(spaceId, roomId), JSON.stringify(next))
+  void persistRoomEvents(spaceId, roomId, next)
   window.dispatchEvent(
     new CustomEvent('voxelle-room-event-appended', {
       detail: { v: 1, spaceId, roomId, eventId: ev.event_id },
