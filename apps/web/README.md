@@ -1,5 +1,18 @@
 # React + TypeScript + Vite
 
+## Voxelle e2e tests
+
+```bash
+# one-time (downloads browser binaries)
+npx playwright install chromium
+
+# run e2e (starts Vite on port 5174 by default)
+npm run test:e2e -w @voxelle/web
+
+# optional: run the full 2-tab UI flow (can be flaky under automation)
+VOXELLE_E2E_UI=1 npm run test:e2e -w @voxelle/web
+```
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

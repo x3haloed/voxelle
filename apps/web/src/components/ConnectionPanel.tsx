@@ -40,6 +40,7 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   const transportRef = useRef<WebRtcTransportWithSignaling | null>(null)
   const signalRef = useRef<SignalClient | null>(null)
   const stopSyncRef = useRef<null | (() => void)>(null)
+  const relayPollTimersRef = useRef<number[]>([])
   const autoJoinRan = useRef(false)
   const autoHostRan = useRef(false)
   const autoAcceptAnswerRan = useRef(false)
@@ -90,6 +91,8 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
     if (roleFromUrl === 'join' || roleFromUrl === 'host') setMode('relay')
 
     return () => {
+      for (const t of relayPollTimersRef.current) window.clearTimeout(t)
+      relayPollTimersRef.current = []
       stopSyncRef.current?.()
       stopSyncRef.current = null
       transportRef.current?.close()
@@ -125,6 +128,8 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   }
 
   function resetAll() {
+    for (const t of relayPollTimersRef.current) window.clearTimeout(t)
+    relayPollTimersRef.current = []
     stopSyncRef.current?.()
     stopSyncRef.current = null
     transportRef.current?.close()
@@ -148,10 +153,9 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
 
   async function onRelayState(s: SignalState) {
     const currentSid = sidRef.current
-    const currentMode = modeRef.current
     if (!s.sid || !currentSid || s.sid !== currentSid) return
 
-    if (s.offer && currentMode === 'relay') {
+    if (s.offer) {
       // If this tab is in join role, create answer once we see offer.
       const role = getUrlParam('role')
       if (role === 'join' && !answerOutRef.current) {
@@ -167,7 +171,7 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
         }
       }
     }
-    if (s.answer && currentMode === 'relay') {
+    if (s.answer) {
       // If this tab is host role, accept answer once.
       const role = getUrlParam('role')
       if (role === 'host' && !autoAcceptAnswerRan.current) {
@@ -275,7 +279,15 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
 
     const signal = ensureSignal()
     signal.join(sidTrim)
-    signal.getState(sidTrim)
+    // Poll state a few times to avoid relying on a single state push.
+    for (let i = 0; i < 12; i++) {
+      const t = window.setTimeout(() => {
+        try {
+          signal.getState(sidTrim)
+        } catch {}
+      }, i * 750)
+      relayPollTimersRef.current.push(t)
+    }
     log('relay: joined; waiting for offer')
   }
 
@@ -342,10 +354,12 @@ export function ConnectionPanel(props: { spaceId: string; roomId: string }) {
   }, [sid, relayUrl])
 
   return (
-    <div className="item" style={{ marginBottom: 10 }}>
+    <div className="item" style={{ marginBottom: 10 }} data-testid="connection-panel">
       <div className="itemTop">
         <div className="itemTitle">Connect (P2P WebRTC)</div>
-        <span className="pill accent">{status.state}</span>
+        <span className="pill accent" data-testid="transport-status">
+          {status.state}
+        </span>
       </div>
 
       <div className="muted" style={{ fontSize: 13 }}>

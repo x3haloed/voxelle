@@ -71,7 +71,7 @@ function safeJsonParse(s: string): unknown {
   return JSON.parse(s)
 }
 
-function waitIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 12_000): Promise<void> {
+function waitIceGatheringComplete(pc: RTCPeerConnection, timeoutMs = 30_000): Promise<void> {
   return new Promise((resolve, reject) => {
     if (pc.iceGatheringState === 'complete') return resolve()
     const t = window.setTimeout(() => {
