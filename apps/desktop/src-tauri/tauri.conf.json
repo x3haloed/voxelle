@@ -4,9 +4,9 @@
   "version": "0.1.0",
   "identifier": "com.voxelle.voxelle",
   "build": {
-    "beforeDevCommand": "cd ../../.. && npm run dev -w @voxelle/web -- --port 5173",
+    "beforeDevCommand": "cd ../.. && npm run dev -w @voxelle/web -- --port 5173",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "cd ../../.. && npm run build -w @voxelle/web",
+    "beforeBuildCommand": "cd ../.. && npm run build -w @voxelle/web",
     "frontendDist": "../../web/dist"
   },
   "app": {
