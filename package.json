@@ -7,8 +7,8 @@
   "scripts": {
     "dev:web": "npm run dev -w @voxelle/web",
     "build:web": "npm run build -w @voxelle/web",
+    "field:test": "bash scripts/field-test.sh",
     "dev:desktop": "npm run tauri dev -w @voxelle/desktop",
     "build:desktop": "npm run tauri build -w @voxelle/desktop"
   }
 }
-
