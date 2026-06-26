@@ -1,6 +1,14 @@
 # Voxelle Field Test
 
-This is the smallest path for a browser-based friend test through localhost.run.
+This is the smallest path for a browser-based friend test through Cloudflare Quick Tunnel.
+
+## Prerequisite
+
+Install `cloudflared` before starting the launcher:
+
+```bash
+brew install cloudflare/cloudflare/cloudflared
+```
 
 ## Start
 
@@ -8,20 +16,12 @@ This is the smallest path for a browser-based friend test through localhost.run.
 npm run field:test
 ```
 
-By default, the launcher uses localhost.run's anonymous SSH target, `nokey@localhost.run`.
-
-If you have a localhost.run account/key and want to use it instead, run:
-
-```bash
-VOXELLE_LOCALHOST_RUN_TARGET=localhost.run npm run field:test
-```
-
 The launcher starts:
 
 - the Vite web app on `127.0.0.1:5173`
 - `voxelle-signal` on `127.0.0.1:9002`
-- one localhost.run HTTPS tunnel for the app
-- one localhost.run HTTPS/WebSocket tunnel for the signaling relay
+- one Cloudflare Quick Tunnel HTTPS URL for the app
+- one Cloudflare Quick Tunnel HTTPS/WebSocket URL for the signaling relay
 
 It prints an App URL and a Relay URL. Keep the terminal open while testing.
 

@@ -4,7 +4,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WEB_PORT="${VOXELLE_WEB_PORT:-5173}"
 SIGNAL_PORT="${VOXELLE_SIGNAL_PORT:-9002}"
-SSH_TARGET="${VOXELLE_LOCALHOST_RUN_TARGET:-nokey@localhost.run}"
 LOG_DIR="${VOXELLE_FIELD_TEST_LOG_DIR:-$ROOT_DIR/logs/field-test}"
 DRY_RUN=0
 
@@ -15,12 +14,11 @@ Usage: npm run field:test [-- --dry-run]
 Starts a Voxelle friend-test rig:
   1. Vite web app on 127.0.0.1:${WEB_PORT}
   2. voxelle-signal relay on 127.0.0.1:${SIGNAL_PORT}
-  3. localhost.run HTTPS tunnels for both services
+  3. Cloudflare Quick Tunnel HTTPS tunnels for both services
 
 Environment:
   VOXELLE_WEB_PORT             Web app port (default: 5173)
   VOXELLE_SIGNAL_PORT          Signaling relay port (default: 9002)
-  VOXELLE_LOCALHOST_RUN_TARGET SSH target (default: nokey@localhost.run; use localhost.run for account/key auth)
   VOXELLE_FIELD_TEST_LOG_DIR   Log directory (default: logs/field-test)
 
 Press Ctrl-C to stop all started processes.
@@ -47,13 +45,12 @@ done
 require_cmd() {
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "Missing required command: $1" >&2
+    if [[ "$1" == "cloudflared" ]]; then
+      echo "Install it with: brew install cloudflare/cloudflare/cloudflared" >&2
+    fi
     exit 1
   fi
 }
-
-require_cmd npm
-require_cmd cargo
-require_cmd ssh
 
 cat <<EOF
 Voxelle field-test launcher
@@ -61,8 +58,8 @@ Voxelle field-test launcher
 Commands:
   web:    npm run dev -w @voxelle/web -- --host 127.0.0.1 --port ${WEB_PORT}
   signal: cargo run -p voxelle-signal -- --host 127.0.0.1 --port ${SIGNAL_PORT}
-  web tunnel:    ssh -o ServerAliveInterval=60 -o ExitOnForwardFailure=yes -R 80:localhost:${WEB_PORT} ${SSH_TARGET}
-  signal tunnel: ssh -o ServerAliveInterval=60 -o ExitOnForwardFailure=yes -R 80:localhost:${SIGNAL_PORT} ${SSH_TARGET}
+  web tunnel:    cloudflared tunnel --url http://127.0.0.1:${WEB_PORT}
+  signal tunnel: cloudflared tunnel --url http://127.0.0.1:${SIGNAL_PORT}
 
 Logs: ${LOG_DIR}
 EOF
@@ -70,6 +67,10 @@ EOF
 if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
+
+require_cmd npm
+require_cmd cargo
+require_cmd cloudflared
 
 mkdir -p "$LOG_DIR"
 
@@ -140,7 +141,7 @@ wait_for_http() {
 
 extract_https_url() {
   local log="$1"
-  sed -n -E 's/^.*tunneled with tls termination, (https:\/\/[^[:space:]]+).*$/\1/p' "$log" 2>/dev/null \
+  grep -Eo 'https://[^[:space:]]+\.trycloudflare\.com' "$log" 2>/dev/null \
     | sed -E 's/[),.;]+$//' \
     | head -n 1
 }
@@ -153,11 +154,6 @@ wait_for_tunnel_url() {
   local url=""
 
   for _ in $(seq 1 "$timeout"); do
-    if grep -Eqi '(^|[[:space:]])(Permission denied|permission denied) \((publickey|keyboard-interactive|password)' "$log" 2>/dev/null; then
-      echo "localhost.run denied SSH auth for ${label}." >&2
-      echo "Try: VOXELLE_LOCALHOST_RUN_TARGET=nokey@localhost.run npm run field:test" >&2
-      return 1
-    fi
     url="$(extract_https_url "$log" || true)"
     if [[ -n "$url" ]]; then
       echo "$url"
@@ -170,7 +166,7 @@ wait_for_tunnel_url() {
     sleep 1
   done
 
-  echo "Timed out waiting for ${label} localhost.run URL. See ${log}" >&2
+  echo "Timed out waiting for ${label} Cloudflare Quick Tunnel URL. See ${log}" >&2
   return 1
 }
 
@@ -188,11 +184,11 @@ start_bg "signaling relay" "$SIGNAL_LOG" cargo run -p voxelle-signal -- --host 1
 wait_for_http "signaling relay" "http://127.0.0.1:${SIGNAL_PORT}/info" 45 "$STARTED_PID"
 
 STARTED_PID=""
-start_bg "web localhost.run tunnel" "$WEB_TUNNEL_LOG" ssh -o ServerAliveInterval=60 -o ExitOnForwardFailure=yes -R "80:localhost:${WEB_PORT}" "$SSH_TARGET"
+start_bg "web Cloudflare Quick Tunnel" "$WEB_TUNNEL_LOG" cloudflared tunnel --url "http://127.0.0.1:${WEB_PORT}"
 WEB_URL="$(wait_for_tunnel_url "web app" "$WEB_TUNNEL_LOG" 60 "$STARTED_PID")"
 
 STARTED_PID=""
-start_bg "signal localhost.run tunnel" "$SIGNAL_TUNNEL_LOG" ssh -o ServerAliveInterval=60 -o ExitOnForwardFailure=yes -R "80:localhost:${SIGNAL_PORT}" "$SSH_TARGET"
+start_bg "signal Cloudflare Quick Tunnel" "$SIGNAL_TUNNEL_LOG" cloudflared tunnel --url "http://127.0.0.1:${SIGNAL_PORT}"
 SIGNAL_URL="$(wait_for_tunnel_url "signaling relay" "$SIGNAL_TUNNEL_LOG" 60 "$STARTED_PID")"
 RELAY_WS_URL="${SIGNAL_URL/#https:/wss:}/ws"
 
