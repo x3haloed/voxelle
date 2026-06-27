@@ -1409,6 +1409,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "voxelle-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "ed25519-dalek",
+ "rand",
+ "serde",
+ "serde_jcs",
+ "serde_json",
+ "sha2",
+ "spki",
+]
+
+[[package]]
 name = "voxelle-protocol"
 version = "0.1.0"
 dependencies = [
