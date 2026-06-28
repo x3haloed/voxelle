@@ -674,6 +674,12 @@ pub fn ed25519_public_key_from_spki_der(spki_der: &[u8]) -> Result<VerifyingKey>
     Ok(VerifyingKey::from_bytes(&pk)?)
 }
 
+pub fn verify_signature_from_spki_b64(spki_b64: &str, message: &[u8], sig_b64: &str) -> Result<()> {
+    let spki_der = b64_decode(spki_b64).context("decode SPKI public key")?;
+    let verifying_key = ed25519_public_key_from_spki_der(&spki_der)?;
+    verify_signature(&verifying_key, message, sig_b64)
+}
+
 pub fn jcs_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     Ok(serde_jcs::to_string(value)
         .context("serialize to JCS")?

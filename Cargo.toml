@@ -4,6 +4,7 @@ members = [
   "crates/voxelle-board",
   "crates/voxelle-cli",
   "crates/voxelle-core",
+  "crates/voxelle-net",
   "crates/voxelle-protocol",
   "crates/voxelle-signal",
   "crates/voxelle-store",
