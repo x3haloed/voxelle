@@ -7,10 +7,11 @@ use sha2::{Digest, Sha256};
 use spki::der::Decode;
 use spki::SubjectPublicKeyInfoRef;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::{self, Write};
 
 const OID_ED25519: spki::ObjectIdentifier = spki::ObjectIdentifier::new_unwrap("1.3.101.112");
+pub const GOVERNANCE_ROOM_ID: &str = "governance";
 
 #[derive(Debug, Clone)]
 pub struct Keypair {
@@ -93,6 +94,40 @@ pub struct EventV1 {
     pub body: serde_json::Value,
     pub sig: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomContext {
+    pub authority_peer_id: String,
+    pub governance_room_id: String,
+}
+
+impl RoomContext {
+    pub fn new(authority_peer_id: impl Into<String>) -> Self {
+        Self {
+            authority_peer_id: authority_peer_id.into(),
+            governance_room_id: GOVERNANCE_ROOM_ID.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GovernanceState {
+    pub members: HashSet<String>,
+    pub banned: HashSet<String>,
+    pub revoked_devices: HashSet<(String, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AcceptError {
+    Invalid(String),
+    NotMember,
+    Banned,
+    DeviceRevoked,
+    NotAuthorized,
+    InvalidGovernanceBody(String),
+}
+
+pub type AcceptResult<T> = std::result::Result<T, AcceptError>;
 
 pub fn create_delegation(
     peer: &Keypair,
@@ -275,6 +310,163 @@ pub fn validate_event_at(event: &EventV1, required_scope: &str, now_ms: i64) -> 
         &event.sig,
     )
     .context("event signature invalid")
+}
+
+pub fn accept_event<'a>(
+    event: &'a EventV1,
+    accepted_room_events: &[EventV1],
+    context: &RoomContext,
+    now_ms: i64,
+) -> AcceptResult<&'a EventV1> {
+    let required_scope = required_scope_for_kind(&event.kind);
+    validate_event_at(event, required_scope, now_ms)
+        .map_err(|e| AcceptError::Invalid(e.to_string()))?;
+
+    let governance_events: Vec<EventV1> = accepted_room_events
+        .iter()
+        .filter(|e| e.room_id == context.governance_room_id)
+        .cloned()
+        .collect();
+    let state = derive_governance_state(&governance_events, context, now_ms);
+
+    if state
+        .revoked_devices
+        .contains(&(event.author_peer_id.clone(), event.author_device_id.clone()))
+    {
+        return Err(AcceptError::DeviceRevoked);
+    }
+
+    if event.room_id == context.governance_room_id {
+        accept_governance_event(event, &state, context)
+    } else {
+        if state.banned.contains(&event.author_peer_id) {
+            return Err(AcceptError::Banned);
+        }
+        if !state.members.contains(&event.author_peer_id) {
+            return Err(AcceptError::NotMember);
+        }
+        Ok(event)
+    }
+}
+
+pub fn derive_governance_state(
+    governance_events: &[EventV1],
+    context: &RoomContext,
+    now_ms: i64,
+) -> GovernanceState {
+    let mut state = GovernanceState::default();
+    let by_id: BTreeMap<String, &EventV1> = governance_events
+        .iter()
+        .map(|event| (event.event_id.clone(), event))
+        .collect();
+
+    for id in topo_sort_deterministic(governance_events) {
+        let Some(event) = by_id.get(&id).copied() else {
+            continue;
+        };
+        let required_scope = required_scope_for_kind(&event.kind);
+        if validate_event_at(event, required_scope, now_ms).is_err() {
+            continue;
+        }
+        if event.room_id != context.governance_room_id {
+            continue;
+        }
+
+        match event.kind.as_str() {
+            "MEMBER_JOIN" => {
+                if member_join_body_matches_author(event)
+                    && !state.banned.contains(&event.author_peer_id)
+                {
+                    state.members.insert(event.author_peer_id.clone());
+                }
+            }
+            "MEMBER_BAN" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                if let Some(peer_id) = string_body_field(event, "peer_id") {
+                    state.banned.insert(peer_id.clone());
+                    state.members.remove(&peer_id);
+                }
+            }
+            "MEMBER_UNBAN" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                if let Some(peer_id) = string_body_field(event, "peer_id") {
+                    state.banned.remove(&peer_id);
+                }
+            }
+            "DEVICE_REVOKE" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                if let (Some(peer_id), Some(device_id)) = (
+                    string_body_field(event, "peer_id"),
+                    string_body_field(event, "device_id"),
+                ) {
+                    state.revoked_devices.insert((peer_id, device_id));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    state
+}
+
+fn accept_governance_event<'a>(
+    event: &'a EventV1,
+    state: &GovernanceState,
+    context: &RoomContext,
+) -> AcceptResult<&'a EventV1> {
+    match event.kind.as_str() {
+        "MEMBER_JOIN" => {
+            if state.banned.contains(&event.author_peer_id) {
+                return Err(AcceptError::Banned);
+            }
+            if !member_join_body_matches_author(event) {
+                return Err(AcceptError::InvalidGovernanceBody(
+                    "MEMBER_JOIN body must match author peer".to_string(),
+                ));
+            }
+            Ok(event)
+        }
+        "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" => {
+            if event.author_peer_id != context.authority_peer_id {
+                return Err(AcceptError::NotAuthorized);
+            }
+            Ok(event)
+        }
+        _ => {
+            if event.author_peer_id != context.authority_peer_id {
+                return Err(AcceptError::NotAuthorized);
+            }
+            Ok(event)
+        }
+    }
+}
+
+fn required_scope_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "MEMBER_JOIN" => "room:join",
+        "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" => "room:governance",
+        k if k.starts_with("MSG_") || k.starts_with("REACTION_") || k.starts_with("PIN_") => {
+            "room:post"
+        }
+        // Unknown kinds must not bypass membership; post is the least privileged default.
+        _ => "room:post",
+    }
+}
+
+fn member_join_body_matches_author(event: &EventV1) -> bool {
+    string_body_field(event, "peer_id").as_deref() == Some(event.author_peer_id.as_str())
+        && string_body_field(event, "peer_pub").as_deref()
+            == Some(event.delegation.peer_pub.as_str())
+}
+
+fn string_body_field(event: &EventV1, field: &str) -> Option<String> {
+    event.body.get(field)?.as_str().map(ToOwned::to_owned)
 }
 
 pub fn compute_heads(events: &[EventV1]) -> Vec<String> {
@@ -515,16 +707,65 @@ mod tests {
     use serde_json::json;
 
     fn identity_with_delegation() -> (PeerIdentity, DelegationCertV1) {
+        identity_with_scopes(vec!["room:post".to_string()])
+    }
+
+    fn identity_with_scopes(scopes: Vec<String>) -> (PeerIdentity, DelegationCertV1) {
         let identity = PeerIdentity::generate().expect("identity");
-        let delegation = create_delegation(
-            &identity.peer,
-            &identity.device,
-            900,
-            2_000,
-            vec!["room:post".to_string()],
-        )
-        .expect("delegation");
+        let delegation = create_delegation(&identity.peer, &identity.device, 900, 2_000, scopes)
+            .expect("delegation");
         (identity, delegation)
+    }
+
+    fn delegation_for(identity: &PeerIdentity, scopes: Vec<String>) -> DelegationCertV1 {
+        create_delegation(&identity.peer, &identity.device, 900, 2_000, scopes).expect("delegation")
+    }
+
+    fn member_join(identity: &PeerIdentity) -> EventV1 {
+        create_event(
+            identity,
+            delegation_for(identity, vec!["room:join".to_string()]),
+            GOVERNANCE_ROOM_ID,
+            1_000,
+            "MEMBER_JOIN",
+            vec![],
+            json!({
+                "peer_id": identity.peer.id,
+                "peer_pub": identity.peer.spki_b64,
+            }),
+        )
+        .expect("member join")
+    }
+
+    fn message(identity: &PeerIdentity, created_ms: i64, parents: Vec<String>) -> EventV1 {
+        create_event(
+            identity,
+            delegation_for(identity, vec!["room:post".to_string()]),
+            "room:general",
+            created_ms,
+            "MSG_POST",
+            parents,
+            json!({ "text": "hello" }),
+        )
+        .expect("message")
+    }
+
+    fn authority_governance_event(
+        authority: &PeerIdentity,
+        created_ms: i64,
+        kind: &str,
+        body: serde_json::Value,
+    ) -> EventV1 {
+        create_event(
+            authority,
+            delegation_for(authority, vec!["room:governance".to_string()]),
+            GOVERNANCE_ROOM_ID,
+            created_ms,
+            kind,
+            vec![],
+            body,
+        )
+        .expect("governance event")
     }
 
     #[test]
@@ -653,5 +894,130 @@ mod tests {
                 &right.event_id
             )
         );
+    }
+
+    #[test]
+    fn non_member_message_is_rejected() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let member = PeerIdentity::generate().expect("member");
+        let context = RoomContext::new(authority.peer.id);
+        let event = message(&member, 1_100, vec![]);
+
+        let err = accept_event(&event, &[], &context, 1_100).expect_err("not accepted");
+        assert_eq!(err, AcceptError::NotMember);
+    }
+
+    #[test]
+    fn member_join_admits_peer_and_member_message_is_accepted() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let member = PeerIdentity::generate().expect("member");
+        let context = RoomContext::new(authority.peer.id);
+
+        let join = member_join(&member);
+        accept_event(&join, &[], &context, 1_000).expect("join accepted");
+
+        let event = message(&member, 1_100, vec![]);
+        accept_event(&event, &[join], &context, 1_100).expect("message accepted");
+    }
+
+    #[test]
+    fn banned_peer_cannot_post() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let member = PeerIdentity::generate().expect("member");
+        let context = RoomContext::new(authority.peer.id.clone());
+
+        let join = member_join(&member);
+        let ban = authority_governance_event(
+            &authority,
+            1_050,
+            "MEMBER_BAN",
+            json!({ "peer_id": member.peer.id }),
+        );
+        accept_event(&ban, &[join.clone()], &context, 1_050).expect("ban accepted");
+
+        let event = message(&member, 1_100, vec![]);
+        let err = accept_event(&event, &[join, ban], &context, 1_100).expect_err("banned");
+        assert_eq!(err, AcceptError::Banned);
+    }
+
+    #[test]
+    fn revoked_device_cannot_post() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let member = PeerIdentity::generate().expect("member");
+        let context = RoomContext::new(authority.peer.id.clone());
+
+        let join = member_join(&member);
+        let revoke = authority_governance_event(
+            &authority,
+            1_050,
+            "DEVICE_REVOKE",
+            json!({
+                "peer_id": member.peer.id,
+                "device_id": member.device.id,
+            }),
+        );
+        accept_event(&revoke, &[join.clone()], &context, 1_050).expect("revoke accepted");
+
+        let event = message(&member, 1_100, vec![]);
+        let err = accept_event(&event, &[join, revoke], &context, 1_100).expect_err("revoked");
+        assert_eq!(err, AcceptError::DeviceRevoked);
+    }
+
+    #[test]
+    fn unknown_kind_does_not_bypass_membership() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let outsider = PeerIdentity::generate().expect("outsider");
+        let context = RoomContext::new(authority.peer.id);
+        let event = create_event(
+            &outsider,
+            delegation_for(&outsider, vec!["room:post".to_string()]),
+            "room:general",
+            1_100,
+            "FUTURE_KIND",
+            vec![],
+            json!({ "opaque": true }),
+        )
+        .expect("unknown event");
+
+        let err = accept_event(&event, &[], &context, 1_100).expect_err("not accepted");
+        assert_eq!(err, AcceptError::NotMember);
+    }
+
+    #[test]
+    fn missing_ancestors_are_tolerated_for_valid_member_events() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let member = PeerIdentity::generate().expect("member");
+        let context = RoomContext::new(authority.peer.id);
+        let join = member_join(&member);
+        let event = message(&member, 1_100, vec!["e:missing".to_string()]);
+
+        accept_event(&event, &[join], &context, 1_100).expect("missing ancestor tolerated");
+    }
+
+    #[test]
+    fn governance_derivation_is_deterministic_from_shuffled_input() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let member = PeerIdentity::generate().expect("member");
+        let context = RoomContext::new(authority.peer.id.clone());
+        let join = member_join(&member);
+        let ban = authority_governance_event(
+            &authority,
+            1_050,
+            "MEMBER_BAN",
+            json!({ "peer_id": member.peer.id }),
+        );
+        let unban = authority_governance_event(
+            &authority,
+            1_060,
+            "MEMBER_UNBAN",
+            json!({ "peer_id": member.peer.id }),
+        );
+
+        let a =
+            derive_governance_state(&[join.clone(), ban.clone(), unban.clone()], &context, 1_100);
+        let b = derive_governance_state(&[unban, join, ban], &context, 1_100);
+        assert_eq!(a, b);
+        assert!(!a.banned.contains(&member.peer.id));
+        assert!(!a.members.contains(&member.peer.id));
     }
 }
