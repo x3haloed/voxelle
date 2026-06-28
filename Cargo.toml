@@ -2,6 +2,7 @@
 members = [
   "crates/isnad",
   "crates/voxelle-board",
+  "crates/voxelle-cli",
   "crates/voxelle-core",
   "crates/voxelle-protocol",
   "crates/voxelle-signal",

@@ -46,6 +46,18 @@ impl Keypair {
         })
     }
 
+    pub fn from_secret_key_b64(secret_key_b64: &str) -> Result<Self> {
+        let secret = b64_decode(secret_key_b64).context("decode secret key")?;
+        let secret: [u8; 32] = secret
+            .try_into()
+            .map_err(|_| anyhow!("Ed25519 secret key must be 32 bytes"))?;
+        Self::from_signing_key(SigningKey::from_bytes(&secret))
+    }
+
+    pub fn secret_key_b64(&self) -> String {
+        base64::engine::general_purpose::STANDARD.encode(self.signing_key.to_bytes())
+    }
+
     pub fn sign(&self, bytes: &[u8]) -> String {
         base64::engine::general_purpose::STANDARD.encode(self.signing_key.sign(bytes).to_bytes())
     }
@@ -62,6 +74,13 @@ impl PeerIdentity {
         Ok(Self {
             peer: Keypair::generate()?,
             device: Keypair::generate()?,
+        })
+    }
+
+    pub fn from_secret_keys_b64(peer_secret_b64: &str, device_secret_b64: &str) -> Result<Self> {
+        Ok(Self {
+            peer: Keypair::from_secret_key_b64(peer_secret_b64)?,
+            device: Keypair::from_secret_key_b64(device_secret_b64)?,
         })
     }
 }
