@@ -136,6 +136,12 @@ pub struct ServedRoomSync {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServedPeerRequest {
+    Diagnostic(PeerReachabilityReport),
+    RoomSync(ServedRoomSync),
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum HandshakeRole {
@@ -342,47 +348,9 @@ impl QuicNode {
             .await
             .context("accept room sync stream")?;
 
-        let request: RoomSyncRequestV1 = recv_json(recv, MAX_SYNC_BYTES).await?;
-        if request.v != 1 {
-            bail!("unsupported room sync request version {}", request.v);
-        }
-        if request.max_events == 0 {
-            bail!("room sync request max_events must be positive");
-        }
-
-        let known: BTreeSet<_> = request.known_event_ids.into_iter().collect();
-        let mut events = source
-            .room_events(&request.room_id)
-            .with_context(|| format!("load source room events for {}", request.room_id))?;
-        events.sort_by(|a, b| {
-            a.created_ms
-                .cmp(&b.created_ms)
-                .then_with(|| a.event_id.cmp(&b.event_id))
-        });
-        events.retain(|event| !known.contains(&event.event_id));
-
-        let truncated = events.len() > request.max_events;
-        events.truncate(request.max_events);
-        let offered = events.len();
-
-        send_json(
-            &mut send,
-            &RoomSyncResponseV1 {
-                v: 1,
-                room_id: request.room_id.clone(),
-                events,
-                truncated,
-            },
-        )
-        .await
-        .context("send room sync response")?;
-
-        Ok(ServedRoomSync {
-            remote: authenticated.remote,
-            room_id: request.room_id,
-            offered,
-            truncated,
-        })
+        let request = recv_json(recv, MAX_SYNC_BYTES).await?;
+        self.serve_room_sync_request(source, authenticated.remote, &mut send, request)
+            .await
     }
 
     pub async fn sync_room_once(
@@ -448,12 +416,101 @@ impl QuicNode {
             .accept_bi()
             .await
             .context("accept diagnostic stream")?;
-        let ping: DiagnosticPingV1 = recv_json(recv, MAX_SYNC_BYTES).await?;
+        let ping = recv_json(recv, MAX_SYNC_BYTES).await?;
+        self.serve_diagnostic_request(authenticated.remote, &mut send, ping)
+            .await
+    }
+
+    pub async fn serve_peer_request_once(&self, source: &Store) -> Result<ServedPeerRequest> {
+        let authenticated = self.accept_one().await?;
+        let (mut send, recv) = authenticated
+            .connection
+            .accept_bi()
+            .await
+            .context("accept peer request stream")?;
+        let request: serde_json::Value = recv_json(recv, MAX_SYNC_BYTES).await?;
+
+        if request.get("nonce").is_some() {
+            let ping: DiagnosticPingV1 =
+                serde_json::from_value(request).context("parse diagnostic request")?;
+            let report = self
+                .serve_diagnostic_request(authenticated.remote, &mut send, ping)
+                .await?;
+            return Ok(ServedPeerRequest::Diagnostic(report));
+        }
+
+        if request.get("room_id").is_some() {
+            let sync: RoomSyncRequestV1 =
+                serde_json::from_value(request).context("parse room sync request")?;
+            let served = self
+                .serve_room_sync_request(source, authenticated.remote, &mut send, sync)
+                .await?;
+            return Ok(ServedPeerRequest::RoomSync(served));
+        }
+
+        bail!("unknown peer request")
+    }
+
+    async fn serve_room_sync_request(
+        &self,
+        source: &Store,
+        remote: AuthenticatedPeer,
+        send: &mut quinn::SendStream,
+        request: RoomSyncRequestV1,
+    ) -> Result<ServedRoomSync> {
+        if request.v != 1 {
+            bail!("unsupported room sync request version {}", request.v);
+        }
+        if request.max_events == 0 {
+            bail!("room sync request max_events must be positive");
+        }
+
+        let known: BTreeSet<_> = request.known_event_ids.into_iter().collect();
+        let mut events = source
+            .room_events(&request.room_id)
+            .with_context(|| format!("load source room events for {}", request.room_id))?;
+        events.sort_by(|a, b| {
+            a.created_ms
+                .cmp(&b.created_ms)
+                .then_with(|| a.event_id.cmp(&b.event_id))
+        });
+        events.retain(|event| !known.contains(&event.event_id));
+
+        let truncated = events.len() > request.max_events;
+        events.truncate(request.max_events);
+        let offered = events.len();
+
+        send_json(
+            send,
+            &RoomSyncResponseV1 {
+                v: 1,
+                room_id: request.room_id.clone(),
+                events,
+                truncated,
+            },
+        )
+        .await
+        .context("send room sync response")?;
+
+        Ok(ServedRoomSync {
+            remote,
+            room_id: request.room_id,
+            offered,
+            truncated,
+        })
+    }
+
+    async fn serve_diagnostic_request(
+        &self,
+        remote: AuthenticatedPeer,
+        send: &mut quinn::SendStream,
+        ping: DiagnosticPingV1,
+    ) -> Result<PeerReachabilityReport> {
         if ping.v != 1 {
             bail!("unsupported diagnostic ping version {}", ping.v);
         }
         send_json(
-            &mut send,
+            send,
             &DiagnosticPongV1 {
                 v: 1,
                 nonce: ping.nonce,
@@ -461,13 +518,10 @@ impl QuicNode {
             },
         )
         .await?;
-        authenticated
-            .connection
-            .close(0u32.into(), b"diagnostic done");
         Ok(PeerReachabilityReport {
             endpoint: self.peer_endpoint(self.local_addr()?)?,
             reachable: true,
-            remote: Some(authenticated.remote),
+            remote: Some(remote),
             error: None,
         })
     }
@@ -541,6 +595,10 @@ impl QuicNode {
 
     pub async fn wait_idle(&self) {
         self.endpoint.wait_idle().await;
+    }
+
+    pub fn close(&self, reason: &[u8]) {
+        self.endpoint.close(0u32.into(), reason);
     }
 }
 

@@ -9,7 +9,7 @@ use voxelle_core::{
 };
 use voxelle_net::{
     LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate, QuicNode,
-    ServedRoomSync,
+    ServedPeerRequest, ServedRoomSync,
 };
 use voxelle_store::Store;
 use voxelle_sync::{SyncLimits, SyncStats};
@@ -55,7 +55,8 @@ pub struct MessageView {
 }
 
 #[derive(Debug)]
-pub struct ListenSession {
+pub struct VoxelleRuntime {
+    home: VoxelleHome,
     node: QuicNode,
     endpoint: PeerEndpoint,
     local_report: LocalReachabilityReport,
@@ -198,18 +199,12 @@ impl VoxelleHome {
         })
     }
 
-    pub fn listen(&self, bind: SocketAddr, advertise: Option<SocketAddr>) -> Result<ListenSession> {
-        let identity = self.load_identity()?;
-        let certificate = self.load_certificate()?;
-        let node = QuicNode::bind_with_certificate(identity, certificate, bind)?;
-        let advertised_addr = advertise.unwrap_or(node.local_addr()?);
-        let endpoint = node.peer_endpoint(advertised_addr)?;
-        let local_report = node.local_reachability_report(advertised_addr)?;
-        Ok(ListenSession {
-            node,
-            endpoint,
-            local_report,
-        })
+    pub fn listen(
+        &self,
+        bind: SocketAddr,
+        advertise: Option<SocketAddr>,
+    ) -> Result<VoxelleRuntime> {
+        VoxelleRuntime::start(self.clone(), bind, advertise)
     }
 
     pub async fn diagnose_peer(&self, endpoint: &PeerEndpoint) -> Result<PeerReachabilityReport> {
@@ -362,7 +357,30 @@ impl VoxelleHome {
     }
 }
 
-impl ListenSession {
+impl VoxelleRuntime {
+    pub fn start(
+        home: VoxelleHome,
+        bind: SocketAddr,
+        advertise: Option<SocketAddr>,
+    ) -> Result<Self> {
+        let identity = home.load_identity()?;
+        let certificate = home.load_certificate()?;
+        let node = QuicNode::bind_with_certificate(identity, certificate, bind)?;
+        let advertised_addr = advertise.unwrap_or(node.local_addr()?);
+        let endpoint = node.peer_endpoint(advertised_addr)?;
+        let local_report = node.local_reachability_report(advertised_addr)?;
+        Ok(Self {
+            home,
+            node,
+            endpoint,
+            local_report,
+        })
+    }
+
+    pub fn home(&self) -> &VoxelleHome {
+        &self.home
+    }
+
     pub fn endpoint(&self) -> &PeerEndpoint {
         &self.endpoint
     }
@@ -397,6 +415,24 @@ impl ListenSession {
 
     pub async fn serve_diagnostic_once(&self) -> Result<PeerReachabilityReport> {
         self.node.serve_diagnostic_once().await
+    }
+
+    pub async fn serve_next_request(&self) -> Result<ServedPeerRequest> {
+        let store = self.home.open_store()?;
+        self.node.serve_peer_request_once(&store).await
+    }
+
+    pub async fn serve_requests(&self, count: usize) -> Result<Vec<ServedPeerRequest>> {
+        let mut served = Vec::with_capacity(count);
+        for _ in 0..count {
+            served.push(self.serve_next_request().await?);
+        }
+        Ok(served)
+    }
+
+    pub async fn stop(self) {
+        self.node.close(b"runtime stopped");
+        self.node.wait_idle().await;
     }
 }
 
@@ -517,5 +553,60 @@ mod tests {
             bob.read_messages(None).expect("bob messages")[0].text,
             "hello over quic"
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_serves_repeated_diagnostics_and_sync() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        bob.init(DEFAULT_ROOM_ID).expect("bob init");
+        alice.send_message("first", None).expect("first send");
+
+        let runtime = VoxelleRuntime::start(
+            alice.clone(),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
+            None,
+        )
+        .expect("runtime");
+        let endpoint = runtime.endpoint().clone();
+
+        let client = async {
+            let diagnostic = bob.diagnose_peer(&endpoint).await.expect("diagnose");
+            assert!(diagnostic.reachable);
+
+            let first = bob
+                .sync_peer(&endpoint, None, 64)
+                .await
+                .expect("first sync");
+            assert_eq!(first.governance.accepted, 1);
+            assert_eq!(first.room.accepted, 1);
+
+            alice.send_message("second", None).expect("second send");
+
+            let second = bob
+                .sync_peer(&endpoint, None, 64)
+                .await
+                .expect("second sync");
+            assert_eq!(second.governance.offered, 0);
+            assert_eq!(second.room.accepted, 1);
+        };
+
+        let (served, _) = tokio::join!(runtime.serve_requests(5), client);
+        let served = served.expect("served requests");
+        assert!(matches!(served[0], ServedPeerRequest::Diagnostic(_)));
+        assert!(matches!(served[1], ServedPeerRequest::RoomSync(_)));
+        assert!(matches!(served[2], ServedPeerRequest::RoomSync(_)));
+        assert!(matches!(served[3], ServedPeerRequest::RoomSync(_)));
+        assert!(matches!(served[4], ServedPeerRequest::RoomSync(_)));
+
+        let messages = bob.read_messages(None).expect("bob messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].text, "first");
+        assert_eq!(messages[1].text, "second");
+
+        runtime.stop().await;
     }
 }
