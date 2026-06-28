@@ -1581,6 +1581,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "voxelle-sync"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "voxelle-core",
+ "voxelle-store",
+]
+
+[[package]]
 name = "wasi"
 version = "0.11.1+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -65,6 +65,18 @@ impl Store {
         Ok(changed == 1)
     }
 
+    pub fn has_event(&self, event_id: &str) -> Result<bool> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM accepted_events WHERE event_id = ?1",
+                params![event_id],
+                |row| row.get(0),
+            )
+            .context("check event existence")?;
+        Ok(count > 0)
+    }
+
     pub fn get_event(&self, event_id: &str) -> Result<Option<EventV1>> {
         self.conn
             .query_row(
@@ -105,6 +117,18 @@ impl Store {
 
     pub fn room_heads(&self, room_id: &str) -> Result<Vec<String>> {
         Ok(compute_heads(&self.room_events(room_id)?))
+    }
+
+    pub fn room_event_count(&self, room_id: &str) -> Result<usize> {
+        let count: i64 = self
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM accepted_events WHERE room_id = ?1",
+                params![room_id],
+                |row| row.get(0),
+            )
+            .context("count room events")?;
+        Ok(count as usize)
     }
 }
 
