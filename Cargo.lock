@@ -2173,6 +2173,8 @@ dependencies = [
  "sha2",
  "tokio",
  "voxelle-core",
+ "voxelle-store",
+ "voxelle-sync",
 ]
 
 [[package]]

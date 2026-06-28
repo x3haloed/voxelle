@@ -4,13 +4,19 @@ use quinn_proto::crypto::rustls::{QuicClientConfig, QuicServerConfig};
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Once;
-use voxelle_core::{id_from_spki_der, verify_signature_from_spki_b64, PeerIdentity};
+use voxelle_core::{
+    id_from_spki_der, verify_signature_from_spki_b64, EventV1, PeerIdentity, RoomContext,
+};
+use voxelle_store::Store;
+use voxelle_sync::{accept_offered_events_once, SyncLimits, SyncStats};
 
 pub const VOXELLE_ALPN: &[u8] = b"voxelle-ipv6/0";
 const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
+const MAX_SYNC_BYTES: usize = 512 * 1024;
 static RUSTLS_PROVIDER: Once = Once::new();
 
 #[derive(Debug)]
@@ -37,6 +43,7 @@ pub struct AuthenticatedPeer {
 
 #[derive(Debug, Clone)]
 pub struct AuthenticatedConnection {
+    _endpoint_guard: Option<quinn::Endpoint>,
     pub connection: quinn::Connection,
     pub remote: AuthenticatedPeer,
 }
@@ -50,6 +57,30 @@ struct HandshakeV1 {
     device_pub: String,
     quic_cert_fingerprint: String,
     sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RoomSyncRequestV1 {
+    v: u8,
+    room_id: String,
+    known_event_ids: Vec<String>,
+    max_events: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RoomSyncResponseV1 {
+    v: u8,
+    room_id: String,
+    events: Vec<EventV1>,
+    truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServedRoomSync {
+    pub remote: AuthenticatedPeer,
+    pub room_id: String,
+    pub offered: usize,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -120,7 +151,11 @@ impl QuicNode {
             .context("write server handshake")?;
         send.finish().context("finish server handshake stream")?;
 
-        Ok(AuthenticatedConnection { connection, remote })
+        Ok(AuthenticatedConnection {
+            _endpoint_guard: None,
+            connection,
+            remote,
+        })
     }
 
     pub async fn connect(
@@ -177,7 +212,118 @@ impl QuicNode {
             );
         }
 
-        Ok(AuthenticatedConnection { connection, remote })
+        Ok(AuthenticatedConnection {
+            _endpoint_guard: Some(endpoint),
+            connection,
+            remote,
+        })
+    }
+
+    pub async fn serve_room_sync_once(&self, source: &Store) -> Result<ServedRoomSync> {
+        let authenticated = self.accept_one().await?;
+        let (mut send, recv) = authenticated
+            .connection
+            .accept_bi()
+            .await
+            .context("accept room sync stream")?;
+
+        let request: RoomSyncRequestV1 = recv_json(recv, MAX_SYNC_BYTES).await?;
+        if request.v != 1 {
+            bail!("unsupported room sync request version {}", request.v);
+        }
+        if request.max_events == 0 {
+            bail!("room sync request max_events must be positive");
+        }
+
+        let known: BTreeSet<_> = request.known_event_ids.into_iter().collect();
+        let mut events = source
+            .room_events(&request.room_id)
+            .with_context(|| format!("load source room events for {}", request.room_id))?;
+        events.sort_by(|a, b| {
+            a.created_ms
+                .cmp(&b.created_ms)
+                .then_with(|| a.event_id.cmp(&b.event_id))
+        });
+        events.retain(|event| !known.contains(&event.event_id));
+
+        let truncated = events.len() > request.max_events;
+        events.truncate(request.max_events);
+        let offered = events.len();
+
+        send_json(
+            &mut send,
+            &RoomSyncResponseV1 {
+                v: 1,
+                room_id: request.room_id.clone(),
+                events,
+                truncated,
+            },
+        )
+        .await
+        .context("send room sync response")?;
+
+        Ok(ServedRoomSync {
+            remote: authenticated.remote,
+            room_id: request.room_id,
+            offered,
+            truncated,
+        })
+    }
+
+    pub async fn sync_room_once(
+        &self,
+        dest: &Store,
+        remote_addr: SocketAddr,
+        remote_cert_der: CertificateDer<'static>,
+        expected_remote_device_id: &str,
+        room_id: &str,
+        context: &RoomContext,
+        now_ms: i64,
+        limits: SyncLimits,
+    ) -> Result<SyncStats> {
+        let authenticated = self
+            .connect(remote_addr, remote_cert_der, expected_remote_device_id)
+            .await?;
+        let known_event_ids = dest
+            .room_events(room_id)
+            .with_context(|| format!("load known room events for {room_id}"))?
+            .into_iter()
+            .map(|event| event.event_id)
+            .collect();
+
+        let (mut send, recv) = authenticated
+            .connection
+            .open_bi()
+            .await
+            .context("open room sync stream")?;
+        send_json(
+            &mut send,
+            &RoomSyncRequestV1 {
+                v: 1,
+                room_id: room_id.to_string(),
+                known_event_ids,
+                max_events: limits.max_events_per_batch,
+            },
+        )
+        .await
+        .context("send room sync request")?;
+
+        let response: RoomSyncResponseV1 = recv_json(recv, MAX_SYNC_BYTES).await?;
+        if response.v != 1 {
+            bail!("unsupported room sync response version {}", response.v);
+        }
+        if response.room_id != room_id {
+            bail!(
+                "room sync response room mismatch: expected {}, got {}",
+                room_id,
+                response.room_id
+            );
+        }
+
+        let mut stats = accept_offered_events_once(dest, &response.events, context, now_ms)?;
+        stats.truncated = response.truncated;
+        authenticated.connection.close(0u32.into(), b"sync done");
+        Ok(stats)
     }
 
     pub async fn wait_idle(&self) {
@@ -346,9 +492,77 @@ async fn recv_handshake<T: for<'de> Deserialize<'de>>(mut recv: quinn::RecvStrea
     serde_json::from_slice(&bytes).context("parse handshake")
 }
 
+async fn send_json<T: Serialize>(send: &mut quinn::SendStream, value: &T) -> Result<()> {
+    let bytes = serde_json::to_vec(value).context("serialize stream message")?;
+    send.write_all(&bytes)
+        .await
+        .context("write stream message")?;
+    send.finish().context("finish stream message")?;
+    if let Some(error_code) = send.stopped().await.context("await stream delivery")? {
+        bail!("stream stopped by peer with error {error_code}");
+    }
+    Ok(())
+}
+
+async fn recv_json<T: for<'de> Deserialize<'de>>(
+    mut recv: quinn::RecvStream,
+    max_bytes: usize,
+) -> Result<T> {
+    let bytes = recv
+        .read_to_end(max_bytes)
+        .await
+        .context("read stream message")?;
+    serde_json::from_slice(&bytes).context("parse stream message")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use voxelle_core::{
+        accept_event, create_delegation, create_event, DelegationCertV1, GOVERNANCE_ROOM_ID,
+    };
+
+    fn delegation_for(identity: &PeerIdentity, scopes: Vec<String>) -> DelegationCertV1 {
+        create_delegation(&identity.peer, &identity.device, 900, 2_000, scopes).expect("delegation")
+    }
+
+    fn member_join(identity: &PeerIdentity) -> EventV1 {
+        create_event(
+            identity,
+            delegation_for(identity, vec!["room:join".to_string()]),
+            GOVERNANCE_ROOM_ID,
+            1_000,
+            "MEMBER_JOIN",
+            vec![],
+            json!({
+                "peer_id": identity.peer.id,
+                "peer_pub": identity.peer.spki_b64,
+            }),
+        )
+        .expect("member join")
+    }
+
+    fn message(identity: &PeerIdentity, created_ms: i64, text: &str) -> EventV1 {
+        create_event(
+            identity,
+            delegation_for(identity, vec!["room:post".to_string()]),
+            "room:general",
+            created_ms,
+            "MSG_POST",
+            vec![],
+            json!({ "text": text }),
+        )
+        .expect("message")
+    }
+
+    fn insert_seed(store: &Store, event: &EventV1, context: &RoomContext, now_ms: i64) {
+        let governance = store.room_events(GOVERNANCE_ROOM_ID).expect("governance");
+        let accepted = accept_event(event, &governance, context, now_ms).expect("accepted");
+        store
+            .insert_accepted_event(accepted, now_ms)
+            .expect("insert");
+    }
 
     #[tokio::test]
     async fn ipv6_loopback_handshake_authenticates_remote_device() -> Result<()> {
@@ -439,6 +653,75 @@ mod tests {
 
         let accepted = accept.await??;
         accepted.connection.close(0u32.into(), b"done");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn authenticated_quic_sync_converges_room_events() -> Result<()> {
+        let authority = PeerIdentity::generate()?;
+        let alice = PeerIdentity::generate()?;
+        let context = RoomContext::new(authority.peer.id.clone());
+        let source_store = Store::open_in_memory()?;
+        let dest_store = Store::open_in_memory()?;
+
+        let join = member_join(&alice);
+        let msg = message(&alice, 1_100, "over quic");
+        insert_seed(&source_store, &join, &context, 1_000);
+        insert_seed(&source_store, &msg, &context, 1_100);
+        let expected_room_heads = source_store.room_heads("room:general")?;
+
+        let server_identity = PeerIdentity::generate()?;
+        let expected_server_device_id = server_identity.device.id.clone();
+        let server = QuicNode::bind_ipv6_loopback(server_identity)?;
+        let client = QuicNode::bind_ipv6_loopback(PeerIdentity::generate()?)?;
+        let server_addr = server.local_addr()?;
+        let server_cert = server.certificate_der();
+
+        let server_fut = async {
+            let served = server.serve_room_sync_once(&source_store).await?;
+            let served_room = served.room_id.clone();
+            let second = server.serve_room_sync_once(&source_store).await?;
+            Ok::<_, anyhow::Error>((served_room, second.room_id))
+        };
+
+        let client_fut = async {
+            let governance_stats = client
+                .sync_room_once(
+                    &dest_store,
+                    server_addr,
+                    server_cert.clone(),
+                    &expected_server_device_id,
+                    GOVERNANCE_ROOM_ID,
+                    &context,
+                    1_200,
+                    SyncLimits::default(),
+                )
+                .await?;
+            assert_eq!(governance_stats.accepted, 1);
+
+            let room_stats = client
+                .sync_room_once(
+                    &dest_store,
+                    server_addr,
+                    server_cert,
+                    &expected_server_device_id,
+                    "room:general",
+                    &context,
+                    1_200,
+                    SyncLimits::default(),
+                )
+                .await?;
+            assert_eq!(room_stats.accepted, 1);
+            Ok::<_, anyhow::Error>(())
+        };
+
+        let (served_rooms, ()) = tokio::try_join!(server_fut, client_fut)?;
+        assert_eq!(
+            served_rooms,
+            (GOVERNANCE_ROOM_ID.to_string(), "room:general".to_string())
+        );
+        assert_eq!(expected_room_heads, dest_store.room_heads("room:general")?);
 
         Ok(())
     }

@@ -65,6 +65,32 @@ pub fn sync_room_once(
     Ok(stats)
 }
 
+pub fn accept_offered_events_once(
+    dest: &Store,
+    offered: &[EventV1],
+    context: &RoomContext,
+    now_ms: i64,
+) -> Result<SyncStats> {
+    let mut stats = SyncStats {
+        offered: offered.len(),
+        ..SyncStats::default()
+    };
+
+    for event in offered {
+        if dest.has_event(&event.event_id)? {
+            stats.already_present += 1;
+            continue;
+        }
+        match insert_after_acceptance(dest, event, context, now_ms) {
+            Ok(true) => stats.accepted += 1,
+            Ok(false) => stats.already_present += 1,
+            Err(_) => stats.rejected += 1,
+        }
+    }
+
+    Ok(stats)
+}
+
 pub fn sync_rooms_once(
     source: &Store,
     dest: &Store,
