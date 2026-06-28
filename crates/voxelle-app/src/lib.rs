@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
 use voxelle_core::{
     accept_event, create_delegation, create_event, EventV1, PeerIdentity, RoomContext,
     GOVERNANCE_ROOM_ID,
@@ -74,6 +76,22 @@ pub struct VoxelleRuntime {
     node: QuicNode,
     endpoint: PeerEndpoint,
     local_report: LocalReachabilityReport,
+}
+
+#[derive(Debug)]
+pub struct VoxelleService {
+    summary: ListenSummary,
+    default_room: String,
+    events: mpsc::Receiver<VoxelleServiceEvent>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<thread::JoinHandle<()>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VoxelleServiceEvent {
+    Served(ServedPeerRequest),
+    Failed(String),
+    Stopped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -220,12 +238,34 @@ impl VoxelleHome {
             .transpose()?;
         let runtime = runtime
             .map(RuntimeStatusView::online)
-            .unwrap_or_else(|| RuntimeStatusView {
-                state: RuntimeState::Offline,
-                listen_addr: None,
-                advertised_addr: None,
-                reachability_notes: vec!["offline".to_string()],
-            });
+            .unwrap_or_else(RuntimeStatusView::offline);
+        Ok(HomeScreenView {
+            profile: self.profile_summary()?,
+            runtime,
+            invite,
+            peers: self
+                .known_peers()?
+                .into_iter()
+                .map(PeerListItemView::from_peer_record)
+                .collect(),
+            room: RoomTimelineView {
+                room_id: config.default_room,
+                messages: self.read_messages(None)?,
+            },
+        })
+    }
+
+    pub fn home_screen_view_service(
+        &self,
+        service: Option<&VoxelleService>,
+    ) -> Result<HomeScreenView> {
+        let config = self.load_config()?;
+        let invite = service
+            .map(|service| service.invite_view(None, None))
+            .transpose()?;
+        let runtime = service
+            .map(RuntimeStatusView::from_service)
+            .unwrap_or_else(RuntimeStatusView::offline);
         Ok(HomeScreenView {
             profile: self.profile_summary()?,
             runtime,
@@ -366,6 +406,14 @@ impl VoxelleHome {
         advertise: Option<SocketAddr>,
     ) -> Result<VoxelleRuntime> {
         VoxelleRuntime::start(self.clone(), bind, advertise)
+    }
+
+    pub fn start_service(
+        &self,
+        bind: SocketAddr,
+        advertise: Option<SocketAddr>,
+    ) -> Result<VoxelleService> {
+        VoxelleService::start(self.clone(), bind, advertise)
     }
 
     pub async fn diagnose_peer(&self, peer: &PeerRecord) -> Result<PeerReachabilityReport> {
@@ -550,12 +598,30 @@ impl PeerRecord {
 }
 
 impl RuntimeStatusView {
+    fn offline() -> Self {
+        Self {
+            state: RuntimeState::Offline,
+            listen_addr: None,
+            advertised_addr: None,
+            reachability_notes: vec!["offline".to_string()],
+        }
+    }
+
     fn online(runtime: &VoxelleRuntime) -> Self {
         Self {
             state: RuntimeState::Online,
             listen_addr: Some(runtime.local_report.listen_addr),
             advertised_addr: Some(runtime.local_report.advertised_addr),
             reachability_notes: runtime.local_report.notes.clone(),
+        }
+    }
+
+    fn from_service(service: &VoxelleService) -> Self {
+        Self {
+            state: RuntimeState::Online,
+            listen_addr: Some(service.summary.local_report.listen_addr),
+            advertised_addr: Some(service.summary.local_report.advertised_addr),
+            reachability_notes: service.summary.local_report.notes.clone(),
         }
     }
 }
@@ -680,8 +746,145 @@ impl VoxelleRuntime {
 
     pub async fn stop(self) {
         self.node.close(b"runtime stopped");
-        self.node.wait_idle().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(500), self.node.wait_idle())
+            .await;
     }
+}
+
+impl VoxelleService {
+    pub fn start(
+        home: VoxelleHome,
+        bind: SocketAddr,
+        advertise: Option<SocketAddr>,
+    ) -> Result<Self> {
+        let runtime = VoxelleRuntime::start(home, bind, advertise)?;
+        let summary = runtime.summary();
+        let default_room = runtime.home.load_config()?.default_room;
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let (event_tx, events) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("voxelle-service".to_string())
+            .spawn(move || run_service_thread(runtime, stop_rx, event_tx))
+            .context("spawn voxelle service thread")?;
+
+        Ok(Self {
+            summary,
+            default_room,
+            events,
+            stop: Some(stop_tx),
+            thread: Some(thread),
+        })
+    }
+
+    pub fn summary(&self) -> &ListenSummary {
+        &self.summary
+    }
+
+    pub fn endpoint(&self) -> &PeerEndpoint {
+        &self.summary.endpoint
+    }
+
+    pub fn local_report(&self) -> &LocalReachabilityReport {
+        &self.summary.local_report
+    }
+
+    pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
+        let default_room = room
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| self.default_room.clone());
+        let record = PeerRecord {
+            v: 1,
+            label,
+            default_room,
+            endpoint: self.summary.endpoint.clone(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn invite_view(
+        &self,
+        label: Option<String>,
+        room: Option<&str>,
+    ) -> Result<InviteExchangeView> {
+        let peer_record = self.peer_record(label, room)?;
+        let peer_record_json = serde_json::to_string_pretty(&peer_record)? + "\n";
+        Ok(InviteExchangeView {
+            peer_record,
+            peer_record_json,
+        })
+    }
+
+    pub fn try_recv_event(&self) -> Option<VoxelleServiceEvent> {
+        match self.events.try_recv() {
+            Ok(event) => Some(event),
+            Err(mpsc::TryRecvError::Empty) | Err(mpsc::TryRecvError::Disconnected) => None,
+        }
+    }
+
+    pub fn stop(mut self) -> Result<()> {
+        self.stop_inner()
+    }
+
+    fn stop_inner(&mut self) -> Result<()> {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            thread
+                .join()
+                .map_err(|_| anyhow::anyhow!("voxelle service thread panicked"))?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for VoxelleService {
+    fn drop(&mut self) {
+        let _ = self.stop_inner();
+    }
+}
+
+fn run_service_thread(
+    runtime: VoxelleRuntime,
+    stop_rx: tokio::sync::oneshot::Receiver<()>,
+    event_tx: mpsc::Sender<VoxelleServiceEvent>,
+) {
+    let Ok(task_runtime) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        let _ = event_tx.send(VoxelleServiceEvent::Failed(
+            "failed to create service runtime".to_string(),
+        ));
+        return;
+    };
+    task_runtime.block_on(run_service_loop(runtime, stop_rx, event_tx));
+}
+
+async fn run_service_loop(
+    runtime: VoxelleRuntime,
+    mut stop_rx: tokio::sync::oneshot::Receiver<()>,
+    event_tx: mpsc::Sender<VoxelleServiceEvent>,
+) {
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => break,
+            result = runtime.serve_next_request() => {
+                match result {
+                    Ok(served) => {
+                        let _ = event_tx.send(VoxelleServiceEvent::Served(served));
+                    }
+                    Err(error) => {
+                        let _ = event_tx.send(VoxelleServiceEvent::Failed(format!("{error:#}")));
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    runtime.stop().await;
+    let _ = event_tx.send(VoxelleServiceEvent::Stopped);
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
@@ -919,6 +1122,53 @@ mod tests {
         );
 
         runtime.stop().await;
+    }
+
+    #[tokio::test]
+    async fn service_keeps_home_online_for_diagnostics_and_sync() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        bob.init(DEFAULT_ROOM_ID).expect("bob init");
+        alice
+            .send_message("first service message", None)
+            .expect("send");
+
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("service");
+        let record = service
+            .peer_record(Some("Alice".to_string()), None)
+            .expect("record");
+
+        let diagnostic = bob.diagnose_peer(&record).await.expect("diagnose");
+        assert!(diagnostic.reachable);
+
+        let first = bob.sync_peer(&record, 64).await.expect("first sync");
+        assert_eq!(first.governance.accepted, 1);
+        assert_eq!(first.room.accepted, 1);
+
+        alice
+            .send_message("second service message", None)
+            .expect("send second");
+        let second = bob.sync_peer(&record, 64).await.expect("second sync");
+        assert_eq!(second.governance.offered, 0);
+        assert_eq!(second.room.accepted, 1);
+
+        let messages = bob.read_messages(None).expect("messages");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].text, "first service message");
+        assert_eq!(messages[1].text, "second service message");
+
+        assert!(matches!(
+            service.try_recv_event(),
+            Some(VoxelleServiceEvent::Served(ServedPeerRequest::Diagnostic(
+                _
+            )))
+        ));
+        service.stop().expect("stop service");
     }
 
     #[tokio::test]

@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use voxelle_app::{
-    HomeScreenView, PeerRecord, RuntimeState, VoxelleHome, VoxelleRuntime, DEFAULT_ROOM_ID,
+    HomeScreenView, PeerRecord, RuntimeState, VoxelleHome, VoxelleService, VoxelleServiceEvent,
+    DEFAULT_ROOM_ID,
 };
 
 fn main() -> eframe::Result<()> {
@@ -18,7 +19,7 @@ fn main() -> eframe::Result<()> {
 
 struct VoxelleDesktop {
     home: VoxelleHome,
-    runtime: Option<VoxelleRuntime>,
+    service: Option<VoxelleService>,
     task_runtime: tokio::runtime::Runtime,
     bind_addr: String,
     advertise_addr: String,
@@ -34,7 +35,7 @@ impl VoxelleDesktop {
         let task_runtime = tokio::runtime::Runtime::new().expect("create desktop async runtime");
         let mut app = Self {
             home,
-            runtime: None,
+            service: None,
             task_runtime,
             bind_addr: "[::1]:0".to_string(),
             advertise_addr: String::new(),
@@ -64,7 +65,7 @@ impl VoxelleDesktop {
 
     fn view(&self) -> Result<HomeScreenView> {
         self.home
-            .home_screen_view(self.runtime.as_ref())
+            .home_screen_view_service(self.service.as_ref())
             .context("build home screen")
     }
 
@@ -75,15 +76,34 @@ impl VoxelleDesktop {
             .parse::<SocketAddr>()
             .context("parse bind address")?;
         let advertise = parse_optional_socket_addr(&self.advertise_addr)?;
-        self.runtime = Some(self.home.listen(bind, advertise)?);
+        self.service = Some(self.home.start_service(bind, advertise)?);
         Ok(())
     }
 
     fn go_offline(&mut self) -> Result<()> {
-        if let Some(runtime) = self.runtime.take() {
-            self.task_runtime.block_on(runtime.stop());
+        if let Some(service) = self.service.take() {
+            service.stop()?;
         }
         Ok(())
+    }
+
+    fn drain_service_events(&mut self) {
+        let Some(service) = &self.service else {
+            return;
+        };
+        while let Some(event) = service.try_recv_event() {
+            match event {
+                VoxelleServiceEvent::Served(served) => {
+                    self.last_action = Some(format!("Served {served:?}"));
+                }
+                VoxelleServiceEvent::Failed(error) => {
+                    self.last_action = Some(format!("Service error: {error}"));
+                }
+                VoxelleServiceEvent::Stopped => {
+                    self.last_action = Some("Service stopped".to_string());
+                }
+            }
+        }
     }
 
     fn import_peer_record(&mut self) -> Result<()> {
@@ -328,6 +348,7 @@ impl VoxelleDesktop {
 
 impl eframe::App for VoxelleDesktop {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.drain_service_events();
         let view = match self.view() {
             Ok(view) => view,
             Err(error) => {
