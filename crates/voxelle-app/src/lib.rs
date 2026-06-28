@@ -54,6 +54,20 @@ pub struct MessageView {
     pub text: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerRecord {
+    pub v: u8,
+    pub label: Option<String>,
+    pub default_room: String,
+    pub endpoint: PeerEndpoint,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct KnownPeersFile {
+    v: u8,
+    peers: Vec<PeerRecord>,
+}
+
 #[derive(Debug)]
 pub struct VoxelleRuntime {
     home: VoxelleHome,
@@ -97,6 +111,10 @@ impl VoxelleHome {
 
     pub fn config_path(&self) -> PathBuf {
         self.root.join("config.json")
+    }
+
+    pub fn known_peers_path(&self) -> PathBuf {
+        self.root.join("known-peers.json")
     }
 
     pub fn init(&self, default_room: impl Into<String>) -> Result<ProfileSummary> {
@@ -199,6 +217,55 @@ impl VoxelleHome {
         })
     }
 
+    pub fn export_peer_record(
+        &self,
+        advertised_addr: SocketAddr,
+        label: Option<String>,
+        room: Option<&str>,
+    ) -> Result<PeerRecord> {
+        let config = self.load_config()?;
+        let default_room = room.unwrap_or(&config.default_room).to_string();
+        let record = PeerRecord {
+            v: 1,
+            label,
+            default_room,
+            endpoint: self.export_endpoint(advertised_addr)?,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn import_peer_record(&self, record: PeerRecord) -> Result<()> {
+        record.validate()?;
+        let mut peers = self.known_peers()?;
+        if let Some(existing) = peers.iter_mut().find(|peer| peer.same_peer(&record)) {
+            *existing = record;
+        } else {
+            peers.push(record);
+        }
+        peers.sort_by(|a, b| {
+            a.label
+                .cmp(&b.label)
+                .then_with(|| a.endpoint.peer_id.cmp(&b.endpoint.peer_id))
+                .then_with(|| a.endpoint.device_id.cmp(&b.endpoint.device_id))
+        });
+        write_json(&self.known_peers_path(), &KnownPeersFile { v: 1, peers })
+    }
+
+    pub fn known_peers(&self) -> Result<Vec<PeerRecord>> {
+        if !self.known_peers_path().exists() {
+            return Ok(Vec::new());
+        }
+        let file: KnownPeersFile = read_json(&self.known_peers_path())?;
+        if file.v != 1 {
+            anyhow::bail!("unsupported known peers version {}", file.v);
+        }
+        for record in &file.peers {
+            record.validate()?;
+        }
+        Ok(file.peers)
+    }
+
     pub fn listen(
         &self,
         bind: SocketAddr,
@@ -207,14 +274,28 @@ impl VoxelleHome {
         VoxelleRuntime::start(self.clone(), bind, advertise)
     }
 
-    pub async fn diagnose_peer(&self, endpoint: &PeerEndpoint) -> Result<PeerReachabilityReport> {
+    pub async fn diagnose_peer(&self, peer: &PeerRecord) -> Result<PeerReachabilityReport> {
+        peer.validate()?;
+        self.diagnose_endpoint(&peer.endpoint).await
+    }
+
+    pub async fn diagnose_endpoint(
+        &self,
+        endpoint: &PeerEndpoint,
+    ) -> Result<PeerReachabilityReport> {
         let identity = self.load_identity()?;
         let certificate = self.load_certificate()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
         Ok(node.diagnose_peer(endpoint).await)
     }
 
-    pub async fn sync_peer(
+    pub async fn sync_peer(&self, peer: &PeerRecord, max_events: usize) -> Result<PeerSyncReport> {
+        peer.validate()?;
+        self.sync_endpoint(&peer.endpoint, Some(&peer.default_room), max_events)
+            .await
+    }
+
+    pub async fn sync_endpoint(
         &self,
         endpoint: &PeerEndpoint,
         room: Option<&str>,
@@ -357,6 +438,23 @@ impl VoxelleHome {
     }
 }
 
+impl PeerRecord {
+    pub fn validate(&self) -> Result<()> {
+        if self.v != 1 {
+            anyhow::bail!("unsupported peer record version {}", self.v);
+        }
+        if self.default_room.trim().is_empty() {
+            anyhow::bail!("peer record default room is empty");
+        }
+        self.endpoint.validate()
+    }
+
+    pub fn same_peer(&self, other: &Self) -> bool {
+        self.endpoint.peer_id == other.endpoint.peer_id
+            && self.endpoint.device_id == other.endpoint.device_id
+    }
+}
+
 impl VoxelleRuntime {
     pub fn start(
         home: VoxelleHome,
@@ -394,6 +492,21 @@ impl VoxelleRuntime {
             endpoint: self.endpoint.clone(),
             local_report: self.local_report.clone(),
         }
+    }
+
+    pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
+        let default_room = match room {
+            Some(room) => room.to_string(),
+            None => self.home.load_config()?.default_room,
+        };
+        let record = PeerRecord {
+            v: 1,
+            label,
+            default_room,
+            endpoint: self.endpoint.clone(),
+        };
+        record.validate()?;
+        Ok(record)
     }
 
     pub async fn serve_sync_once(&self, home: &VoxelleHome) -> Result<ServedRoomSync> {
@@ -528,7 +641,7 @@ mod tests {
 
         let (diagnostic_served, report) = tokio::join!(
             listener.serve_diagnostic_once(),
-            bob.diagnose_peer(&endpoint)
+            bob.diagnose_endpoint(&endpoint)
         );
         let report = report.expect("diagnose");
         assert!(report.reachable);
@@ -540,7 +653,7 @@ mod tests {
         let endpoint = listener.endpoint().clone();
         let (served, report) = tokio::join!(
             listener.serve_sync_requests(&alice, 2),
-            bob.sync_peer(&endpoint, None, 64)
+            bob.sync_endpoint(&endpoint, None, 64)
         );
         let served = served.expect("sync served");
         let report = report.expect("sync peer");
@@ -574,11 +687,11 @@ mod tests {
         let endpoint = runtime.endpoint().clone();
 
         let client = async {
-            let diagnostic = bob.diagnose_peer(&endpoint).await.expect("diagnose");
+            let diagnostic = bob.diagnose_endpoint(&endpoint).await.expect("diagnose");
             assert!(diagnostic.reachable);
 
             let first = bob
-                .sync_peer(&endpoint, None, 64)
+                .sync_endpoint(&endpoint, None, 64)
                 .await
                 .expect("first sync");
             assert_eq!(first.governance.accepted, 1);
@@ -587,7 +700,7 @@ mod tests {
             alice.send_message("second", None).expect("second send");
 
             let second = bob
-                .sync_peer(&endpoint, None, 64)
+                .sync_endpoint(&endpoint, None, 64)
                 .await
                 .expect("second sync");
             assert_eq!(second.governance.offered, 0);
@@ -606,6 +719,61 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].text, "first");
         assert_eq!(messages[1].text, "second");
+
+        runtime.stop().await;
+    }
+
+    #[tokio::test]
+    async fn peer_record_export_import_drives_diagnostics_and_sync() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        bob.init(DEFAULT_ROOM_ID).expect("bob init");
+        alice
+            .send_message("from imported peer", None)
+            .expect("send");
+
+        let runtime = alice
+            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("runtime");
+        let alice_record = runtime
+            .peer_record(Some("Alice".to_string()), None)
+            .expect("peer record");
+        bob.import_peer_record(alice_record.clone())
+            .expect("import peer");
+
+        let known = bob.known_peers().expect("known peers");
+        assert_eq!(known, vec![alice_record.clone()]);
+
+        let mut renamed_record = alice_record.clone();
+        renamed_record.label = Some("Alice renamed".to_string());
+        bob.import_peer_record(renamed_record.clone())
+            .expect("update peer");
+        assert_eq!(
+            bob.known_peers().expect("updated peers"),
+            vec![renamed_record]
+        );
+
+        let client = async {
+            let diagnostic = bob.diagnose_peer(&alice_record).await.expect("diagnose");
+            assert!(diagnostic.reachable);
+
+            let sync = bob.sync_peer(&alice_record, 64).await.expect("sync");
+            assert_eq!(sync.governance.accepted, 1);
+            assert_eq!(sync.room.accepted, 1);
+        };
+
+        let (served, _) = tokio::join!(runtime.serve_requests(3), client);
+        let served = served.expect("served requests");
+        assert!(matches!(served[0], ServedPeerRequest::Diagnostic(_)));
+        assert!(matches!(served[1], ServedPeerRequest::RoomSync(_)));
+        assert!(matches!(served[2], ServedPeerRequest::RoomSync(_)));
+        assert_eq!(
+            bob.read_messages(None).expect("bob messages")[0].text,
+            "from imported peer"
+        );
 
         runtime.stop().await;
     }
