@@ -88,6 +88,59 @@ pub struct PeerSyncReport {
     pub room: SyncStats,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HomeScreenView {
+    pub profile: ProfileSummary,
+    pub runtime: RuntimeStatusView,
+    pub invite: Option<InviteExchangeView>,
+    pub peers: Vec<PeerListItemView>,
+    pub room: RoomTimelineView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeStatusView {
+    pub state: RuntimeState,
+    pub listen_addr: Option<SocketAddr>,
+    pub advertised_addr: Option<SocketAddr>,
+    pub reachability_notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeState {
+    Offline,
+    Online,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InviteExchangeView {
+    pub peer_record: PeerRecord,
+    pub peer_record_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerListItemView {
+    pub label: String,
+    pub peer_id: String,
+    pub device_id: String,
+    pub addr: SocketAddr,
+    pub default_room: String,
+    pub diagnostic_state: PeerActionState,
+    pub sync_state: PeerActionState,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PeerActionState {
+    NotRun,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoomTimelineView {
+    pub room_id: String,
+    pub messages: Vec<MessageView>,
+}
+
 impl VoxelleHome {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
@@ -145,6 +198,47 @@ impl VoxelleHome {
             device_id: identity.device.id,
             default_room: config.default_room,
             authority_peer_id: config.authority_peer_id,
+        })
+    }
+
+    pub fn profile_summary(&self) -> Result<ProfileSummary> {
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        Ok(ProfileSummary {
+            home: self.root.clone(),
+            peer_id: identity.peer.id,
+            device_id: identity.device.id,
+            default_room: config.default_room,
+            authority_peer_id: config.authority_peer_id,
+        })
+    }
+
+    pub fn home_screen_view(&self, runtime: Option<&VoxelleRuntime>) -> Result<HomeScreenView> {
+        let config = self.load_config()?;
+        let invite = runtime
+            .map(|runtime| runtime.invite_view(None, None))
+            .transpose()?;
+        let runtime = runtime
+            .map(RuntimeStatusView::online)
+            .unwrap_or_else(|| RuntimeStatusView {
+                state: RuntimeState::Offline,
+                listen_addr: None,
+                advertised_addr: None,
+                reachability_notes: vec!["offline".to_string()],
+            });
+        Ok(HomeScreenView {
+            profile: self.profile_summary()?,
+            runtime,
+            invite,
+            peers: self
+                .known_peers()?
+                .into_iter()
+                .map(PeerListItemView::from_peer_record)
+                .collect(),
+            room: RoomTimelineView {
+                room_id: config.default_room,
+                messages: self.read_messages(None)?,
+            },
         })
     }
 
@@ -455,6 +549,34 @@ impl PeerRecord {
     }
 }
 
+impl RuntimeStatusView {
+    fn online(runtime: &VoxelleRuntime) -> Self {
+        Self {
+            state: RuntimeState::Online,
+            listen_addr: Some(runtime.local_report.listen_addr),
+            advertised_addr: Some(runtime.local_report.advertised_addr),
+            reachability_notes: runtime.local_report.notes.clone(),
+        }
+    }
+}
+
+impl PeerListItemView {
+    fn from_peer_record(record: PeerRecord) -> Self {
+        Self {
+            label: record
+                .label
+                .clone()
+                .unwrap_or_else(|| short_peer_label(&record.endpoint.peer_id)),
+            peer_id: record.endpoint.peer_id,
+            device_id: record.endpoint.device_id,
+            addr: record.endpoint.addr,
+            default_room: record.default_room,
+            diagnostic_state: PeerActionState::NotRun,
+            sync_state: PeerActionState::NotRun,
+        }
+    }
+}
+
 impl VoxelleRuntime {
     pub fn start(
         home: VoxelleHome,
@@ -509,6 +631,19 @@ impl VoxelleRuntime {
         Ok(record)
     }
 
+    pub fn invite_view(
+        &self,
+        label: Option<String>,
+        room: Option<&str>,
+    ) -> Result<InviteExchangeView> {
+        let peer_record = self.peer_record(label, room)?;
+        let peer_record_json = serde_json::to_string_pretty(&peer_record)? + "\n";
+        Ok(InviteExchangeView {
+            peer_record,
+            peer_record_json,
+        })
+    }
+
     pub async fn serve_sync_once(&self, home: &VoxelleHome) -> Result<ServedRoomSync> {
         let store = home.open_store()?;
         self.node.serve_room_sync_once(&store).await
@@ -560,6 +695,14 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
     }
     fs::write(path, serde_json::to_string_pretty(value)? + "\n")
         .with_context(|| format!("write {}", path.display()))
+}
+
+fn short_peer_label(peer_id: &str) -> String {
+    peer_id
+        .strip_prefix("ed25519:")
+        .and_then(|rest| rest.get(..12))
+        .map(|short| format!("Peer {short}"))
+        .unwrap_or_else(|| "Peer".to_string())
 }
 
 fn now_ms() -> i64 {
@@ -776,5 +919,51 @@ mod tests {
         );
 
         runtime.stop().await;
+    }
+
+    #[tokio::test]
+    async fn home_screen_view_shapes_first_gui_state() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        let peer_home = VoxelleHome::new(dir.path().join("peer"));
+
+        home.init(DEFAULT_ROOM_ID).expect("home init");
+        peer_home.init(DEFAULT_ROOM_ID).expect("peer init");
+        home.send_message("visible message", None).expect("send");
+
+        let offline = home.home_screen_view(None).expect("offline view");
+        assert_eq!(offline.runtime.state, RuntimeState::Offline);
+        assert!(offline.invite.is_none());
+        assert!(offline.peers.is_empty());
+        assert_eq!(offline.room.room_id, DEFAULT_ROOM_ID);
+        assert_eq!(offline.room.messages[0].text, "visible message");
+
+        let runtime = home
+            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("runtime");
+        let peer_runtime = peer_home
+            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("peer runtime");
+        let peer_record = peer_runtime
+            .peer_record(Some("Peer One".to_string()), None)
+            .expect("peer record");
+        home.import_peer_record(peer_record.clone())
+            .expect("import peer");
+
+        let online = home.home_screen_view(Some(&runtime)).expect("online view");
+        assert_eq!(online.runtime.state, RuntimeState::Online);
+        assert!(online.runtime.listen_addr.is_some());
+        assert!(online.invite.is_some());
+        assert!(online
+            .invite
+            .as_ref()
+            .expect("invite")
+            .peer_record_json
+            .contains("\"default_room\": \"room:general\""));
+        assert_eq!(online.peers.len(), 1);
+        assert_eq!(online.peers[0].label, "Peer One");
+        assert_eq!(online.peers[0].peer_id, peer_record.endpoint.peer_id);
+        assert_eq!(online.peers[0].diagnostic_state, PeerActionState::NotRun);
+        assert_eq!(online.peers[0].sync_state, PeerActionState::NotRun);
     }
 }
