@@ -12,7 +12,9 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 voxelle-core = { path = "../voxelle-core" }
+voxelle-net = { path = "../voxelle-net" }
 voxelle-store = { path = "../voxelle-store" }
 voxelle-sync = { path = "../voxelle-sync" }
 
@@ -20,4 +22,3 @@ voxelle-sync = { path = "../voxelle-sync" }
 assert_cmd = "2"
 predicates = "3"
 tempfile = "3"
-

@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Once;
+use std::time::Duration;
 use voxelle_core::{
     id_from_spki_der, verify_signature_from_spki_b64, EventV1, PeerIdentity, RoomContext,
 };
@@ -17,6 +18,7 @@ use voxelle_sync::{accept_offered_events_once, SyncLimits, SyncStats};
 pub const VOXELLE_ALPN: &[u8] = b"voxelle-ipv6/0";
 const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
 const MAX_SYNC_BYTES: usize = 512 * 1024;
+const DIAGNOSTIC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 static RUSTLS_PROVIDER: Once = Once::new();
 
 #[derive(Debug)]
@@ -33,7 +35,7 @@ pub struct QuicCertificate {
     pub fingerprint: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuthenticatedPeer {
     pub peer_id: String,
     pub device_id: String,
@@ -46,6 +48,44 @@ pub struct AuthenticatedConnection {
     _endpoint_guard: Option<quinn::Endpoint>,
     pub connection: quinn::Connection,
     pub remote: AuthenticatedPeer,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerEndpoint {
+    pub v: u8,
+    pub addr: SocketAddr,
+    pub peer_id: String,
+    pub device_id: String,
+    pub quic_cert_der_b64: String,
+    pub quic_cert_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalReachabilityReport {
+    pub listen_addr: SocketAddr,
+    pub advertised_addr: SocketAddr,
+    pub address_scope: AddressScope,
+    pub can_accept_inbound: bool,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerReachabilityReport {
+    pub endpoint: PeerEndpoint,
+    pub reachable: bool,
+    pub remote: Option<AuthenticatedPeer>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AddressScope {
+    Loopback,
+    LinkLocal,
+    UniqueLocal,
+    Global,
+    Unspecified,
+    Ipv4,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +115,19 @@ struct RoomSyncResponseV1 {
     truncated: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DiagnosticPingV1 {
+    v: u8,
+    nonce: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DiagnosticPongV1 {
+    v: u8,
+    nonce: String,
+    reachable: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServedRoomSync {
     pub remote: AuthenticatedPeer,
@@ -99,12 +152,28 @@ impl QuicNode {
         identity: PeerIdentity,
         certificate: QuicCertificate,
     ) -> Result<Self> {
-        let server_config = server_config(&certificate)?;
-        let endpoint = quinn::Endpoint::server(
-            server_config,
+        Self::bind_with_certificate(
+            identity,
+            certificate,
             SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
         )
-        .context("bind IPv6 QUIC endpoint")?;
+    }
+
+    pub fn bind(identity: PeerIdentity, bind_addr: SocketAddr) -> Result<Self> {
+        Self::bind_with_certificate(identity, QuicCertificate::generate()?, bind_addr)
+    }
+
+    pub fn bind_with_certificate(
+        identity: PeerIdentity,
+        certificate: QuicCertificate,
+        bind_addr: SocketAddr,
+    ) -> Result<Self> {
+        if !bind_addr.is_ipv6() {
+            bail!("listen address must be IPv6");
+        }
+        let server_config = server_config(&certificate)?;
+        let endpoint =
+            quinn::Endpoint::server(server_config, bind_addr).context("bind IPv6 QUIC endpoint")?;
 
         Ok(Self {
             endpoint,
@@ -123,6 +192,52 @@ impl QuicNode {
 
     pub fn certificate(&self) -> &QuicCertificate {
         &self.certificate
+    }
+
+    pub fn peer_endpoint(&self, advertised_addr: SocketAddr) -> Result<PeerEndpoint> {
+        if !advertised_addr.is_ipv6() {
+            bail!("advertised address must be IPv6");
+        }
+        Ok(PeerEndpoint {
+            v: 1,
+            addr: advertised_addr,
+            peer_id: self.identity.peer.id.clone(),
+            device_id: self.identity.device.id.clone(),
+            quic_cert_der_b64: self.certificate.cert_der_b64.clone(),
+            quic_cert_fingerprint: self.certificate.fingerprint.clone(),
+        })
+    }
+
+    pub fn local_reachability_report(
+        &self,
+        advertised_addr: SocketAddr,
+    ) -> Result<LocalReachabilityReport> {
+        let listen_addr = self.local_addr()?;
+        let address_scope = classify_address(advertised_addr.ip());
+        let mut notes = Vec::new();
+        match address_scope {
+            AddressScope::Global => notes.push("advertised address appears globally routable".into()),
+            AddressScope::UniqueLocal => notes.push("advertised address is unique-local and may only work inside one private IPv6 network".into()),
+            AddressScope::LinkLocal => notes.push("advertised address is link-local and requires an interface scope; it is not internet-routable".into()),
+            AddressScope::Loopback => notes.push("advertised address is loopback; only this machine can connect".into()),
+            AddressScope::Unspecified => notes.push("advertised address is unspecified; provide a concrete IPv6 address to peers".into()),
+            AddressScope::Ipv4 => notes.push("advertised address is IPv4; Voxelle IPv6 transport will reject it".into()),
+        }
+        if listen_addr.ip().is_unspecified() {
+            notes.push("listener is bound on all local IPv6 interfaces".into());
+        }
+        notes.push(
+            "public inbound reachability still requires a remote peer-assisted connect check"
+                .into(),
+        );
+
+        Ok(LocalReachabilityReport {
+            listen_addr,
+            advertised_addr,
+            address_scope,
+            can_accept_inbound: listen_addr.is_ipv6(),
+            notes,
+        })
     }
 
     pub async fn accept_one(&self) -> Result<AuthenticatedConnection> {
@@ -326,6 +441,104 @@ impl QuicNode {
         Ok(stats)
     }
 
+    pub async fn serve_diagnostic_once(&self) -> Result<PeerReachabilityReport> {
+        let authenticated = self.accept_one().await?;
+        let (mut send, recv) = authenticated
+            .connection
+            .accept_bi()
+            .await
+            .context("accept diagnostic stream")?;
+        let ping: DiagnosticPingV1 = recv_json(recv, MAX_SYNC_BYTES).await?;
+        if ping.v != 1 {
+            bail!("unsupported diagnostic ping version {}", ping.v);
+        }
+        send_json(
+            &mut send,
+            &DiagnosticPongV1 {
+                v: 1,
+                nonce: ping.nonce,
+                reachable: true,
+            },
+        )
+        .await?;
+        authenticated
+            .connection
+            .close(0u32.into(), b"diagnostic done");
+        Ok(PeerReachabilityReport {
+            endpoint: self.peer_endpoint(self.local_addr()?)?,
+            reachable: true,
+            remote: Some(authenticated.remote),
+            error: None,
+        })
+    }
+
+    pub async fn diagnose_peer(&self, endpoint: &PeerEndpoint) -> PeerReachabilityReport {
+        match self.diagnose_peer_result(endpoint).await {
+            Ok(report) => report,
+            Err(error) => PeerReachabilityReport {
+                endpoint: endpoint.clone(),
+                reachable: false,
+                remote: None,
+                error: Some(error.to_string()),
+            },
+        }
+    }
+
+    async fn diagnose_peer_result(
+        &self,
+        endpoint: &PeerEndpoint,
+    ) -> Result<PeerReachabilityReport> {
+        endpoint.validate()?;
+        let authenticated = tokio::time::timeout(
+            DIAGNOSTIC_CONNECT_TIMEOUT,
+            self.connect(
+                endpoint.addr,
+                endpoint.certificate_der()?,
+                &endpoint.device_id,
+            ),
+        )
+        .await
+        .context("diagnostic connect timed out")??;
+        let nonce = format!(
+            "diag:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(
+                format!("{:?}", std::time::SystemTime::now()).as_bytes()
+            ))
+        );
+        let (mut send, recv) = authenticated
+            .connection
+            .open_bi()
+            .await
+            .context("open diagnostic stream")?;
+        send_json(
+            &mut send,
+            &DiagnosticPingV1 {
+                v: 1,
+                nonce: nonce.clone(),
+            },
+        )
+        .await
+        .context("send diagnostic ping")?;
+        let pong: DiagnosticPongV1 = recv_json(recv, MAX_SYNC_BYTES)
+            .await
+            .context("read diagnostic pong")?;
+        if pong.v != 1 {
+            bail!("unsupported diagnostic pong version {}", pong.v);
+        }
+        if pong.nonce != nonce {
+            bail!("diagnostic nonce mismatch");
+        }
+        authenticated
+            .connection
+            .close(0u32.into(), b"diagnostic done");
+        Ok(PeerReachabilityReport {
+            endpoint: endpoint.clone(),
+            reachable: pong.reachable,
+            remote: Some(authenticated.remote),
+            error: None,
+        })
+    }
+
     pub async fn wait_idle(&self) {
         self.endpoint.wait_idle().await;
     }
@@ -367,6 +580,35 @@ impl QuicCertificate {
             base64::engine::general_purpose::STANDARD
                 .decode(&self.private_key_pkcs8_der_b64)
                 .context("decode QUIC private key DER")?,
+        ))
+    }
+}
+
+impl PeerEndpoint {
+    pub fn validate(&self) -> Result<()> {
+        if self.v != 1 {
+            bail!("unsupported peer endpoint version {}", self.v);
+        }
+        if !self.addr.is_ipv6() {
+            bail!("peer endpoint address must be IPv6");
+        }
+        let cert = self.certificate_der()?;
+        let fingerprint = cert_fingerprint(cert.as_ref());
+        if fingerprint != self.quic_cert_fingerprint {
+            bail!(
+                "peer endpoint cert fingerprint mismatch: expected {}, got {}",
+                self.quic_cert_fingerprint,
+                fingerprint
+            );
+        }
+        Ok(())
+    }
+
+    pub fn certificate_der(&self) -> Result<CertificateDer<'static>> {
+        Ok(CertificateDer::from(
+            base64::engine::general_purpose::STANDARD
+                .decode(&self.quic_cert_der_b64)
+                .context("decode peer endpoint QUIC cert")?,
         ))
     }
 }
@@ -421,6 +663,25 @@ fn cert_fingerprint(cert_der: &[u8]) -> String {
         "sha256:{}",
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(cert_der))
     )
+}
+
+fn classify_address(ip: IpAddr) -> AddressScope {
+    match ip {
+        IpAddr::V4(_) => AddressScope::Ipv4,
+        IpAddr::V6(addr) if addr.is_unspecified() => AddressScope::Unspecified,
+        IpAddr::V6(addr) if addr.is_loopback() => AddressScope::Loopback,
+        IpAddr::V6(addr) if is_ipv6_link_local(addr) => AddressScope::LinkLocal,
+        IpAddr::V6(addr) if is_ipv6_unique_local(addr) => AddressScope::UniqueLocal,
+        IpAddr::V6(_) => AddressScope::Global,
+    }
+}
+
+fn is_ipv6_link_local(addr: Ipv6Addr) -> bool {
+    (addr.segments()[0] & 0xffc0) == 0xfe80
+}
+
+fn is_ipv6_unique_local(addr: Ipv6Addr) -> bool {
+    (addr.segments()[0] & 0xfe00) == 0xfc00
 }
 
 fn make_handshake(
@@ -722,6 +983,27 @@ mod tests {
             (GOVERNANCE_ROOM_ID.to_string(), "room:general".to_string())
         );
         assert_eq!(expected_room_heads, dest_store.room_heads("room:general")?);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn peer_assisted_diagnostic_reports_reachable_endpoint() -> Result<()> {
+        let server_identity = PeerIdentity::generate()?;
+        let server = QuicNode::bind_ipv6_loopback(server_identity)?;
+        let client = QuicNode::bind_ipv6_loopback(PeerIdentity::generate()?)?;
+        let endpoint = server.peer_endpoint(server.local_addr()?)?;
+        let local = server.local_reachability_report(endpoint.addr)?;
+        assert_eq!(local.address_scope, AddressScope::Loopback);
+
+        let server_fut = async { server.serve_diagnostic_once().await };
+        let client_fut = async { Ok::<_, anyhow::Error>(client.diagnose_peer(&endpoint).await) };
+        let (served, report) = tokio::try_join!(server_fut, client_fut)?;
+
+        assert!(served.reachable);
+        assert!(report.reachable);
+        assert_eq!(report.endpoint.device_id, endpoint.device_id);
+        assert_eq!(report.remote.expect("remote").device_id, endpoint.device_id);
 
         Ok(())
     }

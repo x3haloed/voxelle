@@ -1,6 +1,9 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use tempfile::tempdir;
+use voxelle_core::PeerIdentity;
+use voxelle_net::{PeerEndpoint, QuicCertificate};
 
 #[test]
 fn cli_creates_identity_room_message_and_syncs_local_store() {
@@ -68,4 +71,48 @@ fn cli_creates_identity_room_message_and_syncs_local_store() {
         .assert()
         .success()
         .stdout(predicate::str::starts_with("e:"));
+}
+
+#[test]
+fn cli_diagnose_connect_reports_unreachable_peer_endpoint() {
+    let dir = tempdir().expect("tempdir");
+    let identity = dir.path().join("client.identity.json");
+    let cert = dir.path().join("client.quic-cert.json");
+    let endpoint_path = dir.path().join("endpoint.json");
+
+    Command::cargo_bin("voxelle")
+        .unwrap()
+        .args(["identity", "create", "--out"])
+        .arg(&identity)
+        .assert()
+        .success();
+
+    let remote_identity = PeerIdentity::generate().expect("remote identity");
+    let remote_cert = QuicCertificate::generate().expect("remote cert");
+    let endpoint = PeerEndpoint {
+        v: 1,
+        addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 9),
+        peer_id: remote_identity.peer.id,
+        device_id: remote_identity.device.id,
+        quic_cert_der_b64: remote_cert.cert_der_b64,
+        quic_cert_fingerprint: remote_cert.fingerprint,
+    };
+    std::fs::write(
+        &endpoint_path,
+        serde_json::to_string_pretty(&endpoint).unwrap() + "\n",
+    )
+    .expect("write endpoint");
+
+    Command::cargo_bin("voxelle")
+        .unwrap()
+        .args(["diagnose", "connect", "--identity"])
+        .arg(&identity)
+        .args(["--cert"])
+        .arg(&cert)
+        .args(["--endpoint"])
+        .arg(&endpoint_path)
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("\"reachable\": false"))
+        .stderr(predicate::str::contains("peer was not reachable"));
 }

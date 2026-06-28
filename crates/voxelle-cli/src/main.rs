@@ -2,10 +2,13 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use voxelle_core::{
     accept_event, create_delegation, create_event, PeerIdentity, RoomContext, GOVERNANCE_ROOM_ID,
 };
+use voxelle_net::{PeerEndpoint, QuicCertificate, QuicNode};
 use voxelle_store::Store;
 use voxelle_sync::{sync_rooms_once, SyncLimits};
 
@@ -36,6 +39,10 @@ enum Command {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    Diagnose {
+        #[command(subcommand)]
+        command: DiagnoseCommand,
     },
 }
 
@@ -101,6 +108,28 @@ enum SyncCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum DiagnoseCommand {
+    Listen {
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long, default_value = "[::1]:0")]
+        bind: SocketAddr,
+        #[arg(long)]
+        advertise: Option<SocketAddr>,
+    },
+    Connect {
+        #[arg(long)]
+        identity: PathBuf,
+        #[arg(long)]
+        cert: PathBuf,
+        #[arg(long)]
+        endpoint: PathBuf,
+    },
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct IdentityFile {
     v: u8,
@@ -110,7 +139,8 @@ struct IdentityFile {
     device_id: String,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Identity { command } => match command {
@@ -141,6 +171,19 @@ fn main() -> Result<()> {
                 room,
                 max_events,
             } => sync_local(&from, &to, &authority_peer_id, &room, max_events),
+        },
+        Command::Diagnose { command } => match command {
+            DiagnoseCommand::Listen {
+                identity,
+                cert,
+                bind,
+                advertise,
+            } => diagnose_listen(&identity, &cert, bind, advertise).await,
+            DiagnoseCommand::Connect {
+                identity,
+                cert,
+                endpoint,
+            } => diagnose_connect(&identity, &cert, &endpoint).await,
         },
     }
 }
@@ -240,6 +283,48 @@ fn sync_local(
     Ok(())
 }
 
+async fn diagnose_listen(
+    identity_path: &Path,
+    cert_path: &Path,
+    bind: SocketAddr,
+    advertise: Option<SocketAddr>,
+) -> Result<()> {
+    let identity = load_identity(identity_path)?;
+    let certificate = load_or_create_certificate(cert_path)?;
+    let node = QuicNode::bind_with_certificate(identity, certificate, bind)?;
+    let advertised_addr = advertise.unwrap_or(node.local_addr()?);
+    let endpoint = node.peer_endpoint(advertised_addr)?;
+    let local = node.local_reachability_report(advertised_addr)?;
+
+    println!("{}", serde_json::to_string_pretty(&endpoint)?);
+    io::stdout().flush()?;
+    eprintln!("{}", serde_json::to_string_pretty(&local)?);
+
+    let report = node.serve_diagnostic_once().await?;
+    eprintln!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
+async fn diagnose_connect(
+    identity_path: &Path,
+    cert_path: &Path,
+    endpoint_path: &Path,
+) -> Result<()> {
+    let identity = load_identity(identity_path)?;
+    let certificate = load_or_create_certificate(cert_path)?;
+    let endpoint: PeerEndpoint = read_json(endpoint_path)?;
+    let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
+    let report = node.diagnose_peer(&endpoint).await;
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    if !report.reachable {
+        anyhow::bail!(
+            "peer was not reachable: {}",
+            report.error.unwrap_or_else(|| "unknown error".to_string())
+        );
+    }
+    Ok(())
+}
+
 fn member_join(identity: &PeerIdentity) -> Result<voxelle_core::EventV1> {
     create_event(
         identity,
@@ -268,6 +353,20 @@ fn load_identity(path: &Path) -> Result<PeerIdentity> {
         anyhow::bail!("unsupported identity version");
     }
     PeerIdentity::from_secret_keys_b64(&file.peer_secret_b64, &file.device_secret_b64)
+}
+
+fn load_or_create_certificate(path: &Path) -> Result<QuicCertificate> {
+    if path.exists() {
+        return read_json(path);
+    }
+    let certificate = QuicCertificate::generate()?;
+    write_json(path, &certificate)?;
+    Ok(certificate)
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {

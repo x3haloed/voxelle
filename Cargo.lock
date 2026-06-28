@@ -2138,7 +2138,9 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "tokio",
  "voxelle-core",
+ "voxelle-net",
  "voxelle-store",
  "voxelle-sync",
 ]
