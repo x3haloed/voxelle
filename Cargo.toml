@@ -5,10 +5,7 @@ members = [
   "crates/voxelle-cli",
   "crates/voxelle-core",
   "crates/voxelle-net",
-  "crates/voxelle-protocol",
-  "crates/voxelle-signal",
   "crates/voxelle-store",
   "crates/voxelle-sync",
 ]
-exclude = ["apps/desktop/src-tauri"]
 resolver = "2"
