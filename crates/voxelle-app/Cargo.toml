@@ -10,6 +10,8 @@ serde_json = "1"
 voxelle-core = { path = "../voxelle-core" }
 voxelle-net = { path = "../voxelle-net" }
 voxelle-store = { path = "../voxelle-store" }
+voxelle-sync = { path = "../voxelle-sync" }
 
 [dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tempfile = "3"
