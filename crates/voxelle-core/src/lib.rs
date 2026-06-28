@@ -129,6 +129,17 @@ pub enum AcceptError {
 
 pub type AcceptResult<T> = std::result::Result<T, AcceptError>;
 
+#[derive(Debug, Clone, Copy)]
+pub struct AcceptedEvent<'a> {
+    event: &'a EventV1,
+}
+
+impl<'a> AcceptedEvent<'a> {
+    pub fn event(self) -> &'a EventV1 {
+        self.event
+    }
+}
+
 pub fn create_delegation(
     peer: &Keypair,
     device: &Keypair,
@@ -317,7 +328,7 @@ pub fn accept_event<'a>(
     accepted_room_events: &[EventV1],
     context: &RoomContext,
     now_ms: i64,
-) -> AcceptResult<&'a EventV1> {
+) -> AcceptResult<AcceptedEvent<'a>> {
     let required_scope = required_scope_for_kind(&event.kind);
     validate_event_at(event, required_scope, now_ms)
         .map_err(|e| AcceptError::Invalid(e.to_string()))?;
@@ -345,7 +356,7 @@ pub fn accept_event<'a>(
         if !state.members.contains(&event.author_peer_id) {
             return Err(AcceptError::NotMember);
         }
-        Ok(event)
+        Ok(AcceptedEvent { event })
     }
 }
 
@@ -419,7 +430,7 @@ fn accept_governance_event<'a>(
     event: &'a EventV1,
     state: &GovernanceState,
     context: &RoomContext,
-) -> AcceptResult<&'a EventV1> {
+) -> AcceptResult<AcceptedEvent<'a>> {
     match event.kind.as_str() {
         "MEMBER_JOIN" => {
             if state.banned.contains(&event.author_peer_id) {
@@ -430,19 +441,19 @@ fn accept_governance_event<'a>(
                     "MEMBER_JOIN body must match author peer".to_string(),
                 ));
             }
-            Ok(event)
+            Ok(AcceptedEvent { event })
         }
         "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" => {
             if event.author_peer_id != context.authority_peer_id {
                 return Err(AcceptError::NotAuthorized);
             }
-            Ok(event)
+            Ok(AcceptedEvent { event })
         }
         _ => {
             if event.author_peer_id != context.authority_peer_id {
                 return Err(AcceptError::NotAuthorized);
             }
-            Ok(event)
+            Ok(AcceptedEvent { event })
         }
     }
 }
