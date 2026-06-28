@@ -5,6 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use voxelle_app::{VoxelleHome, DEFAULT_ROOM_ID};
 use voxelle_core::{
     accept_event, create_delegation, create_event, PeerIdentity, RoomContext, GOVERNANCE_ROOM_ID,
 };
@@ -24,6 +25,30 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Init {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long, default_value = DEFAULT_ROOM_ID)]
+        room: String,
+    },
+    Send {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        room: Option<String>,
+    },
+    Read {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        room: Option<String>,
+    },
+    Endpoint {
+        #[command(subcommand)]
+        command: EndpointCommand,
+    },
     Identity {
         #[command(subcommand)]
         command: IdentityCommand,
@@ -43,6 +68,18 @@ enum Command {
     Diagnose {
         #[command(subcommand)]
         command: DiagnoseCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum EndpointCommand {
+    Export {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        advertise: SocketAddr,
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
 }
 
@@ -143,6 +180,16 @@ struct IdentityFile {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Init { home, room } => app_init(&home, &room),
+        Command::Send { home, text, room } => app_send(&home, &text, room.as_deref()),
+        Command::Read { home, room } => app_read(&home, room.as_deref()),
+        Command::Endpoint { command } => match command {
+            EndpointCommand::Export {
+                home,
+                advertise,
+                out,
+            } => app_endpoint_export(&home, advertise, out.as_deref()),
+        },
         Command::Identity { command } => match command {
             IdentityCommand::Create { out } => identity_create(&out),
         },
@@ -186,6 +233,33 @@ async fn main() -> Result<()> {
             } => diagnose_connect(&identity, &cert, &endpoint).await,
         },
     }
+}
+
+fn app_init(home: &Path, room: &str) -> Result<()> {
+    let summary = VoxelleHome::new(home).init(room)?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+fn app_send(home: &Path, text: &str, room: Option<&str>) -> Result<()> {
+    let event = VoxelleHome::new(home).send_message(text, room)?;
+    println!("{}", event.event_id);
+    Ok(())
+}
+
+fn app_read(home: &Path, room: Option<&str>) -> Result<()> {
+    let messages = VoxelleHome::new(home).read_messages(room)?;
+    println!("{}", serde_json::to_string_pretty(&messages)?);
+    Ok(())
+}
+
+fn app_endpoint_export(home: &Path, advertise: SocketAddr, out: Option<&Path>) -> Result<()> {
+    let endpoint = VoxelleHome::new(home).export_endpoint(advertise)?;
+    if let Some(out) = out {
+        write_json(out, &endpoint)?;
+    }
+    println!("{}", serde_json::to_string_pretty(&endpoint)?);
+    Ok(())
 }
 
 fn identity_create(out: &Path) -> Result<()> {
