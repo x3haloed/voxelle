@@ -3,6 +3,10 @@ name = "voxelle-tauri-host"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "voxelle-tauri-host"
+path = "src/main.rs"
+
 [dependencies]
 dirs = "6"
 tauri = "2.11.3"
