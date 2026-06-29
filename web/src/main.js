@@ -7,19 +7,63 @@ if (!(app instanceof HTMLElement)) {
   throw new Error("missing #app");
 }
 
-let currentSnapshot = await shell.snapshot();
-renderShell(app, currentSnapshot);
+const workbench = {
+  panels: [
+    {
+      id: "panel.network.health",
+      title: "Network Health",
+      viewId: "network.health",
+      region: "main",
+    },
+    {
+      id: "panel.network.log",
+      title: "Network Log",
+      viewId: "service.activity",
+      region: "side",
+    },
+    {
+      id: "panel.peer.exchange",
+      title: "Peer Exchange",
+      viewId: "peer.exchange",
+      region: "side",
+    },
+    {
+      id: "panel.room.timeline",
+      title: "Room",
+      viewId: "room.timeline",
+      region: "main",
+    },
+  ],
+};
 
-/**
- * @param {HTMLElement} root
- * @param {import("./shell-contract").ShellSnapshotView} snapshot
- */
-function renderShell(root, snapshot) {
-  currentSnapshot = snapshot;
-  root.replaceChildren(
-    header(snapshot),
-    networkHealth(snapshot),
-    secondarySurface(snapshot),
+const uiState = {
+  busyCommand: "",
+  error: "",
+  peerRecordDraft: "",
+  messageDraft: "",
+  bindDraft: "",
+  advertiseDraft: "",
+};
+
+const viewRenderers = {
+  "network.health": networkHealthView,
+  "service.activity": activityView,
+  "peer.exchange": peerExchangeView,
+  "room.timeline": roomTimelineView,
+};
+
+let currentSnapshot = await shell.snapshot();
+render();
+
+async function refresh() {
+  currentSnapshot = await shell.snapshot();
+  return currentSnapshot;
+}
+
+function render() {
+  app.replaceChildren(
+    header(currentSnapshot),
+    workbenchShell(currentSnapshot),
   );
 }
 
@@ -30,25 +74,100 @@ function header(snapshot) {
   titleGroup.append(element("h1", "", "Voxelle"));
   titleGroup.append(element("p", "path", snapshot.home_root));
 
-  const runtime = snapshot.home?.runtime.state ?? "offline";
-  const state = element("div", `runtime-state ${runtime}`, runtime);
+  const actions = element("div", "header-actions");
+  actions.append(runtimeState(snapshot), commandButton("Refresh", "shell.refresh"));
 
-  headerEl.append(titleGroup, state);
+  headerEl.append(titleGroup, actions);
   return headerEl;
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function networkHealth(snapshot) {
-  const section = element("section", "network-health");
-  section.append(sectionHeader("Network Health"));
+function runtimeState(snapshot) {
+  const runtime = snapshot.home?.runtime.state ?? "offline";
+  return element("div", `runtime-state ${runtime}`, runtime);
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function workbenchShell(snapshot) {
+  const shellEl = element("section", "workbench");
+  const mainRegion = element("div", "workbench-region main-region");
+  const sideRegion = element("aside", "workbench-region side-region");
+
+  for (const panel of workbench.panels) {
+    const panelEl = workbenchPanel(panel, snapshot);
+    if (panel.region === "side") {
+      sideRegion.append(panelEl);
+    } else {
+      mainRegion.append(panelEl);
+    }
+  }
+
+  shellEl.append(mainRegion, sideRegion);
+  return shellEl;
+}
+
+/**
+ * @param {{ id: string, title: string, viewId: string }} panel
+ * @param {import("./shell-contract").ShellSnapshotView} snapshot
+ */
+function workbenchPanel(panel, snapshot) {
+  const section = element("section", "panel");
+  section.dataset.panelId = panel.id;
+  section.dataset.viewId = panel.viewId;
+  section.append(panelHeader(panel));
+
+  const view = element("div", "panel-view");
+  const renderer = viewRenderers[panel.viewId] ?? unknownView;
+  view.append(renderer(snapshot));
+  section.append(view);
+  return section;
+}
+
+/** @param {{ id: string, title: string, viewId: string }} panel */
+function panelHeader(panel) {
+  const headerEl = element("div", "panel-header");
+  const titleGroup = element("div", "panel-title");
+  titleGroup.append(element("h2", "", panel.title));
+  titleGroup.append(element("span", "view-id", panel.viewId));
+  headerEl.append(titleGroup);
+  return headerEl;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function networkHealthView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const controls = element("div", "control-row");
+  controls.append(
+    commandButton("Initialize", "home.init"),
+    commandButton("Go Online", "runtime.goOnline"),
+    commandButton("Go Offline", "runtime.goOffline"),
+  );
+  fragment.append(errorBanner(), serviceOptions(), controls);
 
   const rows = element("ol", "health-list");
   for (const row of snapshot.network_health.rows) {
     rows.append(healthRow(row, snapshot));
   }
+  fragment.append(rows);
+  return fragment;
+}
 
-  section.append(rows);
-  return section;
+function serviceOptions() {
+  const options = element("div", "service-options");
+  options.append(
+    labeledInput("Bind", "Optional local bind, e.g. [::]:0", uiState.bindDraft, (value) => {
+      uiState.bindDraft = value;
+    }),
+    labeledInput(
+      "Advertise",
+      "Optional advertised IPv6 address",
+      uiState.advertiseDraft,
+      (value) => {
+        uiState.advertiseDraft = value;
+      },
+    ),
+  );
+  return options;
 }
 
 /**
@@ -58,6 +177,7 @@ function networkHealth(snapshot) {
 function healthRow(row, snapshot) {
   const item = element("li", "health-row");
   item.dataset.status = row.status;
+  item.dataset.healthRowId = row.id;
 
   const indicator = element("span", "status-indicator", statusLabel(row.status));
   const body = element("div", "health-body");
@@ -72,67 +192,248 @@ function healthRow(row, snapshot) {
     body.append(details);
   }
 
-  const action = primaryAction(row, snapshot);
   item.append(indicator, body);
-  if (action) {
-    item.append(action);
+  if (row.primary_action) {
+    item.append(primaryAction(row.primary_action, snapshot));
   }
   return item;
 }
 
 /**
- * @param {import("./shell-contract").NetworkHealthRow} row
+ * @param {string} command
  * @param {import("./shell-contract").ShellSnapshotView} snapshot
  */
-function primaryAction(row, snapshot) {
-  if (!row.primary_action) {
-    return null;
+function primaryAction(command, snapshot) {
+  const knownCommand = snapshot.ui_ontology.commands.find((item) => item.id === command);
+  return commandButton(knownCommand?.label ?? command, command);
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function activityView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  fragment.append(errorBanner());
+
+  const actions = element("div", "control-row");
+  actions.append(commandButton("Refresh", "shell.refresh"));
+  fragment.append(actions);
+
+  const list = element("ol", "activity-list");
+  for (const activity of [...snapshot.service_activity].reverse()) {
+    const row = element("li", "");
+    row.dataset.level = activity.level;
+    row.append(
+      element("span", "activity-id", String(activity.id)),
+      element("span", "", activity.summary),
+    );
+    list.append(row);
   }
-  const command = snapshot.ui_ontology.commands.find((item) => item.id === row.primary_action);
-  const button = element("button", "primary-action", command?.label ?? row.primary_action);
+  fragment.append(list);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function peerExchangeView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const invite = snapshot.home?.invite?.peer_record_json ?? "";
+  const inviteGroup = element("div", "field-stack");
+  inviteGroup.append(element("h3", "", "Local Invite"));
+  inviteGroup.append(element("pre", "invite-json", invite));
+  inviteGroup.append(commandButton("Copy Invite", "invite.copy"));
+
+  const importGroup = element("form", "field-stack");
+  importGroup.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("peer.import").catch(reportError);
+  });
+  const textarea = element("textarea", "peer-record-input");
+  textarea.placeholder = "Paste peer record JSON";
+  textarea.value = uiState.peerRecordDraft;
+  textarea.addEventListener("input", () => {
+    uiState.peerRecordDraft = textarea.value;
+  });
+  importGroup.append(element("h3", "", "Import Peer"), textarea, submitButton("Import"));
+
+  fragment.append(inviteGroup, importGroup, peerList(snapshot));
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function peerList(snapshot) {
+  const peers = snapshot.home?.peers ?? [];
+  const group = element("div", "field-stack");
+  group.append(element("h3", "", "Known Peers"));
+
+  const list = element("ol", "peer-list");
+  for (const peer of peers) {
+    const row = element("li", "peer-row");
+    const body = element("div", "peer-body");
+    body.append(element("strong", "", peer.label));
+    body.append(element("span", "mono", peer.addr));
+    body.append(element("span", "muted", shortId(peer.peer_id)));
+
+    const actions = element("div", "row-actions");
+    actions.append(
+      commandButton("Diagnose", "peer.diagnose", peerRequest(peer)),
+      commandButton("Sync", "peer.sync", peerRequest(peer)),
+    );
+    row.append(body, actions);
+    list.append(row);
+  }
+  group.append(list);
+  return group;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function roomTimelineView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const messages = snapshot.home?.room.messages ?? [];
+  const list = element("ol", "message-list");
+  for (const message of messages) {
+    const row = element("li", "");
+    row.append(element("span", "muted", shortId(message.author_peer_id)));
+    row.append(element("p", "", message.text));
+    list.append(row);
+  }
+
+  const form = element("form", "message-form");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("message.send").catch(reportError);
+  });
+  const input = element("input", "message-input");
+  input.placeholder = "Message";
+  input.value = uiState.messageDraft;
+  input.addEventListener("input", () => {
+    uiState.messageDraft = input.value;
+  });
+  form.append(input, submitButton("Send"));
+
+  fragment.append(list, form);
+  return fragment;
+}
+
+function unknownView() {
+  return element("p", "summary", "Unknown view");
+}
+
+/**
+ * @param {string} label
+ * @param {string} command
+ * @param {unknown} [payload]
+ */
+function commandButton(label, command, payload) {
+  const button = element("button", "command-button", label);
   button.type = "button";
-  button.dataset.command = row.primary_action;
+  button.dataset.command = command;
+  button.disabled = uiState.busyCommand !== "";
+  if (uiState.busyCommand === command) {
+    button.textContent = "Working";
+  }
   button.addEventListener("click", () => {
-    runPrimaryAction(row.primary_action).catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
-      appendActivity(currentSnapshot, `error: ${message}`);
-      renderShell(app, currentSnapshot);
-    });
+    runCommand(command, payload).catch(reportError);
   });
   return button;
 }
 
-/** @param {string} command */
-async function runPrimaryAction(command) {
-  switch (command) {
-    case "home.init":
-      renderShell(app, await shell.initHome({ default_room: null }));
-      return;
-    case "runtime.goOnline":
-      renderShell(app, await shell.startService({ bind: null, advertise: null }));
-      return;
-    case "runtime.goOffline":
-      renderShell(app, await shell.stopService());
-      return;
-    case "peer.import":
-      appendActivity(currentSnapshot, "peer import needs the import editor");
-      renderShell(app, currentSnapshot);
-      return;
-    case "peer.diagnose":
-      renderShell(app, await shell.diagnosePeer(firstPeerRequest()));
-      return;
-    case "peer.sync":
-      renderShell(app, await shell.syncPeer(firstPeerRequest()));
-      return;
-    case "invite.copy":
-      await navigator.clipboard?.writeText(currentSnapshot.home?.invite?.peer_record_json ?? "");
-      appendActivity(currentSnapshot, "copied invite");
-      renderShell(app, currentSnapshot);
-      return;
-    default:
-      appendActivity(currentSnapshot, `unhandled ${command}`);
-      renderShell(app, currentSnapshot);
+/** @param {string} label */
+function submitButton(label) {
+  const button = element("button", "command-button", label);
+  button.type = "submit";
+  button.disabled = uiState.busyCommand !== "";
+  return button;
+}
+
+/**
+ * @param {string} command
+ * @param {unknown} [payload]
+ */
+async function runCommand(command, payload) {
+  uiState.busyCommand = command;
+  uiState.error = "";
+  render();
+  try {
+    switch (command) {
+      case "shell.refresh":
+        await refresh();
+        return;
+      case "home.init":
+        currentSnapshot = await shell.initHome({ default_room: null });
+        return;
+      case "runtime.goOnline":
+        currentSnapshot = await shell.startService({
+          bind: blankToNull(uiState.bindDraft),
+          advertise: blankToNull(uiState.advertiseDraft),
+        });
+        return;
+      case "runtime.goOffline":
+        currentSnapshot = await shell.stopService();
+        return;
+      case "peer.import":
+        currentSnapshot = await shell.importPeerRecord({
+          peer_record_json: uiState.peerRecordDraft,
+        });
+        uiState.peerRecordDraft = "";
+        return;
+      case "peer.diagnose":
+        currentSnapshot = await shell.diagnosePeer(
+          /** @type {import("./shell-contract").PeerCommandRequest} */ (
+            payload ?? firstPeerRequest()
+          ),
+        );
+        return;
+      case "peer.sync":
+        currentSnapshot = await shell.syncPeer(
+          /** @type {import("./shell-contract").PeerCommandRequest} */ (
+            payload ?? firstPeerRequest()
+          ),
+        );
+        return;
+      case "message.send":
+        currentSnapshot = await shell.sendMessage({
+          text: uiState.messageDraft,
+          room: null,
+        });
+        uiState.messageDraft = "";
+        return;
+      case "invite.copy":
+        await navigator.clipboard?.writeText(
+          currentSnapshot.home?.invite?.peer_record_json ?? "",
+        );
+        appendActivity(currentSnapshot, "copied invite");
+        return;
+      default:
+        appendActivity(currentSnapshot, `unhandled ${command}`);
+    }
+  } finally {
+    uiState.busyCommand = "";
+    render();
   }
+}
+
+/** @param {unknown} error */
+function reportError(error) {
+  uiState.busyCommand = "";
+  uiState.error = errorMessage(error);
+  appendActivity(currentSnapshot, `error: ${uiState.error}`);
+  render();
+}
+
+/** @param {unknown} error */
+function errorMessage(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object" && "message" in error) {
+    return String(error.message);
+  }
+  return String(error);
+}
+
+function errorBanner() {
+  if (!uiState.error) {
+    return document.createDocumentFragment();
+  }
+  return element("p", "error-banner", uiState.error);
 }
 
 function firstPeerRequest() {
@@ -140,6 +441,11 @@ function firstPeerRequest() {
   if (!peer) {
     throw new Error("no peer available");
   }
+  return peerRequest(peer);
+}
+
+/** @param {import("./shell-contract").PeerListItemView} peer */
+function peerRequest(peer) {
   return {
     peer_id: peer.peer_id,
     device_id: peer.device_id,
@@ -161,73 +467,28 @@ function statusLabel(status) {
   }
 }
 
-/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function secondarySurface(snapshot) {
-  const grid = element("section", "secondary-grid");
-  grid.append(activityPanel(snapshot), peerPanel(snapshot), invitePanel(snapshot), roomPanel(snapshot));
-  return grid;
+/**
+ * @param {string} label
+ * @param {string} placeholder
+ * @param {string} value
+ * @param {(value: string) => void} onInput
+ */
+function labeledInput(label, placeholder, value, onInput) {
+  const field = element("label", "field");
+  const input = element("input", "");
+  input.placeholder = placeholder;
+  input.value = value;
+  input.addEventListener("input", () => {
+    onInput(input.value);
+  });
+  field.append(element("span", "", label), input);
+  return field;
 }
 
-/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function activityPanel(snapshot) {
-  const section = element("section", "panel");
-  section.append(sectionHeader("Activity"));
-
-  const list = element("ol", "activity-list");
-  for (const activity of [...snapshot.service_activity].reverse()) {
-    const row = element("li", "");
-    row.dataset.level = activity.level;
-    row.append(element("span", "activity-id", String(activity.id)), element("span", "", activity.summary));
-    list.append(row);
-  }
-  section.append(list);
-  return section;
-}
-
-/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function peerPanel(snapshot) {
-  const section = element("section", "panel");
-  section.append(sectionHeader("Peers"));
-
-  const peers = snapshot.home?.peers ?? [];
-  const list = element("ol", "peer-list");
-  for (const peer of peers) {
-    const row = element("li", "peer-row");
-    row.append(element("strong", "", peer.label));
-    row.append(element("span", "mono", peer.addr));
-    row.append(element("span", "muted", shortId(peer.peer_id)));
-    list.append(row);
-  }
-  section.append(list);
-  return section;
-}
-
-/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function invitePanel(snapshot) {
-  const section = element("section", "panel invite-panel");
-  section.append(sectionHeader("Invite"));
-
-  const invite = snapshot.home?.invite?.peer_record_json ?? "";
-  const pre = element("pre", "invite-json", invite);
-  section.append(pre);
-  return section;
-}
-
-/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function roomPanel(snapshot) {
-  const section = element("section", "panel room-panel");
-  section.append(sectionHeader(snapshot.home?.room.room_id ?? "Room"));
-
-  const messages = snapshot.home?.room.messages ?? [];
-  const list = element("ol", "message-list");
-  for (const message of messages) {
-    const row = element("li", "");
-    row.append(element("span", "muted", shortId(message.author_peer_id)));
-    row.append(element("p", "", message.text));
-    list.append(row);
-  }
-  section.append(list);
-  return section;
+/** @param {string} value */
+function blankToNull(value) {
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
 }
 
 /**
@@ -243,13 +504,6 @@ function appendActivity(snapshot, summary) {
 function shortId(text) {
   const value = text.startsWith("ed25519:") ? text.slice(8) : text;
   return value.length > 12 ? `${value.slice(0, 12)}` : value;
-}
-
-/** @param {string} title */
-function sectionHeader(title) {
-  const headerEl = element("div", "section-header");
-  headerEl.append(element("h2", "", title));
-  return headerEl;
 }
 
 /**
