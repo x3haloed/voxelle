@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
+ts-rs = "12"
 voxelle-app = { path = "../voxelle-app" }
 
 [dev-dependencies]

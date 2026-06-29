@@ -9,6 +9,7 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::Once;
 use std::time::Duration;
+use ts_rs::TS;
 use voxelle_core::{
     id_from_spki_der, verify_signature_from_spki_b64, EventV1, PeerIdentity, RoomContext,
 };
@@ -50,9 +51,10 @@ pub struct AuthenticatedConnection {
     pub remote: AuthenticatedPeer,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct PeerEndpoint {
     pub v: u8,
+    #[ts(type = "string")]
     pub addr: SocketAddr,
     pub peer_id: String,
     pub device_id: String,

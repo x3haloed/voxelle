@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use ts_rs::TS;
 use voxelle_app::{
     ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest,
     ShellSnapshotView, StartServiceRequest, VoxelleCommandHost,
@@ -70,7 +71,7 @@ impl ShellState {
 
 pub type ShellResult<T> = Result<T, ShellError>;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, TS)]
 pub struct ShellError {
     pub message: String,
 }
@@ -81,6 +82,26 @@ impl From<anyhow::Error> for ShellError {
             message: format!("{error:#}"),
         }
     }
+}
+
+pub fn shell_contract_typescript() -> String {
+    let mut output = voxelle_app::shell_contract_typescript();
+    let cfg = ts_rs::Config::default();
+    output.push_str("export ");
+    output.push_str(&ShellError::decl(&cfg));
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
+}
+
+pub fn write_shell_contract(path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, shell_contract_typescript())?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -197,6 +218,20 @@ mod tests {
         assert!(error.message.contains("identity.json"));
         let encoded = serde_json::to_string(&error).expect("serialize");
         assert!(encoded.contains("identity.json"));
+    }
+
+    #[test]
+    fn generated_shell_contract_matches_checked_in_web_contract() {
+        let contract_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("web")
+            .join("src")
+            .join("shell-contract.ts");
+
+        let checked_in = std::fs::read_to_string(&contract_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", contract_path.display()));
+
+        assert_eq!(checked_in, shell_contract_typescript());
     }
 
     fn health_status(snapshot: &ShellSnapshotView, id: &str) -> NetworkHealthStatus {

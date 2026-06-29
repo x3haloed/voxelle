@@ -6,6 +6,7 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
+use ts_rs::TS;
 use voxelle_core::{
     accept_event, create_delegation, create_event, EventV1, PeerIdentity, RoomContext,
     GOVERNANCE_ROOM_ID,
@@ -40,8 +41,9 @@ pub struct IdentityFile {
     pub device_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct ProfileSummary {
+    #[ts(type = "string")]
     pub home: PathBuf,
     pub peer_id: String,
     pub device_id: String,
@@ -49,15 +51,16 @@ pub struct ProfileSummary {
     pub authority_peer_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct MessageView {
     pub event_id: String,
+    #[ts(type = "number")]
     pub created_ms: i64,
     pub author_peer_id: String,
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct PeerRecord {
     pub v: u8,
     pub label: Option<String>,
@@ -71,7 +74,7 @@ struct KnownPeersFile {
     peers: Vec<PeerRecord>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct UiOntologyView {
     pub places: Vec<UiPlace>,
     pub views: Vec<UiView>,
@@ -82,7 +85,7 @@ pub struct UiOntologyView {
     pub renderers: Vec<UiRenderer>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct UiPlace {
     pub id: String,
     pub label: String,
@@ -91,7 +94,7 @@ pub struct UiPlace {
     pub editing_surface: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct UiView {
     pub id: String,
     pub label: String,
@@ -101,7 +104,7 @@ pub struct UiView {
     pub editing_surface: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct UiCommand {
     pub id: String,
     pub label: String,
@@ -110,7 +113,7 @@ pub struct UiCommand {
     pub editing_surface: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct SemanticToken {
     pub id: String,
     pub label: String,
@@ -121,7 +124,7 @@ pub struct SemanticToken {
     pub editing_surface: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct UiMetric {
     pub id: String,
     pub label: String,
@@ -133,7 +136,7 @@ pub struct UiMetric {
     pub editing_surface: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct UiBehavior {
     pub id: String,
     pub label: String,
@@ -144,7 +147,7 @@ pub struct UiBehavior {
     pub editing_surface: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct UiRenderer {
     pub id: String,
     pub label: String,
@@ -155,7 +158,7 @@ pub struct UiRenderer {
     pub editing_surface: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum UiBehaviorValue {
     Bool(bool),
@@ -187,6 +190,44 @@ impl Default for UiPreferences {
             behaviors: BTreeMap::new(),
         }
     }
+}
+
+pub fn shell_contract_typescript() -> String {
+    let cfg = ts_rs::Config::default();
+    let declarations = [
+        PeerEndpoint::decl(&cfg),
+        ProfileSummary::decl(&cfg),
+        MessageView::decl(&cfg),
+        PeerRecord::decl(&cfg),
+        UiOntologyView::decl(&cfg),
+        UiPlace::decl(&cfg),
+        UiView::decl(&cfg),
+        UiCommand::decl(&cfg),
+        SemanticToken::decl(&cfg),
+        UiMetric::decl(&cfg),
+        UiBehavior::decl(&cfg),
+        UiRenderer::decl(&cfg),
+        UiBehaviorValue::decl(&cfg),
+        ShellSnapshotView::decl(&cfg),
+        ServiceActivityItem::decl(&cfg),
+        ServiceActivityLevel::decl(&cfg),
+        InitHomeRequest::decl(&cfg),
+        StartServiceRequest::decl(&cfg),
+        SendMessageRequest::decl(&cfg),
+        ImportPeerRecordRequest::decl(&cfg),
+        PeerCommandRequest::decl(&cfg),
+        HomeScreenView::decl(&cfg),
+        NetworkHealthView::decl(&cfg),
+        NetworkHealthRow::decl(&cfg),
+        NetworkHealthStatus::decl(&cfg),
+        RuntimeStatusView::decl(&cfg),
+        RuntimeState::decl(&cfg),
+        InviteExchangeView::decl(&cfg),
+        PeerListItemView::decl(&cfg),
+        PeerActionState::decl(&cfg),
+        RoomTimelineView::decl(&cfg),
+    ];
+    typescript_module(declarations)
 }
 
 #[derive(Debug)]
@@ -264,8 +305,9 @@ pub struct PeerSyncReport {
     pub room: SyncStats,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
 pub struct ShellSnapshotView {
+    #[ts(type = "string")]
     pub home_root: PathBuf,
     pub home: Option<HomeScreenView>,
     pub home_error: Option<String>,
@@ -274,50 +316,53 @@ pub struct ShellSnapshotView {
     pub service_activity: Vec<ServiceActivityItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct ServiceActivityItem {
+    #[ts(type = "number")]
     pub id: u64,
     pub level: ServiceActivityLevel,
     pub summary: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceActivityLevel {
     Info,
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct InitHomeRequest {
     pub default_room: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct StartServiceRequest {
+    #[ts(type = "string | null")]
     pub bind: Option<SocketAddr>,
+    #[ts(type = "string | null")]
     pub advertise: Option<SocketAddr>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct SendMessageRequest {
     pub text: String,
     pub room: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct ImportPeerRecordRequest {
     pub peer_record_json: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct PeerCommandRequest {
     pub peer_id: String,
     pub device_id: String,
     pub max_events: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct HomeScreenView {
     pub profile: ProfileSummary,
     pub runtime: RuntimeStatusView,
@@ -326,12 +371,12 @@ pub struct HomeScreenView {
     pub room: RoomTimelineView,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct NetworkHealthView {
     pub rows: Vec<NetworkHealthRow>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct NetworkHealthRow {
     pub id: String,
     pub label: String,
@@ -343,7 +388,7 @@ pub struct NetworkHealthRow {
     pub related_commands: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum NetworkHealthStatus {
     Unknown,
@@ -352,45 +397,48 @@ pub enum NetworkHealthStatus {
     Broken,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct RuntimeStatusView {
     pub state: RuntimeState,
+    #[ts(type = "string | null")]
     pub listen_addr: Option<SocketAddr>,
+    #[ts(type = "string | null")]
     pub advertised_addr: Option<SocketAddr>,
     pub reachability_notes: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeState {
     Offline,
     Online,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct InviteExchangeView {
     pub peer_record: PeerRecord,
     pub peer_record_json: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct PeerListItemView {
     pub label: String,
     pub peer_id: String,
     pub device_id: String,
+    #[ts(type = "string")]
     pub addr: SocketAddr,
     pub default_room: String,
     pub diagnostic_state: PeerActionState,
     pub sync_state: PeerActionState,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
 #[serde(rename_all = "snake_case")]
 pub enum PeerActionState {
     NotRun,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct RoomTimelineView {
     pub room_id: String,
     pub messages: Vec<MessageView>,
@@ -2250,6 +2298,20 @@ fn same_behavior_value_kind(left: &UiBehaviorValue, right: &UiBehaviorValue) -> 
         (UiBehaviorValue::Bool(_), UiBehaviorValue::Bool(_))
             | (UiBehaviorValue::Text(_), UiBehaviorValue::Text(_))
     )
+}
+
+fn typescript_module(declarations: impl IntoIterator<Item = String>) -> String {
+    let mut output =
+        String::from("// This file is generated from Rust shell DTOs. Do not edit by hand.\n\n");
+    for declaration in declarations {
+        output.push_str("export ");
+        output.push_str(&declaration);
+        if !declaration.ends_with('\n') {
+            output.push('\n');
+        }
+        output.push('\n');
+    }
+    output
 }
 
 fn advertised_address_row(report: &LocalReachabilityReport) -> NetworkHealthRow {
