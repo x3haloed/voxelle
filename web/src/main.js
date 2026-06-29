@@ -1,18 +1,21 @@
-import { fixtureSnapshot } from "./fixture.js";
+import { createShellClient } from "./shell-client.js";
 
 const app = document.querySelector("#app");
+const shell = createShellClient();
 
 if (!(app instanceof HTMLElement)) {
   throw new Error("missing #app");
 }
 
-renderShell(app, fixtureSnapshot);
+let currentSnapshot = await shell.snapshot();
+renderShell(app, currentSnapshot);
 
 /**
  * @param {HTMLElement} root
  * @param {import("./shell-contract").ShellSnapshotView} snapshot
  */
 function renderShell(root, snapshot) {
+  currentSnapshot = snapshot;
   root.replaceChildren(
     header(snapshot),
     networkHealth(snapshot),
@@ -90,10 +93,58 @@ function primaryAction(row, snapshot) {
   button.type = "button";
   button.dataset.command = row.primary_action;
   button.addEventListener("click", () => {
-    appendActivity(snapshot, `queued ${row.primary_action}`);
-    renderShell(app, snapshot);
+    runPrimaryAction(row.primary_action).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      appendActivity(currentSnapshot, `error: ${message}`);
+      renderShell(app, currentSnapshot);
+    });
   });
   return button;
+}
+
+/** @param {string} command */
+async function runPrimaryAction(command) {
+  switch (command) {
+    case "home.init":
+      renderShell(app, await shell.initHome({ default_room: null }));
+      return;
+    case "runtime.goOnline":
+      renderShell(app, await shell.startService({ bind: null, advertise: null }));
+      return;
+    case "runtime.goOffline":
+      renderShell(app, await shell.stopService());
+      return;
+    case "peer.import":
+      appendActivity(currentSnapshot, "peer import needs the import editor");
+      renderShell(app, currentSnapshot);
+      return;
+    case "peer.diagnose":
+      renderShell(app, await shell.diagnosePeer(firstPeerRequest()));
+      return;
+    case "peer.sync":
+      renderShell(app, await shell.syncPeer(firstPeerRequest()));
+      return;
+    case "invite.copy":
+      await navigator.clipboard?.writeText(currentSnapshot.home?.invite?.peer_record_json ?? "");
+      appendActivity(currentSnapshot, "copied invite");
+      renderShell(app, currentSnapshot);
+      return;
+    default:
+      appendActivity(currentSnapshot, `unhandled ${command}`);
+      renderShell(app, currentSnapshot);
+  }
+}
+
+function firstPeerRequest() {
+  const peer = currentSnapshot.home?.peers[0];
+  if (!peer) {
+    throw new Error("no peer available");
+  }
+  return {
+    peer_id: peer.peer_id,
+    device_id: peer.device_id,
+    max_events: 64,
+  };
 }
 
 /** @param {import("./shell-contract").NetworkHealthStatus} status */
