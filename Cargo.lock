@@ -4516,6 +4516,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "voxelle-shell"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "voxelle-app",
+]
+
+[[package]]
 name = "voxelle-store"
 version = "0.1.0"
 dependencies = [
