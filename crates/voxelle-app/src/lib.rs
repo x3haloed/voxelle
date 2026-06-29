@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
@@ -11,8 +11,8 @@ use voxelle_core::{
     GOVERNANCE_ROOM_ID,
 };
 use voxelle_net::{
-    LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate, QuicNode,
-    ServedPeerRequest, ServedRoomSync,
+    AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
+    QuicNode, ServedPeerRequest, ServedRoomSync,
 };
 use voxelle_store::Store;
 use voxelle_sync::{SyncLimits, SyncStats};
@@ -266,6 +266,32 @@ pub struct HomeScreenView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkHealthView {
+    pub rows: Vec<NetworkHealthRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkHealthRow {
+    pub id: String,
+    pub label: String,
+    pub status: NetworkHealthStatus,
+    pub summary: String,
+    pub primary_action: Option<String>,
+    pub details: Vec<String>,
+    pub related_views: Vec<String>,
+    pub related_commands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NetworkHealthStatus {
+    Unknown,
+    Working,
+    NeedsAttention,
+    Broken,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeStatusView {
     pub state: RuntimeState,
     pub listen_addr: Option<SocketAddr>,
@@ -433,6 +459,271 @@ impl VoxelleHome {
                 room_id: config.default_room,
                 messages: self.read_messages(None)?,
             },
+        })
+    }
+
+    pub fn network_health_view(
+        &self,
+        service: Option<&VoxelleService>,
+    ) -> Result<NetworkHealthView> {
+        let home_status = match self.load_config() {
+            Ok(config) => NetworkHealthRow::working(
+                "home",
+                "Home",
+                format!("Home is initialized for {}.", config.default_room),
+            )
+            .detail(format!("root: {}", self.root.display())),
+            Err(error) if self.root.exists() => NetworkHealthRow::broken(
+                "home",
+                "Home",
+                "Home exists but cannot be read.",
+                Some("home.init"),
+            )
+            .detail(format!("{error:#}"))
+            .related_command("home.init"),
+            Err(_) => NetworkHealthRow::needs_attention(
+                "home",
+                "Home",
+                "Create the local home before networking can start.",
+                Some("home.init"),
+            )
+            .detail(format!("root: {}", self.root.display()))
+            .related_command("home.init"),
+        }
+        .related_view("profile.summary");
+
+        let identity_status = match self.load_identity() {
+            Ok(identity) => NetworkHealthRow::working(
+                "identity",
+                "Identity",
+                format!(
+                    "Local peer {} is available.",
+                    short_peer_label(&identity.peer.id)
+                ),
+            )
+            .detail(format!("device: {}", short_peer_label(&identity.device.id))),
+            Err(error) if self.identity_path().exists() => NetworkHealthRow::broken(
+                "identity",
+                "Identity",
+                "Identity file exists but cannot be loaded.",
+                Some("home.init"),
+            )
+            .detail(format!("{error:#}"))
+            .related_command("home.init"),
+            Err(_) => NetworkHealthRow::needs_attention(
+                "identity",
+                "Identity",
+                "Create a local peer identity.",
+                Some("home.init"),
+            )
+            .related_command("home.init"),
+        }
+        .related_view("profile.summary");
+
+        let certificate_status = match self.load_certificate() {
+            Ok(certificate) => NetworkHealthRow::working(
+                "certificate",
+                "Certificate",
+                "Persistent QUIC certificate is available.",
+            )
+            .detail(format!("fingerprint: {}", certificate.fingerprint)),
+            Err(error) if self.certificate_path().exists() => NetworkHealthRow::broken(
+                "certificate",
+                "Certificate",
+                "Certificate file exists but cannot be loaded.",
+                Some("home.init"),
+            )
+            .detail(format!("{error:#}"))
+            .related_command("home.init"),
+            Err(_) => NetworkHealthRow::needs_attention(
+                "certificate",
+                "Certificate",
+                "Create persistent QUIC certificate material.",
+                Some("home.init"),
+            )
+            .related_command("home.init"),
+        }
+        .related_view("runtime.status");
+
+        let ipv6_status = match local_ipv6_socket_available() {
+            Ok(()) => {
+                NetworkHealthRow::working("ipv6", "IPv6", "This machine can open an IPv6 socket.")
+            }
+            Err(error) => NetworkHealthRow::broken(
+                "ipv6",
+                "IPv6",
+                "This machine could not open an IPv6 socket.",
+                None,
+            )
+            .detail(format!("{error:#}")),
+        }
+        .related_view("network.health");
+
+        let service_status = match service {
+            Some(service) => NetworkHealthRow::working(
+                "service",
+                "Service",
+                format!("Resident service is online at {}.", service.endpoint().addr),
+            )
+            .related_command("runtime.goOffline"),
+            None => NetworkHealthRow::needs_attention(
+                "service",
+                "Service",
+                "Go online to accept peer diagnostics and sync requests.",
+                Some("runtime.goOnline"),
+            )
+            .related_command("runtime.goOnline"),
+        }
+        .related_view("runtime.status");
+
+        let bind_status = match service {
+            Some(service) if service.local_report().listen_addr.is_ipv6() => {
+                NetworkHealthRow::working(
+                    "bind",
+                    "Bind",
+                    format!("Listening on {}.", service.local_report().listen_addr),
+                )
+                .related_command("runtime.goOffline")
+            }
+            Some(service) => NetworkHealthRow::broken(
+                "bind",
+                "Bind",
+                format!(
+                    "Listener is not IPv6: {}.",
+                    service.local_report().listen_addr
+                ),
+                Some("runtime.goOffline"),
+            )
+            .related_command("runtime.goOffline"),
+            None => NetworkHealthRow::unknown(
+                "bind",
+                "Bind",
+                "Binding has not been tested in this session.",
+                Some("runtime.goOnline"),
+            )
+            .related_command("runtime.goOnline"),
+        }
+        .related_view("runtime.status");
+
+        let advertise_status = match service {
+            Some(service) => advertised_address_row(service.local_report()),
+            None => NetworkHealthRow::unknown(
+                "advertise",
+                "Advertise",
+                "No advertised address until the service is online.",
+                Some("runtime.goOnline"),
+            )
+            .related_command("runtime.goOnline"),
+        }
+        .related_view("runtime.status");
+
+        let invite_status = match service {
+            Some(service) => match service.invite_view(None, None) {
+                Ok(invite) => NetworkHealthRow::new(
+                    "invite",
+                    "Invite",
+                    NetworkHealthStatus::Working,
+                    "A peer record can be generated from the current service.",
+                    Some("invite.copy"),
+                )
+                .detail(format!(
+                    "advertised address: {}",
+                    invite.peer_record.endpoint.addr
+                ))
+                .related_command("invite.copy"),
+                Err(error) => NetworkHealthRow::broken(
+                    "invite",
+                    "Invite",
+                    "Current service could not produce an invite.",
+                    Some("runtime.goOnline"),
+                )
+                .detail(format!("{error:#}"))
+                .related_command("runtime.goOnline"),
+            },
+            None => NetworkHealthRow::unknown(
+                "invite",
+                "Invite",
+                "Go online before copying an invite.",
+                Some("runtime.goOnline"),
+            )
+            .related_command("runtime.goOnline"),
+        }
+        .related_view("invite.exchange");
+
+        let peers = self.known_peers()?;
+        let peer_status = if peers.is_empty() {
+            NetworkHealthRow::needs_attention(
+                "peers",
+                "Peers",
+                "Import a peer record before peer diagnostics or sync can run.",
+                Some("peer.import"),
+            )
+            .related_command("peer.import")
+        } else {
+            NetworkHealthRow::working(
+                "peers",
+                "Peers",
+                format!("{} known peer record(s).", peers.len()),
+            )
+            .related_command("peer.import")
+        }
+        .related_view("peer.list");
+
+        let reachability_status = if peers.is_empty() {
+            NetworkHealthRow::unknown(
+                "reachability",
+                "Reachability",
+                "No peer is available to verify incoming reachability.",
+                Some("peer.import"),
+            )
+            .related_command("peer.import")
+        } else {
+            NetworkHealthRow::needs_attention(
+                "reachability",
+                "Reachability",
+                "Run a peer-assisted diagnostic against a known peer.",
+                Some("peer.diagnose"),
+            )
+            .detail("A real incoming check requires another peer to connect back.")
+            .related_command("peer.diagnose")
+        }
+        .related_view("network.health")
+        .related_view("service.activity");
+
+        let sync_status = if peers.is_empty() {
+            NetworkHealthRow::unknown(
+                "sync",
+                "Sync",
+                "No peer is available to test room sync.",
+                Some("peer.import"),
+            )
+            .related_command("peer.import")
+        } else {
+            NetworkHealthRow::needs_attention(
+                "sync",
+                "Sync",
+                "Run sync with a known peer to verify durable room exchange.",
+                Some("peer.sync"),
+            )
+            .related_command("peer.sync")
+        }
+        .related_view("network.health")
+        .related_view("service.activity");
+
+        Ok(NetworkHealthView {
+            rows: vec![
+                home_status,
+                identity_status,
+                certificate_status,
+                ipv6_status,
+                service_status,
+                bind_status,
+                advertise_status,
+                invite_status,
+                peer_status,
+                reachability_status,
+                sync_status,
+            ],
         })
     }
 
@@ -884,6 +1175,93 @@ impl PeerListItemView {
     }
 }
 
+impl NetworkHealthRow {
+    fn working(id: &str, label: &str, summary: impl Into<String>) -> Self {
+        Self::new(id, label, NetworkHealthStatus::Working, summary, None)
+    }
+
+    fn needs_attention(
+        id: &str,
+        label: &str,
+        summary: impl Into<String>,
+        primary_action: Option<&str>,
+    ) -> Self {
+        Self::new(
+            id,
+            label,
+            NetworkHealthStatus::NeedsAttention,
+            summary,
+            primary_action,
+        )
+    }
+
+    fn unknown(
+        id: &str,
+        label: &str,
+        summary: impl Into<String>,
+        primary_action: Option<&str>,
+    ) -> Self {
+        Self::new(
+            id,
+            label,
+            NetworkHealthStatus::Unknown,
+            summary,
+            primary_action,
+        )
+    }
+
+    fn broken(
+        id: &str,
+        label: &str,
+        summary: impl Into<String>,
+        primary_action: Option<&str>,
+    ) -> Self {
+        Self::new(
+            id,
+            label,
+            NetworkHealthStatus::Broken,
+            summary,
+            primary_action,
+        )
+    }
+
+    fn new(
+        id: &str,
+        label: &str,
+        status: NetworkHealthStatus,
+        summary: impl Into<String>,
+        primary_action: Option<&str>,
+    ) -> Self {
+        Self {
+            id: id.to_string(),
+            label: label.to_string(),
+            status,
+            summary: summary.into(),
+            primary_action: primary_action.map(ToOwned::to_owned),
+            details: Vec::new(),
+            related_views: Vec::new(),
+            related_commands: primary_action
+                .map(|action| vec![action.to_string()])
+                .unwrap_or_default(),
+        }
+    }
+
+    fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.details.push(detail.into());
+        self
+    }
+
+    fn related_view(mut self, view_id: &str) -> Self {
+        push_unique(&mut self.related_views, view_id);
+        self
+    }
+
+    fn related_command(mut self, command_id: &str) -> Self {
+        push_unique(&mut self.related_commands, command_id);
+        self
+    }
+}
+
 impl VoxelleRuntime {
     pub fn start(
         home: VoxelleHome,
@@ -1216,6 +1594,12 @@ fn default_views() -> Vec<UiView> {
             "Online/offline and reachability state",
         ),
         ui_view(
+            "network.health",
+            "Network Health",
+            "status",
+            "Re-entrant checklist for setup, reachability, and repair",
+        ),
+        ui_view(
             "invite.exchange",
             "Invite Exchange",
             "sidebar",
@@ -1250,6 +1634,7 @@ fn default_views() -> Vec<UiView> {
 
 fn default_commands() -> Vec<UiCommand> {
     vec![
+        ui_command("home.init", "Initialize Home", "Create local app state"),
         ui_command(
             "runtime.goOnline",
             "Go Online",
@@ -1265,6 +1650,7 @@ fn default_commands() -> Vec<UiCommand> {
             "Send Message",
             "Send a message to the current room",
         ),
+        ui_command("invite.copy", "Copy Invite", "Copy the current peer record"),
         ui_command("peer.import", "Import Peer", "Import a peer record"),
         ui_command("peer.diagnose", "Diagnose Peer", "Check peer reachability"),
         ui_command(
@@ -1610,6 +1996,74 @@ fn same_behavior_value_kind(left: &UiBehaviorValue, right: &UiBehaviorValue) -> 
     )
 }
 
+fn advertised_address_row(report: &LocalReachabilityReport) -> NetworkHealthRow {
+    let (status, summary, action) = match report.address_scope {
+        AddressScope::Global => (
+            NetworkHealthStatus::Working,
+            format!("Advertising global IPv6 address {}.", report.advertised_addr),
+            None,
+        ),
+        AddressScope::UniqueLocal => (
+            NetworkHealthStatus::NeedsAttention,
+            format!(
+                "Advertising unique-local address {}; peers must be on the same private IPv6 network.",
+                report.advertised_addr
+            ),
+            Some("runtime.goOnline"),
+        ),
+        AddressScope::LinkLocal => (
+            NetworkHealthStatus::NeedsAttention,
+            format!(
+                "Advertising link-local address {}; this usually needs an interface scope and local-network peers.",
+                report.advertised_addr
+            ),
+            Some("runtime.goOnline"),
+        ),
+        AddressScope::Loopback => (
+            NetworkHealthStatus::NeedsAttention,
+            format!(
+                "Advertising loopback address {}; only this machine can connect.",
+                report.advertised_addr
+            ),
+            Some("runtime.goOnline"),
+        ),
+        AddressScope::Unspecified => (
+            NetworkHealthStatus::Broken,
+            "Advertising an unspecified address; peers need a concrete IPv6 address.".to_string(),
+            Some("runtime.goOnline"),
+        ),
+        AddressScope::Ipv4 => (
+            NetworkHealthStatus::Broken,
+            format!(
+                "Advertising IPv4 address {}; Voxelle requires IPv6.",
+                report.advertised_addr
+            ),
+            Some("runtime.goOnline"),
+        ),
+    };
+
+    let mut row = NetworkHealthRow::new("advertise", "Advertise", status, summary, action);
+    for note in &report.notes {
+        row = row.detail(note);
+    }
+    if let Some(action) = action {
+        row = row.related_command(action);
+    }
+    row
+}
+
+fn local_ipv6_socket_available() -> Result<()> {
+    UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0))
+        .context("bind local IPv6 UDP socket")?;
+    Ok(())
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|existing| existing == value) {
+        values.push(value.to_string());
+    }
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
@@ -1792,6 +2246,164 @@ mod tests {
                 UiBehaviorValue::Text("yes".to_string())
             )
             .is_err());
+    }
+
+    #[test]
+    fn network_health_view_handles_uninitialized_home() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+
+        let health = home.network_health_view(None).expect("health");
+
+        assert_eq!(
+            network_health_status(&health, "home"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_status(&health, "identity"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_status(&health, "certificate"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_status(&health, "ipv6"),
+            NetworkHealthStatus::Working
+        );
+        assert_eq!(
+            network_health_status(&health, "service"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_row(&health, "home")
+                .primary_action
+                .as_deref(),
+            Some("home.init")
+        );
+    }
+
+    #[test]
+    fn network_health_view_shapes_initialized_offline_state() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+
+        let health = home.network_health_view(None).expect("health");
+
+        assert_eq!(
+            network_health_status(&health, "home"),
+            NetworkHealthStatus::Working
+        );
+        assert_eq!(
+            network_health_status(&health, "identity"),
+            NetworkHealthStatus::Working
+        );
+        assert_eq!(
+            network_health_status(&health, "certificate"),
+            NetworkHealthStatus::Working
+        );
+        assert_eq!(
+            network_health_status(&health, "service"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_status(&health, "bind"),
+            NetworkHealthStatus::Unknown
+        );
+        assert_eq!(
+            network_health_status(&health, "advertise"),
+            NetworkHealthStatus::Unknown
+        );
+        assert_eq!(
+            network_health_status(&health, "invite"),
+            NetworkHealthStatus::Unknown
+        );
+        assert_eq!(
+            network_health_status(&health, "peers"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_row(&health, "service")
+                .related_commands
+                .as_slice(),
+            &["runtime.goOnline".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn network_health_view_shapes_online_service_state() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+        let service = home
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("service");
+
+        let health = home.network_health_view(Some(&service)).expect("health");
+
+        assert_eq!(
+            network_health_status(&health, "service"),
+            NetworkHealthStatus::Working
+        );
+        assert_eq!(
+            network_health_status(&health, "bind"),
+            NetworkHealthStatus::Working
+        );
+        assert_eq!(
+            network_health_status(&health, "advertise"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_status(&health, "invite"),
+            NetworkHealthStatus::Working
+        );
+        assert_eq!(
+            network_health_row(&health, "invite")
+                .primary_action
+                .as_deref(),
+            Some("invite.copy")
+        );
+        service.stop().expect("stop service");
+    }
+
+    #[tokio::test]
+    async fn network_health_view_tracks_known_peer_prerequisites() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        let peer = VoxelleHome::new(dir.path().join("peer"));
+        home.init(DEFAULT_ROOM_ID).expect("home init");
+        peer.init(DEFAULT_ROOM_ID).expect("peer init");
+        let peer_runtime = peer
+            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("peer runtime");
+        let peer_record = peer_runtime
+            .peer_record(Some("Peer".to_string()), None)
+            .expect("peer record");
+        home.import_peer_record(peer_record).expect("import");
+
+        let health = home.network_health_view(None).expect("health");
+
+        assert_eq!(
+            network_health_status(&health, "peers"),
+            NetworkHealthStatus::Working
+        );
+        assert_eq!(
+            network_health_status(&health, "reachability"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_row(&health, "reachability")
+                .primary_action
+                .as_deref(),
+            Some("peer.diagnose")
+        );
+        assert_eq!(
+            network_health_row(&health, "sync")
+                .primary_action
+                .as_deref(),
+            Some("peer.sync")
+        );
     }
 
     #[tokio::test]
@@ -2070,5 +2682,17 @@ mod tests {
             .unwrap_or_else(|| panic!("missing behavior {id}"))
             .current_value
             .clone()
+    }
+
+    fn network_health_row<'a>(health: &'a NetworkHealthView, id: &str) -> &'a NetworkHealthRow {
+        health
+            .rows
+            .iter()
+            .find(|row| row.id == id)
+            .unwrap_or_else(|| panic!("missing network health row {id}"))
+    }
+
+    fn network_health_status(health: &NetworkHealthView, id: &str) -> NetworkHealthStatus {
+        network_health_row(health, id).status
     }
 }
