@@ -206,6 +206,14 @@ pub struct VoxelleService {
     thread: Option<thread::JoinHandle<()>>,
 }
 
+#[derive(Debug)]
+pub struct VoxelleCommandHost {
+    home: VoxelleHome,
+    service: Option<VoxelleService>,
+    activity: Vec<ServiceActivityItem>,
+    next_activity_id: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoxelleServiceEvent {
     Served(ServedPeerRequest),
@@ -254,6 +262,59 @@ pub struct ListenSummary {
 pub struct PeerSyncReport {
     pub governance: SyncStats,
     pub room: SyncStats,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShellSnapshotView {
+    pub home_root: PathBuf,
+    pub home: Option<HomeScreenView>,
+    pub home_error: Option<String>,
+    pub network_health: NetworkHealthView,
+    pub ui_ontology: UiOntologyView,
+    pub service_activity: Vec<ServiceActivityItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ServiceActivityItem {
+    pub id: u64,
+    pub level: ServiceActivityLevel,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceActivityLevel {
+    Info,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InitHomeRequest {
+    pub default_room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StartServiceRequest {
+    pub bind: Option<SocketAddr>,
+    pub advertise: Option<SocketAddr>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SendMessageRequest {
+    pub text: String,
+    pub room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImportPeerRecordRequest {
+    pub peer_record_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PeerCommandRequest {
+    pub peer_id: String,
+    pub device_id: String,
+    pub max_events: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1109,6 +1170,201 @@ impl VoxelleHome {
             .map_err(|e| anyhow::anyhow!("member join rejected: {e:?}"))?;
         store.insert_accepted_event(accepted, now_ms())?;
         Ok(())
+    }
+}
+
+impl VoxelleCommandHost {
+    pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self {
+            home: VoxelleHome::new(root),
+            service: None,
+            activity: Vec::new(),
+            next_activity_id: 1,
+        }
+    }
+
+    pub fn home(&self) -> &VoxelleHome {
+        &self.home
+    }
+
+    pub fn is_online(&self) -> bool {
+        self.service.is_some()
+    }
+
+    pub fn snapshot(&mut self) -> Result<ShellSnapshotView> {
+        self.drain_service_events();
+        self.snapshot_without_drain()
+    }
+
+    pub fn init_home(&mut self, request: InitHomeRequest) -> Result<ShellSnapshotView> {
+        let default_room = request.default_room.as_deref().unwrap_or(DEFAULT_ROOM_ID);
+        self.home.init(default_room)?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("initialized home for {default_room}"),
+        );
+        self.snapshot()
+    }
+
+    pub fn start_service(&mut self, request: StartServiceRequest) -> Result<ShellSnapshotView> {
+        if self.service.is_some() {
+            return self.snapshot();
+        }
+
+        let bind = request
+            .bind
+            .unwrap_or_else(|| SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0));
+        let service = self.home.start_service(bind, request.advertise)?;
+        let addr = service.endpoint().addr;
+        self.service = Some(service);
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("service started at {addr}"),
+        );
+        self.snapshot()
+    }
+
+    pub fn stop_service(&mut self) -> Result<ShellSnapshotView> {
+        if let Some(service) = self.service.take() {
+            service.stop()?;
+            self.push_activity(ServiceActivityLevel::Info, "service stopped");
+        }
+        self.snapshot()
+    }
+
+    pub fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
+        let event = self
+            .home
+            .send_message(&request.text, request.room.as_deref())?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("sent message {}", event.event_id),
+        );
+        self.snapshot()
+    }
+
+    pub fn import_peer_record(
+        &mut self,
+        request: ImportPeerRecordRequest,
+    ) -> Result<ShellSnapshotView> {
+        let peer_record: PeerRecord =
+            serde_json::from_str(&request.peer_record_json).context("parse peer record JSON")?;
+        let label = peer_record
+            .label
+            .clone()
+            .unwrap_or_else(|| short_peer_label(&peer_record.endpoint.peer_id));
+        self.home.import_peer_record(peer_record)?;
+        self.push_activity(ServiceActivityLevel::Info, format!("imported peer {label}"));
+        self.snapshot()
+    }
+
+    pub async fn diagnose_peer(
+        &mut self,
+        request: PeerCommandRequest,
+    ) -> Result<ShellSnapshotView> {
+        let peer = self.find_known_peer(&request.peer_id, &request.device_id)?;
+        let label = peer
+            .label
+            .clone()
+            .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
+        let report = self.home.diagnose_peer(&peer).await?;
+        if report.reachable {
+            self.push_activity(
+                ServiceActivityLevel::Info,
+                format!("diagnostic reached {label}"),
+            );
+        } else {
+            self.push_activity(
+                ServiceActivityLevel::Error,
+                format!(
+                    "diagnostic failed for {label}: {}",
+                    report.error.as_deref().unwrap_or("no error detail")
+                ),
+            );
+        }
+        self.snapshot()
+    }
+
+    pub async fn sync_peer(&mut self, request: PeerCommandRequest) -> Result<ShellSnapshotView> {
+        let peer = self.find_known_peer(&request.peer_id, &request.device_id)?;
+        let label = peer
+            .label
+            .clone()
+            .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
+        let max_events = request.max_events.unwrap_or(64);
+        let report = self.home.sync_peer(&peer, max_events).await?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "synced {label}: governance accepted {}, room accepted {}",
+                report.governance.accepted, report.room.accepted
+            ),
+        );
+        self.snapshot()
+    }
+
+    fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
+        let (home, home_error) = match self.home.home_screen_view_service(self.service.as_ref()) {
+            Ok(home) => (Some(home), None),
+            Err(error) => (None, Some(format!("{error:#}"))),
+        };
+        Ok(ShellSnapshotView {
+            home_root: self.home.root().to_path_buf(),
+            home,
+            home_error,
+            network_health: self.home.network_health_view(self.service.as_ref())?,
+            ui_ontology: self.home.ui_ontology()?,
+            service_activity: self.activity.clone(),
+        })
+    }
+
+    fn drain_service_events(&mut self) {
+        let Some(service) = self.service.as_ref() else {
+            return;
+        };
+
+        let mut drained = Vec::new();
+        while let Some(event) = service.try_recv_event() {
+            let level = match event {
+                VoxelleServiceEvent::Failed(_) => ServiceActivityLevel::Error,
+                VoxelleServiceEvent::Served(_) | VoxelleServiceEvent::Stopped => {
+                    ServiceActivityLevel::Info
+                }
+            };
+            drained.push((level, event.summary()));
+        }
+
+        for (level, summary) in drained {
+            self.push_activity(level, summary);
+        }
+    }
+
+    fn push_activity(&mut self, level: ServiceActivityLevel, summary: impl Into<String>) {
+        let item = ServiceActivityItem {
+            id: self.next_activity_id,
+            level,
+            summary: summary.into(),
+        };
+        self.next_activity_id += 1;
+        self.activity.push(item);
+        if self.activity.len() > 200 {
+            let overflow = self.activity.len() - 200;
+            self.activity.drain(0..overflow);
+        }
+    }
+
+    fn find_known_peer(&self, peer_id: &str, device_id: &str) -> Result<PeerRecord> {
+        self.home
+            .known_peers()?
+            .into_iter()
+            .find(|peer| peer.endpoint.peer_id == peer_id && peer.endpoint.device_id == device_id)
+            .with_context(|| {
+                format!(
+                    "unknown peer record for {} / {}",
+                    short_peer_label(peer_id),
+                    short_peer_label(device_id)
+                )
+            })
     }
 }
 
@@ -2246,6 +2502,103 @@ mod tests {
                 UiBehaviorValue::Text("yes".to_string())
             )
             .is_err());
+    }
+
+    #[test]
+    fn command_host_snapshot_is_safe_before_home_init() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+
+        let snapshot = host.snapshot().expect("snapshot");
+
+        assert_eq!(snapshot.home_root, dir.path().join("home"));
+        assert!(snapshot.home.is_none());
+        assert!(snapshot.home_error.is_some());
+        assert_eq!(
+            network_health_status(&snapshot.network_health, "home"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert!(snapshot
+            .ui_ontology
+            .views
+            .iter()
+            .any(|view| view.id == "network.health"));
+    }
+
+    #[tokio::test]
+    async fn command_host_drives_tauri_style_network_workflow() {
+        let dir = tempdir().expect("tempdir");
+        let mut alice = VoxelleCommandHost::new(dir.path().join("alice"));
+        let mut bob = VoxelleCommandHost::new(dir.path().join("bob"));
+
+        alice
+            .init_home(InitHomeRequest { default_room: None })
+            .expect("alice init");
+        bob.init_home(InitHomeRequest { default_room: None })
+            .expect("bob init");
+        alice
+            .send_message(SendMessageRequest {
+                text: "from command host".to_string(),
+                room: None,
+            })
+            .expect("send");
+
+        let alice_online = alice
+            .start_service(StartServiceRequest {
+                bind: None,
+                advertise: None,
+            })
+            .expect("alice online");
+        assert_eq!(
+            network_health_status(&alice_online.network_health, "service"),
+            NetworkHealthStatus::Working
+        );
+        let peer_record_json = alice_online
+            .home
+            .as_ref()
+            .expect("home view")
+            .invite
+            .as_ref()
+            .expect("invite")
+            .peer_record_json
+            .clone();
+
+        let bob_imported = bob
+            .import_peer_record(ImportPeerRecordRequest { peer_record_json })
+            .expect("import");
+        assert_eq!(
+            network_health_status(&bob_imported.network_health, "peers"),
+            NetworkHealthStatus::Working
+        );
+        let peer = bob.home().known_peers().expect("known peers")[0].clone();
+        let request = PeerCommandRequest {
+            peer_id: peer.endpoint.peer_id.clone(),
+            device_id: peer.endpoint.device_id.clone(),
+            max_events: Some(64),
+        };
+
+        let diagnosed = bob.diagnose_peer(request.clone()).await.expect("diagnose");
+        assert!(diagnosed
+            .service_activity
+            .iter()
+            .any(|item| item.summary.starts_with("diagnostic reached")));
+
+        let synced = bob.sync_peer(request).await.expect("sync");
+        assert!(synced
+            .service_activity
+            .iter()
+            .any(|item| item.summary.contains("room accepted 1")));
+        assert_eq!(
+            synced.home.expect("home").room.messages[0].text,
+            "from command host"
+        );
+
+        let alice_after_serving = alice.snapshot().expect("alice snapshot");
+        assert!(alice_after_serving
+            .service_activity
+            .iter()
+            .any(|item| item.summary.starts_with("served diagnostic:")));
+        alice.stop_service().expect("stop");
     }
 
     #[test]
