@@ -10,6 +10,12 @@ if (!(app instanceof HTMLElement)) {
 const workbench = {
   panels: [
     {
+      id: "panel.home.profile",
+      title: "Home",
+      viewId: "home.profile",
+      region: "side",
+    },
+    {
       id: "panel.network.health",
       title: "Network Health",
       viewId: "network.health",
@@ -25,6 +31,12 @@ const workbench = {
       id: "panel.peer.exchange",
       title: "Peer Exchange",
       viewId: "peer.exchange",
+      region: "side",
+    },
+    {
+      id: "panel.field.test",
+      title: "Field Test",
+      viewId: "field.test",
       region: "side",
     },
     {
@@ -46,9 +58,11 @@ const uiState = {
 };
 
 const viewRenderers = {
+  "home.profile": homeProfileView,
   "network.health": networkHealthView,
   "service.activity": activityView,
   "peer.exchange": peerExchangeView,
+  "field.test": fieldTestView,
   "room.timeline": roomTimelineView,
 };
 
@@ -131,6 +145,49 @@ function panelHeader(panel) {
   titleGroup.append(element("span", "view-id", panel.viewId));
   headerEl.append(titleGroup);
   return headerEl;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function homeProfileView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  fragment.append(errorBanner());
+
+  if (!snapshot.home) {
+    const empty = element("div", "empty-state");
+    empty.append(
+      element("h3", "", "No initialized home"),
+      element("p", "summary", snapshot.home_error ?? "Home state is not available."),
+      commandButton("Initialize Home", "home.init"),
+    );
+    fragment.append(empty);
+    return fragment;
+  }
+
+  const profile = snapshot.home.profile;
+  const runtime = snapshot.home.runtime;
+  const rows = [
+    ["Home root", snapshot.home_root],
+    ["Peer", profile.peer_id],
+    ["Device", profile.device_id],
+    ["Default room", profile.default_room],
+    ["Authority", profile.authority_peer_id],
+    ["Runtime", runtime.state],
+    ["Listen", runtime.listen_addr ?? "not listening"],
+    ["Advertise", runtime.advertised_addr ?? "not advertising"],
+    ["Known peers", String(snapshot.home.peers.length)],
+    ["Messages", String(snapshot.home.room.messages.length)],
+  ];
+
+  fragment.append(definitionGrid(rows));
+
+  const controls = element("div", "control-row");
+  controls.append(
+    commandButton("Initialize", "home.init"),
+    commandButton("Go Online", "runtime.goOnline"),
+    commandButton("Go Offline", "runtime.goOffline"),
+  );
+  fragment.append(controls);
+  return fragment;
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -258,6 +315,71 @@ function peerExchangeView(snapshot) {
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function fieldTestView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const rows = [
+    {
+      label: "Home initialized",
+      status: snapshot.home ? "working" : "needs_attention",
+      command: snapshot.home ? null : "home.init",
+      detail: snapshot.home ? snapshot.home.profile.default_room : snapshot.home_error,
+    },
+    {
+      label: "Resident service online",
+      status: snapshot.home?.runtime.state === "online" ? "working" : "needs_attention",
+      command: snapshot.home?.runtime.state === "online" ? "runtime.goOffline" : "runtime.goOnline",
+      detail: snapshot.home?.runtime.advertised_addr ?? "offline",
+    },
+    {
+      label: "Invite available",
+      status: snapshot.home?.invite ? "working" : "unknown",
+      command: snapshot.home?.invite ? "invite.copy" : "runtime.goOnline",
+      detail: snapshot.home?.invite?.peer_record.endpoint.addr ?? "go online to create an invite",
+    },
+    {
+      label: "Peer imported",
+      status: (snapshot.home?.peers.length ?? 0) > 0 ? "working" : "needs_attention",
+      command: "peer.import",
+      detail: `${snapshot.home?.peers.length ?? 0} known peer(s)`,
+    },
+    {
+      label: "Peer diagnostic",
+      status: activityIncludes(snapshot, "diagnostic reached") ? "working" : "needs_attention",
+      command: (snapshot.home?.peers.length ?? 0) > 0 ? "peer.diagnose" : "peer.import",
+      detail: activityIncludes(snapshot, "diagnostic reached")
+        ? "latest diagnostic reached a peer"
+        : "run against an imported peer",
+    },
+    {
+      label: "Room sync",
+      status: activityIncludes(snapshot, "sync") ? "working" : "needs_attention",
+      command: (snapshot.home?.peers.length ?? 0) > 0 ? "peer.sync" : "peer.import",
+      detail: `${snapshot.home?.room.messages.length ?? 0} visible message(s)`,
+    },
+  ];
+
+  const list = element("ol", "workflow-list");
+  for (const row of rows) {
+    const item = element("li", "workflow-row");
+    item.dataset.status = row.status;
+    const body = element("div", "workflow-body");
+    body.append(
+      element("span", "status-indicator", statusLabel(row.status)),
+      element("h3", "", row.label),
+      element("p", "summary", row.detail ?? ""),
+    );
+    item.append(body);
+    if (row.command) {
+      item.append(commandButton(commandLabel(row.command, snapshot), row.command));
+    }
+    list.append(item);
+  }
+
+  fragment.append(list);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function peerList(snapshot) {
   const peers = snapshot.home?.peers ?? [];
   const group = element("div", "field-stack");
@@ -314,6 +436,38 @@ function roomTimelineView(snapshot) {
 
 function unknownView() {
   return element("p", "summary", "Unknown view");
+}
+
+/**
+ * @param {Array<[string, string]>} rows
+ */
+function definitionGrid(rows) {
+  const grid = element("dl", "definition-grid");
+  for (const [term, value] of rows) {
+    grid.append(element("dt", "", term), element("dd", "mono", value));
+  }
+  return grid;
+}
+
+/**
+ * @param {string} command
+ * @param {import("./shell-contract").ShellSnapshotView} snapshot
+ */
+function commandLabel(command, snapshot) {
+  const fallback = {
+    "home.init": "Initialize Home",
+    "runtime.goOnline": "Go Online",
+    "runtime.goOffline": "Go Offline",
+    "peer.import": "Import Peer",
+    "peer.diagnose": "Diagnose Peer",
+    "peer.sync": "Sync Peer",
+    "invite.copy": "Copy Invite",
+    "message.send": "Send Message",
+    "shell.refresh": "Refresh",
+  };
+  return snapshot.ui_ontology.commands.find((item) => item.id === command)?.label
+    ?? fallback[command]
+    ?? command;
 }
 
 /**
@@ -489,6 +643,14 @@ function labeledInput(label, placeholder, value, onInput) {
 function blankToNull(value) {
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+/**
+ * @param {import("./shell-contract").ShellSnapshotView} snapshot
+ * @param {string} text
+ */
+function activityIncludes(snapshot, text) {
+  return snapshot.service_activity.some((item) => item.summary.includes(text));
 }
 
 /**

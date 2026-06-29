@@ -75,7 +75,8 @@ h3 {
 
 .path,
 .mono,
-.invite-json {
+.invite-json,
+.definition-grid dd {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -134,7 +135,8 @@ h3 {
 .health-list,
 .activity-list,
 .peer-list,
-.message-list {
+.message-list,
+.workflow-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -196,14 +198,16 @@ h3 {
 
 .activity-list,
 .peer-list,
-.message-list {
+.message-list,
+.workflow-list {
   display: grid;
   gap: 10px;
 }
 
 .activity-list li,
 .peer-row,
-.message-list li {
+.message-list li,
+.workflow-row {
   display: grid;
   gap: 4px;
   min-width: 0;
@@ -261,6 +265,28 @@ textarea {
   margin-top: 18px;
 }
 
+.definition-grid {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 0 0 16px;
+}
+
+.definition-grid dt {
+  color: GrayText;
+}
+
+.definition-grid dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.empty-state {
+  display: grid;
+  gap: 10px;
+}
+
 .invite-json {
   max-height: 260px;
   overflow: auto;
@@ -295,13 +321,28 @@ textarea {
   border: 1px solid ButtonBorder;
 }
 
+.workflow-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  padding: 10px;
+  border: 1px solid ButtonBorder;
+}
+
+.workflow-body {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
 @media (max-width: 760px) {
   .app-header,
   .health-row,
   .workbench,
   .service-options,
   .peer-row,
-  .message-form {
+  .message-form,
+  .definition-grid,
+  .workflow-row {
     grid-template-columns: 1fr;
   }
 
