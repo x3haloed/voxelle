@@ -94,6 +94,37 @@ pub enum VoxelleServiceEvent {
     Stopped,
 }
 
+impl VoxelleServiceEvent {
+    pub fn summary(&self) -> String {
+        match self {
+            VoxelleServiceEvent::Served(ServedPeerRequest::Diagnostic(report)) => {
+                if report.reachable {
+                    let remote = report
+                        .remote
+                        .as_ref()
+                        .map(|remote| short_peer_label(&remote.peer_id))
+                        .unwrap_or_else(|| "peer".to_string());
+                    format!("served diagnostic: {remote} reached this home")
+                } else {
+                    format!(
+                        "served diagnostic: unreachable ({})",
+                        report.error.as_deref().unwrap_or("no error detail")
+                    )
+                }
+            }
+            VoxelleServiceEvent::Served(ServedPeerRequest::RoomSync(sync)) => {
+                let truncated = if sync.truncated { ", truncated" } else { "" };
+                format!(
+                    "served sync: room {}, offered {} event(s){}",
+                    sync.room_id, sync.offered, truncated
+                )
+            }
+            VoxelleServiceEvent::Failed(error) => format!("service error: {error}"),
+            VoxelleServiceEvent::Stopped => "service stopped".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ListenSummary {
     pub endpoint: PeerEndpoint,
@@ -1162,12 +1193,14 @@ mod tests {
         assert_eq!(messages[0].text, "first service message");
         assert_eq!(messages[1].text, "second service message");
 
+        let Some(event) = service.try_recv_event() else {
+            panic!("expected service event");
+        };
         assert!(matches!(
-            service.try_recv_event(),
-            Some(VoxelleServiceEvent::Served(ServedPeerRequest::Diagnostic(
-                _
-            )))
+            event,
+            VoxelleServiceEvent::Served(ServedPeerRequest::Diagnostic(_))
         ));
+        assert!(event.summary().starts_with("served diagnostic:"));
         service.stop().expect("stop service");
     }
 

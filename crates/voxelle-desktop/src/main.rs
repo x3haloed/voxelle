@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use eframe::egui;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use voxelle_app::{
@@ -26,7 +26,14 @@ struct VoxelleDesktop {
     peer_record_input: String,
     message_input: String,
     last_action: Option<String>,
-    peer_actions: BTreeMap<String, String>,
+    activity: VecDeque<String>,
+    peer_actions: BTreeMap<String, PeerActionView>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PeerActionView {
+    diagnostic: Option<String>,
+    sync: Option<String>,
 }
 
 impl VoxelleDesktop {
@@ -42,6 +49,7 @@ impl VoxelleDesktop {
             peer_record_input: String::new(),
             message_input: String::new(),
             last_action: None,
+            activity: VecDeque::new(),
             peer_actions: BTreeMap::new(),
         };
         app.run_action("Initialized home", |app| {
@@ -58,8 +66,21 @@ impl VoxelleDesktop {
     ) {
         let ok_message = ok_message.into();
         match action(self) {
-            Ok(()) => self.last_action = Some(ok_message),
-            Err(error) => self.last_action = Some(format!("Error: {error:#}")),
+            Ok(()) => self.set_action(ok_message),
+            Err(error) => self.set_action(format!("Error: {error:#}")),
+        }
+    }
+
+    fn set_action(&mut self, message: impl Into<String>) {
+        let message = message.into();
+        self.last_action = Some(message.clone());
+        self.add_activity(message);
+    }
+
+    fn add_activity(&mut self, message: impl Into<String>) {
+        self.activity.push_front(message.into());
+        while self.activity.len() > 30 {
+            self.activity.pop_back();
         }
     }
 
@@ -91,18 +112,20 @@ impl VoxelleDesktop {
         let Some(service) = &self.service else {
             return;
         };
+        let mut summaries = Vec::new();
         while let Some(event) = service.try_recv_event() {
-            match event {
-                VoxelleServiceEvent::Served(served) => {
-                    self.last_action = Some(format!("Served {served:?}"));
-                }
-                VoxelleServiceEvent::Failed(error) => {
-                    self.last_action = Some(format!("Service error: {error}"));
-                }
-                VoxelleServiceEvent::Stopped => {
-                    self.last_action = Some("Service stopped".to_string());
-                }
+            let summary = event.summary();
+            let is_terminal = matches!(
+                event,
+                VoxelleServiceEvent::Failed(_) | VoxelleServiceEvent::Stopped
+            );
+            summaries.push((summary, is_terminal));
+        }
+        for (summary, is_terminal) in summaries {
+            if is_terminal {
+                self.last_action = Some(summary.clone());
             }
+            self.add_activity(summary);
         }
     }
 
@@ -135,7 +158,12 @@ impl VoxelleDesktop {
             .context("peer not found")?;
         let report = self.task_runtime.block_on(self.home.diagnose_peer(&peer))?;
         let value = if report.reachable {
-            "reachable".to_string()
+            let remote = report
+                .remote
+                .as_ref()
+                .map(|remote| short_id(&remote.peer_id))
+                .unwrap_or_else(|| "peer".to_string());
+            format!("reachable as {remote}")
         } else {
             format!(
                 "unreachable: {}",
@@ -144,7 +172,11 @@ impl VoxelleDesktop {
                     .unwrap_or_else(|| "no error detail".to_string())
             )
         };
-        self.peer_actions.insert(peer_id.to_string(), value);
+        self.peer_actions
+            .entry(peer_id.to_string())
+            .or_default()
+            .diagnostic = Some(value.clone());
+        self.add_activity(format!("diagnostic {}: {value}", short_id(peer_id)));
         Ok(())
     }
 
@@ -156,13 +188,18 @@ impl VoxelleDesktop {
             .find(|peer| peer.endpoint.peer_id == peer_id)
             .context("peer not found")?;
         let report = self.task_runtime.block_on(self.home.sync_peer(&peer, 64))?;
-        self.peer_actions.insert(
-            peer_id.to_string(),
-            format!(
-                "sync: governance accepted {}, room accepted {}",
-                report.governance.accepted, report.room.accepted
-            ),
+        let value = format!(
+            "governance accepted {}, room accepted {}, room already present {}, room rejected {}",
+            report.governance.accepted,
+            report.room.accepted,
+            report.room.already_present,
+            report.room.rejected
         );
+        self.peer_actions
+            .entry(peer_id.to_string())
+            .or_default()
+            .sync = Some(value.clone());
+        self.add_activity(format!("sync {}: {value}", short_id(peer_id)));
         Ok(())
     }
 
@@ -311,8 +348,29 @@ impl VoxelleDesktop {
                         }
                     });
                     if let Some(result) = self.peer_actions.get(&peer.peer_id) {
-                        ui.label(result);
+                        if let Some(diagnostic) = &result.diagnostic {
+                            ui.label(format!("Diagnostic: {diagnostic}"));
+                        }
+                        if let Some(sync) = &result.sync {
+                            ui.label(format!("Sync: {sync}"));
+                        }
                     }
+                }
+            });
+    }
+
+    fn activity_section(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Activity");
+        if self.activity.is_empty() {
+            ui.label("None");
+            return;
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("activity")
+            .max_height(180.0)
+            .show(ui, |ui| {
+                for entry in &self.activity {
+                    ui.label(entry);
                 }
             });
     }
@@ -377,6 +435,8 @@ impl eframe::App for VoxelleDesktop {
                 self.import_section(ui);
                 ui.separator();
                 self.peers_section(ui, &view);
+                ui.separator();
+                self.activity_section(ui);
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
