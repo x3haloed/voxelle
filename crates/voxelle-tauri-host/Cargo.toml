@@ -1,0 +1,12 @@
+[package]
+name = "voxelle-tauri-host"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+dirs = "6"
+tauri = "2.11.3"
+voxelle-tauri = { path = "../voxelle-tauri" }
+
+[build-dependencies]
+tauri-build = "2.6.3"
