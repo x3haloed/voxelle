@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -68,6 +69,124 @@ pub struct PeerRecord {
 struct KnownPeersFile {
     v: u8,
     peers: Vec<PeerRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiOntologyView {
+    pub places: Vec<UiPlace>,
+    pub views: Vec<UiView>,
+    pub commands: Vec<UiCommand>,
+    pub semantic_tokens: Vec<SemanticToken>,
+    pub metrics: Vec<UiMetric>,
+    pub behaviors: Vec<UiBehavior>,
+    pub renderers: Vec<UiRenderer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UiPlace {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub editable: bool,
+    pub editing_surface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UiView {
+    pub id: String,
+    pub label: String,
+    pub place_id: String,
+    pub description: String,
+    pub editable: bool,
+    pub editing_surface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UiCommand {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub editable: bool,
+    pub editing_surface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SemanticToken {
+    pub id: String,
+    pub label: String,
+    pub default_value: String,
+    pub current_value: String,
+    pub used_by: Vec<String>,
+    pub editable: bool,
+    pub editing_surface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiMetric {
+    pub id: String,
+    pub label: String,
+    pub default_value: f64,
+    pub current_value: f64,
+    pub unit: String,
+    pub used_by: Vec<String>,
+    pub editable: bool,
+    pub editing_surface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UiBehavior {
+    pub id: String,
+    pub label: String,
+    pub default_value: UiBehaviorValue,
+    pub current_value: UiBehaviorValue,
+    pub used_by: Vec<String>,
+    pub editable: bool,
+    pub editing_surface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UiRenderer {
+    pub id: String,
+    pub label: String,
+    pub renders: String,
+    pub default_renderer: String,
+    pub current_renderer: String,
+    pub editable: bool,
+    pub editing_surface: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum UiBehaviorValue {
+    Bool(bool),
+    Text(String),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UiPreferenceKind {
+    SemanticToken,
+    Metric,
+    Behavior,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiPreferences {
+    pub v: u8,
+    pub semantic_tokens: BTreeMap<String, String>,
+    pub metrics: BTreeMap<String, f64>,
+    pub behaviors: BTreeMap<String, UiBehaviorValue>,
+}
+
+impl Default for UiPreferences {
+    fn default() -> Self {
+        Self {
+            v: 1,
+            semantic_tokens: BTreeMap::new(),
+            metrics: BTreeMap::new(),
+            behaviors: BTreeMap::new(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -217,6 +336,10 @@ impl VoxelleHome {
 
     pub fn known_peers_path(&self) -> PathBuf {
         self.root.join("known-peers.json")
+    }
+
+    pub fn ui_preferences_path(&self) -> PathBuf {
+        self.root.join("ui-preferences.json")
     }
 
     pub fn init(&self, default_room: impl Into<String>) -> Result<ProfileSummary> {
@@ -431,6 +554,88 @@ impl VoxelleHome {
         Ok(file.peers)
     }
 
+    pub fn ui_ontology(&self) -> Result<UiOntologyView> {
+        Ok(default_ui_ontology(self.ui_preferences()?))
+    }
+
+    pub fn ui_preferences(&self) -> Result<UiPreferences> {
+        if !self.ui_preferences_path().exists() {
+            return Ok(UiPreferences::default());
+        }
+        let preferences: UiPreferences = read_json(&self.ui_preferences_path())?;
+        if preferences.v != 1 {
+            anyhow::bail!("unsupported UI preferences version {}", preferences.v);
+        }
+        validate_ui_preferences(&preferences)?;
+        Ok(preferences)
+    }
+
+    pub fn set_semantic_token(&self, id: &str, value: impl Into<String>) -> Result<()> {
+        let default = default_semantic_tokens()
+            .into_iter()
+            .find(|token| token.id == id)
+            .with_context(|| format!("unknown semantic token {id}"))?;
+        if !default.editable {
+            anyhow::bail!("semantic token {id} is not editable");
+        }
+        let value = value.into();
+        if value.trim().is_empty() {
+            anyhow::bail!("semantic token value is empty");
+        }
+        let mut preferences = self.ui_preferences()?;
+        preferences.semantic_tokens.insert(id.to_string(), value);
+        self.write_ui_preferences(&preferences)
+    }
+
+    pub fn set_metric(&self, id: &str, value: f64) -> Result<()> {
+        let default = default_metrics()
+            .into_iter()
+            .find(|metric| metric.id == id)
+            .with_context(|| format!("unknown UI metric {id}"))?;
+        if !default.editable {
+            anyhow::bail!("UI metric {id} is not editable");
+        }
+        if !value.is_finite() || value < 0.0 {
+            anyhow::bail!("UI metric value must be a finite non-negative number");
+        }
+        let mut preferences = self.ui_preferences()?;
+        preferences.metrics.insert(id.to_string(), value);
+        self.write_ui_preferences(&preferences)
+    }
+
+    pub fn set_behavior(&self, id: &str, value: UiBehaviorValue) -> Result<()> {
+        let default = default_behaviors()
+            .into_iter()
+            .find(|behavior| behavior.id == id)
+            .with_context(|| format!("unknown UI behavior {id}"))?;
+        if !default.editable {
+            anyhow::bail!("UI behavior {id} is not editable");
+        }
+        if !same_behavior_value_kind(&default.default_value, &value) {
+            anyhow::bail!("UI behavior {id} value has the wrong kind");
+        }
+        let mut preferences = self.ui_preferences()?;
+        preferences.behaviors.insert(id.to_string(), value);
+        self.write_ui_preferences(&preferences)
+    }
+
+    pub fn reset_ui_preference(&self, kind: UiPreferenceKind, id: &str) -> Result<()> {
+        let mut preferences = self.ui_preferences()?;
+        let removed = match kind {
+            UiPreferenceKind::SemanticToken => preferences.semantic_tokens.remove(id).is_some(),
+            UiPreferenceKind::Metric => preferences.metrics.remove(id).is_some(),
+            UiPreferenceKind::Behavior => preferences.behaviors.remove(id).is_some(),
+        };
+        if !removed {
+            validate_ui_preference_id(kind, id)?;
+        }
+        self.write_ui_preferences(&preferences)
+    }
+
+    pub fn reset_all_ui_preferences(&self) -> Result<()> {
+        self.write_ui_preferences(&UiPreferences::default())
+    }
+
     pub fn listen(
         &self,
         bind: SocketAddr,
@@ -539,6 +744,11 @@ impl VoxelleHome {
 
     pub fn open_store(&self) -> Result<Store> {
         Store::open(self.store_path())
+    }
+
+    fn write_ui_preferences(&self, preferences: &UiPreferences) -> Result<()> {
+        validate_ui_preferences(preferences)?;
+        write_json(&self.ui_preferences_path(), preferences)
     }
 
     fn load_or_create_identity(&self) -> Result<PeerIdentity> {
@@ -918,6 +1128,488 @@ async fn run_service_loop(
     let _ = event_tx.send(VoxelleServiceEvent::Stopped);
 }
 
+fn default_ui_ontology(preferences: UiPreferences) -> UiOntologyView {
+    let mut semantic_tokens = default_semantic_tokens();
+    for token in &mut semantic_tokens {
+        if let Some(value) = preferences.semantic_tokens.get(&token.id) {
+            token.current_value = value.clone();
+        }
+    }
+
+    let mut metrics = default_metrics();
+    for metric in &mut metrics {
+        if let Some(value) = preferences.metrics.get(&metric.id) {
+            metric.current_value = *value;
+        }
+    }
+
+    let mut behaviors = default_behaviors();
+    for behavior in &mut behaviors {
+        if let Some(value) = preferences.behaviors.get(&behavior.id) {
+            behavior.current_value = value.clone();
+        }
+    }
+
+    UiOntologyView {
+        places: default_places(),
+        views: default_views(),
+        commands: default_commands(),
+        semantic_tokens,
+        metrics,
+        behaviors,
+        renderers: default_renderers(),
+    }
+}
+
+fn default_places() -> Vec<UiPlace> {
+    vec![
+        ui_place(
+            "sidebar",
+            "Sidebar",
+            "Navigation and secondary app surfaces",
+            true,
+            "layout/place editor",
+        ),
+        ui_place(
+            "main",
+            "Main",
+            "Primary room and message surfaces",
+            true,
+            "layout/place editor",
+        ),
+        ui_place(
+            "inspector",
+            "Inspector",
+            "Future selected peer or message details",
+            true,
+            "layout/place editor",
+        ),
+        ui_place(
+            "activity",
+            "Activity",
+            "Service, diagnostic, and sync activity",
+            true,
+            "layout/place editor",
+        ),
+        ui_place(
+            "status",
+            "Status",
+            "Runtime and reachability state",
+            true,
+            "layout/place editor",
+        ),
+    ]
+}
+
+fn default_views() -> Vec<UiView> {
+    vec![
+        ui_view(
+            "profile.summary",
+            "Profile Summary",
+            "sidebar",
+            "Local peer and device identity",
+        ),
+        ui_view(
+            "runtime.status",
+            "Runtime Status",
+            "status",
+            "Online/offline and reachability state",
+        ),
+        ui_view(
+            "invite.exchange",
+            "Invite Exchange",
+            "sidebar",
+            "Copyable peer record and peer import",
+        ),
+        ui_view(
+            "peer.list",
+            "Peer List",
+            "sidebar",
+            "Known peers and peer actions",
+        ),
+        ui_view(
+            "room.timeline",
+            "Room Timeline",
+            "main",
+            "Messages in the selected room",
+        ),
+        ui_view(
+            "message.composer",
+            "Message Composer",
+            "main",
+            "Message entry and send command",
+        ),
+        ui_view(
+            "service.activity",
+            "Service Activity",
+            "activity",
+            "Served requests, diagnostics, and sync events",
+        ),
+    ]
+}
+
+fn default_commands() -> Vec<UiCommand> {
+    vec![
+        ui_command(
+            "runtime.goOnline",
+            "Go Online",
+            "Start resident peer serving",
+        ),
+        ui_command(
+            "runtime.goOffline",
+            "Go Offline",
+            "Stop resident peer serving",
+        ),
+        ui_command(
+            "message.send",
+            "Send Message",
+            "Send a message to the current room",
+        ),
+        ui_command("peer.import", "Import Peer", "Import a peer record"),
+        ui_command("peer.diagnose", "Diagnose Peer", "Check peer reachability"),
+        ui_command(
+            "peer.sync",
+            "Sync Peer",
+            "Sync governance and room events with a peer",
+        ),
+    ]
+}
+
+fn default_semantic_tokens() -> Vec<SemanticToken> {
+    vec![
+        semantic_token(
+            "app.background",
+            "App Background",
+            "Canvas",
+            "system.canvas",
+            &["profile.summary", "room.timeline"],
+        ),
+        semantic_token(
+            "panel.background",
+            "Panel Background",
+            "Panel surface",
+            "system.panel",
+            &["peer.list", "invite.exchange", "service.activity"],
+        ),
+        semantic_token(
+            "panel.border",
+            "Panel Border",
+            "Panel boundary",
+            "system.border",
+            &["sidebar", "inspector"],
+        ),
+        semantic_token(
+            "text.primary",
+            "Primary Text",
+            "Primary readable text",
+            "system.text",
+            &["profile.summary", "room.timeline", "message.composer"],
+        ),
+        semantic_token(
+            "text.secondary",
+            "Secondary Text",
+            "Secondary metadata text",
+            "system.text.secondary",
+            &["peer.list", "service.activity"],
+        ),
+        semantic_token(
+            "runtime.online",
+            "Runtime Online",
+            "Online runtime state",
+            "system.success",
+            &["runtime.status"],
+        ),
+        semantic_token(
+            "runtime.offline",
+            "Runtime Offline",
+            "Offline runtime state",
+            "system.muted",
+            &["runtime.status"],
+        ),
+        semantic_token(
+            "peer.reachable",
+            "Peer Reachable",
+            "Reachable peer diagnostic",
+            "system.success",
+            &["peer.list", "service.activity"],
+        ),
+        semantic_token(
+            "peer.unreachable",
+            "Peer Unreachable",
+            "Unreachable peer diagnostic",
+            "system.error",
+            &["peer.list", "service.activity"],
+        ),
+        semantic_token(
+            "message.own.background",
+            "Own Message Background",
+            "Messages authored by this peer",
+            "system.message.own",
+            &["room.timeline"],
+        ),
+        semantic_token(
+            "message.remote.background",
+            "Remote Message Background",
+            "Messages authored by other peers",
+            "system.message.remote",
+            &["room.timeline"],
+        ),
+        semantic_token(
+            "activity.info",
+            "Activity Info",
+            "Informational activity entries",
+            "system.info",
+            &["service.activity"],
+        ),
+        semantic_token(
+            "activity.error",
+            "Activity Error",
+            "Error activity entries",
+            "system.error",
+            &["service.activity"],
+        ),
+    ]
+}
+
+fn default_metrics() -> Vec<UiMetric> {
+    vec![
+        metric("sidebar.width", "Sidebar Width", 360.0, "px", &["sidebar"]),
+        metric(
+            "panel.padding",
+            "Panel Padding",
+            12.0,
+            "px",
+            &["profile.summary", "peer.list", "invite.exchange"],
+        ),
+        metric("panel.gap", "Panel Gap", 8.0, "px", &["sidebar", "main"]),
+        metric("message.gap", "Message Gap", 8.0, "px", &["room.timeline"]),
+        metric(
+            "message.maxWidth",
+            "Message Max Width",
+            720.0,
+            "px",
+            &["room.timeline"],
+        ),
+        metric(
+            "avatar.size",
+            "Avatar Size",
+            32.0,
+            "px",
+            &["peer.list", "room.timeline"],
+        ),
+        metric(
+            "activity.maxItems",
+            "Activity Max Items",
+            30.0,
+            "count",
+            &["service.activity"],
+        ),
+    ]
+}
+
+fn default_behaviors() -> Vec<UiBehavior> {
+    vec![
+        behavior(
+            "timestamps.visible",
+            "Show Timestamps",
+            UiBehaviorValue::Bool(true),
+            &["room.timeline"],
+        ),
+        behavior(
+            "timestamps.style",
+            "Timestamp Style",
+            UiBehaviorValue::Text("relative".to_string()),
+            &["room.timeline"],
+        ),
+        behavior(
+            "activity.autoScroll",
+            "Activity Auto Scroll",
+            UiBehaviorValue::Bool(true),
+            &["service.activity"],
+        ),
+        behavior(
+            "peerList.compact",
+            "Compact Peer List",
+            UiBehaviorValue::Bool(false),
+            &["peer.list"],
+        ),
+        behavior(
+            "sync.autoAfterImport",
+            "Sync After Import",
+            UiBehaviorValue::Bool(false),
+            &["invite.exchange", "peer.list"],
+        ),
+        behavior(
+            "runtime.startOnlineOnLaunch",
+            "Start Online On Launch",
+            UiBehaviorValue::Bool(false),
+            &["runtime.status"],
+        ),
+    ]
+}
+
+fn default_renderers() -> Vec<UiRenderer> {
+    vec![
+        renderer(
+            "message.renderer",
+            "Message Renderer",
+            "message",
+            "message.standard",
+        ),
+        renderer("peer.renderer", "Peer Renderer", "peer", "peer.standard"),
+        renderer(
+            "activity.renderer",
+            "Activity Renderer",
+            "activity",
+            "activity.standard",
+        ),
+    ]
+}
+
+fn ui_place(
+    id: &str,
+    label: &str,
+    description: &str,
+    editable: bool,
+    editing_surface: &str,
+) -> UiPlace {
+    UiPlace {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: description.to_string(),
+        editable,
+        editing_surface: editing_surface.to_string(),
+    }
+}
+
+fn ui_view(id: &str, label: &str, place_id: &str, description: &str) -> UiView {
+    UiView {
+        id: id.to_string(),
+        label: label.to_string(),
+        place_id: place_id.to_string(),
+        description: description.to_string(),
+        editable: true,
+        editing_surface: "layout/place editor".to_string(),
+    }
+}
+
+fn ui_command(id: &str, label: &str, description: &str) -> UiCommand {
+    UiCommand {
+        id: id.to_string(),
+        label: label.to_string(),
+        description: description.to_string(),
+        editable: true,
+        editing_surface: "command palette".to_string(),
+    }
+}
+
+fn semantic_token(
+    id: &str,
+    label: &str,
+    description: &str,
+    default_value: &str,
+    used_by: &[&str],
+) -> SemanticToken {
+    SemanticToken {
+        id: id.to_string(),
+        label: label.to_string(),
+        default_value: default_value.to_string(),
+        current_value: default_value.to_string(),
+        used_by: used_by.iter().map(|value| value.to_string()).collect(),
+        editable: true,
+        editing_surface: format!("appearance/token editor: {description}"),
+    }
+}
+
+fn metric(id: &str, label: &str, default_value: f64, unit: &str, used_by: &[&str]) -> UiMetric {
+    UiMetric {
+        id: id.to_string(),
+        label: label.to_string(),
+        default_value,
+        current_value: default_value,
+        unit: unit.to_string(),
+        used_by: used_by.iter().map(|value| value.to_string()).collect(),
+        editable: true,
+        editing_surface: "layout/place editor".to_string(),
+    }
+}
+
+fn behavior(id: &str, label: &str, default_value: UiBehaviorValue, used_by: &[&str]) -> UiBehavior {
+    UiBehavior {
+        id: id.to_string(),
+        label: label.to_string(),
+        default_value: default_value.clone(),
+        current_value: default_value,
+        used_by: used_by.iter().map(|value| value.to_string()).collect(),
+        editable: true,
+        editing_surface: "behavior settings".to_string(),
+    }
+}
+
+fn renderer(id: &str, label: &str, renders: &str, default_renderer: &str) -> UiRenderer {
+    UiRenderer {
+        id: id.to_string(),
+        label: label.to_string(),
+        renders: renders.to_string(),
+        default_renderer: default_renderer.to_string(),
+        current_renderer: default_renderer.to_string(),
+        editable: true,
+        editing_surface: "renderer settings".to_string(),
+    }
+}
+
+fn validate_ui_preferences(preferences: &UiPreferences) -> Result<()> {
+    for (id, value) in &preferences.semantic_tokens {
+        validate_ui_preference_id(UiPreferenceKind::SemanticToken, id)?;
+        if value.trim().is_empty() {
+            anyhow::bail!("semantic token {id} value is empty");
+        }
+    }
+    for (id, value) in &preferences.metrics {
+        validate_ui_preference_id(UiPreferenceKind::Metric, id)?;
+        if !value.is_finite() || *value < 0.0 {
+            anyhow::bail!("UI metric {id} value must be a finite non-negative number");
+        }
+    }
+    for (id, value) in &preferences.behaviors {
+        let default = default_behaviors()
+            .into_iter()
+            .find(|behavior| behavior.id == *id)
+            .with_context(|| format!("unknown UI behavior {id}"))?;
+        if !same_behavior_value_kind(&default.default_value, value) {
+            anyhow::bail!("UI behavior {id} value has the wrong kind");
+        }
+    }
+    Ok(())
+}
+
+fn validate_ui_preference_id(kind: UiPreferenceKind, id: &str) -> Result<()> {
+    let known = match kind {
+        UiPreferenceKind::SemanticToken => default_semantic_tokens()
+            .into_iter()
+            .any(|token| token.id == id && token.editable),
+        UiPreferenceKind::Metric => default_metrics()
+            .into_iter()
+            .any(|metric| metric.id == id && metric.editable),
+        UiPreferenceKind::Behavior => default_behaviors()
+            .into_iter()
+            .any(|behavior| behavior.id == id && behavior.editable),
+    };
+    if known {
+        Ok(())
+    } else {
+        anyhow::bail!("unknown or non-editable UI preference {id}")
+    }
+}
+
+fn same_behavior_value_kind(left: &UiBehaviorValue, right: &UiBehaviorValue) -> bool {
+    matches!(
+        (left, right),
+        (UiBehaviorValue::Bool(_), UiBehaviorValue::Bool(_))
+            | (UiBehaviorValue::Text(_), UiBehaviorValue::Text(_))
+    )
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
@@ -999,6 +1691,107 @@ mod tests {
                 .expect("count"),
             1
         );
+    }
+
+    #[test]
+    fn ui_ontology_exposes_first_customization_primitives() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+
+        let ontology = home.ui_ontology().expect("ontology");
+
+        assert!(ontology.places.iter().any(|place| place.id == "sidebar"));
+        assert!(ontology.views.iter().any(|view| view.id == "room.timeline"));
+        assert!(ontology
+            .commands
+            .iter()
+            .any(|command| command.id == "peer.sync"));
+        assert_eq!(
+            semantic_token_value(&ontology, "peer.reachable"),
+            "system.success"
+        );
+        assert_eq!(metric_value(&ontology, "sidebar.width"), 360.0);
+        assert_eq!(
+            behavior_value(&ontology, "timestamps.visible"),
+            UiBehaviorValue::Bool(true)
+        );
+        assert!(ontology
+            .renderers
+            .iter()
+            .any(|renderer| renderer.id == "message.renderer"));
+    }
+
+    #[test]
+    fn ui_preferences_persist_merge_and_reset() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+
+        home.set_semantic_token("peer.reachable", "#00ff00")
+            .expect("set token");
+        home.set_metric("sidebar.width", 420.0).expect("set metric");
+        home.set_behavior(
+            "timestamps.style",
+            UiBehaviorValue::Text("absolute".to_string()),
+        )
+        .expect("set behavior");
+
+        let reopened = VoxelleHome::new(home.root().to_path_buf());
+        let preferences = reopened.ui_preferences().expect("preferences");
+        assert_eq!(
+            preferences.semantic_tokens.get("peer.reachable"),
+            Some(&"#00ff00".to_string())
+        );
+        assert_eq!(preferences.metrics.get("sidebar.width"), Some(&420.0));
+        assert_eq!(
+            preferences.behaviors.get("timestamps.style"),
+            Some(&UiBehaviorValue::Text("absolute".to_string()))
+        );
+
+        let ontology = reopened.ui_ontology().expect("ontology");
+        assert_eq!(semantic_token_value(&ontology, "peer.reachable"), "#00ff00");
+        assert_eq!(metric_value(&ontology, "sidebar.width"), 420.0);
+        assert_eq!(
+            behavior_value(&ontology, "timestamps.style"),
+            UiBehaviorValue::Text("absolute".to_string())
+        );
+
+        reopened
+            .reset_ui_preference(UiPreferenceKind::Metric, "sidebar.width")
+            .expect("reset metric");
+        let reset = reopened.ui_ontology().expect("reset ontology");
+        assert_eq!(metric_value(&reset, "sidebar.width"), 360.0);
+        assert_eq!(semantic_token_value(&reset, "peer.reachable"), "#00ff00");
+
+        reopened
+            .reset_all_ui_preferences()
+            .expect("reset all preferences");
+        let defaults = reopened.ui_ontology().expect("default ontology");
+        assert_eq!(
+            semantic_token_value(&defaults, "peer.reachable"),
+            "system.success"
+        );
+        assert_eq!(
+            behavior_value(&defaults, "timestamps.style"),
+            UiBehaviorValue::Text("relative".to_string())
+        );
+    }
+
+    #[test]
+    fn ui_preferences_reject_unknown_ids_and_wrong_behavior_kind() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+
+        assert!(home.set_semantic_token("unknown.token", "#fff").is_err());
+        assert!(home.set_metric("sidebar.width", -1.0).is_err());
+        assert!(home
+            .set_behavior(
+                "timestamps.visible",
+                UiBehaviorValue::Text("yes".to_string())
+            )
+            .is_err());
     }
 
     #[tokio::test]
@@ -1248,5 +2041,34 @@ mod tests {
         assert_eq!(online.peers[0].peer_id, peer_record.endpoint.peer_id);
         assert_eq!(online.peers[0].diagnostic_state, PeerActionState::NotRun);
         assert_eq!(online.peers[0].sync_state, PeerActionState::NotRun);
+    }
+
+    fn semantic_token_value(ontology: &UiOntologyView, id: &str) -> String {
+        ontology
+            .semantic_tokens
+            .iter()
+            .find(|token| token.id == id)
+            .unwrap_or_else(|| panic!("missing semantic token {id}"))
+            .current_value
+            .clone()
+    }
+
+    fn metric_value(ontology: &UiOntologyView, id: &str) -> f64 {
+        ontology
+            .metrics
+            .iter()
+            .find(|metric| metric.id == id)
+            .unwrap_or_else(|| panic!("missing metric {id}"))
+            .current_value
+    }
+
+    fn behavior_value(ontology: &UiOntologyView, id: &str) -> UiBehaviorValue {
+        ontology
+            .behaviors
+            .iter()
+            .find(|behavior| behavior.id == id)
+            .unwrap_or_else(|| panic!("missing behavior {id}"))
+            .current_value
+            .clone()
     }
 }
