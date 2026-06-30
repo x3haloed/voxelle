@@ -12,15 +12,19 @@ import { fixtureSnapshot } from "./fixture.js";
 export function createShellClient() {
   const invoke = tauriInvoke();
   if (invoke) {
-    return new TauriShellClient(invoke);
+    return new TauriShellClient(invoke, "tauri");
   }
-  return new FixtureShellClient(structuredClone(fixtureSnapshot));
+  return new FixtureShellClient(structuredClone(fixtureSnapshot), "fixture");
 }
 
 class TauriShellClient {
-  /** @param {(command: string, args?: Record<string, unknown>) => Promise<unknown>} invoke */
-  constructor(invoke) {
+  /**
+   * @param {(command: string, args?: Record<string, unknown>) => Promise<unknown>} invoke
+   * @param {string} mode
+   */
+  constructor(invoke, mode) {
     this.invoke = invoke;
+    this.mode = mode;
   }
 
   /** @returns {Promise<ShellSnapshotView>} */
@@ -73,9 +77,13 @@ class TauriShellClient {
 }
 
 class FixtureShellClient {
-  /** @param {ShellSnapshotView} snapshot */
-  constructor(snapshot) {
+  /**
+   * @param {ShellSnapshotView} snapshot
+   * @param {string} mode
+   */
+  constructor(snapshot, mode) {
     this.current = snapshot;
+    this.mode = mode;
   }
 
   async snapshot() {
@@ -164,7 +172,11 @@ class FixtureShellClient {
 
 function tauriInvoke() {
   const maybeWindow =
-    /** @type {Window & { __TAURI__?: { core?: { invoke?: unknown } } }} */ (window);
-  const invoke = maybeWindow.__TAURI__?.core?.invoke;
-  return typeof invoke === "function" ? invoke : null;
+    /** @type {Window & { __TAURI__?: { core?: { invoke?: unknown } }, __TAURI_INTERNALS__?: { invoke?: unknown } }} */ (window);
+  const publicInvoke = maybeWindow.__TAURI__?.core?.invoke;
+  if (typeof publicInvoke === "function") {
+    return publicInvoke;
+  }
+  const internalInvoke = maybeWindow.__TAURI_INTERNALS__?.invoke;
+  return typeof internalInvoke === "function" ? internalInvoke : null;
 }

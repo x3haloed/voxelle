@@ -89,10 +89,15 @@ function header(snapshot) {
   titleGroup.append(element("p", "path", snapshot.home_root));
 
   const actions = element("div", "header-actions");
-  actions.append(runtimeState(snapshot), commandButton("Refresh", "shell.refresh"));
+  actions.append(shellMode(), runtimeState(snapshot), commandButton("Refresh", "shell.refresh"));
 
   headerEl.append(titleGroup, actions);
   return headerEl;
+}
+
+function shellMode() {
+  const mode = shell.mode ?? "unknown";
+  return element("div", `shell-mode ${mode}`, mode === "tauri" ? "Tauri" : "Fixture");
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */

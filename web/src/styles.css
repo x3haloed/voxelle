@@ -80,7 +80,8 @@ h3 {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
-.runtime-state {
+.runtime-state,
+.shell-mode {
   border: 1px solid ButtonBorder;
   padding: 4px 8px;
   text-transform: capitalize;
