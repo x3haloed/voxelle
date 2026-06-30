@@ -87,7 +87,7 @@ fn init_home(
 }
 
 #[tauri::command]
-fn start_service(
+async fn start_service(
     state: State<'_, ShellState>,
     request: StartServiceRequest,
 ) -> Result<ShellSnapshotView, ShellError> {
