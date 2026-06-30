@@ -294,6 +294,7 @@ function peerExchangeView(snapshot) {
   const invite = snapshot.home?.invite?.peer_record_json ?? "";
   const inviteGroup = element("div", "field-stack");
   inviteGroup.append(element("h3", "", "Local Invite"));
+  inviteGroup.append(element("p", "summary", "After this peer is online, copy this JSON into another peer's Import Peer field."));
   inviteGroup.append(element("pre", "invite-json", invite));
   inviteGroup.append(commandButton("Copy Invite", "invite.copy"));
 
