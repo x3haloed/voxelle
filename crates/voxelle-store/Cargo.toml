@@ -1,0 +1,14 @@
+[package]
+name = "voxelle-store"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+rusqlite = "0.32"
+serde_json = "1"
+voxelle-core = { path = "../voxelle-core" }
+
+[dev-dependencies]
+tempfile = "3"
+

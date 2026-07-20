@@ -2,8 +2,15 @@
 members = [
   "crates/isnad",
   "crates/voxelle-board",
-  "crates/voxelle-protocol",
-  "crates/voxelle-signal",
+  "crates/voxelle-app",
+  "crates/voxelle-shell",
+  "crates/voxelle-tauri",
+  "crates/voxelle-tauri-host",
+  "crates/voxelle-cli",
+  "crates/voxelle-inhabitantd",
+  "crates/voxelle-core",
+  "crates/voxelle-net",
+  "crates/voxelle-store",
+  "crates/voxelle-sync",
 ]
-exclude = ["apps/desktop/src-tauri"]
 resolver = "2"

@@ -1,0 +1,12 @@
+[package]
+name = "voxelle-sync"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+voxelle-core = { path = "../voxelle-core" }
+voxelle-store = { path = "../voxelle-store" }
+
+[dev-dependencies]
+serde_json = "1"

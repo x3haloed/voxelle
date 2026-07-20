@@ -1,0 +1,20 @@
+[package]
+name = "voxelle-net"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+quinn = "0.11"
+quinn-proto = "0.11"
+rcgen = "0.13"
+rustls = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+ts-rs = "12"
+voxelle-core = { path = "../voxelle-core" }
+voxelle-store = { path = "../voxelle-store" }
+voxelle-sync = { path = "../voxelle-sync" }

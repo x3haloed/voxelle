@@ -1,0 +1,12 @@
+[package]
+name = "voxelle-tauri"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tauri = { version = "2.11.3", default-features = false }
+voxelle-app = { path = "../voxelle-app" }
+voxelle-shell = { path = "../voxelle-shell" }
+
+[dev-dependencies]
+tempfile = "3"
