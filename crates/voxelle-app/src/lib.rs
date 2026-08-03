@@ -944,24 +944,6 @@ impl VoxelleHome {
         })
     }
 
-    pub fn export_peer_record(
-        &self,
-        advertised_addr: SocketAddr,
-        label: Option<String>,
-        room: Option<&str>,
-    ) -> Result<PeerRecord> {
-        let config = self.load_config()?;
-        let default_room = room.unwrap_or(&config.default_room).to_string();
-        let record = PeerRecord {
-            v: 1,
-            label,
-            default_room,
-            endpoint: self.export_endpoint(advertised_addr)?,
-        };
-        record.validate()?;
-        Ok(record)
-    }
-
     pub fn import_peer_record(&self, record: PeerRecord) -> Result<()> {
         record.validate()?;
         let mut peers = self.known_peers()?;
@@ -1259,14 +1241,6 @@ impl VoxelleCommandHost {
             activity: Vec::new(),
             next_activity_id: 1,
         }
-    }
-
-    pub fn home(&self) -> &VoxelleHome {
-        &self.home
-    }
-
-    pub fn is_online(&self) -> bool {
-        self.service.is_some()
     }
 
     pub fn snapshot(&mut self) -> Result<ShellSnapshotView> {
@@ -2645,10 +2619,10 @@ mod tests {
             network_health_status(&bob_imported.network_health, "peers"),
             NetworkHealthStatus::Working
         );
-        let peer = bob.home().known_peers().expect("known peers")[0].clone();
+        let peer = &bob_imported.home.as_ref().expect("home view").peers[0];
         let request = PeerCommandRequest {
-            peer_id: peer.endpoint.peer_id.clone(),
-            device_id: peer.endpoint.device_id.clone(),
+            peer_id: peer.peer_id.clone(),
+            device_id: peer.device_id.clone(),
             max_events: Some(64),
         };
 
