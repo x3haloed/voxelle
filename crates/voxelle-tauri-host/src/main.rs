@@ -1,7 +1,7 @@
 use tauri::State;
 use voxelle_app::{
-    ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest, ShellError,
-    ShellSnapshotView, ShellState, StartServiceRequest,
+    ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest,
+    SetUiPreferenceRequest, ShellError, ShellSnapshotView, ShellState, StartServiceRequest,
 };
 
 fn main() {
@@ -15,7 +15,8 @@ fn main() {
             send_message,
             import_peer_record,
             diagnose_peer,
-            sync_peer
+            sync_peer,
+            set_ui_preference
         ])
         .run(tauri::generate_context!())
         .expect("run Voxelle Tauri host");
@@ -77,4 +78,12 @@ fn sync_peer(
     request: PeerCommandRequest,
 ) -> Result<ShellSnapshotView, ShellError> {
     tauri::async_runtime::block_on(state.sync_peer(request))
+}
+
+#[tauri::command]
+fn set_ui_preference(
+    state: State<'_, ShellState>,
+    request: SetUiPreferenceRequest,
+) -> Result<ShellSnapshotView, ShellError> {
+    state.set_ui_preference(request)
 }

@@ -1,12 +1,12 @@
 use crate::{
     ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest,
-    ShellSnapshotView, StartServiceRequest, VoxelleCommandHost,
+    SetUiPreferenceRequest, ShellSnapshotView, StartServiceRequest, VoxelleCommandHost,
 };
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use ts_rs::TS;
 
-pub const SHELL_COMMAND_IDS: [&str; 8] = [
+pub const SHELL_COMMAND_IDS: [&str; 9] = [
     "snapshot",
     "init_home",
     "start_service",
@@ -15,6 +15,7 @@ pub const SHELL_COMMAND_IDS: [&str; 8] = [
     "import_peer_record",
     "diagnose_peer",
     "sync_peer",
+    "set_ui_preference",
 ];
 
 #[derive(Debug)]
@@ -27,6 +28,7 @@ pub enum ShellCommand {
     ImportPeerRecord(ImportPeerRecordRequest),
     DiagnosePeer(PeerCommandRequest),
     SyncPeer(PeerCommandRequest),
+    SetUiPreference(SetUiPreferenceRequest),
 }
 
 impl ShellCommand {
@@ -40,6 +42,7 @@ impl ShellCommand {
             "import_peer_record" => Ok(Self::ImportPeerRecord(parse_request(payload)?)),
             "diagnose_peer" => Ok(Self::DiagnosePeer(parse_request(payload)?)),
             "sync_peer" => Ok(Self::SyncPeer(parse_request(payload)?)),
+            "set_ui_preference" => Ok(Self::SetUiPreference(parse_request(payload)?)),
             _ => Err(ShellError {
                 message: format!("unknown command {command_id}"),
             }),
@@ -98,6 +101,15 @@ impl ShellState {
             .map_err(ShellError::from)
     }
 
+    pub fn set_ui_preference(
+        &self,
+        request: SetUiPreferenceRequest,
+    ) -> ShellResult<ShellSnapshotView> {
+        self.host()?
+            .set_ui_preference(request)
+            .map_err(ShellError::from)
+    }
+
     pub async fn diagnose_peer(
         &self,
         request: PeerCommandRequest,
@@ -121,6 +133,7 @@ impl ShellState {
             ShellCommand::ImportPeerRecord(request) => Ok(self.import_peer_record(request)),
             ShellCommand::DiagnosePeer(request) => Err(DeferredShellCommand::DiagnosePeer(request)),
             ShellCommand::SyncPeer(request) => Err(DeferredShellCommand::SyncPeer(request)),
+            ShellCommand::SetUiPreference(request) => Ok(self.set_ui_preference(request)),
         }
     }
 
@@ -294,6 +307,29 @@ mod tests {
             snapshot.home.expect("home").room.messages[0].text,
             "serialized shell command"
         );
+        let set_preference = ShellCommand::from_json(
+            "set_ui_preference",
+            serde_json::json!({
+                "kind": "metric",
+                "id": "sidebar.width",
+                "value": 444.0
+            }),
+        )
+        .expect("parse preference");
+        let updated = shell
+            .execute_command(set_preference)
+            .expect("preference should not be deferred")
+            .expect("set preference");
+        assert_eq!(metric_value(&updated, "sidebar.width"), 444.0);
+
+        let reopened = ShellState::new(dir.path().join("home"));
+        assert_eq!(
+            metric_value(
+                &reopened.snapshot().expect("reopened snapshot"),
+                "sidebar.width"
+            ),
+            444.0
+        );
         assert_eq!(
             ShellCommand::from_json("not_a_command", serde_json::json!({}))
                 .expect_err("unknown command")
@@ -330,5 +366,15 @@ mod tests {
             .find(|row| row.id == id)
             .unwrap_or_else(|| panic!("missing health row {id}"))
             .status
+    }
+
+    fn metric_value(snapshot: &ShellSnapshotView, id: &str) -> f64 {
+        snapshot
+            .ui_ontology
+            .metrics
+            .iter()
+            .find(|metric| metric.id == id)
+            .unwrap_or_else(|| panic!("missing metric {id}"))
+            .current_value
     }
 }

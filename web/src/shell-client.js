@@ -7,6 +7,7 @@ import { fixtureSnapshot } from "./fixture.js";
  * @typedef {import("./shell-contract").SendMessageRequest} SendMessageRequest
  * @typedef {import("./shell-contract").ImportPeerRecordRequest} ImportPeerRecordRequest
  * @typedef {import("./shell-contract").PeerCommandRequest} PeerCommandRequest
+ * @typedef {import("./shell-contract").SetUiPreferenceRequest} SetUiPreferenceRequest
  */
 
 export function createShellClient() {
@@ -64,6 +65,11 @@ class TauriShellClient {
   /** @param {PeerCommandRequest} request */
   syncPeer(request) {
     return this.call("sync_peer", { request });
+  }
+
+  /** @param {SetUiPreferenceRequest} request */
+  setUiPreference(request) {
+    return this.call("set_ui_preference", { request });
   }
 
   /**
@@ -147,6 +153,23 @@ class FixtureShellClient {
   /** @param {PeerCommandRequest} _request */
   async syncPeer(_request) {
     this.appendActivity("fixture sync completed");
+    return this.current;
+  }
+
+  /** @param {SetUiPreferenceRequest} request */
+  async setUiPreference(request) {
+    const { semantic_tokens: tokens, metrics, behaviors } = this.current.ui_ontology;
+    const collection = request.kind === "semantic_token"
+      ? tokens
+      : request.kind === "metric"
+        ? metrics
+        : behaviors;
+    const preference = collection.find((item) => item.id === request.id);
+    if (!preference) {
+      throw new Error(`unknown UI preference ${request.id}`);
+    }
+    preference.current_value = request.value;
+    this.appendActivity(`updated UI preference ${request.id}`);
     return this.current;
   }
 

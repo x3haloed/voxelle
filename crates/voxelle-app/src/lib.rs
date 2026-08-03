@@ -262,6 +262,7 @@ pub fn shell_contract_typescript() -> String {
         SendMessageRequest::decl(&cfg),
         ImportPeerRecordRequest::decl(&cfg),
         PeerCommandRequest::decl(&cfg),
+        SetUiPreferenceRequest::decl(&cfg),
         HomeScreenView::decl(&cfg),
         NetworkHealthView::decl(&cfg),
         NetworkHealthRow::decl(&cfg),
@@ -288,6 +289,23 @@ pub fn write_shell_contract(path: impl AsRef<Path>) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, shell_contract_typescript())?;
+    Ok(())
+}
+
+pub fn ui_ontology_fixture_javascript() -> Result<String> {
+    let ontology = default_ui_ontology(UiPreferences::default());
+    Ok(format!(
+        "// This file is generated from the Rust UI ontology. Do not edit by hand.\n\nexport const defaultUiOntology = {};\n",
+        serde_json::to_string(&ontology)?
+    ))
+}
+
+pub fn write_ui_ontology_fixture(path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, ui_ontology_fixture_javascript()?)?;
     Ok(())
 }
 
@@ -420,6 +438,14 @@ pub struct PeerCommandRequest {
     pub peer_id: String,
     pub device_id: String,
     pub max_events: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SetUiPreferenceRequest {
+    SemanticToken { id: String, value: String },
+    Metric { id: String, value: f64 },
+    Behavior { id: String, value: UiBehaviorValue },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -612,7 +638,7 @@ impl VoxelleHome {
                 format!("Home is initialized for {}.", config.default_room),
             )
             .detail(format!("root: {}", self.root.display())),
-            Err(error) if self.root.exists() => NetworkHealthRow::broken(
+            Err(error) if self.config_path().exists() => NetworkHealthRow::broken(
                 "home",
                 "Home",
                 "Home exists but cannot be read.",
@@ -1322,6 +1348,31 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
+    pub fn set_ui_preference(
+        &mut self,
+        request: SetUiPreferenceRequest,
+    ) -> Result<ShellSnapshotView> {
+        let id = match request {
+            SetUiPreferenceRequest::SemanticToken { id, value } => {
+                self.home.set_semantic_token(&id, value)?;
+                id
+            }
+            SetUiPreferenceRequest::Metric { id, value } => {
+                self.home.set_metric(&id, value)?;
+                id
+            }
+            SetUiPreferenceRequest::Behavior { id, value } => {
+                self.home.set_behavior(&id, value)?;
+                id
+            }
+        };
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("updated UI preference {id}"),
+        );
+        self.snapshot()
+    }
+
     pub async fn diagnose_peer(
         &mut self,
         request: PeerCommandRequest,
@@ -1924,6 +1975,11 @@ fn default_commands() -> Vec<UiCommand> {
             "Sync Peer",
             "Sync governance and room events with a peer",
         ),
+        ui_command(
+            "ui.preference.set",
+            "Save Preference",
+            "Persist a UI customization",
+        ),
     ]
 }
 
@@ -1933,91 +1989,91 @@ fn default_semantic_tokens() -> Vec<SemanticToken> {
             "app.background",
             "App Background",
             "Canvas",
-            "system.canvas",
+            "Canvas",
             &["profile.summary", "room.timeline"],
         ),
         semantic_token(
             "panel.background",
             "Panel Background",
             "Panel surface",
-            "system.panel",
+            "Canvas",
             &["peer.list", "invite.exchange", "service.activity"],
         ),
         semantic_token(
             "panel.border",
             "Panel Border",
             "Panel boundary",
-            "system.border",
+            "ButtonBorder",
             &["sidebar", "inspector"],
         ),
         semantic_token(
             "text.primary",
             "Primary Text",
             "Primary readable text",
-            "system.text",
+            "CanvasText",
             &["profile.summary", "room.timeline", "message.composer"],
         ),
         semantic_token(
             "text.secondary",
             "Secondary Text",
             "Secondary metadata text",
-            "system.text.secondary",
+            "GrayText",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
             "runtime.online",
             "Runtime Online",
             "Online runtime state",
-            "system.success",
+            "#18794e",
             &["runtime.status"],
         ),
         semantic_token(
             "runtime.offline",
             "Runtime Offline",
             "Offline runtime state",
-            "system.muted",
+            "GrayText",
             &["runtime.status"],
         ),
         semantic_token(
             "peer.reachable",
             "Peer Reachable",
             "Reachable peer diagnostic",
-            "system.success",
+            "#18794e",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
             "peer.unreachable",
             "Peer Unreachable",
             "Unreachable peer diagnostic",
-            "system.error",
+            "#b42318",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
             "message.own.background",
             "Own Message Background",
             "Messages authored by this peer",
-            "system.message.own",
+            "#e8f1ff",
             &["room.timeline"],
         ),
         semantic_token(
             "message.remote.background",
             "Remote Message Background",
             "Messages authored by other peers",
-            "system.message.remote",
+            "#f2f2f2",
             &["room.timeline"],
         ),
         semantic_token(
             "activity.info",
             "Activity Info",
             "Informational activity entries",
-            "system.info",
+            "LinkText",
             &["service.activity"],
         ),
         semantic_token(
             "activity.error",
             "Activity Error",
             "Error activity entries",
-            "system.error",
+            "#b42318",
             &["service.activity"],
         ),
     ]
@@ -2469,10 +2525,7 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.id == "peer.sync"));
-        assert_eq!(
-            semantic_token_value(&ontology, "peer.reachable"),
-            "system.success"
-        );
+        assert_eq!(semantic_token_value(&ontology, "peer.reachable"), "#18794e");
         assert_eq!(metric_value(&ontology, "sidebar.width"), 360.0);
         assert_eq!(
             behavior_value(&ontology, "timestamps.visible"),
@@ -2530,10 +2583,7 @@ mod tests {
             .reset_all_ui_preferences()
             .expect("reset all preferences");
         let defaults = reopened.ui_ontology().expect("default ontology");
-        assert_eq!(
-            semantic_token_value(&defaults, "peer.reachable"),
-            "system.success"
-        );
+        assert_eq!(semantic_token_value(&defaults, "peer.reachable"), "#18794e");
         assert_eq!(
             behavior_value(&defaults, "timestamps.style"),
             UiBehaviorValue::Text("relative".to_string())
@@ -2678,6 +2728,27 @@ mod tests {
         );
         assert_eq!(
             network_health_status(&health, "service"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_row(&health, "home")
+                .primary_action
+                .as_deref(),
+            Some("home.init")
+        );
+    }
+
+    #[test]
+    fn customizing_before_initialization_keeps_home_recoverable() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.set_metric("sidebar.width", 512.0)
+            .expect("save preference");
+
+        let health = home.network_health_view(None).expect("health");
+
+        assert_eq!(
+            network_health_status(&health, "home"),
             NetworkHealthStatus::NeedsAttention
         );
         assert_eq!(

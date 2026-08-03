@@ -42,6 +42,8 @@ export type ImportPeerRecordRequest = { peer_record_json: string, };
 
 export type PeerCommandRequest = { peer_id: string, device_id: string, max_events: number | null, };
 
+export type SetUiPreferenceRequest = { "kind": "semantic_token", id: string, value: string, } | { "kind": "metric", id: string, value: number, } | { "kind": "behavior", id: string, value: UiBehaviorValue, };
+
 export type HomeScreenView = { profile: ProfileSummary, runtime: RuntimeStatusView, invite: InviteExchangeView | null, peers: Array<PeerListItemView>, room: RoomTimelineView, };
 
 export type NetworkHealthView = { rows: Array<NetworkHealthRow>, };

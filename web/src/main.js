@@ -1,4 +1,10 @@
 import { createShellClient } from "./shell-client.js";
+import {
+  applyOntology,
+  messageTimestamp,
+  ontologyPresentation,
+  visibleActivity,
+} from "./ui-ontology.mjs";
 
 const app = document.querySelector("#app");
 const shell = createShellClient();
@@ -67,6 +73,12 @@ const viewRenderers = {
 };
 
 let currentSnapshot = await shell.snapshot();
+if (
+  ontologyPresentation(currentSnapshot.ui_ontology).startOnlineOnLaunch
+  && currentSnapshot.home?.runtime.state === "offline"
+) {
+  currentSnapshot = await shell.startService({ bind: null, advertise: null });
+}
 render();
 
 async function refresh() {
@@ -75,10 +87,18 @@ async function refresh() {
 }
 
 function render() {
+  const presentation = applyOntology(
+    document.documentElement,
+    currentSnapshot.ui_ontology,
+  );
   app.replaceChildren(
     header(currentSnapshot),
     workbenchShell(currentSnapshot),
   );
+  if (presentation.activityAutoScroll) {
+    const activity = app.querySelector(".activity-list");
+    activity?.scrollTo?.({ top: activity.scrollHeight });
+  }
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -89,7 +109,12 @@ function header(snapshot) {
   titleGroup.append(element("p", "path", snapshot.home_root));
 
   const actions = element("div", "header-actions");
-  actions.append(shellMode(), runtimeState(snapshot), commandButton("Refresh", "shell.refresh"));
+  actions.append(
+    customizationEditor(snapshot),
+    shellMode(),
+    runtimeState(snapshot),
+    commandButton("Refresh", "shell.refresh"),
+  );
 
   headerEl.append(titleGroup, actions);
   return headerEl;
@@ -104,6 +129,100 @@ function shellMode() {
 function runtimeState(snapshot) {
   const runtime = snapshot.home?.runtime.state ?? "offline";
   return element("div", `runtime-state ${runtime}`, runtime);
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function customizationEditor(snapshot) {
+  const details = element("details", "customization");
+  details.append(element("summary", "command-button", "Customize"));
+  const editor = element("div", "customization-editor");
+  editor.append(
+    preferenceGroup(
+      "Appearance",
+      snapshot.ui_ontology.semantic_tokens,
+      semanticTokenEditor,
+    ),
+    preferenceGroup("Layout", snapshot.ui_ontology.metrics, metricEditor),
+    preferenceGroup("Behavior", snapshot.ui_ontology.behaviors, behaviorEditor),
+  );
+  details.append(editor);
+  return details;
+}
+
+function preferenceGroup(title, preferences, renderer) {
+  const group = element("section", "preference-group");
+  group.append(element("h3", "", title));
+  for (const preference of preferences.filter((item) => item.editable)) {
+    group.append(renderer(preference));
+  }
+  return group;
+}
+
+/** @param {import("./shell-contract").SemanticToken} token */
+function semanticTokenEditor(token) {
+  const input = preferenceInput(token, "text", token.current_value);
+  return preferenceForm(token, input, () => ({
+    kind: "semantic_token",
+    id: token.id,
+    value: input.value,
+  }));
+}
+
+/** @param {import("./shell-contract").UiMetric} metric */
+function metricEditor(metric) {
+  const input = preferenceInput(metric, "number", String(metric.current_value));
+  input.min = "0";
+  input.step = metric.unit === "count" ? "1" : "0.5";
+  return preferenceForm(metric, input, () => ({
+    kind: "metric",
+    id: metric.id,
+    value: input.valueAsNumber,
+  }));
+}
+
+/** @param {import("./shell-contract").UiBehavior} behavior */
+function behaviorEditor(behavior) {
+  const value = behavior.current_value;
+  const input = preferenceInput(
+    behavior,
+    value.type === "bool" ? "checkbox" : "text",
+    value.type === "text" ? value.value : "",
+  );
+  if (value.type === "bool") {
+    input.checked = value.value;
+  }
+  return preferenceForm(behavior, input, () => ({
+    kind: "behavior",
+    id: behavior.id,
+    value: value.type === "bool"
+      ? { type: "bool", value: input.checked }
+      : { type: "text", value: input.value },
+  }));
+}
+
+function preferenceInput(preference, type, value) {
+  const input = element("input", "preference-input");
+  input.type = type;
+  input.value = value;
+  input.dataset.preferenceId = preference.id;
+  return input;
+}
+
+function preferenceForm(preference, input, request) {
+  const form = element("form", "preference-form");
+  form.dataset.preferenceId = preference.id;
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("ui.preference.set", request()).catch(reportError);
+  });
+  const label = element("label", "preference-label");
+  label.append(
+    element("span", "", preference.label),
+    element("small", "view-id", preference.id),
+    input,
+  );
+  form.append(label, submitButton("Save"));
+  return form;
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -280,7 +399,10 @@ function activityView(snapshot) {
   fragment.append(actions);
 
   const list = element("ol", "activity-list");
-  for (const activity of [...snapshot.service_activity].reverse()) {
+  for (const activity of visibleActivity(
+    snapshot.service_activity,
+    snapshot.ui_ontology,
+  )) {
     const row = element("li", "");
     row.dataset.level = activity.level;
     row.append(
@@ -417,8 +539,15 @@ function roomTimelineView(snapshot) {
   const messages = snapshot.home?.room.messages ?? [];
   const list = element("ol", "message-list");
   for (const message of messages) {
-    const row = element("li", "");
+    const own = message.author_peer_id === snapshot.home?.profile.peer_id;
+    const row = element("li", own ? "message own" : "message remote");
     row.append(element("span", "muted", shortId(message.author_peer_id)));
+    const timestamp = messageTimestamp(message, snapshot.ui_ontology);
+    if (timestamp !== null) {
+      const time = element("time", "message-time", timestamp);
+      time.dateTime = new Date(message.created_ms).toISOString();
+      row.append(time);
+    }
     row.append(element("p", "", message.text));
     list.append(row);
   }
@@ -533,6 +662,9 @@ async function runCommand(command, payload) {
           peer_record_json: uiState.peerRecordDraft,
         });
         uiState.peerRecordDraft = "";
+        if (ontologyPresentation(currentSnapshot.ui_ontology).syncAutoAfterImport) {
+          currentSnapshot = await shell.syncPeer(firstPeerRequest());
+        }
         return;
       case "peer.diagnose":
         currentSnapshot = await shell.diagnosePeer(
@@ -560,6 +692,11 @@ async function runCommand(command, payload) {
           currentSnapshot.home?.invite?.peer_record_json ?? "",
         );
         appendActivity(currentSnapshot, "copied invite");
+        return;
+      case "ui.preference.set":
+        currentSnapshot = await shell.setUiPreference(
+          /** @type {import("./shell-contract").SetUiPreferenceRequest} */ (payload),
+        );
         return;
       default:
         appendActivity(currentSnapshot, `unhandled ${command}`);

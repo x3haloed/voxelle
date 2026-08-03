@@ -1,3 +1,5 @@
+import { defaultUiOntology } from "./ui-ontology.fixture.mjs";
+
 /** @type {import("./shell-contract").ShellSnapshotView} */
 export const fixtureSnapshot = {
   home_root: "/Users/chad/.voxelle",
@@ -126,44 +128,7 @@ export const fixtureSnapshot = {
       },
     ],
   },
-  ui_ontology: {
-    places: [],
-    views: [],
-    commands: [
-      {
-        id: "runtime.goOnline",
-        label: "Go Online",
-        description: "Start resident peer serving",
-        editable: true,
-        editing_surface: "command settings",
-      },
-      {
-        id: "runtime.goOffline",
-        label: "Go Offline",
-        description: "Stop resident peer serving",
-        editable: true,
-        editing_surface: "command settings",
-      },
-      {
-        id: "peer.diagnose",
-        label: "Diagnose Peer",
-        description: "Check peer reachability",
-        editable: true,
-        editing_surface: "command settings",
-      },
-      {
-        id: "peer.sync",
-        label: "Sync Peer",
-        description: "Sync governance and room events with a peer",
-        editable: true,
-        editing_surface: "command settings",
-      },
-    ],
-    semantic_tokens: [],
-    metrics: [],
-    behaviors: [],
-    renderers: [],
-  },
+  ui_ontology: defaultUiOntology,
   service_activity: [
     { id: 1, level: "info", summary: "service started at [::1]:49152" },
     { id: 2, level: "info", summary: "served diagnostic: Peer 5b2a91c840e2 reached this home" },

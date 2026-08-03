@@ -279,10 +279,9 @@ editing_surface: appearance/token editor
 
 ## 5. First Registry Layer
 
-The first code implementation should not build the full UI shell first.
+The first code implementation did not build the full UI shell first.
 
-It should add a durable ontology registry layer that can feed a Tauri-style
-web UI later:
+It added a durable ontology registry layer that feeds the Tauri-style web UI:
 
 ```text
 voxelle-app
@@ -295,8 +294,15 @@ voxelle-app
   ViewModels that reference stable primitive IDs
 ```
 
-The web UI should consume these registries instead of hard-coding the whole
-world in TypeScript.
+The local web UI now consumes the Rust-owned token, metric, and behavior
+registries. Its Customize surface sends one typed preference command through
+the local bridge; Rust validates and persists the change, and the returned
+snapshot changes the rendered interface. The standalone browser fixture is
+generated from the same Rust defaults.
+
+Places, view composition, and renderer selection are still only partly
+realized. They remain named ontology commitments rather than claims that the
+current workbench layout is already user-editable.
 
 ## 6. Framework Direction
 
