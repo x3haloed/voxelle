@@ -991,53 +991,24 @@ impl VoxelleHome {
         Ok(preferences)
     }
 
-    pub fn set_semantic_token(&self, id: &str, value: impl Into<String>) -> Result<()> {
-        let default = default_semantic_tokens()
-            .into_iter()
-            .find(|token| token.id == id)
-            .with_context(|| format!("unknown semantic token {id}"))?;
-        if !default.editable {
-            anyhow::bail!("semantic token {id} is not editable");
-        }
-        let value = value.into();
-        if value.trim().is_empty() {
-            anyhow::bail!("semantic token value is empty");
-        }
+    pub fn set_ui_preference(&self, request: SetUiPreferenceRequest) -> Result<String> {
         let mut preferences = self.ui_preferences()?;
-        preferences.semantic_tokens.insert(id.to_string(), value);
-        self.write_ui_preferences(&preferences)
-    }
-
-    pub fn set_metric(&self, id: &str, value: f64) -> Result<()> {
-        let default = default_metrics()
-            .into_iter()
-            .find(|metric| metric.id == id)
-            .with_context(|| format!("unknown UI metric {id}"))?;
-        if !default.editable {
-            anyhow::bail!("UI metric {id} is not editable");
-        }
-        if !value.is_finite() || value < 0.0 {
-            anyhow::bail!("UI metric value must be a finite non-negative number");
-        }
-        let mut preferences = self.ui_preferences()?;
-        preferences.metrics.insert(id.to_string(), value);
-        self.write_ui_preferences(&preferences)
-    }
-
-    pub fn set_behavior(&self, id: &str, value: UiBehaviorValue) -> Result<()> {
-        let default = default_behaviors()
-            .into_iter()
-            .find(|behavior| behavior.id == id)
-            .with_context(|| format!("unknown UI behavior {id}"))?;
-        if !default.editable {
-            anyhow::bail!("UI behavior {id} is not editable");
-        }
-        if !same_behavior_value_kind(&default.default_value, &value) {
-            anyhow::bail!("UI behavior {id} value has the wrong kind");
-        }
-        let mut preferences = self.ui_preferences()?;
-        preferences.behaviors.insert(id.to_string(), value);
-        self.write_ui_preferences(&preferences)
+        let id = match request {
+            SetUiPreferenceRequest::SemanticToken { id, value } => {
+                preferences.semantic_tokens.insert(id.clone(), value);
+                id
+            }
+            SetUiPreferenceRequest::Metric { id, value } => {
+                preferences.metrics.insert(id.clone(), value);
+                id
+            }
+            SetUiPreferenceRequest::Behavior { id, value } => {
+                preferences.behaviors.insert(id.clone(), value);
+                id
+            }
+        };
+        self.write_ui_preferences(&preferences)?;
+        Ok(id)
     }
 
     pub fn reset_ui_preference(&self, kind: UiPreferenceKind, id: &str) -> Result<()> {
@@ -1314,20 +1285,7 @@ impl VoxelleCommandHost {
         &mut self,
         request: SetUiPreferenceRequest,
     ) -> Result<ShellSnapshotView> {
-        let id = match request {
-            SetUiPreferenceRequest::SemanticToken { id, value } => {
-                self.home.set_semantic_token(&id, value)?;
-                id
-            }
-            SetUiPreferenceRequest::Metric { id, value } => {
-                self.home.set_metric(&id, value)?;
-                id
-            }
-            SetUiPreferenceRequest::Behavior { id, value } => {
-                self.home.set_behavior(&id, value)?;
-                id
-            }
-        };
+        let id = self.home.set_ui_preference(request)?;
         self.push_activity(
             ServiceActivityLevel::Info,
             format!("updated UI preference {id}"),
@@ -2465,13 +2423,20 @@ mod tests {
         let home = VoxelleHome::new(dir.path().join("home"));
         home.init(DEFAULT_ROOM_ID).expect("init");
 
-        home.set_semantic_token("peer.reachable", "#00ff00")
-            .expect("set token");
-        home.set_metric("sidebar.width", 420.0).expect("set metric");
-        home.set_behavior(
-            "timestamps.style",
-            UiBehaviorValue::Text("absolute".to_string()),
-        )
+        home.set_ui_preference(SetUiPreferenceRequest::SemanticToken {
+            id: "peer.reachable".to_string(),
+            value: "#00ff00".to_string(),
+        })
+        .expect("set token");
+        home.set_ui_preference(SetUiPreferenceRequest::Metric {
+            id: "sidebar.width".to_string(),
+            value: 420.0,
+        })
+        .expect("set metric");
+        home.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "timestamps.style".to_string(),
+            value: UiBehaviorValue::Text("absolute".to_string()),
+        })
         .expect("set behavior");
 
         let reopened = VoxelleHome::new(home.root().to_path_buf());
@@ -2518,13 +2483,23 @@ mod tests {
         let home = VoxelleHome::new(dir.path().join("home"));
         home.init(DEFAULT_ROOM_ID).expect("init");
 
-        assert!(home.set_semantic_token("unknown.token", "#fff").is_err());
-        assert!(home.set_metric("sidebar.width", -1.0).is_err());
         assert!(home
-            .set_behavior(
-                "timestamps.visible",
-                UiBehaviorValue::Text("yes".to_string())
-            )
+            .set_ui_preference(SetUiPreferenceRequest::SemanticToken {
+                id: "unknown.token".to_string(),
+                value: "#fff".to_string(),
+            })
+            .is_err());
+        assert!(home
+            .set_ui_preference(SetUiPreferenceRequest::Metric {
+                id: "sidebar.width".to_string(),
+                value: -1.0,
+            })
+            .is_err());
+        assert!(home
+            .set_ui_preference(SetUiPreferenceRequest::Behavior {
+                id: "timestamps.visible".to_string(),
+                value: UiBehaviorValue::Text("yes".to_string()),
+            })
             .is_err());
     }
 
@@ -2664,8 +2639,11 @@ mod tests {
     fn customizing_before_initialization_keeps_home_recoverable() {
         let dir = tempdir().expect("tempdir");
         let home = VoxelleHome::new(dir.path().join("home"));
-        home.set_metric("sidebar.width", 512.0)
-            .expect("save preference");
+        home.set_ui_preference(SetUiPreferenceRequest::Metric {
+            id: "sidebar.width".to_string(),
+            value: 512.0,
+        })
+        .expect("save preference");
 
         let health = home.network_health_view(None).expect("health");
 
