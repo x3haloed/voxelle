@@ -306,7 +306,7 @@ pub fn write_ui_ontology_fixture(path: impl AsRef<Path>) -> Result<()> {
 }
 
 #[derive(Debug)]
-pub struct VoxelleRuntime {
+struct PeerServer {
     home: VoxelleHome,
     node: QuicNode,
     online: OnlineHome,
@@ -1028,14 +1028,6 @@ impl VoxelleHome {
         self.write_ui_preferences(&UiPreferences::default())
     }
 
-    pub fn listen(
-        &self,
-        bind: SocketAddr,
-        advertise: Option<SocketAddr>,
-    ) -> Result<VoxelleRuntime> {
-        VoxelleRuntime::start(self.clone(), bind, advertise)
-    }
-
     pub fn start_service(
         &self,
         bind: SocketAddr,
@@ -1569,12 +1561,8 @@ impl NetworkHealthRow {
     }
 }
 
-impl VoxelleRuntime {
-    pub fn start(
-        home: VoxelleHome,
-        bind: SocketAddr,
-        advertise: Option<SocketAddr>,
-    ) -> Result<Self> {
+impl PeerServer {
+    fn start(home: VoxelleHome, bind: SocketAddr, advertise: Option<SocketAddr>) -> Result<Self> {
         let identity = home.load_identity()?;
         let certificate = home.load_certificate()?;
         let node = QuicNode::bind_with_certificate(identity, certificate, bind)?;
@@ -1593,24 +1581,12 @@ impl VoxelleRuntime {
         })
     }
 
-    pub fn online(&self) -> &OnlineHome {
-        &self.online
-    }
-
-    pub async fn serve_next_request(&self) -> Result<ServedPeerRequest> {
+    async fn serve_next_request(&self) -> Result<ServedPeerRequest> {
         let store = self.home.open_store()?;
         self.node.serve_peer_request_once(&store).await
     }
 
-    pub async fn serve_requests(&self, count: usize) -> Result<Vec<ServedPeerRequest>> {
-        let mut served = Vec::with_capacity(count);
-        for _ in 0..count {
-            served.push(self.serve_next_request().await?);
-        }
-        Ok(served)
-    }
-
-    pub async fn stop(self) {
+    async fn stop(self) {
         self.node.close(b"runtime stopped");
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), self.node.wait_idle())
             .await;
@@ -1623,13 +1599,13 @@ impl VoxelleService {
         bind: SocketAddr,
         advertise: Option<SocketAddr>,
     ) -> Result<Self> {
-        let runtime = VoxelleRuntime::start(home, bind, advertise)?;
-        let online = runtime.online().clone();
+        let server = PeerServer::start(home, bind, advertise)?;
+        let online = server.online.clone();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let (event_tx, events) = mpsc::channel();
         let thread = thread::Builder::new()
             .name("voxelle-service".to_string())
-            .spawn(move || run_service_thread(runtime, stop_rx, event_tx))
+            .spawn(move || run_service_thread(server, stop_rx, event_tx))
             .context("spawn voxelle service thread")?;
 
         Ok(Self {
@@ -1675,7 +1651,7 @@ impl Drop for VoxelleService {
 }
 
 fn run_service_thread(
-    runtime: VoxelleRuntime,
+    server: PeerServer,
     stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::Sender<VoxelleServiceEvent>,
 ) {
@@ -1688,18 +1664,18 @@ fn run_service_thread(
         ));
         return;
     };
-    task_runtime.block_on(run_service_loop(runtime, stop_rx, event_tx));
+    task_runtime.block_on(run_service_loop(server, stop_rx, event_tx));
 }
 
 async fn run_service_loop(
-    runtime: VoxelleRuntime,
+    server: PeerServer,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::Sender<VoxelleServiceEvent>,
 ) {
     loop {
         tokio::select! {
             _ = &mut stop_rx => break,
-            result = runtime.serve_next_request() => {
+            result = server.serve_next_request() => {
                 match result {
                     Ok(served) => {
                         let _ = event_tx.send(VoxelleServiceEvent::Served(served));
@@ -1712,7 +1688,7 @@ async fn run_service_loop(
             }
         }
     }
-    runtime.stop().await;
+    server.stop().await;
     let _ = event_tx.send(VoxelleServiceEvent::Stopped);
 }
 
@@ -2752,10 +2728,10 @@ mod tests {
         let peer = VoxelleHome::new(dir.path().join("peer"));
         home.init(DEFAULT_ROOM_ID).expect("home init");
         peer.init(DEFAULT_ROOM_ID).expect("peer init");
-        let peer_runtime = peer
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("peer runtime");
-        let peer_record = peer_runtime
+        let peer_service = peer
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("peer service");
+        let peer_record = peer_service
             .online()
             .peer_record(Some("Peer".to_string()), None)
             .expect("peer record");
@@ -2783,104 +2759,7 @@ mod tests {
                 .as_deref(),
             Some("peer.sync")
         );
-    }
-
-    #[tokio::test]
-    async fn two_homes_sync_messages_over_ipv6_loopback() {
-        let dir = tempdir().expect("tempdir");
-        let alice = VoxelleHome::new(dir.path().join("alice"));
-        let bob = VoxelleHome::new(dir.path().join("bob"));
-
-        alice.init(DEFAULT_ROOM_ID).expect("alice init");
-        bob.init(DEFAULT_ROOM_ID).expect("bob init");
-        alice.send_message("hello over quic", None).expect("send");
-
-        let listener = alice
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("listen");
-        let endpoint = listener.online().endpoint.clone();
-
-        let (diagnostic_served, report) = tokio::join!(
-            listener.serve_next_request(),
-            bob.diagnose_endpoint(&endpoint)
-        );
-        let report = report.expect("diagnose");
-        assert!(report.reachable);
-        diagnostic_served.expect("diagnostic served");
-
-        let listener = alice
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("listen");
-        let endpoint = listener.online().endpoint.clone();
-        let (served, report) = tokio::join!(
-            listener.serve_requests(2),
-            bob.sync_endpoint(&endpoint, None, 64)
-        );
-        let served = served.expect("sync served");
-        let report = report.expect("sync peer");
-
-        assert_eq!(served.len(), 2);
-        assert_eq!(report.governance.accepted, 1);
-        assert_eq!(report.room.accepted, 1);
-        assert_eq!(
-            bob.read_messages(None).expect("bob messages")[0].text,
-            "hello over quic"
-        );
-    }
-
-    #[tokio::test]
-    async fn runtime_serves_repeated_diagnostics_and_sync() {
-        let dir = tempdir().expect("tempdir");
-        let alice = VoxelleHome::new(dir.path().join("alice"));
-        let bob = VoxelleHome::new(dir.path().join("bob"));
-
-        alice.init(DEFAULT_ROOM_ID).expect("alice init");
-        bob.init(DEFAULT_ROOM_ID).expect("bob init");
-        alice.send_message("first", None).expect("first send");
-
-        let runtime = VoxelleRuntime::start(
-            alice.clone(),
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
-            None,
-        )
-        .expect("runtime");
-        let endpoint = runtime.online().endpoint.clone();
-
-        let client = async {
-            let diagnostic = bob.diagnose_endpoint(&endpoint).await.expect("diagnose");
-            assert!(diagnostic.reachable);
-
-            let first = bob
-                .sync_endpoint(&endpoint, None, 64)
-                .await
-                .expect("first sync");
-            assert_eq!(first.governance.accepted, 1);
-            assert_eq!(first.room.accepted, 1);
-
-            alice.send_message("second", None).expect("second send");
-
-            let second = bob
-                .sync_endpoint(&endpoint, None, 64)
-                .await
-                .expect("second sync");
-            assert_eq!(second.governance.offered, 0);
-            assert_eq!(second.room.accepted, 1);
-        };
-
-        let (served, _) = tokio::join!(runtime.serve_requests(5), client);
-        let served = served.expect("served requests");
-        assert!(matches!(served[0], ServedPeerRequest::Diagnostic(_)));
-        assert!(matches!(served[1], ServedPeerRequest::RoomSync(_)));
-        assert!(matches!(served[2], ServedPeerRequest::RoomSync(_)));
-        assert!(matches!(served[3], ServedPeerRequest::RoomSync(_)));
-        assert!(matches!(served[4], ServedPeerRequest::RoomSync(_)));
-
-        let messages = bob.read_messages(None).expect("bob messages");
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].text, "first");
-        assert_eq!(messages[1].text, "second");
-
-        runtime.stop().await;
+        peer_service.stop().expect("stop peer service");
     }
 
     #[tokio::test]
@@ -2895,10 +2774,10 @@ mod tests {
             .send_message("from imported peer", None)
             .expect("send");
 
-        let runtime = alice
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("runtime");
-        let alice_record = runtime
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("service");
+        let alice_record = service
             .online()
             .peer_record(Some("Alice".to_string()), None)
             .expect("peer record");
@@ -2917,26 +2796,17 @@ mod tests {
             vec![renamed_record]
         );
 
-        let client = async {
-            let diagnostic = bob.diagnose_peer(&alice_record).await.expect("diagnose");
-            assert!(diagnostic.reachable);
+        let diagnostic = bob.diagnose_peer(&alice_record).await.expect("diagnose");
+        assert!(diagnostic.reachable);
 
-            let sync = bob.sync_peer(&alice_record, 64).await.expect("sync");
-            assert_eq!(sync.governance.accepted, 1);
-            assert_eq!(sync.room.accepted, 1);
-        };
-
-        let (served, _) = tokio::join!(runtime.serve_requests(3), client);
-        let served = served.expect("served requests");
-        assert!(matches!(served[0], ServedPeerRequest::Diagnostic(_)));
-        assert!(matches!(served[1], ServedPeerRequest::RoomSync(_)));
-        assert!(matches!(served[2], ServedPeerRequest::RoomSync(_)));
+        let sync = bob.sync_peer(&alice_record, 64).await.expect("sync");
+        assert_eq!(sync.governance.accepted, 1);
+        assert_eq!(sync.room.accepted, 1);
         assert_eq!(
             bob.read_messages(None).expect("bob messages")[0].text,
             "from imported peer"
         );
-
-        runtime.stop().await;
+        service.stop().expect("stop service");
     }
 
     #[tokio::test]
@@ -3006,13 +2876,13 @@ mod tests {
         assert_eq!(offline.room.room_id, DEFAULT_ROOM_ID);
         assert_eq!(offline.room.messages[0].text, "visible message");
 
-        let runtime = home
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("runtime");
-        let peer_runtime = peer_home
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("peer runtime");
-        let peer_record = peer_runtime
+        let service = home
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("service");
+        let peer_service = peer_home
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("peer service");
+        let peer_record = peer_service
             .online()
             .peer_record(Some("Peer One".to_string()), None)
             .expect("peer record");
@@ -3020,7 +2890,7 @@ mod tests {
             .expect("import peer");
 
         let online = home
-            .home_screen_view(Some(runtime.online()))
+            .home_screen_view(Some(service.online()))
             .expect("online view");
         assert_eq!(online.runtime.state, RuntimeState::Online);
         assert!(online.runtime.listen_addr.is_some());
@@ -3034,6 +2904,8 @@ mod tests {
         assert_eq!(online.peers.len(), 1);
         assert_eq!(online.peers[0].label, "Peer One");
         assert_eq!(online.peers[0].peer_id, peer_record.endpoint.peer_id);
+        service.stop().expect("stop service");
+        peer_service.stop().expect("stop peer service");
     }
 
     fn semantic_token_value(ontology: &UiOntologyView, id: &str) -> String {
