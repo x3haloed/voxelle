@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use voxelle_app::{VoxelleHome, DEFAULT_ROOM_ID};
+use voxelle_app::{IdentityFile, VoxelleHome, DEFAULT_ROOM_ID};
 use voxelle_core::{
     accept_event, create_delegation, create_event, PeerIdentity, RoomContext, GOVERNANCE_ROOM_ID,
 };
@@ -167,15 +167,6 @@ enum DiagnoseCommand {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct IdentityFile {
-    v: u8,
-    peer_secret_b64: String,
-    device_secret_b64: String,
-    peer_id: String,
-    device_id: String,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -264,15 +255,9 @@ fn app_endpoint_export(home: &Path, advertise: SocketAddr, out: Option<&Path>) -
 
 fn identity_create(out: &Path) -> Result<()> {
     let identity = PeerIdentity::generate()?;
-    let file = IdentityFile {
-        v: 1,
-        peer_secret_b64: identity.peer.secret_key_b64(),
-        device_secret_b64: identity.device.secret_key_b64(),
-        peer_id: identity.peer.id.clone(),
-        device_id: identity.device.id.clone(),
-    };
+    let file = IdentityFile::from_identity(&identity);
     write_json(out, &file)?;
-    println!("{}", file.peer_id);
+    println!("{}", identity.peer.id);
     Ok(())
 }
 
@@ -423,10 +408,7 @@ fn member_join(identity: &PeerIdentity) -> Result<voxelle_core::EventV1> {
 fn load_identity(path: &Path) -> Result<PeerIdentity> {
     let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let file: IdentityFile = serde_json::from_str(&raw).context("parse identity file")?;
-    if file.v != 1 {
-        anyhow::bail!("unsupported identity version");
-    }
-    PeerIdentity::from_secret_keys_b64(&file.peer_secret_b64, &file.device_secret_b64)
+    file.to_identity()
 }
 
 fn load_or_create_certificate(path: &Path) -> Result<QuicCertificate> {

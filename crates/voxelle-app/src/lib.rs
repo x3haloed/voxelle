@@ -54,11 +54,30 @@ pub struct HomeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IdentityFile {
-    pub v: u8,
-    pub peer_secret_b64: String,
-    pub device_secret_b64: String,
-    pub peer_id: String,
-    pub device_id: String,
+    v: u8,
+    peer_secret_b64: String,
+    device_secret_b64: String,
+    peer_id: String,
+    device_id: String,
+}
+
+impl IdentityFile {
+    pub fn from_identity(identity: &PeerIdentity) -> Self {
+        Self {
+            v: 1,
+            peer_secret_b64: identity.peer.secret_key_b64(),
+            device_secret_b64: identity.device.secret_key_b64(),
+            peer_id: identity.peer.id.clone(),
+            device_id: identity.device.id.clone(),
+        }
+    }
+
+    pub fn to_identity(&self) -> Result<PeerIdentity> {
+        if self.v != 1 {
+            anyhow::bail!("unsupported identity version {}", self.v);
+        }
+        PeerIdentity::from_secret_keys_b64(&self.peer_secret_b64, &self.device_secret_b64)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1144,10 +1163,7 @@ impl VoxelleHome {
 
     pub fn load_identity(&self) -> Result<PeerIdentity> {
         let file: IdentityFile = read_json(&self.identity_path())?;
-        if file.v != 1 {
-            anyhow::bail!("unsupported identity version {}", file.v);
-        }
-        PeerIdentity::from_secret_keys_b64(&file.peer_secret_b64, &file.device_secret_b64)
+        file.to_identity()
     }
 
     pub fn load_certificate(&self) -> Result<QuicCertificate> {
@@ -1176,13 +1192,7 @@ impl VoxelleHome {
             return self.load_identity();
         }
         let identity = PeerIdentity::generate()?;
-        let file = IdentityFile {
-            v: 1,
-            peer_secret_b64: identity.peer.secret_key_b64(),
-            device_secret_b64: identity.device.secret_key_b64(),
-            peer_id: identity.peer.id.clone(),
-            device_id: identity.device.id.clone(),
-        };
+        let file = IdentityFile::from_identity(&identity);
         write_json(&self.identity_path(), &file)?;
         Ok(identity)
     }
