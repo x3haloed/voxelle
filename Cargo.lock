@@ -4962,7 +4962,6 @@ name = "voxelle-tauri"
 version = "0.1.0"
 dependencies = [
  "tauri",
- "tempfile",
  "voxelle-app",
  "voxelle-shell",
 ]

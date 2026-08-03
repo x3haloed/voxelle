@@ -6,6 +6,55 @@ use voxelle_app::{
     ShellSnapshotView, StartServiceRequest, VoxelleCommandHost,
 };
 
+pub const SHELL_COMMAND_IDS: [&str; 8] = [
+    "snapshot",
+    "init_home",
+    "start_service",
+    "stop_service",
+    "send_message",
+    "import_peer_record",
+    "diagnose_peer",
+    "sync_peer",
+];
+
+#[derive(Debug)]
+pub enum ShellCommand {
+    Snapshot,
+    InitHome(InitHomeRequest),
+    StartService(StartServiceRequest),
+    StopService,
+    SendMessage(SendMessageRequest),
+    ImportPeerRecord(ImportPeerRecordRequest),
+    DiagnosePeer(PeerCommandRequest),
+    SyncPeer(PeerCommandRequest),
+}
+
+impl ShellCommand {
+    pub fn from_json(command_id: &str, payload: serde_json::Value) -> ShellResult<Self> {
+        match command_id {
+            "snapshot" => Ok(Self::Snapshot),
+            "init_home" => Ok(Self::InitHome(parse_request(payload)?)),
+            "start_service" => Ok(Self::StartService(parse_request(payload)?)),
+            "stop_service" => Ok(Self::StopService),
+            "send_message" => Ok(Self::SendMessage(parse_request(payload)?)),
+            "import_peer_record" => Ok(Self::ImportPeerRecord(parse_request(payload)?)),
+            "diagnose_peer" => Ok(Self::DiagnosePeer(parse_request(payload)?)),
+            "sync_peer" => Ok(Self::SyncPeer(parse_request(payload)?)),
+            _ => Err(ShellError {
+                message: format!("unknown command {command_id}"),
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum DeferredShellCommand {
+    DiagnosePeer(PeerCommandRequest),
+    SyncPeer(PeerCommandRequest),
+}
+
+pub type ShellCommandExecution = Result<ShellResult<ShellSnapshotView>, DeferredShellCommand>;
+
 #[derive(Debug)]
 pub struct ShellState {
     host: Mutex<VoxelleCommandHost>,
@@ -62,11 +111,30 @@ impl ShellState {
         host.sync_peer(request).await.map_err(ShellError::from)
     }
 
+    pub fn execute_command(&self, command: ShellCommand) -> ShellCommandExecution {
+        match command {
+            ShellCommand::Snapshot => Ok(self.snapshot()),
+            ShellCommand::InitHome(request) => Ok(self.init_home(request)),
+            ShellCommand::StartService(request) => Ok(self.start_service(request)),
+            ShellCommand::StopService => Ok(self.stop_service()),
+            ShellCommand::SendMessage(request) => Ok(self.send_message(request)),
+            ShellCommand::ImportPeerRecord(request) => Ok(self.import_peer_record(request)),
+            ShellCommand::DiagnosePeer(request) => Err(DeferredShellCommand::DiagnosePeer(request)),
+            ShellCommand::SyncPeer(request) => Err(DeferredShellCommand::SyncPeer(request)),
+        }
+    }
+
     fn host(&self) -> ShellResult<MutexGuard<'_, VoxelleCommandHost>> {
         self.host.lock().map_err(|_| ShellError {
             message: "shell state lock poisoned".to_string(),
         })
     }
+}
+
+fn parse_request<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> ShellResult<T> {
+    serde_json::from_value(payload).map_err(|error| ShellError {
+        message: format!("invalid command payload: {error}"),
+    })
 }
 
 pub type ShellResult<T> = Result<T, ShellError>;
@@ -218,6 +286,46 @@ mod tests {
         assert!(error.message.contains("identity.json"));
         let encoded = serde_json::to_string(&error).expect("serialize");
         assert!(encoded.contains("identity.json"));
+    }
+
+    #[test]
+    fn serialized_commands_preserve_the_shell_action_contract() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shell = ShellState::new(dir.path().join("home"));
+
+        let init =
+            ShellCommand::from_json("init_home", serde_json::json!({ "default_room": null }))
+                .expect("parse init");
+        let init_result = shell
+            .execute_command(init)
+            .expect("init should not be deferred");
+        init_result.expect("init");
+        let send = ShellCommand::from_json(
+            "send_message",
+            serde_json::json!({ "text": "serialized shell command", "room": null }),
+        )
+        .expect("parse send");
+        let send_result = shell
+            .execute_command(send)
+            .expect("send should not be deferred");
+        let snapshot = send_result.expect("send");
+
+        assert_eq!(
+            snapshot.home.expect("home").room.messages[0].text,
+            "serialized shell command"
+        );
+        assert_eq!(
+            ShellCommand::from_json("not_a_command", serde_json::json!({}))
+                .expect_err("unknown command")
+                .message,
+            "unknown command not_a_command"
+        );
+        assert!(
+            ShellCommand::from_json("send_message", serde_json::json!({}))
+                .expect_err("invalid payload")
+                .message
+                .starts_with("invalid command payload:")
+        );
     }
 
     #[test]
