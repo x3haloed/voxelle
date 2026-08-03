@@ -45,8 +45,6 @@ export const fixtureSnapshot = {
         device_id: "ed25519:peerdevice000000000000000000000000000000000000000000",
         addr: "[::1]:49153",
         default_room: "room:general",
-        diagnostic_state: "not_run",
-        sync_state: "not_run",
       },
     ],
     room: {

@@ -58,9 +58,7 @@ export type RuntimeState = "offline" | "online";
 
 export type InviteExchangeView = { peer_record: PeerRecord, peer_record_json: string, };
 
-export type PeerListItemView = { label: string, peer_id: string, device_id: string, addr: string, default_room: string, diagnostic_state: PeerActionState, sync_state: PeerActionState, };
-
-export type PeerActionState = "not_run";
+export type PeerListItemView = { label: string, peer_id: string, device_id: string, addr: string, default_room: string, };
 
 export type RoomTimelineView = { room_id: string, messages: Array<MessageView>, };
 

@@ -268,7 +268,6 @@ pub fn shell_contract_typescript() -> String {
         RuntimeState::decl(&cfg),
         InviteExchangeView::decl(&cfg),
         PeerListItemView::decl(&cfg),
-        PeerActionState::decl(&cfg),
         RoomTimelineView::decl(&cfg),
     ];
     let mut output = typescript_module(declarations);
@@ -511,14 +510,6 @@ pub struct PeerListItemView {
     #[ts(type = "string")]
     pub addr: SocketAddr,
     pub default_room: String,
-    pub diagnostic_state: PeerActionState,
-    pub sync_state: PeerActionState,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum PeerActionState {
-    NotRun,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1555,8 +1546,6 @@ impl PeerListItemView {
             device_id: record.endpoint.device_id,
             addr: record.endpoint.addr,
             default_room: record.default_room,
-            diagnostic_state: PeerActionState::NotRun,
-            sync_state: PeerActionState::NotRun,
         }
     }
 }
@@ -3119,8 +3108,6 @@ mod tests {
         assert_eq!(online.peers.len(), 1);
         assert_eq!(online.peers[0].label, "Peer One");
         assert_eq!(online.peers[0].peer_id, peer_record.endpoint.peer_id);
-        assert_eq!(online.peers[0].diagnostic_state, PeerActionState::NotRun);
-        assert_eq!(online.peers[0].sync_state, PeerActionState::NotRun);
     }
 
     fn semantic_token_value(ontology: &UiOntologyView, id: &str) -> String {
