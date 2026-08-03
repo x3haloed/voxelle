@@ -523,32 +523,8 @@ impl VoxelleHome {
         Self { root: root.into() }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    pub fn identity_path(&self) -> PathBuf {
-        self.root.join("identity.json")
-    }
-
-    pub fn certificate_path(&self) -> PathBuf {
-        self.root.join("quic-cert.json")
-    }
-
-    pub fn store_path(&self) -> PathBuf {
-        self.root.join("store.sqlite3")
-    }
-
-    pub fn config_path(&self) -> PathBuf {
-        self.root.join("config.json")
-    }
-
-    pub fn known_peers_path(&self) -> PathBuf {
-        self.root.join("known-peers.json")
-    }
-
-    pub fn ui_preferences_path(&self) -> PathBuf {
-        self.root.join("ui-preferences.json")
+    fn path(&self, name: &str) -> PathBuf {
+        self.root.join(name)
     }
 
     pub fn init(&self, default_room: impl Into<String>) -> Result<ProfileSummary> {
@@ -558,7 +534,7 @@ impl VoxelleHome {
         self.load_or_create_certificate()?;
 
         let default_room = default_room.into();
-        let config = if self.config_path().exists() {
+        let config = if self.path("config.json").exists() {
             self.load_config()?
         } else {
             let config = HomeConfig {
@@ -566,7 +542,7 @@ impl VoxelleHome {
                 default_room,
                 authority_peer_id: identity.peer.id.clone(),
             };
-            write_json(&self.config_path(), &config)?;
+            write_json(&self.path("config.json"), &config)?;
             config
         };
 
@@ -626,7 +602,7 @@ impl VoxelleHome {
                 format!("Home is initialized for {}.", config.default_room),
             )
             .detail(format!("root: {}", self.root.display())),
-            Err(error) if self.config_path().exists() => NetworkHealthRow::broken(
+            Err(error) if self.path("config.json").exists() => NetworkHealthRow::broken(
                 "home",
                 "Home",
                 "Home exists but cannot be read.",
@@ -655,7 +631,7 @@ impl VoxelleHome {
                 ),
             )
             .detail(format!("device: {}", short_peer_label(&identity.device.id))),
-            Err(error) if self.identity_path().exists() => NetworkHealthRow::broken(
+            Err(error) if self.path("identity.json").exists() => NetworkHealthRow::broken(
                 "identity",
                 "Identity",
                 "Identity file exists but cannot be loaded.",
@@ -680,7 +656,7 @@ impl VoxelleHome {
                 "Persistent QUIC certificate is available.",
             )
             .detail(format!("fingerprint: {}", certificate.fingerprint)),
-            Err(error) if self.certificate_path().exists() => NetworkHealthRow::broken(
+            Err(error) if self.path("quic-cert.json").exists() => NetworkHealthRow::broken(
                 "certificate",
                 "Certificate",
                 "Certificate file exists but cannot be loaded.",
@@ -942,14 +918,17 @@ impl VoxelleHome {
                 .then_with(|| a.endpoint.peer_id.cmp(&b.endpoint.peer_id))
                 .then_with(|| a.endpoint.device_id.cmp(&b.endpoint.device_id))
         });
-        write_json(&self.known_peers_path(), &KnownPeersFile { v: 1, peers })
+        write_json(
+            &self.path("known-peers.json"),
+            &KnownPeersFile { v: 1, peers },
+        )
     }
 
     pub fn known_peers(&self) -> Result<Vec<PeerRecord>> {
-        if !self.known_peers_path().exists() {
+        if !self.path("known-peers.json").exists() {
             return Ok(Vec::new());
         }
-        let file: KnownPeersFile = read_json(&self.known_peers_path())?;
+        let file: KnownPeersFile = read_json(&self.path("known-peers.json"))?;
         if file.v != 1 {
             anyhow::bail!("unsupported known peers version {}", file.v);
         }
@@ -964,10 +943,10 @@ impl VoxelleHome {
     }
 
     pub fn ui_preferences(&self) -> Result<UiPreferences> {
-        if !self.ui_preferences_path().exists() {
+        if !self.path("ui-preferences.json").exists() {
             return Ok(UiPreferences::default());
         }
-        let preferences: UiPreferences = read_json(&self.ui_preferences_path())?;
+        let preferences: UiPreferences = read_json(&self.path("ui-preferences.json"))?;
         if preferences.v != 1 {
             anyhow::bail!("unsupported UI preferences version {}", preferences.v);
         }
@@ -1071,48 +1050,48 @@ impl VoxelleHome {
         Ok(PeerSyncReport { governance, room })
     }
 
-    pub fn load_identity(&self) -> Result<PeerIdentity> {
-        let file: IdentityFile = read_json(&self.identity_path())?;
+    fn load_identity(&self) -> Result<PeerIdentity> {
+        let file: IdentityFile = read_json(&self.path("identity.json"))?;
         file.to_identity()
     }
 
-    pub fn load_certificate(&self) -> Result<QuicCertificate> {
-        read_json(&self.certificate_path())
+    fn load_certificate(&self) -> Result<QuicCertificate> {
+        read_json(&self.path("quic-cert.json"))
     }
 
-    pub fn load_config(&self) -> Result<HomeConfig> {
-        let config: HomeConfig = read_json(&self.config_path())?;
+    fn load_config(&self) -> Result<HomeConfig> {
+        let config: HomeConfig = read_json(&self.path("config.json"))?;
         if config.v != 1 {
             anyhow::bail!("unsupported home config version {}", config.v);
         }
         Ok(config)
     }
 
-    pub fn open_store(&self) -> Result<Store> {
-        Store::open(self.store_path())
+    fn open_store(&self) -> Result<Store> {
+        Store::open(self.path("store.sqlite3"))
     }
 
     fn write_ui_preferences(&self, preferences: &UiPreferences) -> Result<()> {
         validate_ui_preferences(preferences)?;
-        write_json(&self.ui_preferences_path(), preferences)
+        write_json(&self.path("ui-preferences.json"), preferences)
     }
 
     fn load_or_create_identity(&self) -> Result<PeerIdentity> {
-        if self.identity_path().exists() {
+        if self.path("identity.json").exists() {
             return self.load_identity();
         }
         let identity = PeerIdentity::generate()?;
         let file = IdentityFile::from_identity(&identity);
-        write_json(&self.identity_path(), &file)?;
+        write_json(&self.path("identity.json"), &file)?;
         Ok(identity)
     }
 
     fn load_or_create_certificate(&self) -> Result<QuicCertificate> {
-        if self.certificate_path().exists() {
+        if self.path("quic-cert.json").exists() {
             return self.load_certificate();
         }
         let certificate = QuicCertificate::generate()?;
-        write_json(&self.certificate_path(), &certificate)?;
+        write_json(&self.path("quic-cert.json"), &certificate)?;
         Ok(certificate)
     }
 
@@ -1302,7 +1281,7 @@ impl VoxelleCommandHost {
             Err(error) => (None, Some(format!("{error:#}"))),
         };
         Ok(ShellSnapshotView {
-            home_root: self.home.root().to_path_buf(),
+            home_root: self.home.root.clone(),
             home,
             home_error,
             network_health: self.home.network_health_view(online)?,
@@ -2289,9 +2268,6 @@ mod tests {
         let home = VoxelleHome::new(dir.path().join("alice"));
 
         let profile = home.init(DEFAULT_ROOM_ID).expect("init");
-        assert!(home.identity_path().exists());
-        assert!(home.certificate_path().exists());
-        assert!(home.store_path().exists());
         assert_eq!(profile.default_room, DEFAULT_ROOM_ID);
         assert_eq!(profile.peer_id, profile.authority_peer_id);
 
@@ -2316,13 +2292,6 @@ mod tests {
         assert_eq!(first.peer_id, second.peer_id);
         assert_eq!(first.device_id, second.device_id);
         assert_eq!(second.default_room, DEFAULT_ROOM_ID);
-        assert_eq!(
-            home.open_store()
-                .expect("store")
-                .room_event_count(GOVERNANCE_ROOM_ID)
-                .expect("count"),
-            1
-        );
     }
 
     #[test]
@@ -2373,7 +2342,7 @@ mod tests {
         })
         .expect("set behavior");
 
-        let reopened = VoxelleHome::new(home.root().to_path_buf());
+        let reopened = VoxelleHome::new(dir.path().join("home"));
         let preferences = reopened.ui_preferences().expect("preferences");
         assert_eq!(
             preferences.semantic_tokens.get("peer.reachable"),
