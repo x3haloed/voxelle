@@ -13,7 +13,7 @@ use voxelle_core::{
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
-    QuicNode, ServedPeerRequest, ServedRoomSync,
+    QuicNode, ServedPeerRequest,
 };
 use voxelle_store::Store;
 use voxelle_sync::{SyncLimits, SyncStats};
@@ -1635,33 +1635,8 @@ impl VoxelleRuntime {
         })
     }
 
-    pub fn home(&self) -> &VoxelleHome {
-        &self.home
-    }
-
     pub fn online(&self) -> &OnlineHome {
         &self.online
-    }
-
-    pub async fn serve_sync_once(&self, home: &VoxelleHome) -> Result<ServedRoomSync> {
-        let store = home.open_store()?;
-        self.node.serve_room_sync_once(&store).await
-    }
-
-    pub async fn serve_sync_requests(
-        &self,
-        home: &VoxelleHome,
-        count: usize,
-    ) -> Result<Vec<ServedRoomSync>> {
-        let mut served = Vec::with_capacity(count);
-        for _ in 0..count {
-            served.push(self.serve_sync_once(home).await?);
-        }
-        Ok(served)
-    }
-
-    pub async fn serve_diagnostic_once(&self) -> Result<PeerReachabilityReport> {
-        self.node.serve_diagnostic_once().await
     }
 
     pub async fn serve_next_request(&self) -> Result<ServedPeerRequest> {
@@ -2848,7 +2823,7 @@ mod tests {
         let endpoint = listener.online().endpoint.clone();
 
         let (diagnostic_served, report) = tokio::join!(
-            listener.serve_diagnostic_once(),
+            listener.serve_next_request(),
             bob.diagnose_endpoint(&endpoint)
         );
         let report = report.expect("diagnose");
@@ -2860,14 +2835,13 @@ mod tests {
             .expect("listen");
         let endpoint = listener.online().endpoint.clone();
         let (served, report) = tokio::join!(
-            listener.serve_sync_requests(&alice, 2),
+            listener.serve_requests(2),
             bob.sync_endpoint(&endpoint, None, 64)
         );
         let served = served.expect("sync served");
         let report = report.expect("sync peer");
 
-        assert_eq!(served[0].room_id, GOVERNANCE_ROOM_ID);
-        assert_eq!(served[1].room_id, DEFAULT_ROOM_ID);
+        assert_eq!(served.len(), 2);
         assert_eq!(report.governance.accepted, 1);
         assert_eq!(report.room.accepted, 1);
         assert_eq!(
