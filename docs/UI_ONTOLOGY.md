@@ -305,9 +305,11 @@ the local bridge; Rust validates and persists the change, and the returned
 snapshot changes the rendered interface. The standalone browser fixture is
 generated from the same Rust defaults.
 
-Places, view composition, and renderer selection are still only partly
-realized. They remain named ontology commitments rather than claims that the
-current workbench layout is already user-editable.
+Places and views now name, order, and compose the visible workbench. Place and
+view editing, command-palette editing, and renderer selection remain planned.
+Their records name the future owning surface but report `editable: false` until
+that surface exists. Semantic tokens, metrics, and behaviors report
+`editable: true` because the in-app Customize surface realizes those paths.
 
 ## 6. Framework Direction
 

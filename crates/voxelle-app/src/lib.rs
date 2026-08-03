@@ -1859,37 +1859,19 @@ fn default_places() -> Vec<UiPlace> {
             "sidebar",
             "Sidebar",
             "Navigation and secondary app surfaces",
-            true,
-            "layout/place editor",
         ),
-        ui_place(
-            "main",
-            "Main",
-            "Primary room and message surfaces",
-            true,
-            "layout/place editor",
-        ),
+        ui_place("main", "Main", "Primary room and message surfaces"),
         ui_place(
             "inspector",
             "Inspector",
             "Future selected peer or message details",
-            true,
-            "layout/place editor",
         ),
         ui_place(
             "activity",
             "Activity",
             "Service, diagnostic, and sync activity",
-            true,
-            "layout/place editor",
         ),
-        ui_place(
-            "status",
-            "Status",
-            "Runtime and reachability state",
-            true,
-            "layout/place editor",
-        ),
+        ui_place("status", "Status", "Runtime and reachability state"),
     ]
 }
 
@@ -2182,19 +2164,13 @@ fn default_renderers() -> Vec<UiRenderer> {
     ]
 }
 
-fn ui_place(
-    id: &str,
-    label: &str,
-    description: &str,
-    editable: bool,
-    editing_surface: &str,
-) -> UiPlace {
+fn ui_place(id: &str, label: &str, description: &str) -> UiPlace {
     UiPlace {
         id: id.to_string(),
         label: label.to_string(),
         description: description.to_string(),
-        editable,
-        editing_surface: editing_surface.to_string(),
+        editable: false,
+        editing_surface: "layout/place editor".to_string(),
     }
 }
 
@@ -2204,7 +2180,7 @@ fn ui_view(id: &str, label: &str, place_id: &str, description: &str) -> UiView {
         label: label.to_string(),
         place_id: place_id.to_string(),
         description: description.to_string(),
-        editable: true,
+        editable: false,
         editing_surface: "layout/place editor".to_string(),
     }
 }
@@ -2214,7 +2190,7 @@ fn ui_command(id: &str, label: &str, description: &str) -> UiCommand {
         id: id.to_string(),
         label: label.to_string(),
         description: description.to_string(),
-        editable: true,
+        editable: false,
         editing_surface: "command palette".to_string(),
     }
 }
@@ -2269,7 +2245,7 @@ fn renderer(id: &str, label: &str, renders: &str, default_renderer: &str) -> UiR
         renders: renders.to_string(),
         default_renderer: default_renderer.to_string(),
         current_renderer: default_renderer.to_string(),
-        editable: true,
+        editable: false,
         editing_surface: "renderer settings".to_string(),
     }
 }
