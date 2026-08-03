@@ -1,7 +1,4 @@
-use crate::{
-    ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest,
-    SetUiPreferenceRequest, ShellSnapshotView, StartServiceRequest, VoxelleCommandHost,
-};
+use crate::{ShellSnapshotView, VoxelleCommandHost};
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use ts_rs::TS;
@@ -17,38 +14,6 @@ pub const SHELL_COMMAND_IDS: [&str; 9] = [
     "sync_peer",
     "set_ui_preference",
 ];
-
-#[derive(Debug)]
-enum ShellCommand {
-    Snapshot,
-    InitHome(InitHomeRequest),
-    StartService(StartServiceRequest),
-    StopService,
-    SendMessage(SendMessageRequest),
-    ImportPeerRecord(ImportPeerRecordRequest),
-    DiagnosePeer(PeerCommandRequest),
-    SyncPeer(PeerCommandRequest),
-    SetUiPreference(SetUiPreferenceRequest),
-}
-
-impl ShellCommand {
-    fn from_json(command_id: &str, payload: serde_json::Value) -> ShellResult<Self> {
-        match command_id {
-            "snapshot" => Ok(Self::Snapshot),
-            "init_home" => Ok(Self::InitHome(parse_request(payload)?)),
-            "start_service" => Ok(Self::StartService(parse_request(payload)?)),
-            "stop_service" => Ok(Self::StopService),
-            "send_message" => Ok(Self::SendMessage(parse_request(payload)?)),
-            "import_peer_record" => Ok(Self::ImportPeerRecord(parse_request(payload)?)),
-            "diagnose_peer" => Ok(Self::DiagnosePeer(parse_request(payload)?)),
-            "sync_peer" => Ok(Self::SyncPeer(parse_request(payload)?)),
-            "set_ui_preference" => Ok(Self::SetUiPreference(parse_request(payload)?)),
-            _ => Err(ShellError {
-                message: format!("unknown command {command_id}"),
-            }),
-        }
-    }
-}
 
 #[derive(Debug)]
 pub struct ShellState {
@@ -67,18 +32,22 @@ impl ShellState {
         command_id: &str,
         payload: serde_json::Value,
     ) -> ShellResult<ShellSnapshotView> {
-        let command = ShellCommand::from_json(command_id, payload)?;
         let mut host = self.host()?;
-        let result = match command {
-            ShellCommand::Snapshot => host.snapshot(),
-            ShellCommand::InitHome(request) => host.init_home(request),
-            ShellCommand::StartService(request) => host.start_service(request),
-            ShellCommand::StopService => host.stop_service(),
-            ShellCommand::SendMessage(request) => host.send_message(request),
-            ShellCommand::ImportPeerRecord(request) => host.import_peer_record(request),
-            ShellCommand::DiagnosePeer(request) => host.diagnose_peer(request).await,
-            ShellCommand::SyncPeer(request) => host.sync_peer(request).await,
-            ShellCommand::SetUiPreference(request) => host.set_ui_preference(request),
+        let result = match command_id {
+            "snapshot" => host.snapshot(),
+            "init_home" => host.init_home(parse_request(payload)?),
+            "start_service" => host.start_service(parse_request(payload)?),
+            "stop_service" => host.stop_service(),
+            "send_message" => host.send_message(parse_request(payload)?),
+            "import_peer_record" => host.import_peer_record(parse_request(payload)?),
+            "diagnose_peer" => host.diagnose_peer(parse_request(payload)?).await,
+            "sync_peer" => host.sync_peer(parse_request(payload)?).await,
+            "set_ui_preference" => host.set_ui_preference(parse_request(payload)?),
+            _ => {
+                return Err(ShellError {
+                    message: format!("unknown command {command_id}"),
+                })
+            }
         };
         result.map_err(ShellError::from)
     }
