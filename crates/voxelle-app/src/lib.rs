@@ -928,22 +928,6 @@ impl VoxelleHome {
         Ok(messages)
     }
 
-    pub fn export_endpoint(&self, advertised_addr: SocketAddr) -> Result<PeerEndpoint> {
-        if !advertised_addr.is_ipv6() {
-            anyhow::bail!("advertised address must be IPv6");
-        }
-        let identity = self.load_identity()?;
-        let certificate = self.load_certificate()?;
-        Ok(PeerEndpoint {
-            v: 1,
-            addr: advertised_addr,
-            peer_id: identity.peer.id,
-            device_id: identity.device.id,
-            quic_cert_der_b64: certificate.cert_der_b64,
-            quic_cert_fingerprint: certificate.fingerprint,
-        })
-    }
-
     pub fn import_peer_record(&self, record: PeerRecord) -> Result<()> {
         record.validate()?;
         let mut peers = self.known_peers()?;
@@ -2319,7 +2303,7 @@ mod tests {
     }
 
     #[test]
-    fn home_init_send_read_and_endpoint_export_are_app_actions() {
+    fn home_init_send_and_read_are_app_actions() {
         let dir = tempdir().expect("tempdir");
         let home = VoxelleHome::new(dir.path().join("alice"));
 
@@ -2338,13 +2322,6 @@ mod tests {
         let messages = home.read_messages(None).expect("read");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].text, "hello from app layer");
-
-        let endpoint = home
-            .export_endpoint(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 4040))
-            .expect("endpoint");
-        endpoint.validate().expect("valid endpoint");
-        assert_eq!(endpoint.peer_id, profile.peer_id);
-        assert_eq!(endpoint.device_id, profile.device_id);
     }
 
     #[test]
