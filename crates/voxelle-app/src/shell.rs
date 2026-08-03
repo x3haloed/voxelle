@@ -4,15 +4,15 @@ use std::sync::{Mutex, MutexGuard};
 use ts_rs::TS;
 
 pub const SHELL_COMMAND_IDS: [&str; 9] = [
-    "snapshot",
-    "init_home",
-    "start_service",
-    "stop_service",
-    "send_message",
-    "import_peer_record",
-    "diagnose_peer",
-    "sync_peer",
-    "set_ui_preference",
+    "shell.refresh",
+    "home.init",
+    "runtime.goOnline",
+    "runtime.goOffline",
+    "message.send",
+    "peer.import",
+    "peer.diagnose",
+    "peer.sync",
+    "ui.preference.set",
 ];
 
 #[derive(Debug)]
@@ -34,15 +34,15 @@ impl ShellState {
     ) -> ShellResult<ShellSnapshotView> {
         let mut host = self.host()?;
         let result = match command_id {
-            "snapshot" => host.snapshot(),
-            "init_home" => host.init_home(parse_request(payload)?),
-            "start_service" => host.start_service(parse_request(payload)?),
-            "stop_service" => host.stop_service(),
-            "send_message" => host.send_message(parse_request(payload)?),
-            "import_peer_record" => host.import_peer_record(parse_request(payload)?),
-            "diagnose_peer" => host.diagnose_peer(parse_request(payload)?).await,
-            "sync_peer" => host.sync_peer(parse_request(payload)?).await,
-            "set_ui_preference" => host.set_ui_preference(parse_request(payload)?),
+            "shell.refresh" => host.snapshot(),
+            "home.init" => host.init_home(parse_request(payload)?),
+            "runtime.goOnline" => host.start_service(parse_request(payload)?),
+            "runtime.goOffline" => host.stop_service(),
+            "message.send" => host.send_message(parse_request(payload)?),
+            "peer.import" => host.import_peer_record(parse_request(payload)?),
+            "peer.diagnose" => host.diagnose_peer(parse_request(payload)?).await,
+            "peer.sync" => host.sync_peer(parse_request(payload)?).await,
+            "ui.preference.set" => host.set_ui_preference(parse_request(payload)?),
             _ => {
                 return Err(ShellError {
                     message: format!("unknown command {command_id}"),
@@ -91,7 +91,7 @@ mod tests {
         let shell = ShellState::new(dir.path().join("home"));
 
         let snapshot = shell
-            .execute_serialized_command("snapshot", serde_json::json!({}))
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
             .await
             .expect("snapshot");
 
@@ -116,17 +116,17 @@ mod tests {
 
         alice
             .execute_serialized_command(
-                "init_home",
+                "home.init",
                 serde_json::json!({ "default_room": DEFAULT_ROOM_ID }),
             )
             .await
             .expect("alice init");
-        bob.execute_serialized_command("init_home", serde_json::json!({ "default_room": null }))
+        bob.execute_serialized_command("home.init", serde_json::json!({ "default_room": null }))
             .await
             .expect("bob init");
         alice
             .execute_serialized_command(
-                "send_message",
+                "message.send",
                 serde_json::json!({ "text": "hello through shell", "room": null }),
             )
             .await
@@ -134,7 +134,7 @@ mod tests {
 
         let alice_online = alice
             .execute_serialized_command(
-                "start_service",
+                "runtime.goOnline",
                 serde_json::json!({ "bind": null, "advertise": null }),
             )
             .await
@@ -155,7 +155,7 @@ mod tests {
 
         let bob_imported = bob
             .execute_serialized_command(
-                "import_peer_record",
+                "peer.import",
                 serde_json::json!({ "peer_record_json": peer_record_json }),
             )
             .await
@@ -172,7 +172,7 @@ mod tests {
         });
 
         let diagnosed = bob
-            .execute_serialized_command("diagnose_peer", request.clone())
+            .execute_serialized_command("peer.diagnose", request.clone())
             .await
             .expect("diagnose");
         assert!(diagnosed
@@ -181,7 +181,7 @@ mod tests {
             .any(|item| item.summary.starts_with("diagnostic reached")));
 
         let synced = bob
-            .execute_serialized_command("sync_peer", request)
+            .execute_serialized_command("peer.sync", request)
             .await
             .expect("sync");
         assert_eq!(
@@ -190,7 +190,7 @@ mod tests {
         );
 
         let alice_after_serving = alice
-            .execute_serialized_command("snapshot", serde_json::json!({}))
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
             .await
             .expect("alice snapshot");
         assert!(alice_after_serving
@@ -198,7 +198,7 @@ mod tests {
             .iter()
             .any(|item| item.summary.starts_with("served diagnostic:")));
         alice
-            .execute_serialized_command("stop_service", serde_json::json!({}))
+            .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
             .await
             .expect("stop");
     }
@@ -210,7 +210,7 @@ mod tests {
 
         let error = shell
             .execute_serialized_command(
-                "send_message",
+                "message.send",
                 serde_json::json!({ "text": "not initialized", "room": null }),
             )
             .await
@@ -227,12 +227,12 @@ mod tests {
         let shell = ShellState::new(dir.path().join("home"));
 
         shell
-            .execute_serialized_command("init_home", serde_json::json!({ "default_room": null }))
+            .execute_serialized_command("home.init", serde_json::json!({ "default_room": null }))
             .await
             .expect("init");
         let snapshot = shell
             .execute_serialized_command(
-                "send_message",
+                "message.send",
                 serde_json::json!({ "text": "serialized shell command", "room": null }),
             )
             .await
@@ -244,7 +244,7 @@ mod tests {
         );
         let updated = shell
             .execute_serialized_command(
-                "set_ui_preference",
+                "ui.preference.set",
                 serde_json::json!({
                     "kind": "metric",
                     "id": "sidebar.width",
@@ -259,7 +259,7 @@ mod tests {
         assert_eq!(
             metric_value(
                 &reopened
-                    .execute_serialized_command("snapshot", serde_json::json!({}))
+                    .execute_serialized_command("shell.refresh", serde_json::json!({}))
                     .await
                     .expect("reopened snapshot"),
                 "sidebar.width"
@@ -275,7 +275,7 @@ mod tests {
             "unknown command not_a_command"
         );
         assert!(shell
-            .execute_serialized_command("send_message", serde_json::json!({}))
+            .execute_serialized_command("message.send", serde_json::json!({}))
             .await
             .expect_err("invalid payload")
             .message

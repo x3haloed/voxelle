@@ -173,19 +173,20 @@ Suggested `agent_hints`:
 
 Actions answer: "What may I do, through the same authority path as the UI?"
 
-The v0 action set should mirror current shell commands:
+The v0 action set uses the same stable semantic command IDs as the UI:
 
-- `snapshot`
-- `init_home`
-- `start_service`
-- `stop_service`
-- `send_message`
-- `import_peer_record`
-- `diagnose_peer`
-- `sync_peer`
+- `shell.refresh`
+- `home.init`
+- `runtime.goOnline`
+- `runtime.goOffline`
+- `message.send`
+- `peer.import`
+- `peer.diagnose`
+- `peer.sync`
+- `ui.preference.set`
 
-Agent-facing adapters may rename these to stable semantic command IDs, but each
-adapter should map back to the same application command host.
+Routes and buttons are affordances over these IDs; adapters do not invent a
+second command vocabulary.
 
 ### 3.4 Action Result
 

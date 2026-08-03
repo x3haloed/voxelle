@@ -31,14 +31,14 @@ mod tests {
         tauri::async_runtime::block_on(async {
             state
                 .execute_serialized_command(
-                    "init_home",
+                    "home.init",
                     serde_json::json!({ "default_room": null }),
                 )
                 .await
                 .expect("initialize home");
             let snapshot = state
                 .execute_serialized_command(
-                    "send_message",
+                    "message.send",
                     serde_json::json!({ "text": "through desktop bridge", "room": null }),
                 )
                 .await
@@ -50,7 +50,7 @@ mod tests {
 
             let online = state
                 .execute_serialized_command(
-                    "start_service",
+                    "runtime.goOnline",
                     serde_json::json!({ "bind": "[::1]:0", "advertise": null }),
                 )
                 .await
@@ -60,7 +60,7 @@ mod tests {
                 voxelle_app::RuntimeState::Online
             );
             state
-                .execute_serialized_command("stop_service", serde_json::json!({}))
+                .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
                 .await
                 .expect("stop service");
         });

@@ -153,7 +153,7 @@ async fn snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     match block_on_shell_call(
         state
             .shell
-            .execute_serialized_command("snapshot", Value::Null),
+            .execute_serialized_command("shell.refresh", Value::Null),
     ) {
         Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response(),

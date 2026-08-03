@@ -34,12 +34,12 @@ const viewRenderers = {
   "service.activity": activityView,
 };
 
-let currentSnapshot = await shell.execute("snapshot");
+let currentSnapshot = await shell.execute("shell.refresh");
 if (
   ontologyPresentation(currentSnapshot.ui_ontology).startOnlineOnLaunch
   && currentSnapshot.home?.runtime.state === "offline"
 ) {
-  currentSnapshot = await shell.execute("start_service", {
+  currentSnapshot = await shell.execute("runtime.goOnline", {
     bind: null,
     advertise: null,
   });
@@ -47,7 +47,7 @@ if (
 render();
 
 async function refresh() {
-  currentSnapshot = await shell.execute("snapshot");
+  currentSnapshot = await shell.execute("shell.refresh");
   return currentSnapshot;
 }
 
@@ -605,44 +605,37 @@ async function runCommand(command, payload) {
         await refresh();
         return;
       case "home.init":
-        currentSnapshot = await shell.execute("init_home", { default_room: null });
+        currentSnapshot = await shell.execute(command, { default_room: null });
         return;
       case "runtime.goOnline":
-        currentSnapshot = await shell.execute("start_service", {
+        currentSnapshot = await shell.execute(command, {
           bind: blankToNull(uiState.bindDraft),
           advertise: blankToNull(uiState.advertiseDraft),
         });
         return;
       case "runtime.goOffline":
-        currentSnapshot = await shell.execute("stop_service");
+        currentSnapshot = await shell.execute(command);
         return;
       case "peer.import":
-        currentSnapshot = await shell.execute("import_peer_record", {
+        currentSnapshot = await shell.execute(command, {
           peer_record_json: uiState.peerRecordDraft,
         });
         uiState.peerRecordDraft = "";
         if (ontologyPresentation(currentSnapshot.ui_ontology).syncAutoAfterImport) {
-          currentSnapshot = await shell.execute("sync_peer", firstPeerRequest());
+          currentSnapshot = await shell.execute("peer.sync", firstPeerRequest());
         }
         return;
       case "peer.diagnose":
-        currentSnapshot = await shell.execute(
-          "diagnose_peer",
-          /** @type {import("./shell-contract").PeerCommandRequest} */ (
-            payload ?? firstPeerRequest()
-          ),
-        );
-        return;
       case "peer.sync":
         currentSnapshot = await shell.execute(
-          "sync_peer",
+          command,
           /** @type {import("./shell-contract").PeerCommandRequest} */ (
             payload ?? firstPeerRequest()
           ),
         );
         return;
       case "message.send":
-        currentSnapshot = await shell.execute("send_message", {
+        currentSnapshot = await shell.execute(command, {
           text: uiState.messageDraft,
           room: null,
         });
@@ -656,7 +649,7 @@ async function runCommand(command, payload) {
         return;
       case "ui.preference.set":
         currentSnapshot = await shell.execute(
-          "set_ui_preference",
+          command,
           /** @type {import("./shell-contract").SetUiPreferenceRequest} */ (payload),
         );
         return;

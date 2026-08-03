@@ -53,30 +53,30 @@ class FixtureShellClient {
    */
   async execute(command, payload = {}) {
     switch (command) {
-      case "snapshot":
+      case "shell.refresh":
         break;
-      case "init_home":
-        this.appendActivity("fixture init_home");
+      case "home.init":
+        this.appendActivity("fixture home.init");
         break;
-      case "start_service":
+      case "runtime.goOnline":
         this.current.home && (this.current.home.runtime.state = "online");
         this.setHealth(
           "service",
           "working",
           "Resident service is online in fixture mode.",
         );
-        this.appendActivity("fixture start_service");
+        this.appendActivity("fixture runtime.goOnline");
         break;
-      case "stop_service":
+      case "runtime.goOffline":
         this.current.home && (this.current.home.runtime.state = "offline");
         this.setHealth(
           "service",
           "needs_attention",
           "Go online to accept peer diagnostics and sync requests.",
         );
-        this.appendActivity("fixture stop_service");
+        this.appendActivity("fixture runtime.goOffline");
         break;
-      case "send_message": {
+      case "message.send": {
         const request = /** @type {SendMessageRequest} */ (payload);
         this.current.home?.room.messages.push({
           event_id: `fixture_${Date.now()}`,
@@ -84,20 +84,20 @@ class FixtureShellClient {
           author_peer_id: this.current.home.profile.peer_id,
           text: request.text,
         });
-        this.appendActivity("fixture send_message");
+        this.appendActivity("fixture message.send");
         break;
       }
-      case "import_peer_record":
+      case "peer.import":
         this.setHealth("peers", "working", "1 known peer record(s).");
-        this.appendActivity("fixture import_peer_record");
+        this.appendActivity("fixture peer.import");
         break;
-      case "diagnose_peer":
+      case "peer.diagnose":
         this.appendActivity("fixture diagnostic reached peer");
         break;
-      case "sync_peer":
+      case "peer.sync":
         this.appendActivity("fixture sync completed");
         break;
-      case "set_ui_preference": {
+      case "ui.preference.set": {
         const request = /** @type {SetUiPreferenceRequest} */ (payload);
         const { semantic_tokens: tokens, metrics, behaviors } = this.current.ui_ontology;
         const collection = request.kind === "semantic_token"
