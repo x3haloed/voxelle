@@ -52,7 +52,7 @@ window to be alive.
 The dependency direction should stay one-way:
 
 ```text
-voxelle-inhabitantd -> voxelle-shell / voxelle-app -> core/store/sync/net
+voxelle-inhabitantd -> voxelle-app -> core/store/sync/net
 ```
 
 Core app crates should not depend on HTTP, SSE, Axum, Watch, Discord, or MCP

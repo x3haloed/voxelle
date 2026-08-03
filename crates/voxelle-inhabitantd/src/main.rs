@@ -22,9 +22,9 @@ use std::{
 };
 use tokio::{net::TcpListener, signal, time};
 use tracing::info;
-use voxelle_app::{resolve_home_root, ShellSnapshotView};
-use voxelle_shell::{
-    DeferredShellCommand, ShellCommand, ShellError, ShellState, SHELL_COMMAND_IDS,
+use voxelle_app::{
+    resolve_home_root, DeferredShellCommand, ShellCommand, ShellError, ShellSnapshotView,
+    ShellState, SHELL_COMMAND_IDS,
 };
 
 #[derive(Debug, Parser)]

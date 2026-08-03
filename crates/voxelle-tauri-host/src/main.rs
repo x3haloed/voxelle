@@ -1,9 +1,8 @@
 use tauri::State;
 use voxelle_app::{
-    ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest,
-    ShellSnapshotView, StartServiceRequest,
+    ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest, ShellError,
+    ShellSnapshotView, ShellState, StartServiceRequest,
 };
-use voxelle_shell::{ShellError, ShellState};
 
 fn main() {
     tauri::Builder::default()

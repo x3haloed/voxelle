@@ -1,10 +1,10 @@
-use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
-use ts_rs::TS;
-use voxelle_app::{
+use crate::{
     ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest,
     ShellSnapshotView, StartServiceRequest, VoxelleCommandHost,
 };
+use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
+use ts_rs::TS;
 
 pub const SHELL_COMMAND_IDS: [&str; 8] = [
     "snapshot",
@@ -152,30 +152,10 @@ impl From<anyhow::Error> for ShellError {
     }
 }
 
-pub fn shell_contract_typescript() -> String {
-    let mut output = voxelle_app::shell_contract_typescript();
-    let cfg = ts_rs::Config::default();
-    output.push_str("export ");
-    output.push_str(&ShellError::decl(&cfg));
-    if !output.ends_with('\n') {
-        output.push('\n');
-    }
-    output
-}
-
-pub fn write_shell_contract(path: impl AsRef<std::path::Path>) -> anyhow::Result<()> {
-    let path = path.as_ref();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, shell_contract_typescript())?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use voxelle_app::{NetworkHealthStatus, DEFAULT_ROOM_ID};
+    use crate::{shell_contract_typescript, NetworkHealthStatus, DEFAULT_ROOM_ID};
 
     #[test]
     fn shell_state_returns_pre_init_snapshot_for_web_shell() {

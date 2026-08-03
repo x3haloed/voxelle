@@ -4900,7 +4900,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "voxelle-app",
- "voxelle-shell",
 ]
 
 [[package]]
@@ -4921,19 +4920,6 @@ dependencies = [
  "voxelle-core",
  "voxelle-store",
  "voxelle-sync",
-]
-
-[[package]]
-name = "voxelle-shell"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "ts-rs",
- "voxelle-app",
 ]
 
 [[package]]
@@ -4964,7 +4950,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "voxelle-app",
- "voxelle-shell",
 ]
 
 [[package]]

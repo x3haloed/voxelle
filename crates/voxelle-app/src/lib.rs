@@ -18,6 +18,13 @@ use voxelle_net::{
 use voxelle_store::Store;
 use voxelle_sync::{SyncLimits, SyncStats};
 
+mod shell;
+
+pub use shell::{
+    DeferredShellCommand, ShellCommand, ShellCommandExecution, ShellError, ShellResult, ShellState,
+    SHELL_COMMAND_IDS,
+};
+
 pub const DEFAULT_ROOM_ID: &str = "room:general";
 
 pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
@@ -266,7 +273,22 @@ pub fn shell_contract_typescript() -> String {
         PeerActionState::decl(&cfg),
         RoomTimelineView::decl(&cfg),
     ];
-    typescript_module(declarations)
+    let mut output = typescript_module(declarations);
+    output.push_str("export ");
+    output.push_str(&ShellError::decl(&cfg));
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
+}
+
+pub fn write_shell_contract(path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, shell_contract_typescript())?;
+    Ok(())
 }
 
 #[derive(Debug)]

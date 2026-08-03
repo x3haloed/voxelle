@@ -5,7 +5,7 @@ fn main() -> anyhow::Result<()> {
         .nth(1)
         .map(PathBuf::from)
         .unwrap_or_else(default_contract_path);
-    voxelle_shell::write_shell_contract(&output)?;
+    voxelle_app::write_shell_contract(&output)?;
     println!("{}", output.display());
     Ok(())
 }
