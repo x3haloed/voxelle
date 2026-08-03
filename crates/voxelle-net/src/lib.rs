@@ -357,7 +357,7 @@ impl QuicNode {
 
     pub async fn sync_room_once(
         &self,
-        dest: &Store,
+        dest: &mut Store,
         remote_addr: SocketAddr,
         remote_cert_der: CertificateDer<'static>,
         expected_remote_device_id: &str,
@@ -984,7 +984,7 @@ mod tests {
         let alice = PeerIdentity::generate()?;
         let context = RoomContext::new(authority.peer.id.clone());
         let source_store = Store::open_in_memory()?;
-        let dest_store = Store::open_in_memory()?;
+        let mut dest_store = Store::open_in_memory()?;
 
         let join = member_join(&alice);
         let msg = message(&alice, 1_100, "over quic");
@@ -1009,7 +1009,7 @@ mod tests {
         let client_fut = async {
             let governance_stats = client
                 .sync_room_once(
-                    &dest_store,
+                    &mut dest_store,
                     server_addr,
                     server_cert.clone(),
                     &expected_server_device_id,
@@ -1023,7 +1023,7 @@ mod tests {
 
             let room_stats = client
                 .sync_room_once(
-                    &dest_store,
+                    &mut dest_store,
                     server_addr,
                     server_cert,
                     &expected_server_device_id,

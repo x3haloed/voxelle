@@ -1015,7 +1015,7 @@ impl VoxelleHome {
 
         let identity = self.load_identity()?;
         let certificate = self.load_certificate()?;
-        let store = self.open_store()?;
+        let mut store = self.open_store()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
         let endpoint = &peer.endpoint;
         let context = RoomContext::new(endpoint.peer_id.clone());
@@ -1024,7 +1024,7 @@ impl VoxelleHome {
         };
         let governance = node
             .sync_room_once(
-                &store,
+                &mut store,
                 endpoint.addr,
                 endpoint.certificate_der()?,
                 &endpoint.device_id,
@@ -1036,7 +1036,7 @@ impl VoxelleHome {
             .await?;
         let room = node
             .sync_room_once(
-                &store,
+                &mut store,
                 endpoint.addr,
                 endpoint.certificate_der()?,
                 &endpoint.device_id,

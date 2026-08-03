@@ -1,6 +1,6 @@
 use crate::{ShellSnapshotView, VoxelleCommandHost};
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard};
+use tokio::sync::Mutex;
 use ts_rs::TS;
 
 pub const SHELL_COMMAND_IDS: [&str; 9] = [
@@ -32,7 +32,7 @@ impl ShellState {
         command_id: &str,
         payload: serde_json::Value,
     ) -> ShellResult<ShellSnapshotView> {
-        let mut host = self.host()?;
+        let mut host = self.host.lock().await;
         let result = match command_id {
             "shell.refresh" => host.snapshot(),
             "home.init" => host.init_home(parse_request(payload)?),
@@ -50,12 +50,6 @@ impl ShellState {
             }
         };
         result.map_err(ShellError::from)
-    }
-
-    fn host(&self) -> ShellResult<MutexGuard<'_, VoxelleCommandHost>> {
-        self.host.lock().map_err(|_| ShellError {
-            message: "shell state lock poisoned".to_string(),
-        })
     }
 }
 

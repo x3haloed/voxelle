@@ -150,11 +150,11 @@ async fn get_discovery(State(state): State<Arc<AppState>>) -> Json<DiscoveryView
 }
 
 async fn snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match block_on_shell_call(
-        state
-            .shell
-            .execute_serialized_command("shell.refresh", Value::Null),
-    ) {
+    match state
+        .shell
+        .execute_serialized_command("shell.refresh", Value::Null)
+        .await
+    {
         Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response(),
     }
@@ -165,7 +165,7 @@ async fn command(
     Path(command_id): Path<String>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    let result = run_command(&state.shell, &command_id, payload);
+    let result = run_command(&state.shell, &command_id, payload).await;
     let status = if result.ok {
         StatusCode::OK
     } else {
@@ -174,8 +174,8 @@ async fn command(
     (status, Json(result)).into_response()
 }
 
-fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionResult {
-    let result = block_on_shell_call(shell.execute_serialized_command(command_id, payload));
+async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionResult {
+    let result = shell.execute_serialized_command(command_id, payload).await;
     match result {
         Ok(snapshot) => ActionResult {
             ok: true,
@@ -192,12 +192,6 @@ fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionRe
             error: Some(error),
         },
     }
-}
-
-fn block_on_shell_call(
-    call: impl std::future::Future<Output = Result<ShellSnapshotView, ShellError>>,
-) -> Result<ShellSnapshotView, ShellError> {
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(call))
 }
 
 async fn events(
