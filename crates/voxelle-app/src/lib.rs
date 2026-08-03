@@ -1022,41 +1022,23 @@ impl VoxelleHome {
 
     pub async fn diagnose_peer(&self, peer: &PeerRecord) -> Result<PeerReachabilityReport> {
         peer.validate()?;
-        self.diagnose_endpoint(&peer.endpoint).await
-    }
-
-    pub async fn diagnose_endpoint(
-        &self,
-        endpoint: &PeerEndpoint,
-    ) -> Result<PeerReachabilityReport> {
         let identity = self.load_identity()?;
         let certificate = self.load_certificate()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
-        Ok(node.diagnose_peer(endpoint).await)
+        Ok(node.diagnose_peer(&peer.endpoint).await)
     }
 
     pub async fn sync_peer(&self, peer: &PeerRecord, max_events: usize) -> Result<PeerSyncReport> {
         peer.validate()?;
-        self.sync_endpoint(&peer.endpoint, Some(&peer.default_room), max_events)
-            .await
-    }
-
-    pub async fn sync_endpoint(
-        &self,
-        endpoint: &PeerEndpoint,
-        room: Option<&str>,
-        max_events: usize,
-    ) -> Result<PeerSyncReport> {
-        endpoint.validate()?;
         if max_events == 0 {
             anyhow::bail!("max_events must be positive");
         }
 
         let identity = self.load_identity()?;
         let certificate = self.load_certificate()?;
-        let config = self.load_config()?;
         let store = self.open_store()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
+        let endpoint = &peer.endpoint;
         let context = RoomContext::new(endpoint.peer_id.clone());
         let limits = SyncLimits {
             max_events_per_batch: max_events,
@@ -1073,14 +1055,13 @@ impl VoxelleHome {
                 limits,
             )
             .await?;
-        let room_id = room.unwrap_or(&config.default_room);
         let room = node
             .sync_room_once(
                 &store,
                 endpoint.addr,
                 endpoint.certificate_der()?,
                 &endpoint.device_id,
-                room_id,
+                &peer.default_room,
                 &context,
                 now_ms(),
                 limits,
