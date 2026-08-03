@@ -295,14 +295,12 @@ pub fn write_shell_contract(path: impl AsRef<Path>) -> Result<()> {
 pub struct VoxelleRuntime {
     home: VoxelleHome,
     node: QuicNode,
-    endpoint: PeerEndpoint,
-    local_report: LocalReachabilityReport,
+    online: OnlineHome,
 }
 
 #[derive(Debug)]
 pub struct VoxelleService {
-    summary: ListenSummary,
-    default_room: String,
+    online: OnlineHome,
     events: mpsc::Receiver<VoxelleServiceEvent>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
@@ -355,9 +353,10 @@ impl VoxelleServiceEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ListenSummary {
+pub struct OnlineHome {
     pub endpoint: PeerEndpoint,
     pub local_report: LocalReachabilityReport,
+    pub default_room: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -581,12 +580,12 @@ impl VoxelleHome {
         })
     }
 
-    pub fn home_screen_view(&self, runtime: Option<&VoxelleRuntime>) -> Result<HomeScreenView> {
+    pub fn home_screen_view(&self, online: Option<&OnlineHome>) -> Result<HomeScreenView> {
         let config = self.load_config()?;
-        let invite = runtime
-            .map(|runtime| runtime.invite_view(None, None))
+        let invite = online
+            .map(|online| online.invite_view(None, None))
             .transpose()?;
-        let runtime = runtime
+        let runtime = online
             .map(RuntimeStatusView::online)
             .unwrap_or_else(RuntimeStatusView::offline);
         Ok(HomeScreenView {
@@ -605,37 +604,7 @@ impl VoxelleHome {
         })
     }
 
-    pub fn home_screen_view_service(
-        &self,
-        service: Option<&VoxelleService>,
-    ) -> Result<HomeScreenView> {
-        let config = self.load_config()?;
-        let invite = service
-            .map(|service| service.invite_view(None, None))
-            .transpose()?;
-        let runtime = service
-            .map(RuntimeStatusView::from_service)
-            .unwrap_or_else(RuntimeStatusView::offline);
-        Ok(HomeScreenView {
-            profile: self.profile_summary()?,
-            runtime,
-            invite,
-            peers: self
-                .known_peers()?
-                .into_iter()
-                .map(PeerListItemView::from_peer_record)
-                .collect(),
-            room: RoomTimelineView {
-                room_id: config.default_room,
-                messages: self.read_messages(None)?,
-            },
-        })
-    }
-
-    pub fn network_health_view(
-        &self,
-        service: Option<&VoxelleService>,
-    ) -> Result<NetworkHealthView> {
+    pub fn network_health_view(&self, online: Option<&OnlineHome>) -> Result<NetworkHealthView> {
         let home_status = match self.load_config() {
             Ok(config) => NetworkHealthRow::working(
                 "home",
@@ -729,11 +698,11 @@ impl VoxelleHome {
         }
         .related_view("network.health");
 
-        let service_status = match service {
-            Some(service) => NetworkHealthRow::working(
+        let service_status = match online {
+            Some(online) => NetworkHealthRow::working(
                 "service",
                 "Service",
-                format!("Resident service is online at {}.", service.endpoint().addr),
+                format!("Resident service is online at {}.", online.endpoint.addr),
             )
             .related_command("runtime.goOffline"),
             None => NetworkHealthRow::needs_attention(
@@ -746,22 +715,17 @@ impl VoxelleHome {
         }
         .related_view("runtime.status");
 
-        let bind_status = match service {
-            Some(service) if service.local_report().listen_addr.is_ipv6() => {
-                NetworkHealthRow::working(
-                    "bind",
-                    "Bind",
-                    format!("Listening on {}.", service.local_report().listen_addr),
-                )
-                .related_command("runtime.goOffline")
-            }
-            Some(service) => NetworkHealthRow::broken(
+        let bind_status = match online {
+            Some(online) if online.local_report.listen_addr.is_ipv6() => NetworkHealthRow::working(
                 "bind",
                 "Bind",
-                format!(
-                    "Listener is not IPv6: {}.",
-                    service.local_report().listen_addr
-                ),
+                format!("Listening on {}.", online.local_report.listen_addr),
+            )
+            .related_command("runtime.goOffline"),
+            Some(online) => NetworkHealthRow::broken(
+                "bind",
+                "Bind",
+                format!("Listener is not IPv6: {}.", online.local_report.listen_addr),
                 Some("runtime.goOffline"),
             )
             .related_command("runtime.goOffline"),
@@ -775,8 +739,8 @@ impl VoxelleHome {
         }
         .related_view("runtime.status");
 
-        let advertise_status = match service {
-            Some(service) => advertised_address_row(service.local_report()),
+        let advertise_status = match online {
+            Some(online) => advertised_address_row(&online.local_report),
             None => NetworkHealthRow::unknown(
                 "advertise",
                 "Advertise",
@@ -787,8 +751,8 @@ impl VoxelleHome {
         }
         .related_view("runtime.status");
 
-        let invite_status = match service {
-            Some(service) => match service.invite_view(None, None) {
+        let invite_status = match online {
+            Some(online) => match online.invite_view(None, None) {
                 Ok(invite) => NetworkHealthRow::new(
                     "invite",
                     "Invite",
@@ -1315,7 +1279,7 @@ impl VoxelleCommandHost {
             .bind
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0));
         let service = self.home.start_service(bind, request.advertise)?;
-        let addr = service.endpoint().addr;
+        let addr = service.online().endpoint.addr;
         self.service = Some(service);
         self.push_activity(
             ServiceActivityLevel::Info,
@@ -1404,7 +1368,8 @@ impl VoxelleCommandHost {
     }
 
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
-        let (home, home_error) = match self.home.home_screen_view_service(self.service.as_ref()) {
+        let online = self.service.as_ref().map(VoxelleService::online);
+        let (home, home_error) = match self.home.home_screen_view(online) {
             Ok(home) => (Some(home), None),
             Err(error) => (None, Some(format!("{error:#}"))),
         };
@@ -1412,7 +1377,7 @@ impl VoxelleCommandHost {
             home_root: self.home.root().to_path_buf(),
             home,
             home_error,
-            network_health: self.home.network_health_view(self.service.as_ref())?,
+            network_health: self.home.network_health_view(online)?,
             ui_ontology: self.home.ui_ontology()?,
             service_activity: self.activity.clone(),
         })
@@ -1485,6 +1450,32 @@ impl PeerRecord {
     }
 }
 
+impl OnlineHome {
+    pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
+        let record = PeerRecord {
+            v: 1,
+            label,
+            default_room: room.unwrap_or(&self.default_room).to_string(),
+            endpoint: self.endpoint.clone(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn invite_view(
+        &self,
+        label: Option<String>,
+        room: Option<&str>,
+    ) -> Result<InviteExchangeView> {
+        let peer_record = self.peer_record(label, room)?;
+        let peer_record_json = serde_json::to_string_pretty(&peer_record)? + "\n";
+        Ok(InviteExchangeView {
+            peer_record,
+            peer_record_json,
+        })
+    }
+}
+
 impl RuntimeStatusView {
     fn offline() -> Self {
         Self {
@@ -1495,21 +1486,12 @@ impl RuntimeStatusView {
         }
     }
 
-    fn online(runtime: &VoxelleRuntime) -> Self {
+    fn online(online: &OnlineHome) -> Self {
         Self {
             state: RuntimeState::Online,
-            listen_addr: Some(runtime.local_report.listen_addr),
-            advertised_addr: Some(runtime.local_report.advertised_addr),
-            reachability_notes: runtime.local_report.notes.clone(),
-        }
-    }
-
-    fn from_service(service: &VoxelleService) -> Self {
-        Self {
-            state: RuntimeState::Online,
-            listen_addr: Some(service.summary.local_report.listen_addr),
-            advertised_addr: Some(service.summary.local_report.advertised_addr),
-            reachability_notes: service.summary.local_report.notes.clone(),
+            listen_addr: Some(online.local_report.listen_addr),
+            advertised_addr: Some(online.local_report.advertised_addr),
+            reachability_notes: online.local_report.notes.clone(),
         }
     }
 }
@@ -1630,11 +1612,15 @@ impl VoxelleRuntime {
         let advertised_addr = advertise.unwrap_or(node.local_addr()?);
         let endpoint = node.peer_endpoint(advertised_addr)?;
         let local_report = node.local_reachability_report(advertised_addr)?;
+        let default_room = home.load_config()?.default_room;
         Ok(Self {
             home,
             node,
-            endpoint,
-            local_report,
+            online: OnlineHome {
+                endpoint,
+                local_report,
+                default_room,
+            },
         })
     }
 
@@ -1642,47 +1628,8 @@ impl VoxelleRuntime {
         &self.home
     }
 
-    pub fn endpoint(&self) -> &PeerEndpoint {
-        &self.endpoint
-    }
-
-    pub fn local_report(&self) -> &LocalReachabilityReport {
-        &self.local_report
-    }
-
-    pub fn summary(&self) -> ListenSummary {
-        ListenSummary {
-            endpoint: self.endpoint.clone(),
-            local_report: self.local_report.clone(),
-        }
-    }
-
-    pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
-        let default_room = match room {
-            Some(room) => room.to_string(),
-            None => self.home.load_config()?.default_room,
-        };
-        let record = PeerRecord {
-            v: 1,
-            label,
-            default_room,
-            endpoint: self.endpoint.clone(),
-        };
-        record.validate()?;
-        Ok(record)
-    }
-
-    pub fn invite_view(
-        &self,
-        label: Option<String>,
-        room: Option<&str>,
-    ) -> Result<InviteExchangeView> {
-        let peer_record = self.peer_record(label, room)?;
-        let peer_record_json = serde_json::to_string_pretty(&peer_record)? + "\n";
-        Ok(InviteExchangeView {
-            peer_record,
-            peer_record_json,
-        })
+    pub fn online(&self) -> &OnlineHome {
+        &self.online
     }
 
     pub async fn serve_sync_once(&self, home: &VoxelleHome) -> Result<ServedRoomSync> {
@@ -1733,8 +1680,7 @@ impl VoxelleService {
         advertise: Option<SocketAddr>,
     ) -> Result<Self> {
         let runtime = VoxelleRuntime::start(home, bind, advertise)?;
-        let summary = runtime.summary();
-        let default_room = runtime.home.load_config()?.default_room;
+        let online = runtime.online().clone();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let (event_tx, events) = mpsc::channel();
         let thread = thread::Builder::new()
@@ -1743,51 +1689,15 @@ impl VoxelleService {
             .context("spawn voxelle service thread")?;
 
         Ok(Self {
-            summary,
-            default_room,
+            online,
             events,
             stop: Some(stop_tx),
             thread: Some(thread),
         })
     }
 
-    pub fn summary(&self) -> &ListenSummary {
-        &self.summary
-    }
-
-    pub fn endpoint(&self) -> &PeerEndpoint {
-        &self.summary.endpoint
-    }
-
-    pub fn local_report(&self) -> &LocalReachabilityReport {
-        &self.summary.local_report
-    }
-
-    pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
-        let default_room = room
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| self.default_room.clone());
-        let record = PeerRecord {
-            v: 1,
-            label,
-            default_room,
-            endpoint: self.summary.endpoint.clone(),
-        };
-        record.validate()?;
-        Ok(record)
-    }
-
-    pub fn invite_view(
-        &self,
-        label: Option<String>,
-        room: Option<&str>,
-    ) -> Result<InviteExchangeView> {
-        let peer_record = self.peer_record(label, room)?;
-        let peer_record_json = serde_json::to_string_pretty(&peer_record)? + "\n";
-        Ok(InviteExchangeView {
-            peer_record,
-            peer_record_json,
-        })
+    pub fn online(&self) -> &OnlineHome {
+        &self.online
     }
 
     pub fn try_recv_event(&self) -> Option<VoxelleServiceEvent> {
@@ -2835,7 +2745,9 @@ mod tests {
             .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("service");
 
-        let health = home.network_health_view(Some(&service)).expect("health");
+        let health = home
+            .network_health_view(Some(service.online()))
+            .expect("health");
 
         assert_eq!(
             network_health_status(&health, "service"),
@@ -2873,6 +2785,7 @@ mod tests {
             .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("peer runtime");
         let peer_record = peer_runtime
+            .online()
             .peer_record(Some("Peer".to_string()), None)
             .expect("peer record");
         home.import_peer_record(peer_record).expect("import");
@@ -2914,7 +2827,7 @@ mod tests {
         let listener = alice
             .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("listen");
-        let endpoint = listener.endpoint().clone();
+        let endpoint = listener.online().endpoint.clone();
 
         let (diagnostic_served, report) = tokio::join!(
             listener.serve_diagnostic_once(),
@@ -2927,7 +2840,7 @@ mod tests {
         let listener = alice
             .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("listen");
-        let endpoint = listener.endpoint().clone();
+        let endpoint = listener.online().endpoint.clone();
         let (served, report) = tokio::join!(
             listener.serve_sync_requests(&alice, 2),
             bob.sync_endpoint(&endpoint, None, 64)
@@ -2961,7 +2874,7 @@ mod tests {
             None,
         )
         .expect("runtime");
-        let endpoint = runtime.endpoint().clone();
+        let endpoint = runtime.online().endpoint.clone();
 
         let client = async {
             let diagnostic = bob.diagnose_endpoint(&endpoint).await.expect("diagnose");
@@ -3016,6 +2929,7 @@ mod tests {
             .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("runtime");
         let alice_record = runtime
+            .online()
             .peer_record(Some("Alice".to_string()), None)
             .expect("peer record");
         bob.import_peer_record(alice_record.clone())
@@ -3071,6 +2985,7 @@ mod tests {
             .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("service");
         let record = service
+            .online()
             .peer_record(Some("Alice".to_string()), None)
             .expect("record");
 
@@ -3128,12 +3043,15 @@ mod tests {
             .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("peer runtime");
         let peer_record = peer_runtime
+            .online()
             .peer_record(Some("Peer One".to_string()), None)
             .expect("peer record");
         home.import_peer_record(peer_record.clone())
             .expect("import peer");
 
-        let online = home.home_screen_view(Some(&runtime)).expect("online view");
+        let online = home
+            .home_screen_view(Some(runtime.online()))
+            .expect("online view");
         assert_eq!(online.runtime.state, RuntimeState::Online);
         assert!(online.runtime.listen_addr.is_some());
         assert!(online.invite.is_some());
