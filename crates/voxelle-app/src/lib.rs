@@ -1917,6 +1917,12 @@ fn default_views() -> Vec<UiView> {
             "Re-entrant checklist for setup, reachability, and repair",
         ),
         ui_view(
+            "field.test",
+            "Field Test",
+            "status",
+            "Re-entrant end-to-end workflow checks",
+        ),
+        ui_view(
             "invite.exchange",
             "Invite Exchange",
             "sidebar",

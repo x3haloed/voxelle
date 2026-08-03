@@ -13,47 +13,6 @@ if (!(app instanceof HTMLElement)) {
   throw new Error("missing #app");
 }
 
-const workbench = {
-  panels: [
-    {
-      id: "panel.home.profile",
-      title: "Home",
-      viewId: "home.profile",
-      region: "side",
-    },
-    {
-      id: "panel.network.health",
-      title: "Network Health",
-      viewId: "network.health",
-      region: "main",
-    },
-    {
-      id: "panel.network.log",
-      title: "Network Log",
-      viewId: "service.activity",
-      region: "side",
-    },
-    {
-      id: "panel.peer.exchange",
-      title: "Peer Exchange",
-      viewId: "peer.exchange",
-      region: "side",
-    },
-    {
-      id: "panel.field.test",
-      title: "Field Test",
-      viewId: "field.test",
-      region: "side",
-    },
-    {
-      id: "panel.room.timeline",
-      title: "Room",
-      viewId: "room.timeline",
-      region: "main",
-    },
-  ],
-};
-
 const uiState = {
   busyCommand: "",
   error: "",
@@ -64,12 +23,15 @@ const uiState = {
 };
 
 const viewRenderers = {
-  "home.profile": homeProfileView,
+  "profile.summary": profileSummaryView,
+  "runtime.status": runtimeStatusView,
   "network.health": networkHealthView,
-  "service.activity": activityView,
-  "peer.exchange": peerExchangeView,
   "field.test": fieldTestView,
+  "invite.exchange": inviteExchangeView,
+  "peer.list": peerListView,
   "room.timeline": roomTimelineView,
+  "message.composer": messageComposerView,
+  "service.activity": activityView,
 };
 
 let currentSnapshot = await shell.snapshot();
@@ -231,9 +193,9 @@ function workbenchShell(snapshot) {
   const mainRegion = element("div", "workbench-region main-region");
   const sideRegion = element("aside", "workbench-region side-region");
 
-  for (const panel of workbench.panels) {
-    const panelEl = workbenchPanel(panel, snapshot);
-    if (panel.region === "side") {
+  for (const view of snapshot.ui_ontology.views) {
+    const panelEl = workbenchPanel(view, snapshot);
+    if (sidePlace(view.place_id)) {
       sideRegion.append(panelEl);
     } else {
       mainRegion.append(panelEl);
@@ -244,35 +206,40 @@ function workbenchShell(snapshot) {
   return shellEl;
 }
 
+function sidePlace(placeId) {
+  return placeId === "sidebar" || placeId === "activity" || placeId === "inspector";
+}
+
 /**
- * @param {{ id: string, title: string, viewId: string }} panel
+ * @param {import("./shell-contract").UiView} viewDefinition
  * @param {import("./shell-contract").ShellSnapshotView} snapshot
  */
-function workbenchPanel(panel, snapshot) {
+function workbenchPanel(viewDefinition, snapshot) {
   const section = element("section", "panel");
-  section.dataset.panelId = panel.id;
-  section.dataset.viewId = panel.viewId;
-  section.append(panelHeader(panel));
+  section.dataset.panelId = `panel.${viewDefinition.id}`;
+  section.dataset.viewId = viewDefinition.id;
+  section.dataset.placeId = viewDefinition.place_id;
+  section.append(panelHeader(viewDefinition));
 
   const view = element("div", "panel-view");
-  const renderer = viewRenderers[panel.viewId] ?? unknownView;
+  const renderer = viewRenderers[viewDefinition.id] ?? unknownView;
   view.append(renderer(snapshot));
   section.append(view);
   return section;
 }
 
-/** @param {{ id: string, title: string, viewId: string }} panel */
-function panelHeader(panel) {
+/** @param {import("./shell-contract").UiView} viewDefinition */
+function panelHeader(viewDefinition) {
   const headerEl = element("div", "panel-header");
   const titleGroup = element("div", "panel-title");
-  titleGroup.append(element("h2", "", panel.title));
-  titleGroup.append(element("span", "view-id", panel.viewId));
+  titleGroup.append(element("h2", "", viewDefinition.label));
+  titleGroup.append(element("span", "view-id", viewDefinition.id));
   headerEl.append(titleGroup);
   return headerEl;
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function homeProfileView(snapshot) {
+function profileSummaryView(snapshot) {
   const fragment = document.createDocumentFragment();
   fragment.append(errorBanner());
 
@@ -288,29 +255,40 @@ function homeProfileView(snapshot) {
   }
 
   const profile = snapshot.home.profile;
-  const runtime = snapshot.home.runtime;
   const rows = [
     ["Home root", snapshot.home_root],
     ["Peer", profile.peer_id],
     ["Device", profile.device_id],
     ["Default room", profile.default_room],
     ["Authority", profile.authority_peer_id],
-    ["Runtime", runtime.state],
-    ["Listen", runtime.listen_addr ?? "not listening"],
-    ["Advertise", runtime.advertised_addr ?? "not advertising"],
     ["Known peers", String(snapshot.home.peers.length)],
     ["Messages", String(snapshot.home.room.messages.length)],
   ];
 
   fragment.append(definitionGrid(rows));
 
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function runtimeStatusView(snapshot) {
+  const runtime = snapshot.home?.runtime;
+  const rows = [
+    ["Runtime", runtime?.state ?? "offline"],
+    ["Listen", runtime?.listen_addr ?? "not listening"],
+    ["Advertise", runtime?.advertised_addr ?? "not advertising"],
+  ];
+  for (const [index, note] of (runtime?.reachability_notes ?? []).entries()) {
+    rows.push([`Reachability ${index + 1}`, note]);
+  }
+  const fragment = document.createDocumentFragment();
   const controls = element("div", "control-row");
   controls.append(
     commandButton("Initialize", "home.init"),
     commandButton("Go Online", "runtime.goOnline"),
     commandButton("Go Offline", "runtime.goOffline"),
   );
-  fragment.append(controls);
+  fragment.append(errorBanner(), definitionGrid(rows), serviceOptions(), controls);
   return fragment;
 }
 
@@ -323,7 +301,7 @@ function networkHealthView(snapshot) {
     commandButton("Go Online", "runtime.goOnline"),
     commandButton("Go Offline", "runtime.goOffline"),
   );
-  fragment.append(errorBanner(), serviceOptions(), controls);
+  fragment.append(errorBanner(), controls);
 
   const rows = element("ol", "health-list");
   for (const row of snapshot.network_health.rows) {
@@ -416,7 +394,7 @@ function activityView(snapshot) {
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function peerExchangeView(snapshot) {
+function inviteExchangeView(snapshot) {
   const fragment = document.createDocumentFragment();
   const invite = snapshot.home?.invite?.peer_record_json ?? "";
   const inviteGroup = element("div", "field-stack");
@@ -438,7 +416,7 @@ function peerExchangeView(snapshot) {
   });
   importGroup.append(element("h3", "", "Import Peer"), textarea, submitButton("Import"));
 
-  fragment.append(inviteGroup, importGroup, peerList(snapshot));
+  fragment.append(inviteGroup, importGroup);
   return fragment;
 }
 
@@ -508,11 +486,8 @@ function fieldTestView(snapshot) {
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function peerList(snapshot) {
+function peerListView(snapshot) {
   const peers = snapshot.home?.peers ?? [];
-  const group = element("div", "field-stack");
-  group.append(element("h3", "", "Known Peers"));
-
   const list = element("ol", "peer-list");
   for (const peer of peers) {
     const row = element("li", "peer-row");
@@ -529,13 +504,11 @@ function peerList(snapshot) {
     row.append(body, actions);
     list.append(row);
   }
-  group.append(list);
-  return group;
+  return list;
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function roomTimelineView(snapshot) {
-  const fragment = document.createDocumentFragment();
   const messages = snapshot.home?.room.messages ?? [];
   const list = element("ol", "message-list");
   for (const message of messages) {
@@ -552,6 +525,10 @@ function roomTimelineView(snapshot) {
     list.append(row);
   }
 
+  return list;
+}
+
+function messageComposerView() {
   const form = element("form", "message-form");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -565,8 +542,7 @@ function roomTimelineView(snapshot) {
   });
   form.append(input, submitButton("Send"));
 
-  fragment.append(list, form);
-  return fragment;
+  return form;
 }
 
 function unknownView() {

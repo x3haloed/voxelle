@@ -122,6 +122,7 @@ Initial views:
 - `runtime.status`
 - `invite.exchange`
 - `peer.list`
+- `field.test`
 - `room.timeline`
 - `message.composer`
 - `service.activity`
