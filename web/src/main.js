@@ -75,7 +75,7 @@ function header(snapshot) {
     customizationEditor(snapshot),
     shellMode(),
     runtimeState(snapshot),
-    commandButton("Refresh", "shell.refresh"),
+    commandButton("shell.refresh"),
   );
 
   headerEl.append(titleGroup, actions);
@@ -183,7 +183,7 @@ function preferenceForm(preference, input, request) {
     element("small", "view-id", preference.id),
     input,
   );
-  form.append(label, submitButton("Save"));
+  form.append(label, submitButton("ui.preference.set"));
   return form;
 }
 
@@ -248,7 +248,7 @@ function profileSummaryView(snapshot) {
     empty.append(
       element("h3", "", "No initialized home"),
       element("p", "summary", snapshot.home_error ?? "Home state is not available."),
-      commandButton("Initialize Home", "home.init"),
+      commandButton("home.init"),
     );
     fragment.append(empty);
     return fragment;
@@ -284,9 +284,9 @@ function runtimeStatusView(snapshot) {
   const fragment = document.createDocumentFragment();
   const controls = element("div", "control-row");
   controls.append(
-    commandButton("Initialize", "home.init"),
-    commandButton("Go Online", "runtime.goOnline"),
-    commandButton("Go Offline", "runtime.goOffline"),
+    commandButton("home.init"),
+    commandButton("runtime.goOnline"),
+    commandButton("runtime.goOffline"),
   );
   fragment.append(errorBanner(), definitionGrid(rows), serviceOptions(), controls);
   return fragment;
@@ -297,15 +297,15 @@ function networkHealthView(snapshot) {
   const fragment = document.createDocumentFragment();
   const controls = element("div", "control-row");
   controls.append(
-    commandButton("Initialize", "home.init"),
-    commandButton("Go Online", "runtime.goOnline"),
-    commandButton("Go Offline", "runtime.goOffline"),
+    commandButton("home.init"),
+    commandButton("runtime.goOnline"),
+    commandButton("runtime.goOffline"),
   );
   fragment.append(errorBanner(), controls);
 
   const rows = element("ol", "health-list");
   for (const row of snapshot.network_health.rows) {
-    rows.append(healthRow(row, snapshot));
+    rows.append(healthRow(row));
   }
   fragment.append(rows);
   return fragment;
@@ -331,9 +331,8 @@ function serviceOptions() {
 
 /**
  * @param {import("./shell-contract").NetworkHealthRow} row
- * @param {import("./shell-contract").ShellSnapshotView} snapshot
  */
-function healthRow(row, snapshot) {
+function healthRow(row) {
   const item = element("li", "health-row");
   item.dataset.status = row.status;
   item.dataset.healthRowId = row.id;
@@ -353,18 +352,9 @@ function healthRow(row, snapshot) {
 
   item.append(indicator, body);
   if (row.primary_action) {
-    item.append(primaryAction(row.primary_action, snapshot));
+    item.append(commandButton(row.primary_action));
   }
   return item;
-}
-
-/**
- * @param {string} command
- * @param {import("./shell-contract").ShellSnapshotView} snapshot
- */
-function primaryAction(command, snapshot) {
-  const knownCommand = snapshot.ui_ontology.commands.find((item) => item.id === command);
-  return commandButton(knownCommand?.label ?? command, command);
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -373,7 +363,7 @@ function activityView(snapshot) {
   fragment.append(errorBanner());
 
   const actions = element("div", "control-row");
-  actions.append(commandButton("Refresh", "shell.refresh"));
+  actions.append(commandButton("shell.refresh"));
   fragment.append(actions);
 
   const list = element("ol", "activity-list");
@@ -401,7 +391,7 @@ function inviteExchangeView(snapshot) {
   inviteGroup.append(element("h3", "", "Local Invite"));
   inviteGroup.append(element("p", "summary", "After this peer is online, copy this JSON into another peer's Import Peer field."));
   inviteGroup.append(element("pre", "invite-json", invite));
-  inviteGroup.append(commandButton("Copy Invite", "invite.copy"));
+  inviteGroup.append(commandButton("invite.copy"));
 
   const importGroup = element("form", "field-stack");
   importGroup.addEventListener("submit", (event) => {
@@ -414,7 +404,11 @@ function inviteExchangeView(snapshot) {
   textarea.addEventListener("input", () => {
     uiState.peerRecordDraft = textarea.value;
   });
-  importGroup.append(element("h3", "", "Import Peer"), textarea, submitButton("Import"));
+  importGroup.append(
+    element("h3", "", commandLabel("peer.import")),
+    textarea,
+    submitButton("peer.import"),
+  );
 
   fragment.append(inviteGroup, importGroup);
   return fragment;
@@ -476,7 +470,7 @@ function fieldTestView(snapshot) {
     );
     item.append(body);
     if (row.command) {
-      item.append(commandButton(commandLabel(row.command, snapshot), row.command));
+      item.append(commandButton(row.command));
     }
     list.append(item);
   }
@@ -498,8 +492,8 @@ function peerListView(snapshot) {
 
     const actions = element("div", "row-actions");
     actions.append(
-      commandButton("Diagnose", "peer.diagnose", peerRequest(peer)),
-      commandButton("Sync", "peer.sync", peerRequest(peer)),
+      commandButton("peer.diagnose", peerRequest(peer)),
+      commandButton("peer.sync", peerRequest(peer)),
     );
     row.append(body, actions);
     list.append(row);
@@ -540,7 +534,7 @@ function messageComposerView() {
   input.addEventListener("input", () => {
     uiState.messageDraft = input.value;
   });
-  form.append(input, submitButton("Send"));
+  form.append(input, submitButton("message.send"));
 
   return form;
 }
@@ -562,32 +556,18 @@ function definitionGrid(rows) {
 
 /**
  * @param {string} command
- * @param {import("./shell-contract").ShellSnapshotView} snapshot
  */
-function commandLabel(command, snapshot) {
-  const fallback = {
-    "home.init": "Initialize Home",
-    "runtime.goOnline": "Go Online",
-    "runtime.goOffline": "Go Offline",
-    "peer.import": "Import Peer",
-    "peer.diagnose": "Diagnose Peer",
-    "peer.sync": "Sync Peer",
-    "invite.copy": "Copy Invite",
-    "message.send": "Send Message",
-    "shell.refresh": "Refresh",
-  };
-  return snapshot.ui_ontology.commands.find((item) => item.id === command)?.label
-    ?? fallback[command]
+function commandLabel(command) {
+  return currentSnapshot.ui_ontology.commands.find((item) => item.id === command)?.label
     ?? command;
 }
 
 /**
- * @param {string} label
  * @param {string} command
  * @param {unknown} [payload]
  */
-function commandButton(label, command, payload) {
-  const button = element("button", "command-button", label);
+function commandButton(command, payload) {
+  const button = element("button", "command-button", commandLabel(command));
   button.type = "button";
   button.dataset.command = command;
   button.disabled = uiState.busyCommand !== "";
@@ -600,9 +580,9 @@ function commandButton(label, command, payload) {
   return button;
 }
 
-/** @param {string} label */
-function submitButton(label) {
-  const button = element("button", "command-button", label);
+/** @param {string} command */
+function submitButton(command) {
+  const button = element("button", "command-button", commandLabel(command));
   button.type = "submit";
   button.disabled = uiState.busyCommand !== "";
   return button;

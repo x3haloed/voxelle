@@ -136,12 +136,16 @@ A command is a user-invokable action with a stable ID.
 
 Initial commands:
 
+- `shell.refresh`
+- `home.init`
 - `runtime.goOnline`
 - `runtime.goOffline`
 - `message.send`
+- `invite.copy`
 - `peer.import`
 - `peer.diagnose`
 - `peer.sync`
+- `ui.preference.set`
 
 Commands should be reachable from more than one surface over time:
 

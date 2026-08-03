@@ -1957,6 +1957,11 @@ fn default_views() -> Vec<UiView> {
 
 fn default_commands() -> Vec<UiCommand> {
     vec![
+        ui_command(
+            "shell.refresh",
+            "Refresh",
+            "Refresh the current shell snapshot",
+        ),
         ui_command("home.init", "Initialize Home", "Create local app state"),
         ui_command(
             "runtime.goOnline",
