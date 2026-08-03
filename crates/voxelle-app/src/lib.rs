@@ -20,6 +20,26 @@ use voxelle_sync::{SyncLimits, SyncStats};
 
 pub const DEFAULT_ROOM_ID: &str = "room:general";
 
+pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
+    resolve_home_root_from(
+        explicit,
+        std::env::var_os("VOXELLE_HOME_ROOT").map(PathBuf::from),
+        dirs::home_dir(),
+    )
+}
+
+fn resolve_home_root_from(
+    explicit: Option<PathBuf>,
+    configured: Option<PathBuf>,
+    platform_home: Option<PathBuf>,
+) -> PathBuf {
+    explicit.or(configured).unwrap_or_else(|| {
+        platform_home
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".voxelle")
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct VoxelleHome {
     root: PathBuf,
@@ -2415,6 +2435,34 @@ mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv6Addr};
     use tempfile::tempdir;
+
+    #[test]
+    fn home_root_resolution_preserves_override_precedence_and_portable_default() {
+        let explicit = PathBuf::from("explicit-home");
+        let configured = PathBuf::from("configured-home");
+        let platform_home = PathBuf::from("platform-home");
+
+        assert_eq!(
+            resolve_home_root_from(
+                Some(explicit.clone()),
+                Some(configured.clone()),
+                Some(platform_home.clone()),
+            ),
+            explicit
+        );
+        assert_eq!(
+            resolve_home_root_from(None, Some(configured.clone()), Some(platform_home.clone())),
+            configured
+        );
+        assert_eq!(
+            resolve_home_root_from(None, None, Some(platform_home.clone())),
+            platform_home.join(".voxelle")
+        );
+        assert_eq!(
+            resolve_home_root_from(None, None, None),
+            PathBuf::from(".").join(".voxelle")
+        );
+    }
 
     #[test]
     fn home_init_send_read_and_endpoint_export_are_app_actions() {

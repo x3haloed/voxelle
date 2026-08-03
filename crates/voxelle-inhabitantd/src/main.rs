@@ -23,8 +23,8 @@ use std::{
 use tokio::{net::TcpListener, signal, time};
 use tracing::info;
 use voxelle_app::{
-    ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest,
-    ShellSnapshotView, StartServiceRequest,
+    resolve_home_root, ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest,
+    SendMessageRequest, ShellSnapshotView, StartServiceRequest,
 };
 use voxelle_shell::{ShellError, ShellState};
 
@@ -99,7 +99,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let home = cli.home.unwrap_or_else(default_home);
+    let home = resolve_home_root(cli.home);
     let listener = TcpListener::bind(SocketAddr::new(cli.host, cli.port))
         .await
         .context("bind inhabitant sidecar")?;
@@ -314,13 +314,6 @@ fn write_discovery_file(
     std::fs::write(&path, format!("{json}\n"))
         .with_context(|| format!("write {}", path.display()))?;
     Ok(())
-}
-
-fn default_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".voxelle")
 }
 
 fn app_url(addr: SocketAddr) -> String {

@@ -8,8 +8,8 @@ name = "voxelle-tauri-host"
 path = "src/main.rs"
 
 [dependencies]
-dirs = "6"
 tauri = "2.11.3"
+voxelle-app = { path = "../voxelle-app" }
 voxelle-tauri = { path = "../voxelle-tauri" }
 
 [build-dependencies]
