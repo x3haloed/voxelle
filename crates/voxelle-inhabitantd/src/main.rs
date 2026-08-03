@@ -23,8 +23,7 @@ use std::{
 use tokio::{net::TcpListener, signal, time};
 use tracing::info;
 use voxelle_app::{
-    resolve_home_root, DeferredShellCommand, ShellCommand, ShellError, ShellSnapshotView,
-    ShellState, SHELL_COMMAND_IDS,
+    resolve_home_root, ShellError, ShellSnapshotView, ShellState, SHELL_COMMAND_IDS,
 };
 
 #[derive(Debug, Parser)]
@@ -172,18 +171,7 @@ async fn command(
 }
 
 fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionResult {
-    let result = match ShellCommand::from_json(command_id, payload) {
-        Ok(command) => match shell.execute_command(command) {
-            Ok(result) => result,
-            Err(DeferredShellCommand::DiagnosePeer(request)) => {
-                block_on_shell_call(shell.diagnose_peer(request))
-            }
-            Err(DeferredShellCommand::SyncPeer(request)) => {
-                block_on_shell_call(shell.sync_peer(request))
-            }
-        },
-        Err(error) => Err(error),
-    };
+    let result = block_on_shell_call(shell.execute_serialized_command(command_id, payload));
 
     match result {
         Ok(snapshot) => ActionResult {

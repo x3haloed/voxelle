@@ -20,10 +20,7 @@ use voxelle_sync::{SyncLimits, SyncStats};
 
 mod shell;
 
-pub use shell::{
-    DeferredShellCommand, ShellCommand, ShellCommandExecution, ShellError, ShellResult, ShellState,
-    SHELL_COMMAND_IDS,
-};
+pub use shell::{ShellError, ShellResult, ShellState, SHELL_COMMAND_IDS};
 
 pub const DEFAULT_ROOM_ID: &str = "room:general";
 

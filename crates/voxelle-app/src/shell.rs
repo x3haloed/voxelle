@@ -19,7 +19,7 @@ pub const SHELL_COMMAND_IDS: [&str; 9] = [
 ];
 
 #[derive(Debug)]
-pub enum ShellCommand {
+enum ShellCommand {
     Snapshot,
     InitHome(InitHomeRequest),
     StartService(StartServiceRequest),
@@ -32,7 +32,7 @@ pub enum ShellCommand {
 }
 
 impl ShellCommand {
-    pub fn from_json(command_id: &str, payload: serde_json::Value) -> ShellResult<Self> {
+    fn from_json(command_id: &str, payload: serde_json::Value) -> ShellResult<Self> {
         match command_id {
             "snapshot" => Ok(Self::Snapshot),
             "init_home" => Ok(Self::InitHome(parse_request(payload)?)),
@@ -49,14 +49,6 @@ impl ShellCommand {
         }
     }
 }
-
-#[derive(Debug)]
-pub enum DeferredShellCommand {
-    DiagnosePeer(PeerCommandRequest),
-    SyncPeer(PeerCommandRequest),
-}
-
-pub type ShellCommandExecution = Result<ShellResult<ShellSnapshotView>, DeferredShellCommand>;
 
 #[derive(Debug)]
 pub struct ShellState {
@@ -123,17 +115,22 @@ impl ShellState {
         host.sync_peer(request).await.map_err(ShellError::from)
     }
 
-    pub fn execute_command(&self, command: ShellCommand) -> ShellCommandExecution {
+    pub async fn execute_serialized_command(
+        &self,
+        command_id: &str,
+        payload: serde_json::Value,
+    ) -> ShellResult<ShellSnapshotView> {
+        let command = ShellCommand::from_json(command_id, payload)?;
         match command {
-            ShellCommand::Snapshot => Ok(self.snapshot()),
-            ShellCommand::InitHome(request) => Ok(self.init_home(request)),
-            ShellCommand::StartService(request) => Ok(self.start_service(request)),
-            ShellCommand::StopService => Ok(self.stop_service()),
-            ShellCommand::SendMessage(request) => Ok(self.send_message(request)),
-            ShellCommand::ImportPeerRecord(request) => Ok(self.import_peer_record(request)),
-            ShellCommand::DiagnosePeer(request) => Err(DeferredShellCommand::DiagnosePeer(request)),
-            ShellCommand::SyncPeer(request) => Err(DeferredShellCommand::SyncPeer(request)),
-            ShellCommand::SetUiPreference(request) => Ok(self.set_ui_preference(request)),
+            ShellCommand::Snapshot => self.snapshot(),
+            ShellCommand::InitHome(request) => self.init_home(request),
+            ShellCommand::StartService(request) => self.start_service(request),
+            ShellCommand::StopService => self.stop_service(),
+            ShellCommand::SendMessage(request) => self.send_message(request),
+            ShellCommand::ImportPeerRecord(request) => self.import_peer_record(request),
+            ShellCommand::DiagnosePeer(request) => self.diagnose_peer(request).await,
+            ShellCommand::SyncPeer(request) => self.sync_peer(request).await,
+            ShellCommand::SetUiPreference(request) => self.set_ui_preference(request),
         }
     }
 
@@ -281,44 +278,37 @@ mod tests {
         assert!(encoded.contains("identity.json"));
     }
 
-    #[test]
-    fn serialized_commands_preserve_the_shell_action_contract() {
+    #[tokio::test]
+    async fn serialized_commands_preserve_the_shell_action_contract() {
         let dir = tempfile::tempdir().expect("tempdir");
         let shell = ShellState::new(dir.path().join("home"));
 
-        let init =
-            ShellCommand::from_json("init_home", serde_json::json!({ "default_room": null }))
-                .expect("parse init");
-        let init_result = shell
-            .execute_command(init)
-            .expect("init should not be deferred");
-        init_result.expect("init");
-        let send = ShellCommand::from_json(
-            "send_message",
-            serde_json::json!({ "text": "serialized shell command", "room": null }),
-        )
-        .expect("parse send");
-        let send_result = shell
-            .execute_command(send)
-            .expect("send should not be deferred");
-        let snapshot = send_result.expect("send");
+        shell
+            .execute_serialized_command("init_home", serde_json::json!({ "default_room": null }))
+            .await
+            .expect("init");
+        let snapshot = shell
+            .execute_serialized_command(
+                "send_message",
+                serde_json::json!({ "text": "serialized shell command", "room": null }),
+            )
+            .await
+            .expect("send");
 
         assert_eq!(
             snapshot.home.expect("home").room.messages[0].text,
             "serialized shell command"
         );
-        let set_preference = ShellCommand::from_json(
-            "set_ui_preference",
-            serde_json::json!({
-                "kind": "metric",
-                "id": "sidebar.width",
-                "value": 444.0
-            }),
-        )
-        .expect("parse preference");
         let updated = shell
-            .execute_command(set_preference)
-            .expect("preference should not be deferred")
+            .execute_serialized_command(
+                "set_ui_preference",
+                serde_json::json!({
+                    "kind": "metric",
+                    "id": "sidebar.width",
+                    "value": 444.0
+                }),
+            )
+            .await
             .expect("set preference");
         assert_eq!(metric_value(&updated, "sidebar.width"), 444.0);
 
@@ -331,17 +321,19 @@ mod tests {
             444.0
         );
         assert_eq!(
-            ShellCommand::from_json("not_a_command", serde_json::json!({}))
+            shell
+                .execute_serialized_command("not_a_command", serde_json::json!({}))
+                .await
                 .expect_err("unknown command")
                 .message,
             "unknown command not_a_command"
         );
-        assert!(
-            ShellCommand::from_json("send_message", serde_json::json!({}))
-                .expect_err("invalid payload")
-                .message
-                .starts_with("invalid command payload:")
-        );
+        assert!(shell
+            .execute_serialized_command("send_message", serde_json::json!({}))
+            .await
+            .expect_err("invalid payload")
+            .message
+            .starts_with("invalid command payload:"));
     }
 
     #[test]
