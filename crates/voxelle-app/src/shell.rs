@@ -62,76 +62,25 @@ impl ShellState {
         }
     }
 
-    pub fn snapshot(&self) -> ShellResult<ShellSnapshotView> {
-        self.host()?.snapshot().map_err(ShellError::from)
-    }
-
-    pub fn init_home(&self, request: InitHomeRequest) -> ShellResult<ShellSnapshotView> {
-        self.host()?.init_home(request).map_err(ShellError::from)
-    }
-
-    pub fn start_service(&self, request: StartServiceRequest) -> ShellResult<ShellSnapshotView> {
-        self.host()?
-            .start_service(request)
-            .map_err(ShellError::from)
-    }
-
-    pub fn stop_service(&self) -> ShellResult<ShellSnapshotView> {
-        self.host()?.stop_service().map_err(ShellError::from)
-    }
-
-    pub fn send_message(&self, request: SendMessageRequest) -> ShellResult<ShellSnapshotView> {
-        self.host()?.send_message(request).map_err(ShellError::from)
-    }
-
-    pub fn import_peer_record(
-        &self,
-        request: ImportPeerRecordRequest,
-    ) -> ShellResult<ShellSnapshotView> {
-        self.host()?
-            .import_peer_record(request)
-            .map_err(ShellError::from)
-    }
-
-    pub fn set_ui_preference(
-        &self,
-        request: SetUiPreferenceRequest,
-    ) -> ShellResult<ShellSnapshotView> {
-        self.host()?
-            .set_ui_preference(request)
-            .map_err(ShellError::from)
-    }
-
-    pub async fn diagnose_peer(
-        &self,
-        request: PeerCommandRequest,
-    ) -> ShellResult<ShellSnapshotView> {
-        let mut host = self.host()?;
-        host.diagnose_peer(request).await.map_err(ShellError::from)
-    }
-
-    pub async fn sync_peer(&self, request: PeerCommandRequest) -> ShellResult<ShellSnapshotView> {
-        let mut host = self.host()?;
-        host.sync_peer(request).await.map_err(ShellError::from)
-    }
-
     pub async fn execute_serialized_command(
         &self,
         command_id: &str,
         payload: serde_json::Value,
     ) -> ShellResult<ShellSnapshotView> {
         let command = ShellCommand::from_json(command_id, payload)?;
-        match command {
-            ShellCommand::Snapshot => self.snapshot(),
-            ShellCommand::InitHome(request) => self.init_home(request),
-            ShellCommand::StartService(request) => self.start_service(request),
-            ShellCommand::StopService => self.stop_service(),
-            ShellCommand::SendMessage(request) => self.send_message(request),
-            ShellCommand::ImportPeerRecord(request) => self.import_peer_record(request),
-            ShellCommand::DiagnosePeer(request) => self.diagnose_peer(request).await,
-            ShellCommand::SyncPeer(request) => self.sync_peer(request).await,
-            ShellCommand::SetUiPreference(request) => self.set_ui_preference(request),
-        }
+        let mut host = self.host()?;
+        let result = match command {
+            ShellCommand::Snapshot => host.snapshot(),
+            ShellCommand::InitHome(request) => host.init_home(request),
+            ShellCommand::StartService(request) => host.start_service(request),
+            ShellCommand::StopService => host.stop_service(),
+            ShellCommand::SendMessage(request) => host.send_message(request),
+            ShellCommand::ImportPeerRecord(request) => host.import_peer_record(request),
+            ShellCommand::DiagnosePeer(request) => host.diagnose_peer(request).await,
+            ShellCommand::SyncPeer(request) => host.sync_peer(request).await,
+            ShellCommand::SetUiPreference(request) => host.set_ui_preference(request),
+        };
+        result.map_err(ShellError::from)
     }
 
     fn host(&self) -> ShellResult<MutexGuard<'_, VoxelleCommandHost>> {
@@ -167,12 +116,15 @@ mod tests {
     use super::*;
     use crate::{shell_contract_typescript, NetworkHealthStatus, DEFAULT_ROOM_ID};
 
-    #[test]
-    fn shell_state_returns_pre_init_snapshot_for_web_shell() {
+    #[tokio::test]
+    async fn shell_state_returns_pre_init_snapshot_for_web_shell() {
         let dir = tempfile::tempdir().expect("tempdir");
         let shell = ShellState::new(dir.path().join("home"));
 
-        let snapshot = shell.snapshot().expect("snapshot");
+        let snapshot = shell
+            .execute_serialized_command("snapshot", serde_json::json!({}))
+            .await
+            .expect("snapshot");
 
         assert!(snapshot.home.is_none());
         assert!(snapshot.home_error.is_some());
@@ -194,24 +146,29 @@ mod tests {
         let bob = ShellState::new(dir.path().join("bob"));
 
         alice
-            .init_home(InitHomeRequest {
-                default_room: Some(DEFAULT_ROOM_ID.to_string()),
-            })
+            .execute_serialized_command(
+                "init_home",
+                serde_json::json!({ "default_room": DEFAULT_ROOM_ID }),
+            )
+            .await
             .expect("alice init");
-        bob.init_home(InitHomeRequest { default_room: None })
+        bob.execute_serialized_command("init_home", serde_json::json!({ "default_room": null }))
+            .await
             .expect("bob init");
         alice
-            .send_message(SendMessageRequest {
-                text: "hello through shell".to_string(),
-                room: None,
-            })
+            .execute_serialized_command(
+                "send_message",
+                serde_json::json!({ "text": "hello through shell", "room": null }),
+            )
+            .await
             .expect("send");
 
         let alice_online = alice
-            .start_service(StartServiceRequest {
-                bind: None,
-                advertise: None,
-            })
+            .execute_serialized_command(
+                "start_service",
+                serde_json::json!({ "bind": null, "advertise": null }),
+            )
+            .await
             .expect("alice online");
         assert_eq!(
             health_status(&alice_online, "service"),
@@ -228,49 +185,66 @@ mod tests {
             .clone();
 
         let bob_imported = bob
-            .import_peer_record(ImportPeerRecordRequest { peer_record_json })
+            .execute_serialized_command(
+                "import_peer_record",
+                serde_json::json!({ "peer_record_json": peer_record_json }),
+            )
+            .await
             .expect("import");
         assert_eq!(
             health_status(&bob_imported, "peers"),
             NetworkHealthStatus::Working
         );
         let peer = &bob_imported.home.as_ref().expect("home").peers[0];
-        let request = PeerCommandRequest {
-            peer_id: peer.peer_id.clone(),
-            device_id: peer.device_id.clone(),
-            max_events: Some(64),
-        };
+        let request = serde_json::json!({
+            "peer_id": peer.peer_id,
+            "device_id": peer.device_id,
+            "max_events": 64,
+        });
 
-        let diagnosed = bob.diagnose_peer(request.clone()).await.expect("diagnose");
+        let diagnosed = bob
+            .execute_serialized_command("diagnose_peer", request.clone())
+            .await
+            .expect("diagnose");
         assert!(diagnosed
             .service_activity
             .iter()
             .any(|item| item.summary.starts_with("diagnostic reached")));
 
-        let synced = bob.sync_peer(request).await.expect("sync");
+        let synced = bob
+            .execute_serialized_command("sync_peer", request)
+            .await
+            .expect("sync");
         assert_eq!(
             synced.home.expect("home").room.messages[0].text,
             "hello through shell"
         );
 
-        let alice_after_serving = alice.snapshot().expect("alice snapshot");
+        let alice_after_serving = alice
+            .execute_serialized_command("snapshot", serde_json::json!({}))
+            .await
+            .expect("alice snapshot");
         assert!(alice_after_serving
             .service_activity
             .iter()
             .any(|item| item.summary.starts_with("served diagnostic:")));
-        alice.stop_service().expect("stop");
+        alice
+            .execute_serialized_command("stop_service", serde_json::json!({}))
+            .await
+            .expect("stop");
     }
 
-    #[test]
-    fn shell_state_returns_serializable_errors() {
+    #[tokio::test]
+    async fn shell_state_returns_serializable_errors() {
         let dir = tempfile::tempdir().expect("tempdir");
         let shell = ShellState::new(dir.path().join("home"));
 
         let error = shell
-            .send_message(SendMessageRequest {
-                text: "not initialized".to_string(),
-                room: None,
-            })
+            .execute_serialized_command(
+                "send_message",
+                serde_json::json!({ "text": "not initialized", "room": null }),
+            )
+            .await
             .expect_err("send should fail");
 
         assert!(error.message.contains("identity.json"));
@@ -315,7 +289,10 @@ mod tests {
         let reopened = ShellState::new(dir.path().join("home"));
         assert_eq!(
             metric_value(
-                &reopened.snapshot().expect("reopened snapshot"),
+                &reopened
+                    .execute_serialized_command("snapshot", serde_json::json!({}))
+                    .await
+                    .expect("reopened snapshot"),
                 "sidebar.width"
             ),
             444.0

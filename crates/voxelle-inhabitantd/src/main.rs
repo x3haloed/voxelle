@@ -150,7 +150,11 @@ async fn get_discovery(State(state): State<Arc<AppState>>) -> Json<DiscoveryView
 }
 
 async fn snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.shell.snapshot() {
+    match block_on_shell_call(
+        state
+            .shell
+            .execute_serialized_command("snapshot", Value::Null),
+    ) {
         Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response(),
     }
@@ -172,7 +176,6 @@ async fn command(
 
 fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionResult {
     let result = block_on_shell_call(shell.execute_serialized_command(command_id, payload));
-
     match result {
         Ok(snapshot) => ActionResult {
             ok: true,
