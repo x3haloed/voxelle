@@ -34,17 +34,20 @@ const viewRenderers = {
   "service.activity": activityView,
 };
 
-let currentSnapshot = await shell.snapshot();
+let currentSnapshot = await shell.execute("snapshot");
 if (
   ontologyPresentation(currentSnapshot.ui_ontology).startOnlineOnLaunch
   && currentSnapshot.home?.runtime.state === "offline"
 ) {
-  currentSnapshot = await shell.startService({ bind: null, advertise: null });
+  currentSnapshot = await shell.execute("start_service", {
+    bind: null,
+    advertise: null,
+  });
 }
 render();
 
 async function refresh() {
-  currentSnapshot = await shell.snapshot();
+  currentSnapshot = await shell.execute("snapshot");
   return currentSnapshot;
 }
 
@@ -602,42 +605,44 @@ async function runCommand(command, payload) {
         await refresh();
         return;
       case "home.init":
-        currentSnapshot = await shell.initHome({ default_room: null });
+        currentSnapshot = await shell.execute("init_home", { default_room: null });
         return;
       case "runtime.goOnline":
-        currentSnapshot = await shell.startService({
+        currentSnapshot = await shell.execute("start_service", {
           bind: blankToNull(uiState.bindDraft),
           advertise: blankToNull(uiState.advertiseDraft),
         });
         return;
       case "runtime.goOffline":
-        currentSnapshot = await shell.stopService();
+        currentSnapshot = await shell.execute("stop_service");
         return;
       case "peer.import":
-        currentSnapshot = await shell.importPeerRecord({
+        currentSnapshot = await shell.execute("import_peer_record", {
           peer_record_json: uiState.peerRecordDraft,
         });
         uiState.peerRecordDraft = "";
         if (ontologyPresentation(currentSnapshot.ui_ontology).syncAutoAfterImport) {
-          currentSnapshot = await shell.syncPeer(firstPeerRequest());
+          currentSnapshot = await shell.execute("sync_peer", firstPeerRequest());
         }
         return;
       case "peer.diagnose":
-        currentSnapshot = await shell.diagnosePeer(
+        currentSnapshot = await shell.execute(
+          "diagnose_peer",
           /** @type {import("./shell-contract").PeerCommandRequest} */ (
             payload ?? firstPeerRequest()
           ),
         );
         return;
       case "peer.sync":
-        currentSnapshot = await shell.syncPeer(
+        currentSnapshot = await shell.execute(
+          "sync_peer",
           /** @type {import("./shell-contract").PeerCommandRequest} */ (
             payload ?? firstPeerRequest()
           ),
         );
         return;
       case "message.send":
-        currentSnapshot = await shell.sendMessage({
+        currentSnapshot = await shell.execute("send_message", {
           text: uiState.messageDraft,
           room: null,
         });
@@ -650,7 +655,8 @@ async function runCommand(command, payload) {
         appendActivity(currentSnapshot, "copied invite");
         return;
       case "ui.preference.set":
-        currentSnapshot = await shell.setUiPreference(
+        currentSnapshot = await shell.execute(
+          "set_ui_preference",
           /** @type {import("./shell-contract").SetUiPreferenceRequest} */ (payload),
         );
         return;

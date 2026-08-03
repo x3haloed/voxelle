@@ -8,8 +8,12 @@ name = "voxelle-tauri-host"
 path = "src/main.rs"
 
 [dependencies]
+serde_json = "1"
 tauri = "2.11.3"
 voxelle-app = { path = "../voxelle-app" }
 
 [build-dependencies]
 tauri-build = "2.6.3"
+
+[dev-dependencies]
+tempfile = "3"

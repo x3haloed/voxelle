@@ -1,89 +1,80 @@
+use serde_json::Value;
 use tauri::State;
-use voxelle_app::{
-    ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest,
-    SetUiPreferenceRequest, ShellError, ShellSnapshotView, ShellState, StartServiceRequest,
-};
+use voxelle_app::{DeferredShellCommand, ShellCommand, ShellError, ShellSnapshotView, ShellState};
 
 fn main() {
     tauri::Builder::default()
         .manage(ShellState::new(voxelle_app::resolve_home_root(None)))
-        .invoke_handler(tauri::generate_handler![
-            snapshot,
-            init_home,
-            start_service,
-            stop_service,
-            send_message,
-            import_peer_record,
-            diagnose_peer,
-            sync_peer,
-            set_ui_preference
-        ])
+        .invoke_handler(tauri::generate_handler![execute_shell_command])
         .run(tauri::generate_context!())
         .expect("run Voxelle Tauri host");
 }
 
 #[tauri::command]
-fn snapshot(state: State<'_, ShellState>) -> Result<ShellSnapshotView, ShellError> {
-    state.snapshot()
-}
-
-#[tauri::command]
-fn init_home(
+fn execute_shell_command(
     state: State<'_, ShellState>,
-    request: InitHomeRequest,
+    command_id: String,
+    payload: Value,
 ) -> Result<ShellSnapshotView, ShellError> {
-    state.init_home(request)
+    tauri::async_runtime::block_on(run_serialized_shell_command(&state, &command_id, payload))
 }
 
-#[tauri::command]
-async fn start_service(
-    state: State<'_, ShellState>,
-    request: StartServiceRequest,
+async fn run_serialized_shell_command(
+    state: &ShellState,
+    command_id: &str,
+    payload: Value,
 ) -> Result<ShellSnapshotView, ShellError> {
-    state.start_service(request)
+    let command = ShellCommand::from_json(command_id, payload)?;
+    match state.execute_command(command) {
+        Ok(result) => result,
+        Err(DeferredShellCommand::DiagnosePeer(request)) => state.diagnose_peer(request).await,
+        Err(DeferredShellCommand::SyncPeer(request)) => state.sync_peer(request).await,
+    }
 }
 
-#[tauri::command]
-fn stop_service(state: State<'_, ShellState>) -> Result<ShellSnapshotView, ShellError> {
-    state.stop_service()
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-#[tauri::command]
-fn send_message(
-    state: State<'_, ShellState>,
-    request: SendMessageRequest,
-) -> Result<ShellSnapshotView, ShellError> {
-    state.send_message(request)
-}
+    #[test]
+    fn serialized_desktop_commands_initialize_and_send_a_message() {
+        let dir = tempfile::tempdir().expect("temporary home");
+        let state = ShellState::new(dir.path().join("home"));
 
-#[tauri::command]
-fn import_peer_record(
-    state: State<'_, ShellState>,
-    request: ImportPeerRecordRequest,
-) -> Result<ShellSnapshotView, ShellError> {
-    state.import_peer_record(request)
-}
+        tauri::async_runtime::block_on(async {
+            run_serialized_shell_command(
+                &state,
+                "init_home",
+                serde_json::json!({ "default_room": null }),
+            )
+            .await
+            .expect("initialize home");
+            let snapshot = run_serialized_shell_command(
+                &state,
+                "send_message",
+                serde_json::json!({ "text": "through desktop bridge", "room": null }),
+            )
+            .await
+            .expect("send message");
+            assert_eq!(
+                snapshot.home.expect("initialized home").room.messages[0].text,
+                "through desktop bridge"
+            );
 
-#[tauri::command]
-fn diagnose_peer(
-    state: State<'_, ShellState>,
-    request: PeerCommandRequest,
-) -> Result<ShellSnapshotView, ShellError> {
-    tauri::async_runtime::block_on(state.diagnose_peer(request))
-}
-
-#[tauri::command]
-fn sync_peer(
-    state: State<'_, ShellState>,
-    request: PeerCommandRequest,
-) -> Result<ShellSnapshotView, ShellError> {
-    tauri::async_runtime::block_on(state.sync_peer(request))
-}
-
-#[tauri::command]
-fn set_ui_preference(
-    state: State<'_, ShellState>,
-    request: SetUiPreferenceRequest,
-) -> Result<ShellSnapshotView, ShellError> {
-    state.set_ui_preference(request)
+            let online = run_serialized_shell_command(
+                &state,
+                "start_service",
+                serde_json::json!({ "bind": "[::1]:0", "advertise": null }),
+            )
+            .await
+            .expect("start IPv6 service");
+            assert_eq!(
+                online.home.expect("online home").runtime.state,
+                voxelle_app::RuntimeState::Online
+            );
+            run_serialized_shell_command(&state, "stop_service", serde_json::json!({}))
+                .await
+                .expect("stop service");
+        });
+    }
 }

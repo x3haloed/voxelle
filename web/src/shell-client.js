@@ -2,11 +2,7 @@ import { fixtureSnapshot } from "./fixture.js";
 
 /**
  * @typedef {import("./shell-contract").ShellSnapshotView} ShellSnapshotView
- * @typedef {import("./shell-contract").InitHomeRequest} InitHomeRequest
- * @typedef {import("./shell-contract").StartServiceRequest} StartServiceRequest
  * @typedef {import("./shell-contract").SendMessageRequest} SendMessageRequest
- * @typedef {import("./shell-contract").ImportPeerRecordRequest} ImportPeerRecordRequest
- * @typedef {import("./shell-contract").PeerCommandRequest} PeerCommandRequest
  * @typedef {import("./shell-contract").SetUiPreferenceRequest} SetUiPreferenceRequest
  */
 
@@ -28,57 +24,15 @@ class TauriShellClient {
     this.mode = mode;
   }
 
-  /** @returns {Promise<ShellSnapshotView>} */
-  snapshot() {
-    return this.call("snapshot");
-  }
-
-  /** @param {InitHomeRequest} request */
-  initHome(request) {
-    return this.call("init_home", { request });
-  }
-
-  /** @param {StartServiceRequest} request */
-  startService(request) {
-    return this.call("start_service", { request });
-  }
-
-  stopService() {
-    return this.call("stop_service");
-  }
-
-  /** @param {SendMessageRequest} request */
-  sendMessage(request) {
-    return this.call("send_message", { request });
-  }
-
-  /** @param {ImportPeerRecordRequest} request */
-  importPeerRecord(request) {
-    return this.call("import_peer_record", { request });
-  }
-
-  /** @param {PeerCommandRequest} request */
-  diagnosePeer(request) {
-    return this.call("diagnose_peer", { request });
-  }
-
-  /** @param {PeerCommandRequest} request */
-  syncPeer(request) {
-    return this.call("sync_peer", { request });
-  }
-
-  /** @param {SetUiPreferenceRequest} request */
-  setUiPreference(request) {
-    return this.call("set_ui_preference", { request });
-  }
-
   /**
    * @param {string} command
-   * @param {Record<string, unknown>} [args]
+   * @param {unknown} [payload]
    * @returns {Promise<ShellSnapshotView>}
    */
-  async call(command, args) {
-    return /** @type {ShellSnapshotView} */ (await this.invoke(command, args));
+  async execute(command, payload = {}) {
+    return /** @type {ShellSnapshotView} */ (
+      await this.invoke("execute_shell_command", { commandId: command, payload })
+    );
   }
 }
 
@@ -92,84 +46,76 @@ class FixtureShellClient {
     this.mode = mode;
   }
 
-  async snapshot() {
-    return this.current;
-  }
-
-  /** @param {InitHomeRequest} _request */
-  async initHome(_request) {
-    this.appendActivity("fixture init_home");
-    return this.current;
-  }
-
-  /** @param {StartServiceRequest} _request */
-  async startService(_request) {
-    this.current.home && (this.current.home.runtime.state = "online");
-    this.setHealth(
-      "service",
-      "working",
-      "Resident service is online in fixture mode.",
-    );
-    this.appendActivity("fixture start_service");
-    return this.current;
-  }
-
-  async stopService() {
-    this.current.home && (this.current.home.runtime.state = "offline");
-    this.setHealth(
-      "service",
-      "needs_attention",
-      "Go online to accept peer diagnostics and sync requests.",
-    );
-    this.appendActivity("fixture stop_service");
-    return this.current;
-  }
-
-  /** @param {SendMessageRequest} request */
-  async sendMessage(request) {
-    this.current.home?.room.messages.push({
-      event_id: `fixture_${Date.now()}`,
-      created_ms: Date.now(),
-      author_peer_id: this.current.home.profile.peer_id,
-      text: request.text,
-    });
-    this.appendActivity("fixture send_message");
-    return this.current;
-  }
-
-  /** @param {ImportPeerRecordRequest} _request */
-  async importPeerRecord(_request) {
-    this.setHealth("peers", "working", "1 known peer record(s).");
-    this.appendActivity("fixture import_peer_record");
-    return this.current;
-  }
-
-  /** @param {PeerCommandRequest} _request */
-  async diagnosePeer(_request) {
-    this.appendActivity("fixture diagnostic reached peer");
-    return this.current;
-  }
-
-  /** @param {PeerCommandRequest} _request */
-  async syncPeer(_request) {
-    this.appendActivity("fixture sync completed");
-    return this.current;
-  }
-
-  /** @param {SetUiPreferenceRequest} request */
-  async setUiPreference(request) {
-    const { semantic_tokens: tokens, metrics, behaviors } = this.current.ui_ontology;
-    const collection = request.kind === "semantic_token"
-      ? tokens
-      : request.kind === "metric"
-        ? metrics
-        : behaviors;
-    const preference = collection.find((item) => item.id === request.id);
-    if (!preference) {
-      throw new Error(`unknown UI preference ${request.id}`);
+  /**
+   * @param {string} command
+   * @param {unknown} [payload]
+   * @returns {Promise<ShellSnapshotView>}
+   */
+  async execute(command, payload = {}) {
+    switch (command) {
+      case "snapshot":
+        break;
+      case "init_home":
+        this.appendActivity("fixture init_home");
+        break;
+      case "start_service":
+        this.current.home && (this.current.home.runtime.state = "online");
+        this.setHealth(
+          "service",
+          "working",
+          "Resident service is online in fixture mode.",
+        );
+        this.appendActivity("fixture start_service");
+        break;
+      case "stop_service":
+        this.current.home && (this.current.home.runtime.state = "offline");
+        this.setHealth(
+          "service",
+          "needs_attention",
+          "Go online to accept peer diagnostics and sync requests.",
+        );
+        this.appendActivity("fixture stop_service");
+        break;
+      case "send_message": {
+        const request = /** @type {SendMessageRequest} */ (payload);
+        this.current.home?.room.messages.push({
+          event_id: `fixture_${Date.now()}`,
+          created_ms: Date.now(),
+          author_peer_id: this.current.home.profile.peer_id,
+          text: request.text,
+        });
+        this.appendActivity("fixture send_message");
+        break;
+      }
+      case "import_peer_record":
+        this.setHealth("peers", "working", "1 known peer record(s).");
+        this.appendActivity("fixture import_peer_record");
+        break;
+      case "diagnose_peer":
+        this.appendActivity("fixture diagnostic reached peer");
+        break;
+      case "sync_peer":
+        this.appendActivity("fixture sync completed");
+        break;
+      case "set_ui_preference": {
+        const request = /** @type {SetUiPreferenceRequest} */ (payload);
+        const { semantic_tokens: tokens, metrics, behaviors } = this.current.ui_ontology;
+        const collection = request.kind === "semantic_token"
+          ? tokens
+          : request.kind === "metric"
+            ? metrics
+            : behaviors;
+        const preference = collection.find((item) => item.id === request.id);
+        if (!preference) {
+          throw new Error(`unknown UI preference ${request.id}`);
+        }
+        preference.current_value = request.value;
+        this.appendActivity(`updated UI preference ${request.id}`);
+        break;
+      }
+      default:
+        throw new Error(`unknown shell command ${command}`);
     }
-    preference.current_value = request.value;
-    this.appendActivity(`updated UI preference ${request.id}`);
     return this.current;
   }
 
