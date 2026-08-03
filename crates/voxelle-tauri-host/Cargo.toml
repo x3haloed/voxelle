@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 tauri = "2.11.3"
 voxelle-app = { path = "../voxelle-app" }
-voxelle-tauri = { path = "../voxelle-tauri" }
+voxelle-shell = { path = "../voxelle-shell" }
 
 [build-dependencies]
 tauri-build = "2.6.3"

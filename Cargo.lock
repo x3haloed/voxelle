@@ -4958,22 +4958,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "voxelle-tauri"
-version = "0.1.0"
-dependencies = [
- "tauri",
- "voxelle-app",
- "voxelle-shell",
-]
-
-[[package]]
 name = "voxelle-tauri-host"
 version = "0.1.0"
 dependencies = [
  "tauri",
  "tauri-build",
  "voxelle-app",
- "voxelle-tauri",
+ "voxelle-shell",
 ]
 
 [[package]]
