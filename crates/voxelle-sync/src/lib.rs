@@ -147,7 +147,7 @@ mod tests {
         identity: &PeerIdentity,
         scopes: Vec<String>,
     ) -> voxelle_core::DelegationCertV1 {
-        create_delegation(&identity.peer, &identity.device, 900, 2_000, scopes).expect("delegation")
+        create_delegation(identity, 900, 2_000, scopes).expect("delegation")
     }
 
     fn member_join(identity: &PeerIdentity) -> EventV1 {
@@ -159,7 +159,7 @@ mod tests {
             "MEMBER_JOIN",
             vec![],
             json!({
-                "peer_id": identity.peer.id,
+                "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
             }),
         )
@@ -196,7 +196,7 @@ mod tests {
     fn two_stores_converge_from_missing_events() {
         let authority = PeerIdentity::generate().expect("authority");
         let alice = PeerIdentity::generate().expect("alice");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let a = Store::open_in_memory().expect("store a");
         let b = Store::open_in_memory().expect("store b");
 
@@ -231,7 +231,7 @@ mod tests {
     fn duplicate_events_are_ignored() {
         let authority = PeerIdentity::generate().expect("authority");
         let alice = PeerIdentity::generate().expect("alice");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let a = Store::open_in_memory().expect("store a");
         let b = Store::open_in_memory().expect("store b");
         let join = member_join(&alice);
@@ -255,7 +255,7 @@ mod tests {
     fn room_event_is_rejected_when_destination_lacks_membership_state() {
         let authority = PeerIdentity::generate().expect("authority");
         let alice = PeerIdentity::generate().expect("alice");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let a = Store::open_in_memory().expect("store a");
         let b = Store::open_in_memory().expect("store b");
         let join = member_join(&alice);
@@ -283,7 +283,7 @@ mod tests {
     fn batch_limits_are_enforced() {
         let authority = PeerIdentity::generate().expect("authority");
         let alice = PeerIdentity::generate().expect("alice");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let a = Store::open_in_memory().expect("store a");
         let b = Store::open_in_memory().expect("store b");
         let join = member_join(&alice);
@@ -323,7 +323,7 @@ mod tests {
     fn third_store_receives_forwarded_events_without_central_relay() {
         let authority = PeerIdentity::generate().expect("authority");
         let alice = PeerIdentity::generate().expect("alice");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let a = Store::open_in_memory().expect("store a");
         let b = Store::open_in_memory().expect("store b");
         let c = Store::open_in_memory().expect("store c");

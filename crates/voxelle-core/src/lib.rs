@@ -65,24 +65,232 @@ impl Keypair {
 
 #[derive(Debug, Clone)]
 pub struct PeerIdentity {
+    pub peer_id: String,
     pub peer: Keypair,
     pub device: Keypair,
+    pub recovery: Keypair,
+    pub proof: IdentityProofV1,
 }
 
 impl PeerIdentity {
     pub fn generate() -> Result<Self> {
+        Self::generate_at(0)
+    }
+
+    pub fn generate_at(created_ms: i64) -> Result<Self> {
+        let peer = Keypair::generate()?;
+        let device = Keypair::generate()?;
+        let recovery = Keypair::generate()?;
+        let genesis = create_identity_genesis(&peer, &recovery)?;
+        let peer_id = principal_id(&genesis)?;
+        let mut proof = IdentityProofV1 {
+            genesis,
+            changes: Vec::new(),
+        };
+        append_identity_change(
+            &mut proof,
+            &peer,
+            IdentityChangeAuthor::Root,
+            IdentityChangeKind::DeviceAuthorize {
+                device_id: device.id.clone(),
+                device_pub: device.spki_b64.clone(),
+                scopes: default_device_scopes(),
+                expires_ms: i64::MAX,
+            },
+            created_ms,
+        )?;
         Ok(Self {
-            peer: Keypair::generate()?,
-            device: Keypair::generate()?,
+            peer_id,
+            peer,
+            device,
+            recovery,
+            proof,
         })
     }
 
-    pub fn from_secret_keys_b64(peer_secret_b64: &str, device_secret_b64: &str) -> Result<Self> {
+    pub fn from_secret_keys_b64(
+        peer_secret_b64: &str,
+        device_secret_b64: &str,
+        recovery_secret_b64: &str,
+        proof: IdentityProofV1,
+    ) -> Result<Self> {
+        let peer = Keypair::from_secret_key_b64(peer_secret_b64)?;
+        let device = Keypair::from_secret_key_b64(device_secret_b64)?;
+        let recovery = Keypair::from_secret_key_b64(recovery_secret_b64)?;
+        let state = derive_identity_state(&proof)?;
+        if state.root_pub != peer.spki_b64 {
+            return Err(anyhow!("identity root secret does not match current proof"));
+        }
+        if state.recovery_pub != recovery.spki_b64 {
+            return Err(anyhow!("identity recovery secret does not match genesis"));
+        }
+        let authorization = state
+            .devices
+            .get(&device.id)
+            .ok_or_else(|| anyhow!("identity device is not authorized"))?;
+        if authorization.device_pub != device.spki_b64 {
+            return Err(anyhow!("identity device secret does not match proof"));
+        }
         Ok(Self {
-            peer: Keypair::from_secret_key_b64(peer_secret_b64)?,
-            device: Keypair::from_secret_key_b64(device_secret_b64)?,
+            peer_id: state.peer_id,
+            peer,
+            device,
+            recovery,
+            proof,
         })
     }
+
+    pub fn recovery_card(&self) -> RecoveryCardV1 {
+        RecoveryCardV1 {
+            v: 1,
+            genesis: self.proof.genesis.clone(),
+            recovery_secret_b64: self.recovery.secret_key_b64(),
+        }
+    }
+
+    pub fn recover(
+        card: &RecoveryCardV1,
+        latest_proof: &IdentityProofV1,
+        created_ms: i64,
+    ) -> Result<Self> {
+        if card.v != 1 || card.genesis != latest_proof.genesis {
+            return Err(anyhow!("recovery card does not match identity proof"));
+        }
+        let recovery = Keypair::from_secret_key_b64(&card.recovery_secret_b64)?;
+        let old_state = derive_identity_state(latest_proof)?;
+        if recovery.spki_b64 != old_state.recovery_pub {
+            return Err(anyhow!("recovery secret does not match identity genesis"));
+        }
+
+        let peer = Keypair::generate()?;
+        let device = Keypair::generate()?;
+        let mut proof = latest_proof.clone();
+        append_identity_change(
+            &mut proof,
+            &recovery,
+            IdentityChangeAuthor::Recovery,
+            IdentityChangeKind::RootRotate {
+                new_root_pub: peer.spki_b64.clone(),
+            },
+            created_ms,
+        )?;
+        for device_id in old_state.devices.keys() {
+            append_identity_change(
+                &mut proof,
+                &peer,
+                IdentityChangeAuthor::Root,
+                IdentityChangeKind::DeviceRevoke {
+                    device_id: device_id.clone(),
+                },
+                created_ms,
+            )?;
+        }
+        append_identity_change(
+            &mut proof,
+            &peer,
+            IdentityChangeAuthor::Root,
+            IdentityChangeKind::DeviceAuthorize {
+                device_id: device.id.clone(),
+                device_pub: device.spki_b64.clone(),
+                scopes: default_device_scopes(),
+                expires_ms: i64::MAX,
+            },
+            created_ms,
+        )?;
+
+        let state = derive_identity_state(&proof)?;
+        Ok(Self {
+            peer_id: state.peer_id,
+            peer,
+            device,
+            recovery,
+            proof,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IdentityGenesisV1 {
+    pub v: u8,
+    pub initial_root_pub: String,
+    pub recovery_pub: String,
+    pub nonce: String,
+    pub sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IdentityProofV1 {
+    pub genesis: IdentityGenesisV1,
+    pub changes: Vec<IdentityChangeV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IdentityChangeV1 {
+    pub v: u8,
+    pub peer_id: String,
+    pub sequence: i64,
+    pub previous: String,
+    pub created_ms: i64,
+    pub author: IdentityChangeAuthor,
+    pub kind: IdentityChangeKind,
+    pub change_id: String,
+    pub sig: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityChangeAuthor {
+    Root,
+    Recovery,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum IdentityChangeKind {
+    RootRotate {
+        new_root_pub: String,
+    },
+    DeviceAuthorize {
+        device_id: String,
+        device_pub: String,
+        scopes: Vec<String>,
+        expires_ms: i64,
+    },
+    DeviceRevoke {
+        device_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryCardV1 {
+    pub v: u8,
+    pub genesis: IdentityGenesisV1,
+    pub recovery_secret_b64: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceAuthorization {
+    pub device_pub: String,
+    pub scopes: BTreeSet<String>,
+    pub expires_ms: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdentityState {
+    pub peer_id: String,
+    pub root_pub: String,
+    pub recovery_pub: String,
+    pub devices: BTreeMap<String, DeviceAuthorization>,
+    pub sequence: i64,
+    pub head: String,
+}
+
+fn default_device_scopes() -> Vec<String> {
+    vec![
+        "room:governance".to_string(),
+        "room:join".to_string(),
+        "room:post".to_string(),
+    ]
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -90,6 +298,7 @@ pub struct DelegationCertV1 {
     pub v: u8,
     pub peer_id: String,
     pub peer_pub: String,
+    pub identity_proof: IdentityProofV1,
     pub device_id: String,
     pub device_pub: String,
     pub not_before_ms: i64,
@@ -159,19 +368,241 @@ impl<'a> AcceptedEvent<'a> {
     }
 }
 
+fn create_identity_genesis(root: &Keypair, recovery: &Keypair) -> Result<IdentityGenesisV1> {
+    let nonce = base64::engine::general_purpose::STANDARD.encode(rand::random::<[u8; 16]>());
+    let unsigned = IdentityGenesisUnsigned {
+        v: 1,
+        initial_root_pub: root.spki_b64.clone(),
+        recovery_pub: recovery.spki_b64.clone(),
+        nonce,
+    };
+    let sig_input = identity_genesis_signature_input(&unsigned)?;
+    Ok(IdentityGenesisV1 {
+        v: unsigned.v,
+        initial_root_pub: unsigned.initial_root_pub,
+        recovery_pub: unsigned.recovery_pub,
+        nonce: unsigned.nonce,
+        sig: root.sign(&sig_input),
+    })
+}
+
+pub fn principal_id(genesis: &IdentityGenesisV1) -> Result<String> {
+    validate_identity_genesis(genesis)?;
+    Ok(format!(
+        "p:{}",
+        base64url_sha256(&identity_genesis_signature_input(
+            &IdentityGenesisUnsigned::from(genesis)
+        )?)
+    ))
+}
+
+pub fn derive_identity_state(proof: &IdentityProofV1) -> Result<IdentityState> {
+    validate_identity_genesis(&proof.genesis)?;
+    let peer_id = principal_id(&proof.genesis)?;
+    let mut state = IdentityState {
+        peer_id: peer_id.clone(),
+        root_pub: proof.genesis.initial_root_pub.clone(),
+        recovery_pub: proof.genesis.recovery_pub.clone(),
+        devices: BTreeMap::new(),
+        sequence: 0,
+        head: peer_id.clone(),
+    };
+
+    for change in &proof.changes {
+        if change.v != 1 {
+            return Err(anyhow!("identity change.v must be 1"));
+        }
+        if change.peer_id != peer_id {
+            return Err(anyhow!("identity change peer_id mismatch"));
+        }
+        if change.sequence != state.sequence + 1 {
+            return Err(anyhow!("identity change sequence is not contiguous"));
+        }
+        if change.previous != state.head {
+            return Err(anyhow!("identity change does not extend current head"));
+        }
+
+        let unsigned = IdentityChangeUnsigned::from(change);
+        let sig_input = identity_change_signature_input(&unsigned)?;
+        if change.change_id != identity_change_id(&sig_input) {
+            return Err(anyhow!("identity change_id mismatch"));
+        }
+        let signer_pub = match (&change.author, &change.kind) {
+            (IdentityChangeAuthor::Recovery, IdentityChangeKind::RootRotate { .. }) => {
+                &state.recovery_pub
+            }
+            (IdentityChangeAuthor::Root, _) => &state.root_pub,
+            (IdentityChangeAuthor::Recovery, _) => {
+                return Err(anyhow!("recovery key may only rotate the root"));
+            }
+        };
+        verify_signature_from_spki_b64(signer_pub, &sig_input, &change.sig)
+            .context("identity change signature invalid")?;
+
+        match &change.kind {
+            IdentityChangeKind::RootRotate { new_root_pub } => {
+                validate_key_id(new_root_pub, None).context("invalid new root key")?;
+                if *new_root_pub == state.root_pub {
+                    return Err(anyhow!("identity root rotation must change the root"));
+                }
+                state.root_pub = new_root_pub.clone();
+            }
+            IdentityChangeKind::DeviceAuthorize {
+                device_id,
+                device_pub,
+                scopes,
+                expires_ms,
+            } => {
+                validate_key_id(device_pub, Some(device_id)).context("invalid device key")?;
+                if scopes.is_empty() {
+                    return Err(anyhow!("device authorization scopes cannot be empty"));
+                }
+                let scope_set: BTreeSet<String> = scopes.iter().cloned().collect();
+                if scope_set.len() != scopes.len() {
+                    return Err(anyhow!("device authorization scopes must be unique"));
+                }
+                state.devices.insert(
+                    device_id.clone(),
+                    DeviceAuthorization {
+                        device_pub: device_pub.clone(),
+                        scopes: scope_set,
+                        expires_ms: *expires_ms,
+                    },
+                );
+            }
+            IdentityChangeKind::DeviceRevoke { device_id } => {
+                if state.devices.remove(device_id).is_none() {
+                    return Err(anyhow!("cannot revoke an unauthorized device"));
+                }
+            }
+        }
+        state.sequence = change.sequence;
+        state.head = change.change_id.clone();
+    }
+    Ok(state)
+}
+
+pub fn identity_proof_extends(
+    known: &IdentityProofV1,
+    candidate: &IdentityProofV1,
+) -> Result<bool> {
+    let known_state = derive_identity_state(known)?;
+    let candidate_state = derive_identity_state(candidate)?;
+    if known_state.peer_id != candidate_state.peer_id
+        || known.genesis != candidate.genesis
+        || candidate.changes.len() < known.changes.len()
+    {
+        return Ok(false);
+    }
+    Ok(candidate.changes[..known.changes.len()] == known.changes)
+}
+
+pub fn append_identity_change(
+    proof: &mut IdentityProofV1,
+    signer: &Keypair,
+    author: IdentityChangeAuthor,
+    kind: IdentityChangeKind,
+    created_ms: i64,
+) -> Result<IdentityChangeV1> {
+    let state = derive_identity_state(proof)?;
+    let expected_signer_pub = match (&author, &kind) {
+        (IdentityChangeAuthor::Recovery, IdentityChangeKind::RootRotate { .. }) => {
+            &state.recovery_pub
+        }
+        (IdentityChangeAuthor::Root, _) => &state.root_pub,
+        (IdentityChangeAuthor::Recovery, _) => {
+            return Err(anyhow!("recovery key may only rotate the root"));
+        }
+    };
+    if signer.spki_b64 != *expected_signer_pub {
+        return Err(anyhow!("identity change signer is not authorized"));
+    }
+    let unsigned = IdentityChangeUnsigned {
+        v: 1,
+        peer_id: state.peer_id,
+        sequence: state.sequence + 1,
+        previous: state.head,
+        created_ms,
+        author,
+        kind,
+    };
+    let sig_input = identity_change_signature_input(&unsigned)?;
+    let change = IdentityChangeV1 {
+        v: unsigned.v,
+        peer_id: unsigned.peer_id,
+        sequence: unsigned.sequence,
+        previous: unsigned.previous,
+        created_ms: unsigned.created_ms,
+        author: unsigned.author,
+        kind: unsigned.kind,
+        change_id: identity_change_id(&sig_input),
+        sig: signer.sign(&sig_input),
+    };
+    let mut candidate = proof.clone();
+    candidate.changes.push(change.clone());
+    derive_identity_state(&candidate)?;
+    proof.changes.push(change.clone());
+    Ok(change)
+}
+
+fn validate_identity_genesis(genesis: &IdentityGenesisV1) -> Result<()> {
+    if genesis.v != 1 {
+        return Err(anyhow!("identity genesis.v must be 1"));
+    }
+    validate_key_id(&genesis.initial_root_pub, None).context("invalid initial root key")?;
+    validate_key_id(&genesis.recovery_pub, None).context("invalid recovery key")?;
+    let nonce = b64_decode(&genesis.nonce).context("decode identity nonce")?;
+    if nonce.len() != 16 {
+        return Err(anyhow!("identity nonce must be 16 bytes"));
+    }
+    let unsigned = IdentityGenesisUnsigned::from(genesis);
+    verify_signature_from_spki_b64(
+        &genesis.initial_root_pub,
+        &identity_genesis_signature_input(&unsigned)?,
+        &genesis.sig,
+    )
+    .context("identity genesis signature invalid")
+}
+
+fn validate_key_id(spki_b64: &str, expected_id: Option<&str>) -> Result<String> {
+    let spki = b64_decode(spki_b64).context("decode key SPKI")?;
+    let id = id_from_spki_der(&spki)?;
+    if expected_id.is_some_and(|expected| expected != id) {
+        return Err(anyhow!("key id does not match public key"));
+    }
+    Ok(id)
+}
+
 pub fn create_delegation(
-    peer: &Keypair,
-    device: &Keypair,
+    identity: &PeerIdentity,
     not_before_ms: i64,
     expires_ms: i64,
     scopes: Vec<String>,
 ) -> Result<DelegationCertV1> {
+    let state = derive_identity_state(&identity.proof)?;
+    if state.peer_id != identity.peer_id || state.root_pub != identity.peer.spki_b64 {
+        return Err(anyhow!("identity does not match current proof"));
+    }
+    let device = state
+        .devices
+        .get(&identity.device.id)
+        .ok_or_else(|| anyhow!("device is not authorized by identity proof"))?;
+    if device.device_pub != identity.device.spki_b64 {
+        return Err(anyhow!("device key does not match identity proof"));
+    }
+    if expires_ms > device.expires_ms {
+        return Err(anyhow!("delegation outlives device authorization"));
+    }
+    if scopes.iter().any(|scope| !device.scopes.contains(scope)) {
+        return Err(anyhow!("delegation requests an unauthorized device scope"));
+    }
     let unsigned = DelegationUnsigned {
         v: 1,
-        peer_id: peer.id.clone(),
-        peer_pub: peer.spki_b64.clone(),
-        device_id: device.id.clone(),
-        device_pub: device.spki_b64.clone(),
+        peer_id: identity.peer_id.clone(),
+        peer_pub: identity.peer.spki_b64.clone(),
+        identity_proof: identity.proof.clone(),
+        device_id: identity.device.id.clone(),
+        device_pub: identity.device.spki_b64.clone(),
         not_before_ms,
         expires_ms,
         scopes,
@@ -181,12 +612,13 @@ pub fn create_delegation(
         v: unsigned.v,
         peer_id: unsigned.peer_id,
         peer_pub: unsigned.peer_pub,
+        identity_proof: unsigned.identity_proof,
         device_id: unsigned.device_id,
         device_pub: unsigned.device_pub,
         not_before_ms: unsigned.not_before_ms,
         expires_ms: unsigned.expires_ms,
         scopes: unsigned.scopes,
-        sig: peer.sign(&sig_input),
+        sig: identity.peer.sign(&sig_input),
     })
 }
 
@@ -218,11 +650,38 @@ pub fn validate_delegation_at(
         ));
     }
 
+    let identity_state = derive_identity_state(&delegation.identity_proof)
+        .context("delegation identity proof invalid")?;
+    if identity_state.peer_id != delegation.peer_id {
+        return Err(anyhow!("delegation peer_id does not match identity proof"));
+    }
+    if identity_state.root_pub != delegation.peer_pub {
+        return Err(anyhow!(
+            "delegation peer_pub is not the current identity root"
+        ));
+    }
+    let authorization = identity_state
+        .devices
+        .get(&delegation.device_id)
+        .ok_or_else(|| anyhow!("delegation device is not authorized"))?;
+    if authorization.device_pub != delegation.device_pub {
+        return Err(anyhow!(
+            "delegation device_pub does not match authorization"
+        ));
+    }
+    if now_ms > authorization.expires_ms {
+        return Err(anyhow!("delegation device authorization expired"));
+    }
+    if delegation
+        .scopes
+        .iter()
+        .any(|scope| !authorization.scopes.contains(scope))
+    {
+        return Err(anyhow!("delegation contains an unauthorized device scope"));
+    }
+
     let peer_spki = b64_decode(&delegation.peer_pub).context("decode peer_pub")?;
     let device_spki = b64_decode(&delegation.device_pub).context("decode device_pub")?;
-    if id_from_spki_der(&peer_spki)? != delegation.peer_id {
-        return Err(anyhow!("delegation peer_id does not match peer_pub"));
-    }
     if id_from_spki_der(&device_spki)? != delegation.device_id {
         return Err(anyhow!("delegation device_id does not match device_pub"));
     }
@@ -231,6 +690,7 @@ pub fn validate_delegation_at(
         v: delegation.v,
         peer_id: delegation.peer_id.clone(),
         peer_pub: delegation.peer_pub.clone(),
+        identity_proof: delegation.identity_proof.clone(),
         device_id: delegation.device_id.clone(),
         device_pub: delegation.device_pub.clone(),
         not_before_ms: delegation.not_before_ms,
@@ -261,7 +721,7 @@ pub fn create_event(
     let unsigned = EventUnsigned {
         v: 1,
         room_id: room_id.into(),
-        author_peer_id: identity.peer.id.clone(),
+        author_peer_id: identity.peer_id.clone(),
         author_device_id: identity.device.id.clone(),
         author_device_pub: identity.device.spki_b64.clone(),
         delegation_sig: delegation.sig.clone(),
@@ -351,6 +811,26 @@ pub fn accept_event<'a>(
     let required_scope = required_scope_for_kind(&event.kind);
     validate_event_at(event, required_scope, now_ms)
         .map_err(|e| AcceptError::Invalid(e.to_string()))?;
+
+    if let Some(known_proof) = accepted_room_events
+        .iter()
+        .filter(|accepted| accepted.author_peer_id == event.author_peer_id)
+        .filter_map(|accepted| {
+            derive_identity_state(&accepted.delegation.identity_proof)
+                .ok()
+                .map(|state| (state.sequence, &accepted.delegation.identity_proof))
+        })
+        .max_by_key(|(sequence, _)| *sequence)
+        .map(|(_, proof)| proof)
+    {
+        let extends = identity_proof_extends(known_proof, &event.delegation.identity_proof)
+            .map_err(|e| AcceptError::Invalid(e.to_string()))?;
+        if !extends {
+            return Err(AcceptError::Invalid(
+                "event identity proof is stale or forks known identity state".to_string(),
+            ));
+        }
+    }
 
     let governance_events: Vec<EventV1> = accepted_room_events
         .iter()
@@ -583,11 +1063,56 @@ struct DelegationUnsigned {
     v: u8,
     peer_id: String,
     peer_pub: String,
+    identity_proof: IdentityProofV1,
     device_id: String,
     device_pub: String,
     not_before_ms: i64,
     expires_ms: i64,
     scopes: Vec<String>,
+}
+
+#[derive(Debug)]
+struct IdentityGenesisUnsigned {
+    v: u8,
+    initial_root_pub: String,
+    recovery_pub: String,
+    nonce: String,
+}
+
+impl From<&IdentityGenesisV1> for IdentityGenesisUnsigned {
+    fn from(value: &IdentityGenesisV1) -> Self {
+        Self {
+            v: value.v,
+            initial_root_pub: value.initial_root_pub.clone(),
+            recovery_pub: value.recovery_pub.clone(),
+            nonce: value.nonce.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct IdentityChangeUnsigned {
+    v: u8,
+    peer_id: String,
+    sequence: i64,
+    previous: String,
+    created_ms: i64,
+    author: IdentityChangeAuthor,
+    kind: IdentityChangeKind,
+}
+
+impl From<&IdentityChangeV1> for IdentityChangeUnsigned {
+    fn from(value: &IdentityChangeV1) -> Self {
+        Self {
+            v: value.v,
+            peer_id: value.peer_id.clone(),
+            sequence: value.sequence,
+            previous: value.previous.clone(),
+            created_ms: value.created_ms,
+            author: value.author,
+            kind: value.kind.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -610,6 +1135,7 @@ fn delegation_signature_input(unsigned: &DelegationUnsigned) -> Result<Vec<u8>> 
     w.write_int(unsigned.v.into())?;
     w.write_str(&unsigned.peer_id)?;
     w.write_str(&unsigned.peer_pub)?;
+    w.write_bytes(&jcs_bytes(&unsigned.identity_proof)?)?;
     w.write_str(&unsigned.device_id)?;
     w.write_str(&unsigned.device_pub)?;
     w.write_int(unsigned.not_before_ms)?;
@@ -619,6 +1145,33 @@ fn delegation_signature_input(unsigned: &DelegationUnsigned) -> Result<Vec<u8>> 
         w.write_str(scope)?;
     }
     Ok(w.into_inner())
+}
+
+fn identity_genesis_signature_input(unsigned: &IdentityGenesisUnsigned) -> Result<Vec<u8>> {
+    let mut w = NetstringWriter::new(Vec::new());
+    w.write_prefix("voxelle/identity-genesis/v1\n")?;
+    w.write_int(unsigned.v.into())?;
+    w.write_str(&unsigned.initial_root_pub)?;
+    w.write_str(&unsigned.recovery_pub)?;
+    w.write_str(&unsigned.nonce)?;
+    Ok(w.into_inner())
+}
+
+fn identity_change_signature_input(unsigned: &IdentityChangeUnsigned) -> Result<Vec<u8>> {
+    let mut w = NetstringWriter::new(Vec::new());
+    w.write_prefix("voxelle/identity-change/v1\n")?;
+    w.write_int(unsigned.v.into())?;
+    w.write_str(&unsigned.peer_id)?;
+    w.write_int(unsigned.sequence)?;
+    w.write_str(&unsigned.previous)?;
+    w.write_int(unsigned.created_ms)?;
+    w.write_bytes(&jcs_bytes(&unsigned.author)?)?;
+    w.write_bytes(&jcs_bytes(&unsigned.kind)?)?;
+    Ok(w.into_inner())
+}
+
+fn identity_change_id(signature_input: &[u8]) -> String {
+    format!("ic:{}", base64url_sha256(signature_input))
 }
 
 fn event_signature_input(unsigned: &EventUnsigned) -> Result<Vec<u8>> {
@@ -748,13 +1301,12 @@ mod tests {
 
     fn identity_with_scopes(scopes: Vec<String>) -> (PeerIdentity, DelegationCertV1) {
         let identity = PeerIdentity::generate().expect("identity");
-        let delegation = create_delegation(&identity.peer, &identity.device, 900, 2_000, scopes)
-            .expect("delegation");
+        let delegation = create_delegation(&identity, 900, 2_000, scopes).expect("delegation");
         (identity, delegation)
     }
 
     fn delegation_for(identity: &PeerIdentity, scopes: Vec<String>) -> DelegationCertV1 {
-        create_delegation(&identity.peer, &identity.device, 900, 2_000, scopes).expect("delegation")
+        create_delegation(identity, 900, 2_000, scopes).expect("delegation")
     }
 
     fn member_join(identity: &PeerIdentity) -> EventV1 {
@@ -766,7 +1318,7 @@ mod tests {
             "MEMBER_JOIN",
             vec![],
             json!({
-                "peer_id": identity.peer.id,
+                "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
             }),
         )
@@ -805,11 +1357,13 @@ mod tests {
     }
 
     #[test]
-    fn peer_and_device_ids_are_stable_from_spki() {
+    fn principal_id_is_distinct_from_root_and_device_key_ids() {
         let identity = PeerIdentity::generate().expect("identity");
 
+        assert!(identity.peer_id.starts_with("p:"));
         assert!(identity.peer.id.starts_with("ed25519:"));
         assert!(identity.device.id.starts_with("ed25519:"));
+        assert_ne!(identity.peer_id, identity.peer.id);
         assert_ne!(identity.peer.id, identity.device.id);
         assert_eq!(
             identity.peer.id,
@@ -822,12 +1376,76 @@ mod tests {
     }
 
     #[test]
+    fn recovery_rotates_root_revokes_old_devices_and_preserves_principal() {
+        let original = PeerIdentity::generate_at(1_000).expect("original identity");
+        let original_peer_id = original.peer_id.clone();
+        let original_root_id = original.peer.id.clone();
+        let original_device_id = original.device.id.clone();
+        let card = original.recovery_card();
+
+        let recovered =
+            PeerIdentity::recover(&card, &original.proof, 2_000).expect("recover identity");
+        let recovered_state = derive_identity_state(&recovered.proof).expect("recovered state");
+
+        assert_eq!(recovered.peer_id, original_peer_id);
+        assert_ne!(recovered.peer.id, original_root_id);
+        assert!(!recovered_state.devices.contains_key(&original_device_id));
+        assert!(recovered_state.devices.contains_key(&recovered.device.id));
+        assert!(identity_proof_extends(&original.proof, &recovered.proof).expect("extension"));
+
+        let delegation = create_delegation(&recovered, 2_000, 3_000, vec!["room:post".to_string()])
+            .expect("recovered delegation");
+        validate_delegation_at(
+            &delegation,
+            &original_peer_id,
+            &recovered.device.id,
+            "room:post",
+            2_100,
+        )
+        .expect("recovered delegation validates");
+    }
+
+    #[test]
+    fn recovery_key_cannot_authorize_a_device() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let unauthorized_device = Keypair::generate().expect("device");
+        let mut proof = identity.proof.clone();
+        let result = append_identity_change(
+            &mut proof,
+            &identity.recovery,
+            IdentityChangeAuthor::Recovery,
+            IdentityChangeKind::DeviceAuthorize {
+                device_id: unauthorized_device.id,
+                device_pub: unauthorized_device.spki_b64,
+                scopes: vec!["room:post".to_string()],
+                expires_ms: i64::MAX,
+            },
+            1_000,
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn tampered_or_regressed_identity_proof_is_rejected() {
+        let original = PeerIdentity::generate_at(1_000).expect("original identity");
+        let recovered = PeerIdentity::recover(&original.recovery_card(), &original.proof, 2_000)
+            .expect("recover identity");
+
+        assert!(!identity_proof_extends(&recovered.proof, &original.proof).expect("regression"));
+
+        let mut tampered = recovered.proof.clone();
+        let last = tampered.changes.last_mut().expect("identity change");
+        last.created_ms += 1;
+        assert!(derive_identity_state(&tampered).is_err());
+    }
+
+    #[test]
     fn device_delegation_verifies_and_binds_ids() {
         let (identity, delegation) = identity_with_delegation();
 
         validate_delegation_at(
             &delegation,
-            &identity.peer.id,
+            &identity.peer_id,
             &identity.device.id,
             "room:post",
             1_000,
@@ -836,7 +1454,7 @@ mod tests {
 
         let wrong = validate_delegation_at(
             &delegation,
-            &identity.peer.id,
+            &identity.peer_id,
             &identity.device.id,
             "room:admin",
             1_000,
@@ -936,7 +1554,7 @@ mod tests {
     fn non_member_message_is_rejected() {
         let authority = PeerIdentity::generate().expect("authority");
         let member = PeerIdentity::generate().expect("member");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let event = message(&member, 1_100, vec![]);
 
         let err = accept_event(&event, &[], &context, 1_100).expect_err("not accepted");
@@ -947,7 +1565,7 @@ mod tests {
     fn member_join_admits_peer_and_member_message_is_accepted() {
         let authority = PeerIdentity::generate().expect("authority");
         let member = PeerIdentity::generate().expect("member");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
 
         let join = member_join(&member);
         accept_event(&join, &[], &context, 1_000).expect("join accepted");
@@ -960,14 +1578,14 @@ mod tests {
     fn banned_peer_cannot_post() {
         let authority = PeerIdentity::generate().expect("authority");
         let member = PeerIdentity::generate().expect("member");
-        let context = RoomContext::new(authority.peer.id.clone());
+        let context = RoomContext::new(authority.peer_id.clone());
 
         let join = member_join(&member);
         let ban = authority_governance_event(
             &authority,
             1_050,
             "MEMBER_BAN",
-            json!({ "peer_id": member.peer.id }),
+            json!({ "peer_id": member.peer_id }),
         );
         accept_event(&ban, &[join.clone()], &context, 1_050).expect("ban accepted");
 
@@ -980,7 +1598,7 @@ mod tests {
     fn revoked_device_cannot_post() {
         let authority = PeerIdentity::generate().expect("authority");
         let member = PeerIdentity::generate().expect("member");
-        let context = RoomContext::new(authority.peer.id.clone());
+        let context = RoomContext::new(authority.peer_id.clone());
 
         let join = member_join(&member);
         let revoke = authority_governance_event(
@@ -988,7 +1606,7 @@ mod tests {
             1_050,
             "DEVICE_REVOKE",
             json!({
-                "peer_id": member.peer.id,
+                "peer_id": member.peer_id,
                 "device_id": member.device.id,
             }),
         );
@@ -1003,7 +1621,7 @@ mod tests {
     fn unknown_kind_does_not_bypass_membership() {
         let authority = PeerIdentity::generate().expect("authority");
         let outsider = PeerIdentity::generate().expect("outsider");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let event = create_event(
             &outsider,
             delegation_for(&outsider, vec!["room:post".to_string()]),
@@ -1023,7 +1641,7 @@ mod tests {
     fn missing_ancestors_are_tolerated_for_valid_member_events() {
         let authority = PeerIdentity::generate().expect("authority");
         let member = PeerIdentity::generate().expect("member");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let join = member_join(&member);
         let event = message(&member, 1_100, vec!["e:missing".to_string()]);
 
@@ -1034,26 +1652,26 @@ mod tests {
     fn governance_derivation_is_deterministic_from_shuffled_input() {
         let authority = PeerIdentity::generate().expect("authority");
         let member = PeerIdentity::generate().expect("member");
-        let context = RoomContext::new(authority.peer.id.clone());
+        let context = RoomContext::new(authority.peer_id.clone());
         let join = member_join(&member);
         let ban = authority_governance_event(
             &authority,
             1_050,
             "MEMBER_BAN",
-            json!({ "peer_id": member.peer.id }),
+            json!({ "peer_id": member.peer_id }),
         );
         let unban = authority_governance_event(
             &authority,
             1_060,
             "MEMBER_UNBAN",
-            json!({ "peer_id": member.peer.id }),
+            json!({ "peer_id": member.peer_id }),
         );
 
         let a =
             derive_governance_state(&[join.clone(), ban.clone(), unban.clone()], &context, 1_100);
         let b = derive_governance_state(&[unban, join, ban], &context, 1_100);
         assert_eq!(a, b);
-        assert!(!a.banned.contains(&member.peer.id));
-        assert!(!a.members.contains(&member.peer.id));
+        assert!(!a.banned.contains(&member.peer_id));
+        assert!(!a.members.contains(&member.peer_id));
     }
 }

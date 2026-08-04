@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
-use voxelle_core::{compute_heads, AcceptedEvent, EventV1};
+use voxelle_core::{
+    compute_heads, derive_identity_state, identity_proof_extends, AcceptedEvent, EventV1,
+    IdentityProofV1,
+};
 
 pub struct Store {
     conn: Connection,
@@ -38,6 +41,13 @@ impl Store {
 
                 CREATE INDEX IF NOT EXISTS idx_accepted_events_room_id
                 ON accepted_events(room_id);
+
+                CREATE TABLE IF NOT EXISTS identity_heads (
+                    peer_id TEXT PRIMARY KEY NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    head TEXT NOT NULL,
+                    proof_json TEXT NOT NULL
+                );
                 "#,
             )
             .context("initialize store schema")?;
@@ -50,6 +60,17 @@ impl Store {
         accepted_at_ms: i64,
     ) -> Result<bool> {
         let event = accepted.event();
+        let candidate_proof = &event.delegation.identity_proof;
+        let candidate_state = derive_identity_state(candidate_proof)
+            .context("derive accepted event identity state")?;
+        if candidate_state.peer_id != event.author_peer_id {
+            anyhow::bail!("accepted event author does not match identity proof");
+        }
+        if let Some(known) = self.latest_identity_proof(&event.author_peer_id)? {
+            if !identity_proof_extends(&known, candidate_proof)? {
+                anyhow::bail!("accepted event carries a stale or forked identity proof");
+            }
+        }
         let event_json = serde_json::to_string(event).context("serialize event")?;
         let changed = self
             .conn
@@ -62,7 +83,43 @@ impl Store {
                 params![event.event_id, event.room_id, event_json, accepted_at_ms],
             )
             .context("insert accepted event")?;
+        if changed == 1 {
+            let proof_json =
+                serde_json::to_string(candidate_proof).context("serialize identity proof")?;
+            self.conn
+                .execute(
+                    r#"
+                    INSERT INTO identity_heads (peer_id, sequence, head, proof_json)
+                    VALUES (?1, ?2, ?3, ?4)
+                    ON CONFLICT(peer_id) DO UPDATE SET
+                        sequence = excluded.sequence,
+                        head = excluded.head,
+                        proof_json = excluded.proof_json
+                    WHERE excluded.sequence > identity_heads.sequence
+                    "#,
+                    params![
+                        candidate_state.peer_id,
+                        candidate_state.sequence,
+                        candidate_state.head,
+                        proof_json
+                    ],
+                )
+                .context("advance identity head")?;
+        }
         Ok(changed == 1)
+    }
+
+    pub fn latest_identity_proof(&self, peer_id: &str) -> Result<Option<IdentityProofV1>> {
+        self.conn
+            .query_row(
+                "SELECT proof_json FROM identity_heads WHERE peer_id = ?1",
+                params![peer_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("load identity head")?
+            .map(|json| serde_json::from_str(&json).context("parse identity proof"))
+            .transpose()
     }
 
     pub fn has_event(&self, event_id: &str) -> Result<bool> {
@@ -146,7 +203,7 @@ mod tests {
         identity: &PeerIdentity,
         scopes: Vec<String>,
     ) -> voxelle_core::DelegationCertV1 {
-        create_delegation(&identity.peer, &identity.device, 900, 2_000, scopes).expect("delegation")
+        create_delegation(identity, 900, 2_000, scopes).expect("delegation")
     }
 
     fn member_join(identity: &PeerIdentity) -> EventV1 {
@@ -158,7 +215,7 @@ mod tests {
             "MEMBER_JOIN",
             vec![],
             json!({
-                "peer_id": identity.peer.id,
+                "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
             }),
         )
@@ -182,7 +239,7 @@ mod tests {
     fn accepted_event_insert_is_idempotent() {
         let authority = PeerIdentity::generate().expect("authority");
         let member = PeerIdentity::generate().expect("member");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let join = member_join(&member);
         let accepted = accept_event(&join, &[], &context, 1_000).expect("accepted");
 
@@ -197,13 +254,46 @@ mod tests {
     }
 
     #[test]
+    fn recovered_identity_head_rejects_later_events_from_lost_device() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let original = PeerIdentity::generate_at(900).expect("original");
+        let context = RoomContext::new(authority.peer_id);
+        let store = Store::open_in_memory().expect("store");
+
+        let join = member_join(&original);
+        let accepted_join = accept_event(&join, &[], &context, 1_000).expect("join accepted");
+        store
+            .insert_accepted_event(accepted_join, 1_000)
+            .expect("insert join");
+
+        let lost_device_event = message(&original, 1_300, vec![]);
+        let accepted_before_recovery =
+            accept_event(&lost_device_event, &[join.clone()], &context, 1_300)
+                .expect("old device was valid before recovery");
+
+        let recovered = PeerIdentity::recover(&original.recovery_card(), &original.proof, 1_100)
+            .expect("recover");
+        let recovered_event = message(&recovered, 1_200, vec![]);
+        let accepted_recovered =
+            accept_event(&recovered_event, &[join], &context, 1_200).expect("recovered event");
+        store
+            .insert_accepted_event(accepted_recovered, 1_200)
+            .expect("advance identity head");
+
+        let err = store
+            .insert_accepted_event(accepted_before_recovery, 1_300)
+            .expect_err("lost device rejected after recovery");
+        assert!(err.to_string().contains("stale or forked identity proof"));
+    }
+
+    #[test]
     fn accepted_events_survive_reopen_and_heads_are_stable() {
         let dir = tempdir().expect("tempdir");
         let path = dir.path().join("voxelle.sqlite3");
 
         let authority = PeerIdentity::generate().expect("authority");
         let member = PeerIdentity::generate().expect("member");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let join = member_join(&member);
         let msg = message(&member, 1_100, vec![]);
 
@@ -243,7 +333,7 @@ mod tests {
     fn dependent_room_heads_ignore_known_parents() {
         let authority = PeerIdentity::generate().expect("authority");
         let member = PeerIdentity::generate().expect("member");
-        let context = RoomContext::new(authority.peer.id);
+        let context = RoomContext::new(authority.peer_id);
         let join = member_join(&member);
         let root = message(&member, 1_100, vec![]);
         let child = message(&member, 1_200, vec![root.event_id.clone()]);

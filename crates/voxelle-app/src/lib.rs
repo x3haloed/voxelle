@@ -8,8 +8,8 @@ use std::sync::mpsc;
 use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
-    accept_event, create_delegation, create_event, EventV1, PeerIdentity, RoomContext,
-    GOVERNANCE_ROOM_ID,
+    accept_event, create_delegation, create_event, EventV1, IdentityProofV1, PeerIdentity,
+    RoomContext, GOVERNANCE_ROOM_ID,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
@@ -59,8 +59,10 @@ pub struct HomeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IdentityFile {
     v: u8,
-    peer_secret_b64: String,
+    root_secret_b64: String,
     device_secret_b64: String,
+    recovery_secret_b64: String,
+    proof: IdentityProofV1,
     peer_id: String,
     device_id: String,
 }
@@ -69,9 +71,11 @@ impl IdentityFile {
     pub fn from_identity(identity: &PeerIdentity) -> Self {
         Self {
             v: 1,
-            peer_secret_b64: identity.peer.secret_key_b64(),
+            root_secret_b64: identity.peer.secret_key_b64(),
             device_secret_b64: identity.device.secret_key_b64(),
-            peer_id: identity.peer.id.clone(),
+            recovery_secret_b64: identity.recovery.secret_key_b64(),
+            proof: identity.proof.clone(),
+            peer_id: identity.peer_id.clone(),
             device_id: identity.device.id.clone(),
         }
     }
@@ -80,7 +84,16 @@ impl IdentityFile {
         if self.v != 1 {
             anyhow::bail!("unsupported identity version {}", self.v);
         }
-        PeerIdentity::from_secret_keys_b64(&self.peer_secret_b64, &self.device_secret_b64)
+        let identity = PeerIdentity::from_secret_keys_b64(
+            &self.root_secret_b64,
+            &self.device_secret_b64,
+            &self.recovery_secret_b64,
+            self.proof.clone(),
+        )?;
+        if identity.peer_id != self.peer_id || identity.device.id != self.device_id {
+            anyhow::bail!("identity metadata does not match signed identity proof");
+        }
+        Ok(identity)
     }
 }
 
@@ -540,7 +553,7 @@ impl VoxelleHome {
             let config = HomeConfig {
                 v: 1,
                 default_room,
-                authority_peer_id: identity.peer.id.clone(),
+                authority_peer_id: identity.peer_id.clone(),
             };
             write_json(&self.path("config.json"), &config)?;
             config
@@ -551,7 +564,7 @@ impl VoxelleHome {
 
         Ok(ProfileSummary {
             home: self.root.clone(),
-            peer_id: identity.peer.id,
+            peer_id: identity.peer_id,
             device_id: identity.device.id,
             default_room: config.default_room,
             authority_peer_id: config.authority_peer_id,
@@ -563,7 +576,7 @@ impl VoxelleHome {
         let config = self.load_config()?;
         Ok(ProfileSummary {
             home: self.root.clone(),
-            peer_id: identity.peer.id,
+            peer_id: identity.peer_id,
             device_id: identity.device.id,
             default_room: config.default_room,
             authority_peer_id: config.authority_peer_id,
@@ -627,7 +640,7 @@ impl VoxelleHome {
                 "Identity",
                 format!(
                     "Local peer {} is available.",
-                    short_peer_label(&identity.peer.id)
+                    short_peer_label(&identity.peer_id)
                 ),
             )
             .detail(format!("device: {}", short_peer_label(&identity.device.id))),
@@ -861,8 +874,7 @@ impl VoxelleHome {
         let event = create_event(
             &identity,
             create_delegation(
-                &identity.peer,
-                &identity.device,
+                &identity,
                 now_ms() - 60_000,
                 now_ms() + 30 * 24 * 60 * 60_000,
                 vec!["room:post".to_string()],
@@ -1080,7 +1092,7 @@ impl VoxelleHome {
         if self.path("identity.json").exists() {
             return self.load_identity();
         }
-        let identity = PeerIdentity::generate()?;
+        let identity = PeerIdentity::generate_at(now_ms())?;
         let file = IdentityFile::from_identity(&identity);
         write_json(&self.path("identity.json"), &file)?;
         Ok(identity)
@@ -1106,9 +1118,9 @@ impl VoxelleHome {
             .into_iter()
             .any(|event| {
                 event.kind == "MEMBER_JOIN"
-                    && event.author_peer_id == identity.peer.id
+                    && event.author_peer_id == identity.peer_id
                     && event.body.get("peer_id").and_then(|value| value.as_str())
-                        == Some(identity.peer.id.as_str())
+                        == Some(identity.peer_id.as_str())
             });
         if existing_join {
             return Ok(());
@@ -1118,8 +1130,7 @@ impl VoxelleHome {
         let join = create_event(
             identity,
             create_delegation(
-                &identity.peer,
-                &identity.device,
+                identity,
                 now_ms() - 60_000,
                 now_ms() + 30 * 24 * 60 * 60_000,
                 vec!["room:join".to_string()],
@@ -1129,7 +1140,7 @@ impl VoxelleHome {
             "MEMBER_JOIN",
             vec![],
             serde_json::json!({
-                "peer_id": identity.peer.id,
+                "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
             }),
         )?;

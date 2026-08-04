@@ -20,7 +20,7 @@ fn cli_home_workflow_drives_app_actions() {
             "\"default_room\": \"room:general\"",
         ))
         .stdout(predicate::str::contains(
-            "\"authority_peer_id\": \"ed25519:",
+            "\"authority_peer_id\": \"p:",
         ));
 
     Command::cargo_bin("voxelle")
@@ -54,7 +54,7 @@ fn cli_creates_identity_room_message_and_syncs_local_store() {
         .arg(&identity)
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("ed25519:"))
+        .stdout(predicate::str::starts_with("p:"))
         .get_output()
         .stdout
         .clone();
@@ -128,7 +128,7 @@ fn cli_diagnose_connect_reports_unreachable_peer_endpoint() {
     let endpoint = PeerEndpoint {
         v: 1,
         addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 9),
-        peer_id: remote_identity.peer.id,
+        peer_id: remote_identity.peer_id,
         device_id: remote_identity.device.id,
         quic_cert_der_b64: remote_cert.cert_der_b64,
         quic_cert_fingerprint: remote_cert.fingerprint,

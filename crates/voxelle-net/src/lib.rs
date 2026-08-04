@@ -209,7 +209,7 @@ impl QuicNode {
         Ok(PeerEndpoint {
             v: 1,
             addr: advertised_addr,
-            peer_id: self.identity.peer.id.clone(),
+            peer_id: self.identity.peer_id.clone(),
             device_id: self.identity.device.id.clone(),
             quic_cert_der_b64: self.certificate.cert_der_b64.clone(),
             quic_cert_fingerprint: self.certificate.fingerprint.clone(),
@@ -752,7 +752,7 @@ fn make_handshake(
     let mut hello = HandshakeV1 {
         v: 1,
         role,
-        peer_id: identity.peer.id.clone(),
+        peer_id: identity.peer_id.clone(),
         device_id: identity.device.id.clone(),
         device_pub: identity.device.spki_b64.clone(),
         quic_cert_fingerprint: quic_cert_fingerprint.to_string(),
@@ -845,7 +845,7 @@ mod tests {
     };
 
     fn delegation_for(identity: &PeerIdentity, scopes: Vec<String>) -> DelegationCertV1 {
-        create_delegation(&identity.peer, &identity.device, 900, 2_000, scopes).expect("delegation")
+        create_delegation(identity, 900, 2_000, scopes).expect("delegation")
     }
 
     fn member_join(identity: &PeerIdentity) -> EventV1 {
@@ -857,7 +857,7 @@ mod tests {
             "MEMBER_JOIN",
             vec![],
             json!({
-                "peer_id": identity.peer.id,
+                "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
             }),
         )
@@ -982,7 +982,7 @@ mod tests {
     async fn authenticated_quic_sync_converges_room_events() -> Result<()> {
         let authority = PeerIdentity::generate()?;
         let alice = PeerIdentity::generate()?;
-        let context = RoomContext::new(authority.peer.id.clone());
+        let context = RoomContext::new(authority.peer_id.clone());
         let source_store = Store::open_in_memory()?;
         let mut dest_store = Store::open_in_memory()?;
 
