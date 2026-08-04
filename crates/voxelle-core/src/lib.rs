@@ -13,6 +13,10 @@ use std::io::{self, Write};
 const OID_ED25519: spki::ObjectIdentifier = spki::ObjectIdentifier::new_unwrap("1.3.101.112");
 pub const GOVERNANCE_ROOM_ID: &str = "governance";
 pub const MAX_EVENT_FUTURE_SKEW_MS: i64 = 5 * 60_000;
+pub const MAX_EVENT_PARENTS: usize = 64;
+pub const MAX_IDENTITY_CHANGES: usize = 256;
+const MAX_EVENT_REFERENCE_BYTES: usize = 128;
+const MAX_IDENTITY_PROOF_BYTES: usize = 256 * 1024;
 const CALL_LIVENESS_MS: i64 = 90_000;
 
 #[derive(Debug, Clone)]
@@ -682,6 +686,12 @@ pub fn principal_id(genesis: &IdentityGenesisV1) -> Result<String> {
 }
 
 pub fn derive_identity_state(proof: &IdentityProofV1) -> Result<IdentityState> {
+    if proof.changes.len() > MAX_IDENTITY_CHANGES {
+        return Err(anyhow!("identity proof exceeds change-count bound"));
+    }
+    if serde_json::to_vec(proof)?.len() > MAX_IDENTITY_PROOF_BYTES {
+        return Err(anyhow!("identity proof exceeds encoded-size bound"));
+    }
     validate_identity_genesis(&proof.genesis)?;
     let peer_id = principal_id(&proof.genesis)?;
     let mut state = IdentityState {
@@ -1002,6 +1012,7 @@ pub fn create_event(
     let mut parents = parents;
     parents.sort();
     parents.dedup();
+    validate_event_parents(&parents)?;
 
     let unsigned = EventUnsigned {
         v: 1,
@@ -1061,6 +1072,7 @@ pub fn validate_event_at(event: &EventV1, required_scope: &str, now_ms: i64) -> 
     if parents != event.parents {
         return Err(anyhow!("event parents are not canonical"));
     }
+    validate_event_parents(&event.parents)?;
 
     let unsigned = EventUnsigned {
         v: event.v,
@@ -1108,13 +1120,8 @@ pub fn accept_event<'a>(
     if let Some(known_proof) = accepted_room_events
         .iter()
         .filter(|accepted| accepted.author_peer_id == event.author_peer_id)
-        .filter_map(|accepted| {
-            derive_identity_state(&accepted.delegation.identity_proof)
-                .ok()
-                .map(|state| (state.sequence, &accepted.delegation.identity_proof))
-        })
-        .max_by_key(|(sequence, _)| *sequence)
-        .map(|(_, proof)| proof)
+        .max_by_key(|accepted| accepted.delegation.identity_proof.changes.len())
+        .map(|accepted| &accepted.delegation.identity_proof)
     {
         let extends = identity_proof_extends(known_proof, &event.delegation.identity_proof)
             .map_err(|e| AcceptError::Invalid(e.to_string()))?;
@@ -2161,6 +2168,19 @@ pub fn compute_heads(events: &[EventV1]) -> Vec<String> {
     ids.difference(&non_heads).cloned().collect()
 }
 
+fn validate_event_parents(parents: &[String]) -> Result<()> {
+    if parents.len() > MAX_EVENT_PARENTS {
+        return Err(anyhow!("event exceeds parent-count bound"));
+    }
+    if parents
+        .iter()
+        .any(|parent| parent.is_empty() || parent.len() > MAX_EVENT_REFERENCE_BYTES)
+    {
+        return Err(anyhow!("event parent identifier is invalid"));
+    }
+    Ok(())
+}
+
 pub fn topo_sort_deterministic(events: &[EventV1]) -> Vec<String> {
     let by_id: BTreeMap<String, &EventV1> = events
         .iter()
@@ -2185,23 +2205,35 @@ pub fn topo_sort_deterministic(events: &[EventV1]) -> Vec<String> {
         }
     }
 
-    let mut ready: Vec<String> = indegree
+    let mut ready: BTreeSet<(i64, String)> = indegree
         .iter()
         .filter(|(_, degree)| **degree == 0)
-        .map(|(id, _)| id.clone())
+        .map(|(id, _)| {
+            (
+                by_id
+                    .get(id)
+                    .map(|event| event.created_ms)
+                    .unwrap_or_default(),
+                id.clone(),
+            )
+        })
         .collect();
     let mut out = Vec::with_capacity(by_id.len());
 
-    while !ready.is_empty() {
-        ready.sort_by(|a, b| compare_events(&by_id, a, b));
-        let id = ready.remove(0);
+    while let Some((_, id)) = ready.pop_first() {
         out.push(id.clone());
         if let Some(kids) = children.get(&id) {
             for kid in kids {
                 if let Some(degree) = indegree.get_mut(kid) {
                     *degree -= 1;
                     if *degree == 0 {
-                        ready.push(kid.clone());
+                        ready.insert((
+                            by_id
+                                .get(kid)
+                                .map(|event| event.created_ms)
+                                .unwrap_or_default(),
+                            kid.clone(),
+                        ));
                     }
                 }
             }
@@ -2872,6 +2904,32 @@ mod tests {
         let mut tampered = event.clone();
         tampered.body = json!({ "text": "goodbye" });
         assert!(validate_event_at(&tampered, "room:post", 1_100).is_err());
+    }
+
+    #[test]
+    fn event_and_identity_structural_bounds_fail_early() {
+        let (identity, delegation) = identity_with_delegation();
+        let parents = (0..=MAX_EVENT_PARENTS)
+            .map(|index| format!("e:{index}"))
+            .collect();
+        assert!(create_event(
+            &identity,
+            delegation,
+            "room:general",
+            1_000,
+            "MSG_POST",
+            parents,
+            json!({"text":"bounded"}),
+        )
+        .is_err());
+
+        let mut proof = identity.proof.clone();
+        let change = proof.changes[0].clone();
+        proof.changes.resize(MAX_IDENTITY_CHANGES + 1, change);
+        assert!(derive_identity_state(&proof)
+            .expect_err("oversized proof")
+            .to_string()
+            .contains("change-count"));
     }
 
     #[test]

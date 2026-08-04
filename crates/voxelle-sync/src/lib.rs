@@ -116,13 +116,27 @@ pub fn accept_offered_events_once(
         ..SyncStats::default()
     };
 
+    let mut accepted_events = dest.room_events(&context.governance_room_id)?;
+    if let Some(room_id) = offered
+        .iter()
+        .map(|event| event.room_id.as_str())
+        .find(|room_id| *room_id != context.governance_room_id)
+    {
+        accepted_events.extend(dest.room_events(room_id)?);
+    }
+
     for event in offered {
         if dest.has_event(&event.event_id)? {
             stats.already_present += 1;
             continue;
         }
-        match insert_after_acceptance(dest, event, context, now_ms) {
-            Ok(true) => stats.accepted += 1,
+        let accepted = accept_event(event, &accepted_events, context, now_ms)
+            .map_err(|error| anyhow::anyhow!("event rejected: {error:?}"));
+        match accepted.and_then(|accepted| dest.insert_accepted_event(accepted, now_ms)) {
+            Ok(true) => {
+                stats.accepted += 1;
+                accepted_events.push(event.clone());
+            }
             Ok(false) => stats.already_present += 1,
             Err(_) => stats.rejected += 1,
         }

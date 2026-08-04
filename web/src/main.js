@@ -1027,6 +1027,10 @@ async function processCallSignals() {
   try {
     const localPeerId = currentSnapshot.home.profile.peer_id;
     const call = currentSnapshot.home.call;
+    const retainedSignalIds = new Set(call.signals.map((signal) => signal.event_id));
+    for (const eventId of uiState.seenCallSignals) {
+      if (!retainedSignalIds.has(eventId)) uiState.seenCallSignals.delete(eventId);
+    }
     for (const signal of call.signals) {
       try {
         await consumeRetainedSignal(signal, uiState.seenCallSignals, async () => {
@@ -1056,6 +1060,7 @@ async function processCallSignals() {
             if (pc.remoteDescription) await pc.addIceCandidate(candidate);
             else {
               const pending = uiState.pendingIce.get(signal.author_peer_id) ?? [];
+              if (pending.length >= 64) pending.shift();
               pending.push(candidate);
               uiState.pendingIce.set(signal.author_peer_id, pending);
             }

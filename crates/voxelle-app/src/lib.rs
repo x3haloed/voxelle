@@ -40,6 +40,9 @@ const READ_STATE: &str = "rooms.read";
 const ROOM_KEYS_STATE: &str = "rooms.keys.encrypted";
 const UI_PREFERENCES_STATE: &str = "ui.preferences";
 const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
+const MAX_KNOWN_PEERS: usize = 128;
+const MAX_PROJECTED_MESSAGES: usize = 500;
+const MAX_PROJECTED_CALL_SIGNALS: usize = 256;
 
 pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
     resolve_home_root_from(
@@ -1085,6 +1088,8 @@ impl VoxelleHome {
             .find(|channel| channel.selected)
             .map(|channel| channel.room_id.clone())
             .unwrap_or_else(|| config.space.default_room_id.clone());
+        let mut projected_messages = self.read_messages(Some(&selected_room))?;
+        retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
         Ok(HomeScreenView {
             profile: self.profile_summary()?,
             runtime,
@@ -1101,7 +1106,7 @@ impl VoxelleHome {
             call: self.call_view(&selected_room)?,
             room: RoomTimelineView {
                 room_id: selected_room.clone(),
-                messages: self.read_messages(Some(&selected_room))?,
+                messages: projected_messages,
             },
         })
     }
@@ -1806,29 +1811,42 @@ impl VoxelleHome {
                 )
             })
             .collect();
+        let mut updates = Vec::new();
         for channel in state.channels.values() {
-            for event in store.room_events(&channel.room_id)? {
-                if event.kind == "PROFILE_UPDATE" {
-                    profiles.insert(
-                        event.author_peer_id.clone(),
-                        ProfileView {
-                            peer_id: event.author_peer_id,
-                            display_name: event
-                                .body
-                                .get("display_name")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("Member")
-                                .to_string(),
-                            about: event
-                                .body
-                                .get("about")
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("")
-                                .to_string(),
-                        },
-                    );
-                }
-            }
+            updates.extend(
+                store
+                    .room_events(&channel.room_id)?
+                    .into_iter()
+                    .filter(|event| {
+                        event.kind == "PROFILE_UPDATE"
+                            && state.members.contains(&event.author_peer_id)
+                    }),
+            );
+        }
+        updates.sort_by(|left, right| {
+            left.created_ms
+                .cmp(&right.created_ms)
+                .then(left.event_id.cmp(&right.event_id))
+        });
+        for event in updates {
+            profiles.insert(
+                event.author_peer_id.clone(),
+                ProfileView {
+                    peer_id: event.author_peer_id,
+                    display_name: event
+                        .body
+                        .get("display_name")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("Member")
+                        .to_string(),
+                    about: event
+                        .body
+                        .get("about")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                },
+            );
         }
         Ok(profiles.into_values().collect())
     }
@@ -1946,6 +1964,11 @@ impl VoxelleHome {
                         .map(ToOwned::to_owned),
                     created_ms: event.created_ms,
                 })
+                .rev()
+                .take(MAX_PROJECTED_CALL_SIGNALS)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
                 .collect()
         };
         Ok(CallView {
@@ -2239,6 +2262,9 @@ impl VoxelleHome {
         if let Some(existing) = peers.iter_mut().find(|peer| peer.same_peer(&record)) {
             *existing = record;
         } else {
+            if peers.len() >= MAX_KNOWN_PEERS {
+                anyhow::bail!("known peer records are limited to {MAX_KNOWN_PEERS}");
+            }
             peers.push(record);
         }
         peers.sort_by(|a, b| {
@@ -5522,6 +5548,12 @@ fn short_peer_label(peer_id: &str) -> String {
         .unwrap_or_else(|| "Peer".to_string())
 }
 
+fn retain_latest<T>(items: &mut Vec<T>, limit: usize) {
+    if items.len() > limit {
+        items.drain(..items.len() - limit);
+    }
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -5535,6 +5567,13 @@ mod tests {
     use std::net::{IpAddr, Ipv6Addr};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
+
+    #[test]
+    fn visible_projection_retains_only_the_latest_bounded_items() {
+        let mut items = vec![1, 2, 3, 4];
+        retain_latest(&mut items, 2);
+        assert_eq!(items, vec![3, 4]);
+    }
 
     #[cfg(unix)]
     #[test]
