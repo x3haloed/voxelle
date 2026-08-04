@@ -21,6 +21,10 @@ pub struct SyncStats {
     pub accepted: usize,
     pub already_present: usize,
     pub rejected: usize,
+    pub sent: usize,
+    pub remote_accepted: usize,
+    pub remote_already_present: usize,
+    pub remote_rejected: usize,
     pub truncated: bool,
 }
 
@@ -121,7 +125,7 @@ fn insert_after_acceptance(
     context: &RoomContext,
     now_ms: i64,
 ) -> Result<bool> {
-    let governance_events = dest.room_events(GOVERNANCE_ROOM_ID)?;
+    let governance_events = dest.room_events(&context.governance_room_id)?;
     let accepted = accept_event(event, &governance_events, context, now_ms)
         .map_err(|e| anyhow::anyhow!("event rejected: {e:?}"))?;
     dest.insert_accepted_event(accepted, now_ms)
@@ -132,6 +136,10 @@ fn merge_stats(total: &mut SyncStats, next: SyncStats) {
     total.accepted += next.accepted;
     total.already_present += next.already_present;
     total.rejected += next.rejected;
+    total.sent += next.sent;
+    total.remote_accepted += next.remote_accepted;
+    total.remote_already_present += next.remote_already_present;
+    total.remote_rejected += next.remote_rejected;
     total.truncated |= next.truncated;
 }
 

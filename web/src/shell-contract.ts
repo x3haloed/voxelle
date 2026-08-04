@@ -6,7 +6,7 @@ export type ProfileSummary = { home: string, peer_id: string, device_id: string,
 
 export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, text: string, };
 
-export type PeerRecord = { v: number, label: string | null, default_room: string, authority_peer_id: string, endpoint: PeerEndpoint, };
+export type PeerRecord = { v: number, label: string | null, space_id: string, governance_room_id: string, default_room: string, authority_peer_id: string, endpoint: PeerEndpoint, };
 
 export type UiOntologyView = { places: Array<UiPlace>, views: Array<UiView>, commands: Array<UiCommand>, semantic_tokens: Array<SemanticToken>, metrics: Array<UiMetric>, behaviors: Array<UiBehavior>, renderers: Array<UiRenderer>, };
 
@@ -40,6 +40,10 @@ export type SendMessageRequest = { text: string, room: string | null, };
 
 export type ImportPeerRecordRequest = { peer_record_json: string, };
 
+export type CreateSpaceInviteRequest = { expires_minutes: number | null, };
+
+export type JoinSpaceRequest = { space_invite_json: string, max_events: number | null, };
+
 export type PeerCommandRequest = { peer_id: string, device_id: string, max_events: number | null, };
 
 export type SetUiPreferenceRequest = { "kind": "semantic_token", id: string, value: string, } | { "kind": "metric", id: string, value: number, } | { "kind": "behavior", id: string, value: UiBehaviorValue, };
@@ -56,7 +60,7 @@ export type RuntimeStatusView = { state: RuntimeState, listen_addr: string | nul
 
 export type RuntimeState = "offline" | "online";
 
-export type InviteExchangeView = { peer_record: PeerRecord, peer_record_json: string, };
+export type InviteExchangeView = { peer_record: PeerRecord, peer_record_json: string, space_invite_json: string | null, };
 
 export type PeerListItemView = { label: string, peer_id: string, device_id: string, addr: string, default_room: string, };
 

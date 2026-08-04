@@ -17,6 +17,7 @@ const uiState = {
   busyCommand: "",
   error: "",
   peerRecordDraft: "",
+  spaceInviteDraft: "",
   messageDraft: "",
   bindDraft: "",
   advertiseDraft: "",
@@ -257,6 +258,24 @@ function profileSummaryView(snapshot) {
       element("p", "summary", snapshot.home_error ?? "Home state is not available."),
       commandButton("home.init"),
     );
+    const joinForm = element("form", "field-stack");
+    joinForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      runCommand("space.join").catch(reportError);
+    });
+    const inviteInput = element("textarea", "peer-record-input");
+    inviteInput.placeholder = "Paste signed .voxinvite JSON";
+    inviteInput.value = uiState.spaceInviteDraft;
+    inviteInput.addEventListener("input", () => {
+      uiState.spaceInviteDraft = inviteInput.value;
+    });
+    joinForm.append(
+      element("h3", "", "Or join a space"),
+      element("p", "summary", "Paste the signed invite; Voxelle will create your identity, join, sync, and go online."),
+      inviteInput,
+      submitButton("space.join"),
+    );
+    empty.append(joinForm);
     fragment.append(empty);
     return fragment;
   }
@@ -393,12 +412,15 @@ function activityView(snapshot) {
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function inviteExchangeView(snapshot) {
   const fragment = document.createDocumentFragment();
-  const invite = snapshot.home?.invite?.peer_record_json ?? "";
+  const invite = snapshot.home?.invite?.space_invite_json ?? "";
   const inviteGroup = element("div", "field-stack");
-  inviteGroup.append(element("h3", "", "Local Invite"));
-  inviteGroup.append(element("p", "summary", "After this peer is online, copy this JSON into another peer's Import Peer field."));
+  inviteGroup.append(element("h3", "", "Signed Space Invite"));
+  inviteGroup.append(element("p", "summary", "Create an expiring invite after going online. It grants membership; bootstrap addresses inside it are signed availability hints."));
   inviteGroup.append(element("pre", "invite-json", invite));
-  inviteGroup.append(commandButton("invite.copy"));
+  inviteGroup.append(
+    commandButton("space.invite.create"),
+    commandButton("invite.copy"),
+  );
 
   const importGroup = element("form", "field-stack");
   importGroup.addEventListener("submit", (event) => {
@@ -439,9 +461,15 @@ function fieldTestView(snapshot) {
     },
     {
       label: "Invite available",
-      status: snapshot.home?.invite ? "working" : "unknown",
-      command: snapshot.home?.invite ? "invite.copy" : "runtime.goOnline",
-      detail: snapshot.home?.invite?.peer_record.endpoint.addr ?? "go online to create an invite",
+      status: snapshot.home?.invite?.space_invite_json ? "working" : "unknown",
+      command: snapshot.home?.invite?.space_invite_json
+        ? "invite.copy"
+        : snapshot.home?.invite
+          ? "space.invite.create"
+          : "runtime.goOnline",
+      detail: snapshot.home?.invite?.space_invite_json
+        ? "signed membership capability ready"
+        : "go online, then create a signed invite",
     },
     {
       label: "Peer imported",
@@ -620,6 +648,16 @@ async function runCommand(command, payload) {
       case "runtime.goOffline":
         currentSnapshot = await shell.execute(command);
         return;
+      case "space.invite.create":
+        currentSnapshot = await shell.execute(command, { expires_minutes: 1440 });
+        return;
+      case "space.join":
+        currentSnapshot = await shell.execute(command, {
+          space_invite_json: uiState.spaceInviteDraft,
+          max_events: 4096,
+        });
+        uiState.spaceInviteDraft = "";
+        return;
       case "peer.import":
         currentSnapshot = await shell.execute(command, {
           peer_record_json: uiState.peerRecordDraft,
@@ -652,7 +690,7 @@ async function runCommand(command, payload) {
           );
         }
         await navigator.clipboard?.writeText(
-          currentSnapshot.home?.invite?.peer_record_json ?? "",
+          currentSnapshot.home?.invite?.space_invite_json ?? "",
         );
         appendActivity(currentSnapshot, "copied invite");
         return;

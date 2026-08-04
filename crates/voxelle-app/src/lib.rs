@@ -14,8 +14,9 @@ use std::sync::mpsc;
 use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
-    accept_event, create_delegation, create_event, EventV1, IdentityProofV1, PeerIdentity,
-    RecoveryCardV1, RoomContext, GOVERNANCE_ROOM_ID,
+    accept_event, create_delegation, create_event, create_space, create_space_invite_event,
+    topo_sort_deterministic, validate_space_at, validate_space_invite_at, EventV1, IdentityProofV1,
+    PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
@@ -55,11 +56,21 @@ pub struct VoxelleHome {
     root: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HomeConfig {
     pub v: u8,
+    pub space: SpaceV1,
     pub default_room: String,
     pub authority_peer_id: String,
+}
+
+impl HomeConfig {
+    fn room_context(&self) -> RoomContext {
+        RoomContext::for_space(
+            self.authority_peer_id.clone(),
+            self.space.governance_room_id.clone(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -185,6 +196,8 @@ pub struct MessageView {
 pub struct PeerRecord {
     pub v: u8,
     pub label: Option<String>,
+    pub space_id: String,
+    pub governance_room_id: String,
     pub default_room: String,
     pub authority_peer_id: String,
     pub endpoint: PeerEndpoint,
@@ -216,6 +229,7 @@ struct RecoveryPayloadV1 {
     v: u8,
     identity_proof: IdentityProofV1,
     config: HomeConfig,
+    governance_events: Vec<EventV1>,
     known_peers: Vec<PeerRecord>,
     ui_preferences: UiPreferences,
 }
@@ -226,6 +240,25 @@ pub struct RecoveryReport {
     pub peers_attempted: usize,
     pub peers_reached: usize,
     pub events_recovered: usize,
+    pub events_pushed: usize,
+    pub peer_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpaceInviteFileV1 {
+    pub v: u8,
+    pub space: SpaceV1,
+    pub invite_event: EventV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JoinSpaceReport {
+    pub profile: ProfileSummary,
+    pub invite_id: String,
+    pub peers_attempted: usize,
+    pub peers_reached: usize,
+    pub events_received: usize,
+    pub events_pushed: usize,
     pub peer_errors: Vec<String>,
 }
 
@@ -370,6 +403,8 @@ pub fn shell_contract_typescript() -> String {
         StartServiceRequest::decl(&cfg),
         SendMessageRequest::decl(&cfg),
         ImportPeerRecordRequest::decl(&cfg),
+        CreateSpaceInviteRequest::decl(&cfg),
+        JoinSpaceRequest::decl(&cfg),
         PeerCommandRequest::decl(&cfg),
         SetUiPreferenceRequest::decl(&cfg),
         HomeScreenView::decl(&cfg),
@@ -438,6 +473,7 @@ pub struct VoxelleCommandHost {
     service: Option<VoxelleService>,
     activity: Vec<ServiceActivityItem>,
     next_activity_id: u64,
+    last_space_invite_json: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -484,6 +520,8 @@ pub struct OnlineHome {
     pub local_report: LocalReachabilityReport,
     pub default_room: String,
     pub authority_peer_id: String,
+    pub space_id: String,
+    pub governance_room_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -540,6 +578,18 @@ pub struct SendMessageRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct ImportPeerRecordRequest {
     pub peer_record_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CreateSpaceInviteRequest {
+    #[ts(type = "number | null")]
+    pub expires_minutes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct JoinSpaceRequest {
+    pub space_invite_json: String,
+    pub max_events: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -613,6 +663,7 @@ pub enum RuntimeState {
 pub struct InviteExchangeView {
     pub peer_record: PeerRecord,
     pub peer_record_json: String,
+    pub space_invite_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -650,17 +701,25 @@ impl VoxelleHome {
         let config = if self.path("config.json").exists() {
             self.load_config()?
         } else {
+            let channel_name = default_room
+                .rsplit(':')
+                .next()
+                .filter(|name| !name.is_empty())
+                .unwrap_or("general");
+            let space = create_space(&identity, "My Space", channel_name, now_ms())?;
             let config = HomeConfig {
                 v: 1,
-                default_room,
+                default_room: space.default_room_id.clone(),
                 authority_peer_id: identity.peer_id.clone(),
+                space,
             };
             write_json(&self.path("config.json"), &config)?;
             config
         };
 
         let store = self.open_store()?;
-        self.ensure_member_join(&store, &identity, &config)?;
+        self.ensure_space_genesis(&store, &config)?;
+        self.ensure_member_join(&store, &identity, &config, None)?;
         self.refresh_recovery_capsule()?;
 
         Ok(ProfileSummary {
@@ -970,8 +1029,8 @@ impl VoxelleHome {
         let config = self.load_config()?;
         let store = self.open_store()?;
         let room = room.unwrap_or(&config.default_room);
-        let context = RoomContext::new(config.authority_peer_id);
-        let governance = store.room_events(GOVERNANCE_ROOM_ID)?;
+        let context = config.room_context();
+        let governance = store.room_events(&config.space.governance_room_id)?;
         let event = create_event(
             &identity,
             create_delegation(
@@ -1055,10 +1114,15 @@ impl VoxelleHome {
     pub fn recovery_kit(&self) -> Result<RecoveryKitV1> {
         let identity = self.load_identity()?;
         let card = identity.recovery_card();
+        let config = self.load_config()?;
+        let governance_events = self
+            .open_store()?
+            .room_events(&config.space.governance_room_id)?;
         let payload = RecoveryPayloadV1 {
             v: 1,
             identity_proof: identity.proof.clone(),
-            config: self.load_config()?,
+            config,
+            governance_events,
             known_peers: self.known_peers()?,
             ui_preferences: self.ui_preferences()?,
         };
@@ -1108,8 +1172,11 @@ impl VoxelleHome {
             anyhow::bail!("recovery capsule identity does not match recovery card");
         }
         let identity = PeerIdentity::recover(&kit.card, &payload.identity_proof, now_ms())?;
-        if identity.peer_id != payload.config.authority_peer_id {
-            anyhow::bail!("recovery capsule authority does not match recovered identity");
+        validate_space_at(&payload.config.space, now_ms())?;
+        if payload.config.default_room != payload.config.space.default_room_id
+            || payload.config.authority_peer_id != payload.config.space.authority_peer_id
+        {
+            anyhow::bail!("recovery config duplicates do not match signed space genesis");
         }
         for peer in &payload.known_peers {
             peer.validate()?;
@@ -1130,9 +1197,33 @@ impl VoxelleHome {
         self.write_ui_preferences(&payload.ui_preferences)?;
         self.load_or_create_certificate()?;
         let store = self.open_store()?;
+        self.ensure_space_genesis(&store, &payload.config)?;
+        let event_by_id: BTreeMap<String, EventV1> = payload
+            .governance_events
+            .iter()
+            .cloned()
+            .map(|event| (event.event_id.clone(), event))
+            .collect();
+        let mut events_recovered = 0;
+        for event_id in topo_sort_deterministic(&payload.governance_events) {
+            if store.has_event(&event_id)? {
+                continue;
+            }
+            let event = event_by_id
+                .get(&event_id)
+                .ok_or_else(|| anyhow::anyhow!("recovery governance event disappeared"))?;
+            let governance = store.room_events(&payload.config.space.governance_room_id)?;
+            let accepted =
+                accept_event(event, &governance, &payload.config.room_context(), now_ms())
+                    .map_err(|error| {
+                        anyhow::anyhow!("recovery governance event rejected: {error:?}")
+                    })?;
+            store.insert_accepted_event(accepted, now_ms())?;
+            events_recovered += 1;
+        }
 
         let mut peers_reached = 0;
-        let mut events_recovered = 0;
+        let mut events_pushed = 0;
         let mut peer_errors = Vec::new();
         for peer in &payload.known_peers {
             match self.sync_peer(peer, max_events_per_peer).await {
@@ -1147,7 +1238,20 @@ impl VoxelleHome {
             }
         }
 
-        self.ensure_member_join(&store, &identity, &payload.config)?;
+        self.ensure_member_join(&store, &identity, &payload.config, None)?;
+        self.ensure_identity_announcement(&store, &identity, &payload.config)?;
+        for peer in &payload.known_peers {
+            match self.sync_peer(peer, max_events_per_peer).await {
+                Ok(report) => {
+                    events_pushed +=
+                        report.governance.remote_accepted + report.room.remote_accepted;
+                }
+                Err(error) => peer_errors.push(format!(
+                    "{} during recovery propagation: {error:#}",
+                    peer.label.as_deref().unwrap_or("unlabelled peer")
+                )),
+            }
+        }
         self.refresh_recovery_capsule()?;
         let profile = self.profile_summary()?;
         Ok(RecoveryReport {
@@ -1155,6 +1259,168 @@ impl VoxelleHome {
             peers_attempted: payload.known_peers.len(),
             peers_reached,
             events_recovered,
+            events_pushed,
+            peer_errors,
+        })
+    }
+
+    pub fn create_space_invite(
+        &self,
+        online: &OnlineHome,
+        expires_ms: i64,
+    ) -> Result<SpaceInviteFileV1> {
+        self.create_space_invite_with_bootstraps(online, &[], expires_ms)
+    }
+
+    pub fn create_space_invite_with_bootstraps(
+        &self,
+        online: &OnlineHome,
+        additional_bootstraps: &[PeerRecord],
+        expires_ms: i64,
+    ) -> Result<SpaceInviteFileV1> {
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        if online.space_id != config.space.space_id
+            || online.authority_peer_id != config.authority_peer_id
+        {
+            anyhow::bail!("online endpoint does not describe the configured space");
+        }
+        let store = self.open_store()?;
+        let mut bootstraps = vec![online.peer_record(Some("Inviter".to_string()), None)?];
+        for peer in additional_bootstraps {
+            peer.validate()?;
+            if peer.space_id != config.space.space_id
+                || peer.governance_room_id != config.space.governance_room_id
+                || peer.default_room != config.space.default_room_id
+                || peer.authority_peer_id != config.space.authority_peer_id
+            {
+                anyhow::bail!("additional bootstrap peer does not match the configured space");
+            }
+            if !bootstraps.iter().any(|existing| existing.same_peer(peer)) {
+                bootstraps.push(peer.clone());
+            }
+        }
+        if bootstraps.len() > 8 {
+            anyhow::bail!("a space invite supports at most 8 bootstrap peers");
+        }
+        let event = create_space_invite_event(
+            &identity,
+            &config.space,
+            bootstraps
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<serde_json::Result<Vec<_>>>()?,
+            expires_ms,
+            now_ms(),
+            store.room_heads(&config.space.governance_room_id)?,
+        )?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let accepted = accept_event(&event, &governance, &config.room_context(), now_ms())
+            .map_err(|error| anyhow::anyhow!("space invite rejected: {error:?}"))?;
+        store.insert_accepted_event(accepted, now_ms())?;
+        Ok(SpaceInviteFileV1 {
+            v: 1,
+            space: config.space,
+            invite_event: event,
+        })
+    }
+
+    pub fn write_space_invite(
+        &self,
+        online: &OnlineHome,
+        expires_ms: i64,
+        path: impl AsRef<Path>,
+    ) -> Result<()> {
+        write_json(
+            path.as_ref(),
+            &self.create_space_invite(online, expires_ms)?,
+        )
+    }
+
+    pub async fn join_space_from_invite(
+        &self,
+        invite: &SpaceInviteFileV1,
+        max_events_per_peer: usize,
+    ) -> Result<JoinSpaceReport> {
+        if invite.v != 1 {
+            anyhow::bail!("unsupported space invite file version {}", invite.v);
+        }
+        if self.path("identity.json").exists()
+            || self.path("config.json").exists()
+            || self.path("store.sqlite3").exists()
+        {
+            anyhow::bail!("joining a space requires a fresh Voxelle home");
+        }
+        if max_events_per_peer == 0 {
+            anyhow::bail!("max_events_per_peer must be positive");
+        }
+        validate_space_invite_at(&invite.space, &invite.invite_event, now_ms())?;
+        let peers = invite.bootstrap_peers()?;
+
+        fs::create_dir_all(&self.root)
+            .with_context(|| format!("create {}", self.root.display()))?;
+        let identity = PeerIdentity::generate_at(now_ms())?;
+        write_identity_vault(&self.path("identity.json"), &identity)?;
+        self.load_or_create_certificate()?;
+        let config = HomeConfig {
+            v: 1,
+            space: invite.space.clone(),
+            default_room: invite.space.default_room_id.clone(),
+            authority_peer_id: invite.space.authority_peer_id.clone(),
+        };
+        write_json(&self.path("config.json"), &config)?;
+        write_json(
+            &self.path("known-peers.json"),
+            &KnownPeersFile {
+                v: 1,
+                peers: peers.clone(),
+            },
+        )?;
+        let store = self.open_store()?;
+        self.ensure_space_genesis(&store, &config)?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let accepted_invite = accept_event(
+            &invite.invite_event,
+            &governance,
+            &config.room_context(),
+            now_ms(),
+        )
+        .map_err(|error| anyhow::anyhow!("space invite rejected locally: {error:?}"))?;
+        store.insert_accepted_event(accepted_invite, now_ms())?;
+
+        let mut peers_reached = 0;
+        let mut events_received = 0;
+        let mut events_pushed = 0;
+        let mut peer_errors = Vec::new();
+        self.ensure_member_join(
+            &store,
+            &identity,
+            &config,
+            Some(&invite.invite_event.event_id),
+        )?;
+        for peer in &peers {
+            match self.sync_peer(peer, max_events_per_peer).await {
+                Ok(report) => {
+                    peers_reached += 1;
+                    events_received += report.governance.accepted + report.room.accepted;
+                    events_pushed +=
+                        report.governance.remote_accepted + report.room.remote_accepted;
+                }
+                Err(error) => peer_errors.push(format!(
+                    "{}: {error:#}",
+                    peer.label.as_deref().unwrap_or("unlabelled peer")
+                )),
+            }
+        }
+        self.refresh_recovery_capsule()?;
+
+        Ok(JoinSpaceReport {
+            profile: self.profile_summary()?,
+            invite_id: invite.invite_event.event_id.clone(),
+            peers_attempted: peers.len(),
+            peers_reached,
+            events_received,
+            events_pushed,
             peer_errors,
         })
     }
@@ -1250,7 +1516,10 @@ impl VoxelleHome {
         let mut store = self.open_store()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
         let endpoint = &peer.endpoint;
-        let context = RoomContext::new(peer.authority_peer_id.clone());
+        let context = RoomContext::for_space(
+            peer.authority_peer_id.clone(),
+            peer.governance_room_id.clone(),
+        );
         let limits = SyncLimits {
             max_events_per_batch: max_events,
         };
@@ -1260,7 +1529,7 @@ impl VoxelleHome {
                 endpoint.addr,
                 endpoint.certificate_der()?,
                 &endpoint.device_id,
-                GOVERNANCE_ROOM_ID,
+                &peer.governance_room_id,
                 &context,
                 now_ms(),
                 limits,
@@ -1295,6 +1564,12 @@ impl VoxelleHome {
         if config.v != 1 {
             anyhow::bail!("unsupported home config version {}", config.v);
         }
+        validate_space_at(&config.space, now_ms()).context("validate configured space")?;
+        if config.default_room != config.space.default_room_id
+            || config.authority_peer_id != config.space.authority_peer_id
+        {
+            anyhow::bail!("home config duplicates do not match signed space genesis");
+        }
         Ok(config)
     }
 
@@ -1325,17 +1600,28 @@ impl VoxelleHome {
         Ok(certificate)
     }
 
+    fn ensure_space_genesis(&self, store: &Store, config: &HomeConfig) -> Result<()> {
+        if store.has_event(&config.space.genesis.event_id)? {
+            return Ok(());
+        }
+        let context = config.room_context();
+        let accepted = accept_event(&config.space.genesis, &[], &context, now_ms())
+            .map_err(|error| anyhow::anyhow!("space genesis rejected: {error:?}"))?;
+        store.insert_accepted_event(accepted, now_ms())?;
+        Ok(())
+    }
+
     fn ensure_member_join(
         &self,
         store: &Store,
         identity: &PeerIdentity,
         config: &HomeConfig,
+        invite_id: Option<&str>,
     ) -> Result<()> {
-        let governance = store.room_events(GOVERNANCE_ROOM_ID)?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
         let existing_join = governance.iter().any(|event| {
             event.kind == "MEMBER_JOIN"
                 && event.author_peer_id == identity.peer_id
-                && event.author_device_id == identity.device.id
                 && event.body.get("peer_id").and_then(|value| value.as_str())
                     == Some(identity.peer_id.as_str())
         });
@@ -1343,7 +1629,7 @@ impl VoxelleHome {
             return Ok(());
         }
 
-        let context = RoomContext::new(config.authority_peer_id.clone());
+        let context = config.room_context();
         let join = create_event(
             identity,
             create_delegation(
@@ -1352,17 +1638,59 @@ impl VoxelleHome {
                 now_ms() + 30 * 24 * 60 * 60_000,
                 vec!["room:join".to_string()],
             )?,
-            GOVERNANCE_ROOM_ID,
+            &config.space.governance_room_id,
             now_ms(),
             "MEMBER_JOIN",
-            vec![],
+            store.room_heads(&config.space.governance_room_id)?,
             serde_json::json!({
                 "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
+                "invite_id": invite_id,
             }),
         )?;
         let accepted = accept_event(&join, &governance, &context, now_ms())
             .map_err(|e| anyhow::anyhow!("member join rejected: {e:?}"))?;
+        store.insert_accepted_event(accepted, now_ms())?;
+        Ok(())
+    }
+
+    fn ensure_identity_announcement(
+        &self,
+        store: &Store,
+        identity: &PeerIdentity,
+        config: &HomeConfig,
+    ) -> Result<()> {
+        let existing = store
+            .room_events(&config.default_room)?
+            .into_iter()
+            .any(|event| {
+                event.kind == "IDENTITY_UPDATE"
+                    && event.author_peer_id == identity.peer_id
+                    && event.author_device_id == identity.device.id
+            });
+        if existing {
+            return Ok(());
+        }
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let event = create_event(
+            identity,
+            create_delegation(
+                identity,
+                now_ms() - 60_000,
+                now_ms() + 30 * 24 * 60 * 60_000,
+                vec!["room:post".to_string()],
+            )?,
+            &config.default_room,
+            now_ms(),
+            "IDENTITY_UPDATE",
+            store.room_heads(&config.default_room)?,
+            serde_json::json!({
+                "peer_id": identity.peer_id,
+                "device_id": identity.device.id,
+            }),
+        )?;
+        let accepted = accept_event(&event, &governance, &config.room_context(), now_ms())
+            .map_err(|error| anyhow::anyhow!("identity announcement rejected: {error:?}"))?;
         store.insert_accepted_event(accepted, now_ms())?;
         Ok(())
     }
@@ -1375,6 +1703,7 @@ impl VoxelleCommandHost {
             service: None,
             activity: Vec::new(),
             next_activity_id: 1,
+            last_space_invite_json: None,
         }
     }
 
@@ -1415,6 +1744,56 @@ impl VoxelleCommandHost {
         if let Some(service) = self.service.take() {
             service.stop()?;
             self.push_activity(ServiceActivityLevel::Info, "service stopped");
+        }
+        self.snapshot()
+    }
+
+    pub fn create_space_invite(
+        &mut self,
+        request: CreateSpaceInviteRequest,
+    ) -> Result<ShellSnapshotView> {
+        let online = self
+            .service
+            .as_ref()
+            .map(VoxelleService::online)
+            .ok_or_else(|| anyhow::anyhow!("go online before creating a space invite"))?;
+        let minutes = request
+            .expires_minutes
+            .unwrap_or(24 * 60)
+            .clamp(1, 30 * 24 * 60);
+        let expires_ms = now_ms().saturating_add((minutes as i64).saturating_mul(60_000));
+        let invite = self.home.create_space_invite(online, expires_ms)?;
+        self.last_space_invite_json = Some(serde_json::to_string_pretty(&invite)? + "\n");
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "created signed space invite {}",
+                invite.invite_event.event_id
+            ),
+        );
+        self.snapshot()
+    }
+
+    pub async fn join_space(&mut self, request: JoinSpaceRequest) -> Result<ShellSnapshotView> {
+        let invite: SpaceInviteFileV1 = serde_json::from_str(&request.space_invite_json)
+            .context("parse signed space invite JSON")?;
+        let report = self
+            .home
+            .join_space_from_invite(&invite, request.max_events.unwrap_or(4096))
+            .await?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "joined space {} via {}, received {}, pushed {}",
+                invite.space.name, report.invite_id, report.events_received, report.events_pushed
+            ),
+        );
+        if self.service.is_none() {
+            self.service = Some(
+                self.home
+                    .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)?,
+            );
+            self.push_activity(ServiceActivityLevel::Info, "service started after join");
         }
         self.snapshot()
     }
@@ -1505,7 +1884,12 @@ impl VoxelleCommandHost {
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
         let online = self.service.as_ref().map(VoxelleService::online);
         let (home, home_error) = match self.home.home_screen_view(online) {
-            Ok(home) => (Some(home), None),
+            Ok(mut home) => {
+                if let Some(invite) = home.invite.as_mut() {
+                    invite.space_invite_json = self.last_space_invite_json.clone();
+                }
+                (Some(home), None)
+            }
             Err(error) => (None, Some(format!("{error:#}"))),
         };
         Ok(ShellSnapshotView {
@@ -1576,6 +1960,14 @@ impl PeerRecord {
         if self.default_room.trim().is_empty() {
             anyhow::bail!("peer record default room is empty");
         }
+        if !self.space_id.starts_with("s:")
+            || self.governance_room_id != format!("{}:governance", self.space_id)
+            || !self
+                .default_room
+                .starts_with(&format!("{}:channel:", self.space_id))
+        {
+            anyhow::bail!("peer record room identifiers do not match its space");
+        }
         if !self.authority_peer_id.starts_with("p:") {
             anyhow::bail!("peer record authority is not a principal ID");
         }
@@ -1588,11 +1980,47 @@ impl PeerRecord {
     }
 }
 
+impl SpaceInviteFileV1 {
+    pub fn validate_at(&self, now_ms: i64) -> Result<()> {
+        if self.v != 1 {
+            anyhow::bail!("unsupported space invite file version {}", self.v);
+        }
+        validate_space_invite_at(&self.space, &self.invite_event, now_ms)?;
+        self.bootstrap_peers().map(|_| ())
+    }
+
+    pub fn bootstrap_peers(&self) -> Result<Vec<PeerRecord>> {
+        let values = self
+            .invite_event
+            .body
+            .get("bootstrap_peers")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("space invite bootstrap peers missing"))?;
+        let mut peers = Vec::with_capacity(values.len());
+        for value in values {
+            let peer: PeerRecord =
+                serde_json::from_value(value.clone()).context("parse signed bootstrap peer")?;
+            peer.validate()?;
+            if peer.space_id != self.space.space_id
+                || peer.governance_room_id != self.space.governance_room_id
+                || peer.default_room != self.space.default_room_id
+                || peer.authority_peer_id != self.space.authority_peer_id
+            {
+                anyhow::bail!("signed bootstrap peer does not match invited space");
+            }
+            peers.push(peer);
+        }
+        Ok(peers)
+    }
+}
+
 impl OnlineHome {
     pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
         let record = PeerRecord {
             v: 1,
             label,
+            space_id: self.space_id.clone(),
+            governance_room_id: self.governance_room_id.clone(),
             default_room: room.unwrap_or(&self.default_room).to_string(),
             authority_peer_id: self.authority_peer_id.clone(),
             endpoint: self.endpoint.clone(),
@@ -1611,6 +2039,7 @@ impl OnlineHome {
         Ok(InviteExchangeView {
             peer_record,
             peer_record_json,
+            space_invite_json: None,
         })
     }
 }
@@ -1754,13 +2183,18 @@ impl PeerServer {
                 local_report,
                 default_room: config.default_room,
                 authority_peer_id: config.authority_peer_id,
+                space_id: config.space.space_id,
+                governance_room_id: config.space.governance_room_id,
             },
         })
     }
 
     async fn serve_next_request(&self) -> Result<ServedPeerRequest> {
         let store = self.home.open_store()?;
-        self.node.serve_peer_request_once(&store).await
+        let context = self.home.load_config()?.room_context();
+        self.node
+            .serve_peer_request_once(&store, &context, now_ms())
+            .await
     }
 
     async fn stop(self) {
@@ -2000,6 +2434,16 @@ fn default_commands() -> Vec<UiCommand> {
             "runtime.goOffline",
             "Go Offline",
             "Stop resident peer serving",
+        ),
+        ui_command(
+            "space.invite.create",
+            "Create Space Invite",
+            "Create a signed expiring invite for the current space",
+        ),
+        ui_command(
+            "space.join",
+            "Join Space",
+            "Join from a signed invite and synchronize automatically",
         ),
         ui_command(
             "message.send",
@@ -2720,7 +3164,7 @@ mod tests {
         let home = VoxelleHome::new(dir.path().join("alice"));
 
         let profile = home.init(DEFAULT_ROOM_ID).expect("init");
-        assert_eq!(profile.default_room, DEFAULT_ROOM_ID);
+        assert!(profile.default_room.ends_with(":channel:general"));
         assert_eq!(profile.peer_id, profile.authority_peer_id);
 
         let event = home
@@ -2743,7 +3187,7 @@ mod tests {
 
         assert_eq!(first.peer_id, second.peer_id);
         assert_eq!(first.device_id, second.device_id);
-        assert_eq!(second.default_room, DEFAULT_ROOM_ID);
+        assert_eq!(second.default_room, first.default_room);
     }
 
     #[test]
@@ -2805,32 +3249,29 @@ mod tests {
         let bob = VoxelleHome::new(dir.path().join("bob-router"));
         let recovered = VoxelleHome::new(dir.path().join("alice-recovered"));
         let alice_profile = alice.init(DEFAULT_ROOM_ID).expect("alice init");
-        bob.init(DEFAULT_ROOM_ID).expect("bob init");
         alice.send_message("before loss", None).expect("message");
 
         let alice_service = alice
             .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("alice service");
-        let alice_record = alice_service
-            .online()
-            .peer_record(Some("Alice".to_string()), None)
-            .expect("alice record");
+        let invite = alice
+            .create_space_invite(alice_service.online(), now_ms() + 60_000)
+            .expect("invite bob");
         let initial_replication = bob
-            .sync_peer(&alice_record, 64)
+            .join_space_from_invite(&invite, 64)
             .await
-            .expect("bob stores alice history");
-        assert_eq!(initial_replication.governance.accepted, 1);
-        assert_eq!(initial_replication.room.accepted, 1);
+            .expect("bob joins and stores alice history");
+        assert_eq!(initial_replication.peers_reached, 1);
+        assert!(initial_replication.events_received >= 2);
         alice_service.stop().expect("alice offline");
 
         let bob_service = bob
             .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("bob service");
-        let mut bob_router = bob_service
+        let bob_router = bob_service
             .online()
             .peer_record(Some("Bob recovery peer".to_string()), None)
             .expect("bob record");
-        bob_router.authority_peer_id = alice_profile.peer_id.clone();
         alice
             .import_peer_record(bob_router)
             .expect("save recovery peer");
@@ -2845,25 +3286,12 @@ mod tests {
         assert_ne!(report.profile.device_id, old_device_id);
         assert_eq!(report.peers_reached, 1);
         assert!(report.events_recovered >= 2);
+        assert!(report.events_pushed >= 1, "{report:?}");
         assert_eq!(
             recovered.read_messages(None).expect("recovered messages")[0].text,
             "before loss"
         );
         bob_service.stop().expect("bob service stop");
-
-        let recovered_service = recovered
-            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("recovered service");
-        let recovered_record = recovered_service
-            .online()
-            .peer_record(Some("Recovered Alice".to_string()), None)
-            .expect("recovered record");
-        let revoke_replication = bob
-            .sync_peer(&recovered_record, 64)
-            .await
-            .expect("replicate recovery head");
-        assert_eq!(revoke_replication.governance.accepted, 1);
-        recovered_service.stop().expect("recovered service stop");
 
         alice
             .send_message("from lost device", None)
@@ -2886,6 +3314,129 @@ mod tests {
             .iter()
             .all(|message| message.text != "from lost device"));
         lost_service.stop().expect("lost service stop");
+    }
+
+    #[tokio::test]
+    async fn signed_invite_onboards_a_fresh_home_and_pushes_membership_and_messages() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob-fresh"));
+        let alice_profile = alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        alice
+            .send_message("welcome history", None)
+            .expect("history");
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let invite = alice
+            .create_space_invite(service.online(), now_ms() + 60_000)
+            .expect("signed invite");
+
+        invite.validate_at(now_ms()).expect("invite validates");
+        let joined = bob
+            .join_space_from_invite(&invite, 64)
+            .await
+            .expect("join from invite");
+        let bootstrap = invite.bootstrap_peers().expect("bootstrap").remove(0);
+        assert_eq!(joined.profile.authority_peer_id, alice_profile.peer_id);
+        assert_eq!(joined.peers_reached, 1);
+        assert!(joined.events_pushed >= 1, "{joined:?}");
+        assert!(bob
+            .read_messages(None)
+            .expect("bob history")
+            .iter()
+            .any(|message| message.text == "welcome history"));
+
+        bob.send_message("hello after one-action join", None)
+            .expect("bob message");
+        let pushed = bob.sync_peer(&bootstrap, 64).await.expect("push message");
+        assert!(pushed.room.remote_accepted >= 1);
+        assert!(alice
+            .read_messages(None)
+            .expect("alice messages")
+            .iter()
+            .any(|message| message.text == "hello after one-action join"));
+
+        let mut tampered = invite.clone();
+        tampered.space.name = "Mallory's Space".to_string();
+        assert!(tampered.validate_at(now_ms()).is_err());
+        service.stop().expect("service stop");
+    }
+
+    #[tokio::test]
+    async fn signed_invite_onboards_through_an_ordinary_peer_while_inviter_is_offline() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice-authority"));
+        let bob = VoxelleHome::new(dir.path().join("bob-router"));
+        let charlie = VoxelleHome::new(dir.path().join("charlie-fresh"));
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        alice
+            .send_message("history via Bob", None)
+            .expect("history");
+
+        let alice_service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let bob_invite = alice
+            .create_space_invite(alice_service.online(), now_ms() + 60_000)
+            .expect("invite bob");
+        bob.join_space_from_invite(&bob_invite, 64)
+            .await
+            .expect("bob joins");
+        let bob_service = bob
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("bob service");
+        let bob_record = bob_service
+            .online()
+            .peer_record(Some("Bob ordinary peer".to_string()), None)
+            .expect("bob record");
+        let charlie_invite = alice
+            .create_space_invite_with_bootstraps(
+                alice_service.online(),
+                std::slice::from_ref(&bob_record),
+                now_ms() + 60_000,
+            )
+            .expect("invite with ordinary peer");
+        alice_service.stop().expect("inviter offline");
+
+        let joined = charlie
+            .join_space_from_invite(&charlie_invite, 64)
+            .await
+            .expect("join through Bob");
+        assert_eq!(joined.peers_attempted, 2);
+        assert_eq!(joined.peers_reached, 1);
+        assert!(joined.events_pushed >= 1, "{joined:?}");
+        assert!(joined
+            .peer_errors
+            .iter()
+            .any(|error| error.contains("Inviter")));
+        assert!(charlie
+            .read_messages(None)
+            .expect("charlie history")
+            .iter()
+            .any(|message| message.text == "history via Bob"));
+
+        charlie
+            .send_message("Charlie through Bob", None)
+            .expect("charlie message");
+        let pushed = charlie
+            .sync_peer(&bob_record, 64)
+            .await
+            .expect("push to Bob");
+        assert!(pushed.room.remote_accepted >= 1, "{pushed:?}");
+
+        let pulled = alice
+            .sync_peer(&bob_record, 64)
+            .await
+            .expect("Alice catches up");
+        assert!(pulled.governance.accepted >= 1, "{pulled:?}");
+        assert!(pulled.room.accepted >= 1, "{pulled:?}");
+        assert!(alice
+            .read_messages(None)
+            .expect("alice messages")
+            .iter()
+            .any(|message| message.text == "Charlie through Bob"));
+        bob_service.stop().expect("bob stop");
     }
 
     #[test]
@@ -3030,8 +3581,6 @@ mod tests {
         alice
             .init_home(InitHomeRequest { default_room: None })
             .expect("alice init");
-        bob.init_home(InitHomeRequest { default_room: None })
-            .expect("bob init");
         alice
             .send_message(SendMessageRequest {
                 text: "from command host".to_string(),
@@ -3049,19 +3598,30 @@ mod tests {
             network_health_status(&alice_online.network_health, "service"),
             NetworkHealthStatus::Working
         );
-        let peer_record_json = alice_online
+        let invite_snapshot = alice
+            .create_space_invite(CreateSpaceInviteRequest {
+                expires_minutes: Some(60),
+            })
+            .expect("create invite");
+        let space_invite_json = invite_snapshot
             .home
             .as_ref()
             .expect("home view")
             .invite
             .as_ref()
             .expect("invite")
-            .peer_record_json
+            .space_invite_json
+            .as_ref()
+            .expect("signed invite")
             .clone();
 
         let bob_imported = bob
-            .import_peer_record(ImportPeerRecordRequest { peer_record_json })
-            .expect("import");
+            .join_space(JoinSpaceRequest {
+                space_invite_json,
+                max_events: Some(64),
+            })
+            .await
+            .expect("join");
         assert_eq!(
             network_health_status(&bob_imported.network_health, "peers"),
             NetworkHealthStatus::Working
@@ -3079,13 +3639,8 @@ mod tests {
             .iter()
             .any(|item| item.summary.starts_with("diagnostic reached")));
 
-        let synced = bob.sync_peer(request).await.expect("sync");
-        assert!(synced
-            .service_activity
-            .iter()
-            .any(|item| item.summary.contains("room accepted 1")));
         assert_eq!(
-            synced.home.expect("home").room.messages[0].text,
+            bob_imported.home.expect("home").room.messages[0].text,
             "from command host"
         );
 
@@ -3093,7 +3648,7 @@ mod tests {
         assert!(alice_after_serving
             .service_activity
             .iter()
-            .any(|item| item.summary.starts_with("served diagnostic:")));
+            .any(|item| item.summary.starts_with("served sync:")));
         alice.stop_service().expect("stop");
     }
 
@@ -3320,13 +3875,11 @@ mod tests {
         let diagnostic = bob.diagnose_peer(&alice_record).await.expect("diagnose");
         assert!(diagnostic.reachable);
 
-        let sync = bob.sync_peer(&alice_record, 64).await.expect("sync");
-        assert_eq!(sync.governance.accepted, 1);
-        assert_eq!(sync.room.accepted, 1);
-        assert_eq!(
-            bob.read_messages(None).expect("bob messages")[0].text,
-            "from imported peer"
-        );
+        let sync_error = bob
+            .sync_peer(&alice_record, 64)
+            .await
+            .expect_err("an endpoint record is not a membership capability");
+        assert!(sync_error.to_string().contains("not a member"));
         service.stop().expect("stop service");
     }
 
@@ -3337,7 +3890,6 @@ mod tests {
         let bob = VoxelleHome::new(dir.path().join("bob"));
 
         alice.init(DEFAULT_ROOM_ID).expect("alice init");
-        bob.init(DEFAULT_ROOM_ID).expect("bob init");
         alice
             .send_message("first service message", None)
             .expect("send");
@@ -3345,17 +3897,15 @@ mod tests {
         let service = alice
             .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("service");
-        let record = service
-            .online()
-            .peer_record(Some("Alice".to_string()), None)
-            .expect("record");
+        let invite = alice
+            .create_space_invite(service.online(), now_ms() + 60_000)
+            .expect("invite");
+        let record = invite.bootstrap_peers().expect("bootstrap").remove(0);
 
+        let joined = bob.join_space_from_invite(&invite, 64).await.expect("join");
+        assert!(joined.events_received >= 1);
         let diagnostic = bob.diagnose_peer(&record).await.expect("diagnose");
         assert!(diagnostic.reachable);
-
-        let first = bob.sync_peer(&record, 64).await.expect("first sync");
-        assert_eq!(first.governance.accepted, 1);
-        assert_eq!(first.room.accepted, 1);
 
         alice
             .send_message("second service message", None)
@@ -3372,11 +3922,8 @@ mod tests {
         let Some(event) = service.try_recv_event() else {
             panic!("expected service event");
         };
-        assert!(matches!(
-            event,
-            VoxelleServiceEvent::Served(ServedPeerRequest::Diagnostic(_))
-        ));
-        assert!(event.summary().starts_with("served diagnostic:"));
+        assert!(matches!(event, VoxelleServiceEvent::Served(_)));
+        assert!(event.summary().starts_with("served "));
         service.stop().expect("stop service");
     }
 
@@ -3394,7 +3941,7 @@ mod tests {
         assert_eq!(offline.runtime.state, RuntimeState::Offline);
         assert!(offline.invite.is_none());
         assert!(offline.peers.is_empty());
-        assert_eq!(offline.room.room_id, DEFAULT_ROOM_ID);
+        assert_eq!(offline.room.room_id, offline.profile.default_room);
         assert_eq!(offline.room.messages[0].text, "visible message");
 
         let service = home
@@ -3421,7 +3968,7 @@ mod tests {
             .as_ref()
             .expect("invite")
             .peer_record_json
-            .contains("\"default_room\": \"room:general\""));
+            .contains(":channel:general"));
         assert_eq!(online.peers.len(), 1);
         assert_eq!(online.peers[0].label, "Peer One");
         assert_eq!(online.peers[0].peer_id, peer_record.endpoint.peer_id);

@@ -23,9 +23,7 @@ fn cli_home_workflow_drives_app_actions() {
         .arg(&home)
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "\"default_room\": \"room:general\"",
-        ))
+        .stdout(predicate::str::contains(":channel:general\""))
         .stdout(predicate::str::contains("\"authority_peer_id\": \"p:"));
 
     voxelle()

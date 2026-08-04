@@ -26,6 +26,8 @@ impl ShellState {
             "home.init" => host.init_home(parse_request(payload)?),
             "runtime.goOnline" => host.start_service(parse_request(payload)?),
             "runtime.goOffline" => host.stop_service(),
+            "space.invite.create" => host.create_space_invite(parse_request(payload)?),
+            "space.join" => host.join_space(parse_request(payload)?).await,
             "message.send" => host.send_message(parse_request(payload)?),
             "peer.import" => host.import_peer_record(parse_request(payload)?),
             "peer.diagnose" => host.diagnose_peer(parse_request(payload)?).await,
@@ -103,9 +105,6 @@ mod tests {
             )
             .await
             .expect("alice init");
-        bob.execute_serialized_command("home.init", serde_json::json!({ "default_room": null }))
-            .await
-            .expect("bob init");
         alice
             .execute_serialized_command(
                 "message.send",
@@ -125,49 +124,40 @@ mod tests {
             health_status(&alice_online, "service"),
             NetworkHealthStatus::Working
         );
-        let peer_record_json = alice_online
+        let invite_snapshot = alice
+            .execute_serialized_command(
+                "space.invite.create",
+                serde_json::json!({ "expires_minutes": 60 }),
+            )
+            .await
+            .expect("create invite");
+        let space_invite_json = invite_snapshot
             .home
             .as_ref()
             .expect("home")
             .invite
             .as_ref()
             .expect("invite")
-            .peer_record_json
+            .space_invite_json
+            .as_ref()
+            .expect("signed invite")
             .clone();
-
-        let bob_imported = bob
+        let bob_joined = bob
             .execute_serialized_command(
-                "peer.import",
-                serde_json::json!({ "peer_record_json": peer_record_json }),
+                "space.join",
+                serde_json::json!({
+                    "space_invite_json": space_invite_json,
+                    "max_events": 64
+                }),
             )
             .await
-            .expect("import");
+            .expect("join");
         assert_eq!(
-            health_status(&bob_imported, "peers"),
+            health_status(&bob_joined, "peers"),
             NetworkHealthStatus::Working
         );
-        let peer = &bob_imported.home.as_ref().expect("home").peers[0];
-        let request = serde_json::json!({
-            "peer_id": peer.peer_id,
-            "device_id": peer.device_id,
-            "max_events": 64,
-        });
-
-        let diagnosed = bob
-            .execute_serialized_command("peer.diagnose", request.clone())
-            .await
-            .expect("diagnose");
-        assert!(diagnosed
-            .service_activity
-            .iter()
-            .any(|item| item.summary.starts_with("diagnostic reached")));
-
-        let synced = bob
-            .execute_serialized_command("peer.sync", request)
-            .await
-            .expect("sync");
         assert_eq!(
-            synced.home.expect("home").room.messages[0].text,
+            bob_joined.home.expect("home").room.messages[0].text,
             "hello through shell"
         );
 
@@ -178,7 +168,7 @@ mod tests {
         assert!(alice_after_serving
             .service_activity
             .iter()
-            .any(|item| item.summary.starts_with("served diagnostic:")));
+            .any(|item| item.summary.starts_with("served sync:")));
         alice
             .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
             .await

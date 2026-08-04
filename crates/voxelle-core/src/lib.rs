@@ -268,6 +268,200 @@ pub struct RecoveryCardV1 {
     pub recovery_secret_b64: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpaceV1 {
+    pub v: u8,
+    pub space_id: String,
+    pub name: String,
+    pub authority_peer_id: String,
+    pub governance_room_id: String,
+    pub default_room_id: String,
+    pub nonce: String,
+    pub genesis: EventV1,
+}
+
+pub fn create_space(
+    identity: &PeerIdentity,
+    name: impl Into<String>,
+    default_channel_name: &str,
+    created_ms: i64,
+) -> Result<SpaceV1> {
+    let name = name.into();
+    validate_space_label(&name, "space name")?;
+    validate_space_label(default_channel_name, "default channel name")?;
+    let nonce = base64::engine::general_purpose::STANDARD.encode(rand::random::<[u8; 16]>());
+    let space_id = derive_space_id(&identity.peer_id, &nonce);
+    let governance_room_id = format!("{space_id}:governance");
+    let default_room_id = format!("{space_id}:channel:{default_channel_name}");
+    let genesis = create_event(
+        identity,
+        create_delegation(
+            identity,
+            created_ms.saturating_sub(60_000),
+            i64::MAX,
+            vec!["room:governance".to_string()],
+        )?,
+        &governance_room_id,
+        created_ms,
+        "SPACE_CREATE",
+        Vec::new(),
+        serde_json::json!({
+            "space_id": space_id,
+            "name": name,
+            "authority_peer_id": identity.peer_id,
+            "governance_room_id": governance_room_id,
+            "default_room_id": default_room_id,
+            "nonce": nonce,
+        }),
+    )?;
+    Ok(SpaceV1 {
+        v: 1,
+        space_id,
+        name,
+        authority_peer_id: identity.peer_id.clone(),
+        governance_room_id,
+        default_room_id,
+        nonce,
+        genesis,
+    })
+}
+
+pub fn validate_space_at(space: &SpaceV1, now_ms: i64) -> Result<()> {
+    if space.v != 1 {
+        return Err(anyhow!("space.v must be 1"));
+    }
+    validate_space_label(&space.name, "space name")?;
+    let nonce = b64_decode(&space.nonce).context("decode space nonce")?;
+    if nonce.len() != 16 {
+        return Err(anyhow!("space nonce must be 16 bytes"));
+    }
+    if space.space_id != derive_space_id(&space.authority_peer_id, &space.nonce) {
+        return Err(anyhow!("space_id mismatch"));
+    }
+    if space.governance_room_id != format!("{}:governance", space.space_id) {
+        return Err(anyhow!("space governance room mismatch"));
+    }
+    if !space
+        .default_room_id
+        .starts_with(&format!("{}:channel:", space.space_id))
+    {
+        return Err(anyhow!("space default room is not namespaced to the space"));
+    }
+    let event = &space.genesis;
+    validate_event_at(event, "room:governance", now_ms).context("space genesis invalid")?;
+    if event.kind != "SPACE_CREATE"
+        || event.room_id != space.governance_room_id
+        || event.author_peer_id != space.authority_peer_id
+        || !event.parents.is_empty()
+    {
+        return Err(anyhow!("space genesis envelope mismatch"));
+    }
+    let expected = serde_json::json!({
+        "space_id": space.space_id,
+        "name": space.name,
+        "authority_peer_id": space.authority_peer_id,
+        "governance_room_id": space.governance_room_id,
+        "default_room_id": space.default_room_id,
+        "nonce": space.nonce,
+    });
+    if event.body != expected {
+        return Err(anyhow!("space genesis body mismatch"));
+    }
+    Ok(())
+}
+
+pub fn create_space_invite_event(
+    identity: &PeerIdentity,
+    space: &SpaceV1,
+    bootstrap_peers: Vec<serde_json::Value>,
+    expires_ms: i64,
+    created_ms: i64,
+    parents: Vec<String>,
+) -> Result<EventV1> {
+    validate_space_at(space, created_ms)?;
+    if identity.peer_id != space.authority_peer_id {
+        return Err(anyhow!(
+            "only the current space authority may create an invite"
+        ));
+    }
+    if expires_ms <= created_ms {
+        return Err(anyhow!("space invite must expire in the future"));
+    }
+    if bootstrap_peers.is_empty() || bootstrap_peers.len() > 8 {
+        return Err(anyhow!(
+            "space invite requires one to eight bootstrap peers"
+        ));
+    }
+    create_event(
+        identity,
+        create_delegation(
+            identity,
+            created_ms.saturating_sub(60_000),
+            expires_ms,
+            vec!["room:governance".to_string()],
+        )?,
+        &space.governance_room_id,
+        created_ms,
+        "INVITE_CREATE",
+        parents,
+        serde_json::json!({
+            "space_id": space.space_id,
+            "expires_ms": expires_ms,
+            "bootstrap_peers": bootstrap_peers,
+        }),
+    )
+}
+
+pub fn validate_space_invite_at(space: &SpaceV1, invite: &EventV1, now_ms: i64) -> Result<()> {
+    validate_space_at(space, now_ms)?;
+    validate_event_at(invite, "room:governance", now_ms).context("space invite invalid")?;
+    if invite.kind != "INVITE_CREATE"
+        || invite.room_id != space.governance_room_id
+        || invite.author_peer_id != space.authority_peer_id
+    {
+        return Err(anyhow!("space invite envelope mismatch"));
+    }
+    if string_body_field(invite, "space_id").as_deref() != Some(space.space_id.as_str()) {
+        return Err(anyhow!("space invite body space_id mismatch"));
+    }
+    let expires_ms = int_body_field(invite, "expires_ms")
+        .ok_or_else(|| anyhow!("space invite expires_ms missing"))?;
+    if expires_ms < now_ms {
+        return Err(anyhow!("space invite expired"));
+    }
+    let peers = invite
+        .body
+        .get("bootstrap_peers")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow!("space invite bootstrap_peers missing"))?;
+    if peers.is_empty() || peers.len() > 8 {
+        return Err(anyhow!(
+            "space invite requires one to eight bootstrap peers"
+        ));
+    }
+    Ok(())
+}
+
+fn derive_space_id(authority_peer_id: &str, nonce: &str) -> String {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"voxelle/space/v1\0");
+    bytes.extend_from_slice(authority_peer_id.as_bytes());
+    bytes.push(0);
+    bytes.extend_from_slice(nonce.as_bytes());
+    format!("s:{}", base64url_sha256(&bytes))
+}
+
+fn validate_space_label(value: &str, name: &str) -> Result<()> {
+    let length = value.chars().count();
+    if !(1..=80).contains(&length) || value.trim() != value {
+        return Err(anyhow!("{name} must be 1 to 80 trimmed characters"));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(anyhow!("{name} contains control characters"));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceAuthorization {
     pub device_pub: String,
@@ -327,6 +521,7 @@ pub struct EventV1 {
 pub struct RoomContext {
     pub authority_peer_id: String,
     pub governance_room_id: String,
+    pub require_invite: bool,
 }
 
 impl RoomContext {
@@ -334,6 +529,18 @@ impl RoomContext {
         Self {
             authority_peer_id: authority_peer_id.into(),
             governance_room_id: GOVERNANCE_ROOM_ID.to_string(),
+            require_invite: false,
+        }
+    }
+
+    pub fn for_space(
+        authority_peer_id: impl Into<String>,
+        governance_room_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            authority_peer_id: authority_peer_id.into(),
+            governance_room_id: governance_room_id.into(),
+            require_invite: true,
         }
     }
 }
@@ -343,6 +550,7 @@ pub struct GovernanceState {
     pub members: HashSet<String>,
     pub banned: HashSet<String>,
     pub revoked_devices: HashSet<(String, String)>,
+    pub active_invites: BTreeMap<String, i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -847,7 +1055,7 @@ pub fn accept_event<'a>(
     }
 
     if event.room_id == context.governance_room_id {
-        accept_governance_event(event, &state, context)
+        accept_governance_event(event, &state, context, now_ms)
     } else {
         if state.banned.contains(&event.author_peer_id) {
             return Err(AcceptError::Banned);
@@ -885,9 +1093,30 @@ pub fn derive_governance_state(
         match event.kind.as_str() {
             "MEMBER_JOIN" => {
                 if member_join_body_matches_author(event)
+                    && member_join_has_authority(event, &state, context, now_ms)
                     && !state.banned.contains(&event.author_peer_id)
                 {
                     state.members.insert(event.author_peer_id.clone());
+                }
+            }
+            "INVITE_CREATE" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                if let Some(expires_ms) = int_body_field(event, "expires_ms") {
+                    if expires_ms >= event.created_ms {
+                        state
+                            .active_invites
+                            .insert(event.event_id.clone(), expires_ms);
+                    }
+                }
+            }
+            "INVITE_REVOKE" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                if let Some(invite_id) = string_body_field(event, "invite_id") {
+                    state.active_invites.remove(&invite_id);
                 }
             }
             "MEMBER_BAN" => {
@@ -929,6 +1158,7 @@ fn accept_governance_event<'a>(
     event: &'a EventV1,
     state: &GovernanceState,
     context: &RoomContext,
+    now_ms: i64,
 ) -> AcceptResult<AcceptedEvent<'a>> {
     match event.kind.as_str() {
         "MEMBER_JOIN" => {
@@ -940,9 +1170,12 @@ fn accept_governance_event<'a>(
                     "MEMBER_JOIN body must match author peer".to_string(),
                 ));
             }
+            if !member_join_has_authority(event, state, context, now_ms) {
+                return Err(AcceptError::NotAuthorized);
+            }
             Ok(AcceptedEvent { event })
         }
-        "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" => {
+        "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" | "INVITE_CREATE" | "INVITE_REVOKE" => {
             if event.author_peer_id != context.authority_peer_id {
                 return Err(AcceptError::NotAuthorized);
             }
@@ -960,7 +1193,8 @@ fn accept_governance_event<'a>(
 fn required_scope_for_kind(kind: &str) -> &'static str {
     match kind {
         "MEMBER_JOIN" => "room:join",
-        "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" => "room:governance",
+        "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" | "INVITE_CREATE" | "INVITE_REVOKE"
+        | "SPACE_CREATE" => "room:governance",
         k if k.starts_with("MSG_") || k.starts_with("REACTION_") || k.starts_with("PIN_") => {
             "room:post"
         }
@@ -975,8 +1209,30 @@ fn member_join_body_matches_author(event: &EventV1) -> bool {
             == Some(event.delegation.peer_pub.as_str())
 }
 
+fn member_join_has_authority(
+    event: &EventV1,
+    state: &GovernanceState,
+    context: &RoomContext,
+    now_ms: i64,
+) -> bool {
+    if !context.require_invite || event.author_peer_id == context.authority_peer_id {
+        return true;
+    }
+    let Some(invite_id) = string_body_field(event, "invite_id") else {
+        return false;
+    };
+    state
+        .active_invites
+        .get(&invite_id)
+        .is_some_and(|expires_ms| *expires_ms >= now_ms)
+}
+
 fn string_body_field(event: &EventV1, field: &str) -> Option<String> {
     event.body.get(field)?.as_str().map(ToOwned::to_owned)
+}
+
+fn int_body_field(event: &EventV1, field: &str) -> Option<i64> {
+    event.body.get(field)?.as_i64()
 }
 
 pub fn compute_heads(events: &[EventV1]) -> Vec<String> {
@@ -1423,6 +1679,78 @@ mod tests {
             1_000,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn signed_space_invite_is_required_for_strict_membership() {
+        let authority = PeerIdentity::generate_at(900).expect("authority");
+        let member = PeerIdentity::generate_at(900).expect("member");
+        let space = create_space(&authority, "Friends", "general", 1_000).expect("space");
+        let context =
+            RoomContext::for_space(authority.peer_id.clone(), space.governance_room_id.clone());
+        let invite = create_space_invite_event(
+            &authority,
+            &space,
+            vec![json!({ "endpoint": "signed bootstrap" })],
+            1_500,
+            1_100,
+            vec![space.genesis.event_id.clone()],
+        )
+        .expect("invite");
+        validate_space_invite_at(&space, &invite, 1_200).expect("valid invite");
+
+        let without_invite = create_event(
+            &member,
+            delegation_for(&member, vec!["room:join".to_string()]),
+            &space.governance_room_id,
+            1_200,
+            "MEMBER_JOIN",
+            vec![invite.event_id.clone()],
+            json!({
+                "peer_id": member.peer_id,
+                "peer_pub": member.peer.spki_b64,
+            }),
+        )
+        .expect("join without invite");
+        assert_eq!(
+            accept_event(
+                &without_invite,
+                &[space.genesis.clone(), invite.clone()],
+                &context,
+                1_200,
+            )
+            .expect_err("invite required"),
+            AcceptError::NotAuthorized
+        );
+
+        let with_invite = create_event(
+            &member,
+            delegation_for(&member, vec!["room:join".to_string()]),
+            &space.governance_room_id,
+            1_200,
+            "MEMBER_JOIN",
+            vec![invite.event_id.clone()],
+            json!({
+                "peer_id": member.peer_id,
+                "peer_pub": member.peer.spki_b64,
+                "invite_id": invite.event_id,
+            }),
+        )
+        .expect("join with invite");
+        accept_event(
+            &with_invite,
+            &[space.genesis.clone(), invite.clone()],
+            &context,
+            1_200,
+        )
+        .expect("invite admits member");
+
+        assert!(validate_space_invite_at(&space, &invite, 1_501).is_err());
+        assert_eq!(
+            accept_event(&with_invite, &[space.genesis, invite], &context, 1_501,)
+                .expect_err("expired invite rejected"),
+            AcceptError::NotAuthorized
+        );
     }
 
     #[test]
