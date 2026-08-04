@@ -173,8 +173,24 @@ cover them only after those artifacts or runtimes are actually exercised.
 
 ## Current Risk Frontier
 
-The first and most irreversible risk is identity recovery. The development home
-stores root and device secrets together and binds the principal ID directly to
-the root key. Until a new identity can recover onto a fresh device without
-losing its stable principal or accepted history, feature breadth would only
-create more state with an unproven recovery path.
+The identity-recovery risk has crossed its first operational gate. Principal
+IDs now derive from a self-signed genesis, delegations carry an ordered identity
+proof, recovery rotates the root and revokes every old device, and SQLite
+retains a monotonic identity head. A two-peer QUIC test carries history from a
+lost home through an ordinary retaining peer into a fresh home, propagates the
+new head back, and proves that the retaining peer rejects a newly signed event
+from the lost device.
+
+Long-lived identity secrets are authenticated ciphertext. Release builds use
+macOS Keychain or Windows Credential Manager for the independent unlock key;
+unit tests and explicitly opted-in debug CLI tests use a permission-restricted
+file key and are not release evidence. The exported `.voxrecover` file is a
+permission-restricted bearer recovery capability: possession is sufficient to
+rotate the identity, so the UI must tell the person to keep it offline. Its
+capsule is independently authenticated and encrypted, and can later be retained
+separately by ordinary peers or guardian shares.
+
+The next irreversible risk is admission: replace endpoint JSON exchange with a
+signed, expiring space capability and prove a fresh packaged launch can import
+it, start service, join, synchronize, and visibly communicate without manual
+diagnose/sync choreography.

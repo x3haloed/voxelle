@@ -1,7 +1,13 @@
 use anyhow::{Context, Result};
+use base64::Engine;
+use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -9,7 +15,7 @@ use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
     accept_event, create_delegation, create_event, EventV1, IdentityProofV1, PeerIdentity,
-    RoomContext, GOVERNANCE_ROOM_ID,
+    RecoveryCardV1, RoomContext, GOVERNANCE_ROOM_ID,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
@@ -59,6 +65,13 @@ pub struct HomeConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IdentityFile {
     v: u8,
+    nonce_b64: String,
+    ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct IdentitySecretsV1 {
+    v: u8,
     root_secret_b64: String,
     device_secret_b64: String,
     recovery_secret_b64: String,
@@ -67,8 +80,8 @@ pub struct IdentityFile {
     device_id: String,
 }
 
-impl IdentityFile {
-    pub fn from_identity(identity: &PeerIdentity) -> Self {
+impl IdentitySecretsV1 {
+    fn from_identity(identity: &PeerIdentity) -> Self {
         Self {
             v: 1,
             root_secret_b64: identity.peer.secret_key_b64(),
@@ -80,7 +93,7 @@ impl IdentityFile {
         }
     }
 
-    pub fn to_identity(&self) -> Result<PeerIdentity> {
+    fn to_identity(&self) -> Result<PeerIdentity> {
         if self.v != 1 {
             anyhow::bail!("unsupported identity version {}", self.v);
         }
@@ -94,6 +107,58 @@ impl IdentityFile {
             anyhow::bail!("identity metadata does not match signed identity proof");
         }
         Ok(identity)
+    }
+}
+
+impl IdentityFile {
+    fn encrypt(identity: &PeerIdentity, key: &[u8; 32]) -> Result<Self> {
+        let secrets = IdentitySecretsV1::from_identity(identity);
+        let plaintext = serde_json::to_vec(&secrets).context("serialize identity secrets")?;
+        let cipher = XChaCha20Poly1305::new(key.into());
+        let mut nonce = [0_u8; 24];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &plaintext,
+                    aad: b"voxelle/identity-vault/v1",
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("encrypt identity vault"))?;
+        Ok(Self {
+            v: 1,
+            nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+            ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+        })
+    }
+
+    fn decrypt(&self, key: &[u8; 32]) -> Result<PeerIdentity> {
+        if self.v != 1 {
+            anyhow::bail!("unsupported identity vault version {}", self.v);
+        }
+        let nonce = base64::engine::general_purpose::STANDARD
+            .decode(&self.nonce_b64)
+            .context("decode identity vault nonce")?;
+        let nonce: [u8; 24] = nonce
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("identity vault nonce must be 24 bytes"))?;
+        let ciphertext = base64::engine::general_purpose::STANDARD
+            .decode(&self.ciphertext_b64)
+            .context("decode identity vault ciphertext")?;
+        let cipher = XChaCha20Poly1305::new(key.into());
+        let plaintext = cipher
+            .decrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &ciphertext,
+                    aad: b"voxelle/identity-vault/v1",
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("identity vault authentication failed"))?;
+        let secrets: IdentitySecretsV1 =
+            serde_json::from_slice(&plaintext).context("parse identity secrets")?;
+        secrets.to_identity()
     }
 }
 
@@ -121,6 +186,7 @@ pub struct PeerRecord {
     pub v: u8,
     pub label: Option<String>,
     pub default_room: String,
+    pub authority_peer_id: String,
     pub endpoint: PeerEndpoint,
 }
 
@@ -128,6 +194,39 @@ pub struct PeerRecord {
 struct KnownPeersFile {
     v: u8,
     peers: Vec<PeerRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryCapsuleV1 {
+    pub v: u8,
+    pub peer_id: String,
+    pub nonce_b64: String,
+    pub ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryKitV1 {
+    pub v: u8,
+    pub card: RecoveryCardV1,
+    pub capsule: RecoveryCapsuleV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct RecoveryPayloadV1 {
+    v: u8,
+    identity_proof: IdentityProofV1,
+    config: HomeConfig,
+    known_peers: Vec<PeerRecord>,
+    ui_preferences: UiPreferences,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub profile: ProfileSummary,
+    pub peers_attempted: usize,
+    pub peers_reached: usize,
+    pub events_recovered: usize,
+    pub peer_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -384,6 +483,7 @@ pub struct OnlineHome {
     pub endpoint: PeerEndpoint,
     pub local_report: LocalReachabilityReport,
     pub default_room: String,
+    pub authority_peer_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -561,6 +661,7 @@ impl VoxelleHome {
 
         let store = self.open_store()?;
         self.ensure_member_join(&store, &identity, &config)?;
+        self.refresh_recovery_capsule()?;
 
         Ok(ProfileSummary {
             home: self.root.clone(),
@@ -933,7 +1034,8 @@ impl VoxelleHome {
         write_json(
             &self.path("known-peers.json"),
             &KnownPeersFile { v: 1, peers },
-        )
+        )?;
+        self.refresh_recovery_capsule()
     }
 
     pub fn known_peers(&self) -> Result<Vec<PeerRecord>> {
@@ -948,6 +1050,113 @@ impl VoxelleHome {
             record.validate()?;
         }
         Ok(file.peers)
+    }
+
+    pub fn recovery_kit(&self) -> Result<RecoveryKitV1> {
+        let identity = self.load_identity()?;
+        let card = identity.recovery_card();
+        let payload = RecoveryPayloadV1 {
+            v: 1,
+            identity_proof: identity.proof.clone(),
+            config: self.load_config()?,
+            known_peers: self.known_peers()?,
+            ui_preferences: self.ui_preferences()?,
+        };
+        let capsule = encrypt_recovery_capsule(&card, &identity.peer_id, &payload)?;
+        Ok(RecoveryKitV1 {
+            v: 1,
+            card,
+            capsule,
+        })
+    }
+
+    pub fn write_recovery_kit(&self, path: impl AsRef<Path>) -> Result<()> {
+        let kit = self.recovery_kit()?;
+        write_secret_json(path.as_ref(), &kit)
+    }
+
+    fn refresh_recovery_capsule(&self) -> Result<()> {
+        write_json(
+            &self.path("recovery-capsule.json"),
+            &self.recovery_kit()?.capsule,
+        )
+    }
+
+    pub async fn recover_from_kit(
+        &self,
+        kit: &RecoveryKitV1,
+        max_events_per_peer: usize,
+    ) -> Result<RecoveryReport> {
+        if kit.v != 1 {
+            anyhow::bail!("unsupported recovery kit version {}", kit.v);
+        }
+        if self.path("identity.json").exists()
+            || self.path("config.json").exists()
+            || self.path("store.sqlite3").exists()
+        {
+            anyhow::bail!("recovery requires a fresh Voxelle home");
+        }
+        if max_events_per_peer == 0 {
+            anyhow::bail!("max_events_per_peer must be positive");
+        }
+
+        let payload = decrypt_recovery_capsule(&kit.card, &kit.capsule)?;
+        if payload.v != 1 {
+            anyhow::bail!("unsupported recovery payload version {}", payload.v);
+        }
+        if payload.identity_proof.genesis != kit.card.genesis {
+            anyhow::bail!("recovery capsule identity does not match recovery card");
+        }
+        let identity = PeerIdentity::recover(&kit.card, &payload.identity_proof, now_ms())?;
+        if identity.peer_id != payload.config.authority_peer_id {
+            anyhow::bail!("recovery capsule authority does not match recovered identity");
+        }
+        for peer in &payload.known_peers {
+            peer.validate()?;
+        }
+        validate_ui_preferences(&payload.ui_preferences)?;
+
+        fs::create_dir_all(&self.root)
+            .with_context(|| format!("create {}", self.root.display()))?;
+        write_identity_vault(&self.path("identity.json"), &identity)?;
+        write_json(&self.path("config.json"), &payload.config)?;
+        write_json(
+            &self.path("known-peers.json"),
+            &KnownPeersFile {
+                v: 1,
+                peers: payload.known_peers.clone(),
+            },
+        )?;
+        self.write_ui_preferences(&payload.ui_preferences)?;
+        self.load_or_create_certificate()?;
+        let store = self.open_store()?;
+
+        let mut peers_reached = 0;
+        let mut events_recovered = 0;
+        let mut peer_errors = Vec::new();
+        for peer in &payload.known_peers {
+            match self.sync_peer(peer, max_events_per_peer).await {
+                Ok(report) => {
+                    peers_reached += 1;
+                    events_recovered += report.governance.accepted + report.room.accepted;
+                }
+                Err(error) => peer_errors.push(format!(
+                    "{}: {error:#}",
+                    peer.label.as_deref().unwrap_or("unlabelled peer")
+                )),
+            }
+        }
+
+        self.ensure_member_join(&store, &identity, &payload.config)?;
+        self.refresh_recovery_capsule()?;
+        let profile = self.profile_summary()?;
+        Ok(RecoveryReport {
+            profile,
+            peers_attempted: payload.known_peers.len(),
+            peers_reached,
+            events_recovered,
+            peer_errors,
+        })
     }
 
     pub fn ui_ontology(&self) -> Result<UiOntologyView> {
@@ -983,6 +1192,9 @@ impl VoxelleHome {
             }
         };
         self.write_ui_preferences(&preferences)?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
         Ok(id)
     }
 
@@ -996,11 +1208,19 @@ impl VoxelleHome {
         if !removed {
             validate_ui_preference_id(kind, id)?;
         }
-        self.write_ui_preferences(&preferences)
+        self.write_ui_preferences(&preferences)?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
+        Ok(())
     }
 
     pub fn reset_all_ui_preferences(&self) -> Result<()> {
-        self.write_ui_preferences(&UiPreferences::default())
+        self.write_ui_preferences(&UiPreferences::default())?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
+        Ok(())
     }
 
     pub fn start_service(
@@ -1030,7 +1250,7 @@ impl VoxelleHome {
         let mut store = self.open_store()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
         let endpoint = &peer.endpoint;
-        let context = RoomContext::new(endpoint.peer_id.clone());
+        let context = RoomContext::new(peer.authority_peer_id.clone());
         let limits = SyncLimits {
             max_events_per_batch: max_events,
         };
@@ -1063,8 +1283,7 @@ impl VoxelleHome {
     }
 
     fn load_identity(&self) -> Result<PeerIdentity> {
-        let file: IdentityFile = read_json(&self.path("identity.json"))?;
-        file.to_identity()
+        read_identity_vault(&self.path("identity.json"))
     }
 
     fn load_certificate(&self) -> Result<QuicCertificate> {
@@ -1093,8 +1312,7 @@ impl VoxelleHome {
             return self.load_identity();
         }
         let identity = PeerIdentity::generate_at(now_ms())?;
-        let file = IdentityFile::from_identity(&identity);
-        write_json(&self.path("identity.json"), &file)?;
+        write_identity_vault(&self.path("identity.json"), &identity)?;
         Ok(identity)
     }
 
@@ -1113,15 +1331,14 @@ impl VoxelleHome {
         identity: &PeerIdentity,
         config: &HomeConfig,
     ) -> Result<()> {
-        let existing_join = store
-            .room_events(GOVERNANCE_ROOM_ID)?
-            .into_iter()
-            .any(|event| {
-                event.kind == "MEMBER_JOIN"
-                    && event.author_peer_id == identity.peer_id
-                    && event.body.get("peer_id").and_then(|value| value.as_str())
-                        == Some(identity.peer_id.as_str())
-            });
+        let governance = store.room_events(GOVERNANCE_ROOM_ID)?;
+        let existing_join = governance.iter().any(|event| {
+            event.kind == "MEMBER_JOIN"
+                && event.author_peer_id == identity.peer_id
+                && event.author_device_id == identity.device.id
+                && event.body.get("peer_id").and_then(|value| value.as_str())
+                    == Some(identity.peer_id.as_str())
+        });
         if existing_join {
             return Ok(());
         }
@@ -1144,7 +1361,7 @@ impl VoxelleHome {
                 "peer_pub": identity.peer.spki_b64,
             }),
         )?;
-        let accepted = accept_event(&join, &[], &context, now_ms())
+        let accepted = accept_event(&join, &governance, &context, now_ms())
             .map_err(|e| anyhow::anyhow!("member join rejected: {e:?}"))?;
         store.insert_accepted_event(accepted, now_ms())?;
         Ok(())
@@ -1359,6 +1576,9 @@ impl PeerRecord {
         if self.default_room.trim().is_empty() {
             anyhow::bail!("peer record default room is empty");
         }
+        if !self.authority_peer_id.starts_with("p:") {
+            anyhow::bail!("peer record authority is not a principal ID");
+        }
         self.endpoint.validate()
     }
 
@@ -1374,6 +1594,7 @@ impl OnlineHome {
             v: 1,
             label,
             default_room: room.unwrap_or(&self.default_room).to_string(),
+            authority_peer_id: self.authority_peer_id.clone(),
             endpoint: self.endpoint.clone(),
         };
         record.validate()?;
@@ -1524,14 +1745,15 @@ impl PeerServer {
         let advertised_addr = advertise.unwrap_or(node.local_addr()?);
         let endpoint = node.peer_endpoint(advertised_addr)?;
         let local_report = node.local_reachability_report(advertised_addr)?;
-        let default_room = home.load_config()?.default_room;
+        let config = home.load_config()?;
         Ok(Self {
             home,
             node,
             online: OnlineHome {
                 endpoint,
                 local_report,
-                default_room,
+                default_room: config.default_room,
+                authority_peer_id: config.authority_peer_id,
             },
         })
     }
@@ -2219,6 +2441,191 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
     }
 }
 
+fn recovery_capsule_key(card: &RecoveryCardV1) -> Result<[u8; 32]> {
+    if card.v != 1 {
+        anyhow::bail!("unsupported recovery card version {}", card.v);
+    }
+    let secret = base64::engine::general_purpose::STANDARD
+        .decode(&card.recovery_secret_b64)
+        .context("decode recovery secret")?;
+    if secret.len() != 32 {
+        anyhow::bail!("recovery secret must be 32 bytes");
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"voxelle/recovery-capsule-key/v1\0");
+    digest.update(secret);
+    Ok(digest.finalize().into())
+}
+
+fn encrypt_recovery_capsule(
+    card: &RecoveryCardV1,
+    peer_id: &str,
+    payload: &RecoveryPayloadV1,
+) -> Result<RecoveryCapsuleV1> {
+    let key = recovery_capsule_key(card)?;
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let mut nonce = [0_u8; 24];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let plaintext = serde_json::to_vec(payload).context("serialize recovery payload")?;
+    let aad = format!("voxelle/recovery-capsule/v1\n{peer_id}");
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &plaintext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("encrypt recovery capsule"))?;
+    Ok(RecoveryCapsuleV1 {
+        v: 1,
+        peer_id: peer_id.to_string(),
+        nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+        ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+    })
+}
+
+fn decrypt_recovery_capsule(
+    card: &RecoveryCardV1,
+    capsule: &RecoveryCapsuleV1,
+) -> Result<RecoveryPayloadV1> {
+    if capsule.v != 1 {
+        anyhow::bail!("unsupported recovery capsule version {}", capsule.v);
+    }
+    let expected_peer_id = voxelle_core::principal_id(&card.genesis)?;
+    if capsule.peer_id != expected_peer_id {
+        anyhow::bail!("recovery capsule principal does not match recovery card");
+    }
+    let nonce = base64::engine::general_purpose::STANDARD
+        .decode(&capsule.nonce_b64)
+        .context("decode recovery capsule nonce")?;
+    let nonce: [u8; 24] = nonce
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("recovery capsule nonce must be 24 bytes"))?;
+    let ciphertext = base64::engine::general_purpose::STANDARD
+        .decode(&capsule.ciphertext_b64)
+        .context("decode recovery capsule ciphertext")?;
+    let key = recovery_capsule_key(card)?;
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let aad = format!("voxelle/recovery-capsule/v1\n{}", capsule.peer_id);
+    let plaintext = cipher
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &ciphertext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("recovery capsule authentication failed"))?;
+    serde_json::from_slice(&plaintext).context("parse recovery payload")
+}
+
+pub fn write_identity_vault(path: &Path, identity: &PeerIdentity) -> Result<()> {
+    let key = identity_vault_key(path, true)?;
+    write_json(path, &IdentityFile::encrypt(identity, &key)?)
+}
+
+pub fn read_identity_vault(path: &Path) -> Result<PeerIdentity> {
+    let file: IdentityFile = read_json(path)?;
+    let key = identity_vault_key(path, false)?;
+    file.decrypt(&key)
+}
+
+fn identity_vault_key(path: &Path, create: bool) -> Result<[u8; 32]> {
+    #[cfg(test)]
+    {
+        return file_identity_vault_key(path, create);
+    }
+
+    #[cfg(not(test))]
+    if cfg!(debug_assertions)
+        && std::env::var("VOXELLE_VAULT_BACKEND").as_deref() == Ok("test-file")
+    {
+        return file_identity_vault_key(path, create);
+    }
+
+    #[cfg(all(not(test), any(target_os = "macos", target_os = "windows")))]
+    {
+        return os_identity_vault_key(path, create);
+    }
+
+    #[cfg(all(not(test), not(any(target_os = "macos", target_os = "windows"))))]
+    {
+        file_identity_vault_key(path, create)
+    }
+}
+
+#[cfg(all(not(test), any(target_os = "macos", target_os = "windows")))]
+fn os_identity_vault_key(path: &Path, create: bool) -> Result<[u8; 32]> {
+    let account_path = if path.exists() {
+        path.canonicalize()
+            .with_context(|| format!("resolve {}", path.display()))?
+    } else {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        parent
+            .canonicalize()
+            .with_context(|| format!("resolve {}", parent.display()))?
+            .join(path.file_name().unwrap_or_default())
+    };
+    let mut account_digest = Sha256::new();
+    account_digest.update(b"voxelle/identity-vault-account/v1\0");
+    account_digest.update(account_path.to_string_lossy().as_bytes());
+    let account =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(account_digest.finalize());
+    let entry = keyring::Entry::new("app.voxelle.identity-vault", &account)
+        .context("open operating-system identity vault entry")?;
+    match entry.get_secret() {
+        Ok(secret) => decode_identity_vault_key(&secret),
+        Err(keyring::Error::NoEntry) if create => {
+            let mut key = [0_u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut key);
+            entry
+                .set_secret(&key)
+                .context("store identity unlock key in operating-system credential store")?;
+            Ok(key)
+        }
+        Err(keyring::Error::NoEntry) => {
+            anyhow::bail!(
+                "identity unlock key is missing from the operating-system credential store"
+            )
+        }
+        Err(error) => {
+            Err(error).context("read identity unlock key from operating-system credential store")
+        }
+    }
+}
+
+fn file_identity_vault_key(path: &Path, create: bool) -> Result<[u8; 32]> {
+    let key_path = path.with_extension("test-unlock-key");
+    if key_path.exists() {
+        return decode_identity_vault_key(
+            &fs::read(&key_path).with_context(|| format!("read {}", key_path.display()))?,
+        );
+    }
+    if !create {
+        anyhow::bail!("identity test unlock key is missing");
+    }
+    if let Some(parent) = key_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut key = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut key);
+    fs::write(&key_path, key).with_context(|| format!("write {}", key_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("protect {}", key_path.display()))?;
+    }
+    Ok(key)
+}
+
+fn decode_identity_vault_key(secret: &[u8]) -> Result<[u8; 32]> {
+    secret
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("identity unlock key must be 32 bytes"))
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
@@ -2232,9 +2639,35 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
+fn write_secret_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    file.write_all((serde_json::to_string_pretty(value)? + "\n").as_bytes())
+        .with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("protect {}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn short_peer_label(peer_id: &str) -> String {
     peer_id
-        .strip_prefix("ed25519:")
+        .strip_prefix("p:")
+        .or_else(|| peer_id.strip_prefix("ed25519:"))
         .and_then(|rest| rest.get(..12))
         .map(|short| format!("Peer {short}"))
         .unwrap_or_else(|| "Peer".to_string())
@@ -2311,6 +2744,148 @@ mod tests {
         assert_eq!(first.peer_id, second.peer_id);
         assert_eq!(first.device_id, second.device_id);
         assert_eq!(second.default_room, DEFAULT_ROOM_ID);
+    }
+
+    #[test]
+    fn home_identity_secrets_are_only_persisted_in_authenticated_ciphertext() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("alice"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+        let identity = home.load_identity().expect("identity");
+        let raw = fs::read_to_string(home.path("identity.json")).expect("vault file");
+
+        assert!(raw.contains("ciphertext_b64"));
+        assert!(!raw.contains("root_secret_b64"));
+        assert!(!raw.contains("device_secret_b64"));
+        assert!(!raw.contains("recovery_secret_b64"));
+        assert!(!raw.contains(&identity.peer.secret_key_b64()));
+        assert!(!raw.contains(&identity.device.secret_key_b64()));
+        assert!(!raw.contains(&identity.recovery.secret_key_b64()));
+    }
+
+    #[test]
+    fn recovery_capsule_is_authenticated_and_bound_to_its_card() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("alice"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+        let kit = home.recovery_kit().expect("recovery kit");
+        let kit_path = dir.path().join("alice.voxrecover");
+        home.write_recovery_kit(&kit_path).expect("write kit");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&kit_path)
+                    .expect("kit metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        let payload = decrypt_recovery_capsule(&kit.card, &kit.capsule).expect("decrypt");
+        assert_eq!(payload.config.authority_peer_id, kit.capsule.peer_id);
+
+        let mut tampered = kit.clone();
+        tampered.capsule.ciphertext_b64.push('A');
+        assert!(decrypt_recovery_capsule(&tampered.card, &tampered.capsule).is_err());
+
+        let other = VoxelleHome::new(dir.path().join("other"));
+        other.init(DEFAULT_ROOM_ID).expect("other init");
+        let wrong_card = other.recovery_kit().expect("other kit").card;
+        assert!(decrypt_recovery_capsule(&wrong_card, &kit.capsule).is_err());
+    }
+
+    #[tokio::test]
+    async fn fresh_home_recovery_resyncs_history_and_revokes_the_lost_device() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice-lost"));
+        let bob = VoxelleHome::new(dir.path().join("bob-router"));
+        let recovered = VoxelleHome::new(dir.path().join("alice-recovered"));
+        let alice_profile = alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        bob.init(DEFAULT_ROOM_ID).expect("bob init");
+        alice.send_message("before loss", None).expect("message");
+
+        let alice_service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let alice_record = alice_service
+            .online()
+            .peer_record(Some("Alice".to_string()), None)
+            .expect("alice record");
+        let initial_replication = bob
+            .sync_peer(&alice_record, 64)
+            .await
+            .expect("bob stores alice history");
+        assert_eq!(initial_replication.governance.accepted, 1);
+        assert_eq!(initial_replication.room.accepted, 1);
+        alice_service.stop().expect("alice offline");
+
+        let bob_service = bob
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("bob service");
+        let mut bob_router = bob_service
+            .online()
+            .peer_record(Some("Bob recovery peer".to_string()), None)
+            .expect("bob record");
+        bob_router.authority_peer_id = alice_profile.peer_id.clone();
+        alice
+            .import_peer_record(bob_router)
+            .expect("save recovery peer");
+        let kit = alice.recovery_kit().expect("recovery kit");
+        let old_device_id = alice_profile.device_id;
+
+        let report = recovered
+            .recover_from_kit(&kit, 64)
+            .await
+            .expect("recover fresh home");
+        assert_eq!(report.profile.peer_id, alice_profile.peer_id);
+        assert_ne!(report.profile.device_id, old_device_id);
+        assert_eq!(report.peers_reached, 1);
+        assert!(report.events_recovered >= 2);
+        assert_eq!(
+            recovered.read_messages(None).expect("recovered messages")[0].text,
+            "before loss"
+        );
+        bob_service.stop().expect("bob service stop");
+
+        let recovered_service = recovered
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("recovered service");
+        let recovered_record = recovered_service
+            .online()
+            .peer_record(Some("Recovered Alice".to_string()), None)
+            .expect("recovered record");
+        let revoke_replication = bob
+            .sync_peer(&recovered_record, 64)
+            .await
+            .expect("replicate recovery head");
+        assert_eq!(revoke_replication.governance.accepted, 1);
+        recovered_service.stop().expect("recovered service stop");
+
+        alice
+            .send_message("from lost device", None)
+            .expect("partitioned lost device can still sign locally");
+        let lost_service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("lost service");
+        let lost_record = lost_service
+            .online()
+            .peer_record(Some("Lost Alice".to_string()), None)
+            .expect("lost record");
+        let rejected = bob
+            .sync_peer(&lost_record, 64)
+            .await
+            .expect("sync reports rejection");
+        assert_eq!(rejected.room.rejected, 1);
+        assert!(bob
+            .read_messages(None)
+            .expect("bob messages")
+            .iter()
+            .all(|message| message.text != "from lost device"));
+        lost_service.stop().expect("lost service stop");
     }
 
     #[test]

@@ -6,7 +6,7 @@ export type ProfileSummary = { home: string, peer_id: string, device_id: string,
 
 export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, text: string, };
 
-export type PeerRecord = { v: number, label: string | null, default_room: string, endpoint: PeerEndpoint, };
+export type PeerRecord = { v: number, label: string | null, default_room: string, authority_peer_id: string, endpoint: PeerEndpoint, };
 
 export type UiOntologyView = { places: Array<UiPlace>, views: Array<UiView>, commands: Array<UiCommand>, semantic_tokens: Array<SemanticToken>, metrics: Array<UiMetric>, behaviors: Array<UiBehavior>, renderers: Array<UiRenderer>, };
 
