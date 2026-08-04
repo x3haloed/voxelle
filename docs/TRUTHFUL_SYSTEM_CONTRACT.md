@@ -25,7 +25,7 @@ The completed product slice includes:
 
 - immutable principal identity with root rotation, device authorization and
   revocation, a recovery card, optional guardian recovery policy, encrypted
-  recovery capsules, legacy-home migration, and recovery health;
+  recovery capsules, and recovery health;
 - signed space invites with space genesis, permissions, expiry, multiple
   bootstrap peers, automatic service launch, join, synchronization, and clear
   disconnected recovery;
@@ -91,7 +91,7 @@ the named authority, not merely serialized or displayed.
 
 Operational completion requires proportionate evidence for restart,
 idempotence, retry, disconnection, partition, stale endpoint, invalid
-authorization, revocation, bounded input, migration, loss, and recovery paths.
+authorization, revocation, bounded input, loss, and recovery paths.
 
 Lived completion requires the packaged native artifact to accept real keyboard,
 pointer, file, clipboard, camera, and microphone inputs that are in scope and
@@ -108,9 +108,9 @@ New features extend the existing signed-event, accepted-store, sync, snapshot,
 and semantic-command paths. They must not introduce parallel protocol models in
 the frontend, preview fixture, CLI, media layer, or recovery UI.
 
-Compatibility exists only for reading and migrating the current v1 home and
-accepted events. It has one removal condition: an explicit pre-release data
-retirement decision or a verified migration horizon.
+Existing development homes and accepted events are disposable. The new stable
+identity and event formats become the first supported product formats; no
+legacy reader, migrator, or compatibility authority is retained.
 
 ## Embodiment Depth
 
@@ -158,8 +158,8 @@ cover them only after those artifacts or runtimes are actually exercised.
 
 ## Construction And Verification Order
 
-1. Carry one identity through migration, loss, recovery, rotation, revocation,
-   remote synchronization, and visible projection.
+1. Carry one identity through loss, recovery, rotation, revocation, remote
+   synchronization, and visible projection.
 2. Carry one signed invite from a fresh packaged launch through automatic join,
    sync, and a visible accepted message.
 3. Repeat the join with the inviter offline through an ordinary forwarding peer.
@@ -173,8 +173,8 @@ cover them only after those artifacts or runtimes are actually exercised.
 
 ## Current Risk Frontier
 
-The first and most irreversible risk is identity recovery. The current v1 home
+The first and most irreversible risk is identity recovery. The development home
 stores root and device secrets together and binds the principal ID directly to
-the root key. Until a legacy home can migrate and then recover onto a fresh
-device without losing its stable principal or accepted history, feature breadth
-would only create more state with an unproven recovery path.
+the root key. Until a new identity can recover onto a fresh device without
+losing its stable principal or accepted history, feature breadth would only
+create more state with an unproven recovery path.
