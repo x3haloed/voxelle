@@ -51,7 +51,24 @@ pub fn paths_for(root: impl AsRef<Path>) -> Paths {
 }
 
 fn ensure_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("create dir {}", path.display()))
+    fs::create_dir_all(path).with_context(|| format!("create dir {}", path.display()))?;
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("inspect dir {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(anyhow!("{} must be a real directory", path.display()));
+    }
+    Ok(())
+}
+
+fn reject_symlink(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Err(anyhow!("refusing symlink path {}", path.display()))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspect {}", path.display())),
+    }
 }
 
 fn write_json_pretty(path: &Path, value: &Value) -> Result<()> {
@@ -59,6 +76,7 @@ fn write_json_pretty(path: &Path, value: &Value) -> Result<()> {
         path.parent()
             .ok_or_else(|| anyhow!("no parent for {}", path.display()))?,
     )?;
+    reject_symlink(path)?;
     fs::write(path, format!("{}\n", serde_json::to_string_pretty(value)?))
         .with_context(|| format!("write {}", path.display()))?;
     Ok(())
@@ -69,6 +87,7 @@ pub fn append_jsonl(path: &Path, value: &Value) -> Result<()> {
         path.parent()
             .ok_or_else(|| anyhow!("no parent for {}", path.display()))?,
     )?;
+    reject_symlink(path)?;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -80,6 +99,8 @@ pub fn append_jsonl(path: &Path, value: &Value) -> Result<()> {
 
 pub fn scaffold(root: impl AsRef<Path>, force: bool) -> Result<Paths> {
     let p = paths_for(root);
+    reject_symlink(&p.isnad_dir)?;
+    reject_symlink(&p.state_dir)?;
     ensure_dir(&p.state_dir)?;
 
     if !p.ledger.exists() {
@@ -98,6 +119,7 @@ pub fn scaffold(root: impl AsRef<Path>, force: bool) -> Result<Paths> {
     }
 
     if !p.control.exists() {
+        reject_symlink(&p.control)?;
         fs::write(&p.control, "").with_context(|| format!("write {}", p.control.display()))?;
     }
 
@@ -120,6 +142,7 @@ pub fn scaffold(root: impl AsRef<Path>, force: bool) -> Result<Paths> {
     }
 
     if force || !p.board_md.exists() {
+        reject_symlink(&p.board_md)?;
         fs::write(
             &p.board_md,
             "# Board (derived)\n\nRun `cargo run -p voxelle-board -- fold` to regenerate.\n",
@@ -189,11 +212,11 @@ fn set_updated(card: &mut Card, ts: &str, seq: i64) {
 }
 
 fn is_status(s: &str) -> bool {
-    STATUSES.iter().any(|x| *x == s)
+    STATUSES.contains(&s)
 }
 
 fn is_priority(p: &str) -> bool {
-    PRIORITIES.iter().any(|x| *x == p)
+    PRIORITIES.contains(&p)
 }
 
 fn priority_rank(p: &str) -> i64 {
@@ -499,12 +522,42 @@ pub fn render_markdown(board: &Board) -> String {
 
 pub fn write_state(root: impl AsRef<Path>, board: &Board) -> Result<(PathBuf, PathBuf)> {
     let p = paths_for(root);
+    reject_symlink(&p.isnad_dir)?;
+    reject_symlink(&p.state_dir)?;
     ensure_dir(&p.state_dir)?;
 
     let json = serde_json::to_value(board)?;
     write_json_pretty(&p.board_json, &json)?;
+    reject_symlink(&p.board_md)?;
     fs::write(&p.board_md, render_markdown(board)).with_context(|| format!("write {}", p.board_md.display()))?;
     Ok((p.board_json, p.board_md))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+    use tempfile::tempdir;
+
+    #[test]
+    fn scaffold_refuses_symlinked_isnad_workspace() {
+        let dir = tempdir().expect("tempdir");
+        let outside = tempdir().expect("outside");
+        symlink(outside.path(), dir.path().join(".isnad")).expect("symlink");
+        assert!(scaffold(dir.path(), false).is_err());
+        assert!(!outside.path().join("ledger.jsonl").exists());
+    }
+
+    #[test]
+    fn append_refuses_symlinked_ledger() {
+        let dir = tempdir().expect("tempdir");
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "preserve\n").expect("victim");
+        let ledger = dir.path().join("ledger.jsonl");
+        symlink(&victim, &ledger).expect("symlink");
+        assert!(append_jsonl(&ledger, &serde_json::json!({"type":"snapshot"})).is_err());
+        assert_eq!(fs::read_to_string(victim).expect("victim unchanged"), "preserve\n");
+    }
 }
 
 pub fn read_jsonl_values(path: &Path) -> Result<Vec<Value>> {

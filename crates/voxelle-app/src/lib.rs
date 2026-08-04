@@ -1013,8 +1013,7 @@ impl VoxelleHome {
     }
 
     pub fn init(&self, default_room: impl Into<String>) -> Result<ProfileSummary> {
-        fs::create_dir_all(&self.root)
-            .with_context(|| format!("create {}", self.root.display()))?;
+        ensure_private_dir(&self.root)?;
         let identity = self.load_or_create_identity()?;
         self.load_or_create_certificate()?;
 
@@ -2496,8 +2495,7 @@ impl VoxelleHome {
             );
         }
 
-        fs::create_dir_all(&self.root)
-            .with_context(|| format!("create {}", self.root.display()))?;
+        ensure_private_dir(&self.root)?;
         write_identity_vault(&self.path("identity.json"), &identity)?;
         self.put_local_state(
             KNOWN_PEERS_STATE,
@@ -2673,8 +2671,7 @@ impl VoxelleHome {
         validate_space_invite_at(&invite.space, &invite.invite_event, now_ms())?;
         let peers = invite.bootstrap_peers()?;
 
-        fs::create_dir_all(&self.root)
-            .with_context(|| format!("create {}", self.root.display()))?;
+        ensure_private_dir(&self.root)?;
         let identity = PeerIdentity::generate_at(now_ms())?;
         write_identity_vault(&self.path("identity.json"), &identity)?;
         self.load_or_create_certificate()?;
@@ -2942,8 +2939,7 @@ impl VoxelleHome {
     }
 
     fn put_local_state<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
-        fs::create_dir_all(&self.root)
-            .with_context(|| format!("create {}", self.root.display()))?;
+        ensure_private_dir(&self.root)?;
         self.open_store()?.put_local_state(key, value)
     }
 
@@ -2966,7 +2962,7 @@ impl VoxelleHome {
             return self.load_certificate();
         }
         let certificate = QuicCertificate::generate()?;
-        write_json(&self.path("quic-cert.json"), &certificate)?;
+        write_secret_json(&self.path("quic-cert.json"), &certificate)?;
         Ok(certificate)
     }
 
@@ -5406,7 +5402,18 @@ fn file_identity_vault_key(path: &Path, create: bool) -> Result<[u8; 32]> {
     }
     let mut key = [0_u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut key);
-    fs::write(&key_path, key).with_context(|| format!("write {}", key_path.display()))?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&key_path)
+        .with_context(|| format!("create {}", key_path.display()))?;
+    file.write_all(&key)
+        .with_context(|| format!("write {}", key_path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -5428,19 +5435,20 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
 }
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
-    fs::write(path, serde_json::to_string_pretty(value)? + "\n")
-        .with_context(|| format!("write {}", path.display()))
+    write_new_private_json(path, value)
 }
 
 fn write_secret_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
+    write_new_private_json(path, value)
+}
+
+fn write_new_private_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("{} has no parent directory", path.display()))?;
+    ensure_real_dir(parent)?;
     let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -5456,6 +5464,36 @@ fn write_secret_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         file.set_permissions(fs::Permissions::from_mode(0o600))
             .with_context(|| format!("protect {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn ensure_private_dir(path: &Path) -> Result<()> {
+    ensure_real_dir(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("protect {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn ensure_real_dir(path: &Path) -> Result<()> {
+    let existed = path.exists();
+    fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("inspect {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        anyhow::bail!("{} must be a real directory", path.display());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if !existed {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("protect {}", path.display()))?;
+        }
     }
     Ok(())
 }
@@ -5482,6 +5520,47 @@ mod tests {
     use std::net::{IpAddr, Ipv6Addr};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
+
+    #[cfg(unix)]
+    #[test]
+    fn private_json_creation_is_owner_only_and_refuses_existing_targets() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = tempdir().expect("tempdir");
+        let private_dir = dir.path().join("private");
+        fs::create_dir(&private_dir).expect("private dir");
+        fs::set_permissions(&private_dir, fs::Permissions::from_mode(0o755))
+            .expect("make permissive");
+        let secret = private_dir.join("recovery.voxrecover");
+        write_secret_json(&secret, &serde_json::json!({"secret": true})).expect("write secret");
+        assert_eq!(
+            fs::metadata(&private_dir)
+                .expect("dir metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755
+        );
+        assert_eq!(
+            fs::metadata(&secret)
+                .expect("file metadata")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(write_secret_json(&secret, &serde_json::json!({"secret": false})).is_err());
+
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "preserve").expect("victim");
+        let link = private_dir.join("linked.voxrecover");
+        symlink(&victim, &link).expect("symlink");
+        assert!(write_secret_json(&link, &serde_json::json!({"secret": true})).is_err());
+        assert_eq!(
+            fs::read_to_string(victim).expect("victim unchanged"),
+            "preserve"
+        );
+    }
 
     #[test]
     fn home_root_resolution_preserves_override_precedence_and_portable_default() {
@@ -5519,6 +5598,26 @@ mod tests {
         let profile = home.init(DEFAULT_ROOM_ID).expect("init");
         assert!(profile.default_room.ends_with(":channel:general"));
         assert_eq!(profile.peer_id, profile.authority_peer_id);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&home.root)
+                    .expect("home metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(home.path("quic-cert.json"))
+                    .expect("certificate metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
 
         let event = home
             .send_message("hello from app layer", None)
