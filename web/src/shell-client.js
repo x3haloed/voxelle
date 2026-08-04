@@ -22,6 +22,11 @@ class TauriShellClient {
     this.mode = mode;
   }
 
+  async onSnapshotInvalidated(callback) {
+    const listen = tauriListen();
+    return listen ? listen("voxelle://snapshot-invalidated", callback) : () => {};
+  }
+
   /**
    * @param {string} command
    * @param {unknown} [payload]
@@ -56,6 +61,10 @@ class PreviewShellClient {
     }
     return this.current;
   }
+
+  async onSnapshotInvalidated() {
+    return () => {};
+  }
 }
 
 function tauriInvoke() {
@@ -67,4 +76,11 @@ function tauriInvoke() {
   }
   const internalInvoke = maybeWindow.__TAURI_INTERNALS__?.invoke;
   return typeof internalInvoke === "function" ? internalInvoke : null;
+}
+
+function tauriListen() {
+  const maybeWindow =
+    /** @type {Window & { __TAURI__?: { event?: { listen?: unknown } } }} */ (window);
+  const listen = maybeWindow.__TAURI__?.event?.listen;
+  return typeof listen === "function" ? listen : null;
 }

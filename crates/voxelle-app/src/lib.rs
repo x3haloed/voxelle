@@ -11,6 +11,7 @@ use std::io::Write;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
@@ -652,7 +653,6 @@ pub struct VoxelleService {
     thread: Option<thread::JoinHandle<()>>,
 }
 
-#[derive(Debug)]
 pub struct VoxelleCommandHost {
     home: VoxelleHome,
     service: Option<VoxelleService>,
@@ -661,6 +661,7 @@ pub struct VoxelleCommandHost {
     last_space_invite_json: Option<String>,
     selected_room_id: Option<String>,
     search_results: Vec<SearchResultView>,
+    snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2816,7 +2817,16 @@ impl VoxelleHome {
         bind: SocketAddr,
         advertise: Option<SocketAddr>,
     ) -> Result<VoxelleService> {
-        VoxelleService::start(self.clone(), bind, advertise)
+        VoxelleService::start(self.clone(), bind, advertise, Arc::new(|| {}))
+    }
+
+    fn start_service_with_notifier(
+        &self,
+        bind: SocketAddr,
+        advertise: Option<SocketAddr>,
+        snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<VoxelleService> {
+        VoxelleService::start(self.clone(), bind, advertise, snapshot_invalidated)
     }
 
     pub async fn diagnose_peer(&self, peer: &PeerRecord) -> Result<PeerReachabilityReport> {
@@ -3252,6 +3262,13 @@ fn string_event_body(event: &EventV1, field: &str) -> String {
 
 impl VoxelleCommandHost {
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        Self::new_with_notifier(root, Arc::new(|| {}))
+    }
+
+    pub fn new_with_notifier(
+        root: impl Into<PathBuf>,
+        snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
         Self {
             home: VoxelleHome::new(root),
             service: None,
@@ -3260,6 +3277,7 @@ impl VoxelleCommandHost {
             last_space_invite_json: None,
             selected_room_id: None,
             search_results: Vec::new(),
+            snapshot_invalidated,
         }
     }
 
@@ -3286,7 +3304,11 @@ impl VoxelleCommandHost {
         let bind = request
             .bind
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0));
-        let service = self.home.start_service(bind, request.advertise)?;
+        let service = self.home.start_service_with_notifier(
+            bind,
+            request.advertise,
+            self.snapshot_invalidated.clone(),
+        )?;
         let addr = service.online().endpoint.addr;
         self.service = Some(service);
         self.push_activity(
@@ -3345,10 +3367,11 @@ impl VoxelleCommandHost {
             ),
         );
         if self.service.is_none() {
-            self.service = Some(
-                self.home
-                    .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)?,
-            );
+            self.service = Some(self.home.start_service_with_notifier(
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
+                None,
+                self.snapshot_invalidated.clone(),
+            )?);
             self.push_activity(ServiceActivityLevel::Info, "service started after join");
         }
         self.snapshot()
@@ -3419,10 +3442,11 @@ impl VoxelleCommandHost {
     pub async fn join_call(&mut self, mut request: CallJoinRequest) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         if self.service.is_none() {
-            self.service = Some(
-                self.home
-                    .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)?,
-            );
+            self.service = Some(self.home.start_service_with_notifier(
+                SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
+                None,
+                self.snapshot_invalidated.clone(),
+            )?);
             self.push_activity(ServiceActivityLevel::Info, "service started for room call");
         }
         self.home.join_call(&request)?;
@@ -4016,6 +4040,7 @@ impl VoxelleService {
         home: VoxelleHome,
         bind: SocketAddr,
         advertise: Option<SocketAddr>,
+        snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self> {
         let server = PeerServer::start(home, bind, advertise)?;
         let online = server.online.clone();
@@ -4023,7 +4048,7 @@ impl VoxelleService {
         let (event_tx, events) = mpsc::channel();
         let thread = thread::Builder::new()
             .name("voxelle-service".to_string())
-            .spawn(move || run_service_thread(server, stop_rx, event_tx))
+            .spawn(move || run_service_thread(server, stop_rx, event_tx, snapshot_invalidated))
             .context("spawn voxelle service thread")?;
 
         Ok(Self {
@@ -4072,6 +4097,7 @@ fn run_service_thread(
     server: PeerServer,
     stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::Sender<VoxelleServiceEvent>,
+    snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
 ) {
     let Ok(task_runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -4082,13 +4108,19 @@ fn run_service_thread(
         ));
         return;
     };
-    task_runtime.block_on(run_service_loop(server, stop_rx, event_tx));
+    task_runtime.block_on(run_service_loop(
+        server,
+        stop_rx,
+        event_tx,
+        snapshot_invalidated,
+    ));
 }
 
 async fn run_service_loop(
     server: PeerServer,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::Sender<VoxelleServiceEvent>,
+    snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
 ) {
     loop {
         tokio::select! {
@@ -4097,9 +4129,11 @@ async fn run_service_loop(
                 match result {
                     Ok(served) => {
                         let _ = event_tx.send(VoxelleServiceEvent::Served(Box::new(served)));
+                        snapshot_invalidated();
                     }
                     Err(error) => {
                         let _ = event_tx.send(VoxelleServiceEvent::Failed(format!("{error:#}")));
+                        snapshot_invalidated();
                         break;
                     }
                 }
@@ -4108,6 +4142,7 @@ async fn run_service_loop(
     }
     server.stop().await;
     let _ = event_tx.send(VoxelleServiceEvent::Stopped);
+    snapshot_invalidated();
 }
 
 fn default_ui_ontology(preferences: UiPreferences) -> UiOntologyView {
@@ -5445,6 +5480,7 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv6Addr};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::tempdir;
 
     #[test]
@@ -6162,7 +6198,14 @@ mod tests {
     #[tokio::test]
     async fn command_host_drives_tauri_style_network_workflow() {
         let dir = tempdir().expect("tempdir");
-        let mut alice = VoxelleCommandHost::new(dir.path().join("alice"));
+        let invalidations = Arc::new(AtomicUsize::new(0));
+        let observed_invalidations = invalidations.clone();
+        let mut alice = VoxelleCommandHost::new_with_notifier(
+            dir.path().join("alice"),
+            Arc::new(move || {
+                observed_invalidations.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
         let mut bob = VoxelleCommandHost::new(dir.path().join("bob"));
 
         alice
@@ -6235,6 +6278,7 @@ mod tests {
         );
 
         let alice_after_serving = alice.snapshot().expect("alice snapshot");
+        assert!(invalidations.load(Ordering::SeqCst) > 0);
         assert!(alice_after_serving
             .service_activity
             .iter()

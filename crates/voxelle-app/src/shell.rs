@@ -1,9 +1,9 @@
 use crate::{ShellSnapshotView, VoxelleCommandHost};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
-#[derive(Debug)]
 pub struct ShellState {
     host: Mutex<VoxelleCommandHost>,
 }
@@ -12,6 +12,18 @@ impl ShellState {
     pub fn new(home_root: impl Into<PathBuf>) -> Self {
         Self {
             host: Mutex::new(VoxelleCommandHost::new(home_root)),
+        }
+    }
+
+    pub fn new_with_notifier(
+        home_root: impl Into<PathBuf>,
+        snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
+    ) -> Self {
+        Self {
+            host: Mutex::new(VoxelleCommandHost::new_with_notifier(
+                home_root,
+                snapshot_invalidated,
+            )),
         }
     }
 
