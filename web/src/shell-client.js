@@ -2,8 +2,6 @@ import { fixtureSnapshot } from "./fixture.js";
 
 /**
  * @typedef {import("./shell-contract").ShellSnapshotView} ShellSnapshotView
- * @typedef {import("./shell-contract").SendMessageRequest} SendMessageRequest
- * @typedef {import("./shell-contract").SetUiPreferenceRequest} SetUiPreferenceRequest
  */
 
 export function createShellClient() {
@@ -11,7 +9,7 @@ export function createShellClient() {
   if (invoke) {
     return new TauriShellClient(invoke, "tauri");
   }
-  return new FixtureShellClient(structuredClone(fixtureSnapshot), "fixture");
+  return new PreviewShellClient(structuredClone(fixtureSnapshot), "preview");
 }
 
 class TauriShellClient {
@@ -36,7 +34,7 @@ class TauriShellClient {
   }
 }
 
-class FixtureShellClient {
+class PreviewShellClient {
   /**
    * @param {ShellSnapshotView} snapshot
    * @param {string} mode
@@ -48,94 +46,15 @@ class FixtureShellClient {
 
   /**
    * @param {string} command
-   * @param {unknown} [payload]
    * @returns {Promise<ShellSnapshotView>}
    */
-  async execute(command, payload = {}) {
-    switch (command) {
-      case "shell.refresh":
-        break;
-      case "home.init":
-        this.appendActivity("fixture home.init");
-        break;
-      case "runtime.goOnline":
-        this.current.home && (this.current.home.runtime.state = "online");
-        this.setHealth(
-          "service",
-          "working",
-          "Resident service is online in fixture mode.",
-        );
-        this.appendActivity("fixture runtime.goOnline");
-        break;
-      case "runtime.goOffline":
-        this.current.home && (this.current.home.runtime.state = "offline");
-        this.setHealth(
-          "service",
-          "needs_attention",
-          "Go online to accept peer diagnostics and sync requests.",
-        );
-        this.appendActivity("fixture runtime.goOffline");
-        break;
-      case "message.send": {
-        const request = /** @type {SendMessageRequest} */ (payload);
-        this.current.home?.room.messages.push({
-          event_id: `fixture_${Date.now()}`,
-          created_ms: Date.now(),
-          author_peer_id: this.current.home.profile.peer_id,
-          text: request.text,
-        });
-        this.appendActivity("fixture message.send");
-        break;
-      }
-      case "peer.import":
-        this.setHealth("peers", "working", "1 known peer record(s).");
-        this.appendActivity("fixture peer.import");
-        break;
-      case "peer.diagnose":
-        this.appendActivity("fixture diagnostic reached peer");
-        break;
-      case "peer.sync":
-        this.appendActivity("fixture sync completed");
-        break;
-      case "ui.preference.set": {
-        const request = /** @type {SetUiPreferenceRequest} */ (payload);
-        const { semantic_tokens: tokens, metrics, behaviors } = this.current.ui_ontology;
-        const collection = request.kind === "semantic_token"
-          ? tokens
-          : request.kind === "metric"
-            ? metrics
-            : behaviors;
-        const preference = collection.find((item) => item.id === request.id);
-        if (!preference) {
-          throw new Error(`unknown UI preference ${request.id}`);
-        }
-        preference.current_value = request.value;
-        this.appendActivity(`updated UI preference ${request.id}`);
-        break;
-      }
-      default:
-        throw new Error(`unknown shell command ${command}`);
+  async execute(command) {
+    if (command !== "shell.refresh") {
+      throw new Error(
+        `Preview only; launch the desktop app to run ${command}.`,
+      );
     }
     return this.current;
-  }
-
-  /**
-   * @param {string} id
-   * @param {import("./shell-contract").NetworkHealthStatus} status
-   * @param {string} summary
-   */
-  setHealth(id, status, summary) {
-    const row = this.current.network_health.rows.find((item) => item.id === id);
-    if (row) {
-      row.status = status;
-      row.summary = summary;
-    }
-  }
-
-  /** @param {string} summary */
-  appendActivity(summary) {
-    const id = this.current.service_activity.at(-1)?.id ?? 0;
-    this.current.service_activity.push({ id: id + 1, level: "info", summary });
   }
 }
 

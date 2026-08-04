@@ -303,7 +303,9 @@ The local web UI now consumes the Rust-owned token, metric, and behavior
 registries. Its Customize surface sends one typed preference command through
 the local bridge; Rust validates and persists the change, and the returned
 snapshot changes the rendered interface. The standalone browser fixture is
-generated from the same Rust defaults.
+generated from the same Rust defaults. It is a read-only visual preview: it
+does not simulate home, service, messaging, peer, sync, or persistence
+behavior. Those commands require the real local bridge.
 
 Places and views now name, order, and compose the visible workbench. Place and
 view editing, command-palette editing, and renderer selection remain planned.

@@ -87,7 +87,11 @@ function header(snapshot) {
 
 function shellMode() {
   const mode = shell.mode ?? "unknown";
-  return element("div", `shell-mode ${mode}`, mode === "tauri" ? "Tauri" : "Fixture");
+  return element(
+    "div",
+    `shell-mode ${mode}`,
+    mode === "tauri" ? "Tauri" : "Preview only · no peer service",
+  );
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -642,6 +646,11 @@ async function runCommand(command, payload) {
         uiState.messageDraft = "";
         return;
       case "invite.copy":
+        if (shell.mode === "preview") {
+          throw new Error(
+            "Preview only; launch the desktop app to copy a usable invite.",
+          );
+        }
         await navigator.clipboard?.writeText(
           currentSnapshot.home?.invite?.peer_record_json ?? "",
         );
