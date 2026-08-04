@@ -40,8 +40,7 @@ pub fn sync_room_once(
     limits: SyncLimits,
 ) -> Result<SyncStats> {
     let known_heads = dest.room_heads(room_id)?;
-    let (offered, truncated) =
-        missing_events_for_heads(source, room_id, &known_heads, limits)?;
+    let (offered, truncated) = missing_events_for_heads(source, room_id, &known_heads, limits)?;
 
     let mut stats = SyncStats {
         offered: offered.len(),

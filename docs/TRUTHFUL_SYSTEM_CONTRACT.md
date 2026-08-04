@@ -226,6 +226,17 @@ history; events more than five minutes in the future are rejected. Invite
 expiry therefore depends on signed participant clocks and is not claimed as a
 partition-proof lease.
 
+Room anti-entropy now exchanges the bounded DAG heads of the requested room
+instead of serializing every known event ID or offering an arbitrary prefix of
+local history. Each authenticated QUIC exchange computes the causally missing
+suffix behind the remote heads, transfers it oldest-first under explicit head
+and event limits, then repeats the same authorized path in the reciprocal
+direction. A divergent two-peer test converges both stores across multiple
+small batches, while a shared-head test sends no duplicate accepted facts.
+Membership and private-room authorization are checked before either side
+accepts a reciprocal push; the event acceptance authority remains the only
+durable admission path.
+
 The unsigned install path has also crossed a native artifact gate: Tauri emits
 an ad-hoc-signed universal macOS DMG (arm64 plus x86_64) and is configured for a
 Windows NSIS artifact, with SHA-256 manifests and narrow per-app Gatekeeper and
@@ -286,11 +297,38 @@ permission-denial truthfulness. This verification machine has no physical
 camera or microphone, so physical-device capture is not claimed as lived local
 evidence.
 
-The final local fixed-point pass is green: full workspace tests, strict lint for
-the changed authorities, generated-contract equality, macOS Intel compilation,
-ad-hoc-signed bundle inspection, packaged native onboarding and palette
-exercise, and resource inspection all pass. The app bundle is 15 MiB on the
-verified arm64 host. Windows compilation reaches native dependencies, but a
-Windows SDK and lived runner are not present on this Mac. Windows first launch
-and physical media devices therefore remain the external gates already named
-in the evidence horizon, not locally completed claims.
+The final local fixed-point pass is green for the changed system authorities:
+71 Rust tests, 9 browser-shell behavior tests, strict lint, generated-contract
+equality, a universal macOS package build, ad-hoc signature and checksum
+inspection, packaged native initialization, accepted message projection,
+layout and message persistence across restart, IPv6 QUIC startup, and retained
+artifact inspection all pass. The universal app contains both arm64 and
+x86_64 executables, occupies 31 MiB unpacked, and ships in an 11 MiB DMG. The
+initialized native test home occupied 84 KiB after one message and one saved
+layout change; its application state consisted of the encrypted identity vault,
+the separate QUIC credential, SQLite, and SQLite crash-safety sidecars.
+
+The locally natural compression point is therefore the current authority
+topology, not the smallest imaginable byte count. The remaining separations
+carry named product meaning:
+
+- collapsing the encrypted principal vault into the QUIC credential would
+  merge identity-root, recovery, device, and transport capabilities;
+- collapsing the optional headless inhabitant into the desktop would remove
+  its independent lifecycle, while making it a mandatory daemon would violate
+  the one-process ordinary-use envelope;
+- moving call signaling out of retained signed events or pruning it would
+  revise the current media acceptance, recovery, and full-retention contract;
+- replacing the WebView or SQLite with platform-specific UI or a specialized
+  store is beyond the admitted embodiment depth; and
+- adding another event encoding or compressed store lacks measured evidence of
+  a net resource win at the current 2--50-person envelope and would add a
+  parallel representation before it removes one.
+
+Those are bounded revision or evidence questions, not unfinished local
+collapses. Workspace-wide formatting and lint are not claimed as green because
+the separate provenance-board crates have existing rustfmt drift and two new
+`manual_contains` warnings under Rust 1.96; the changed Voxelle authority crates
+are formatted and strict-lint clean. Windows first launch, non-loopback field
+reachability, and physical media devices remain the external gates already
+named in the evidence horizon, not locally completed claims.

@@ -306,9 +306,13 @@ mod tests {
             .expect("insert join");
 
         let lost_device_event = message(&original, 1_300, vec![]);
-        let accepted_before_recovery =
-            accept_event(&lost_device_event, &[join.clone()], &context, 1_300)
-                .expect("old device was valid before recovery");
+        let accepted_before_recovery = accept_event(
+            &lost_device_event,
+            std::slice::from_ref(&join),
+            &context,
+            1_300,
+        )
+        .expect("old device was valid before recovery");
 
         let recovered = PeerIdentity::recover(&original.recovery_card(), &original.proof, 1_100)
             .expect("recover");
@@ -342,8 +346,8 @@ mod tests {
             store
                 .insert_accepted_event(accepted_join, 1_000)
                 .expect("insert join");
-            let accepted_msg =
-                accept_event(&msg, &[join.clone()], &context, 1_100).expect("msg accepted");
+            let accepted_msg = accept_event(&msg, std::slice::from_ref(&join), &context, 1_100)
+                .expect("msg accepted");
             store
                 .insert_accepted_event(accepted_msg, 1_100)
                 .expect("insert msg");
@@ -382,8 +386,8 @@ mod tests {
         store
             .insert_accepted_event(accepted_join, 1_000)
             .expect("insert join");
-        let accepted_root =
-            accept_event(&root, &[join.clone()], &context, 1_100).expect("root accepted");
+        let accepted_root = accept_event(&root, std::slice::from_ref(&join), &context, 1_100)
+            .expect("root accepted");
         store
             .insert_accepted_event(accepted_root, 1_100)
             .expect("insert root");

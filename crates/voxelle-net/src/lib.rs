@@ -14,9 +14,7 @@ use voxelle_core::{
     EventV1, PeerIdentity, RoomContext,
 };
 use voxelle_store::Store;
-use voxelle_sync::{
-    accept_offered_events_once, missing_events_for_heads, SyncLimits, SyncStats,
-};
+use voxelle_sync::{accept_offered_events_once, missing_events_for_heads, SyncLimits, SyncStats};
 
 pub const VOXELLE_ALPN: &[u8] = b"voxelle-ipv6/0";
 const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
@@ -390,22 +388,11 @@ impl QuicNode {
             .context("accept room sync stream")?;
 
         let request = recv_json(recv, MAX_SYNC_BYTES).await?;
-        self.serve_room_sync_request(
-            source,
-            context,
-            now_ms,
-            authenticated,
-            send,
-            request,
-        )
-        .await
+        self.serve_room_sync_request(source, context, now_ms, authenticated, send, request)
+            .await
     }
 
-    pub async fn sync_room_once(
-        &self,
-        dest: &mut Store,
-        sync: RoomSync<'_>,
-    ) -> Result<SyncStats> {
+    pub async fn sync_room_once(&self, dest: &mut Store, sync: RoomSync<'_>) -> Result<SyncStats> {
         validate_sync_limits(sync.limits)?;
         sync.remote.validate()?;
         let local_heads = dest.room_heads(sync.room_id)?;
@@ -463,12 +450,8 @@ impl QuicNode {
 
         let mut stats =
             accept_offered_events_once(dest, &response.events, sync.context, sync.now_ms)?;
-        let (push_events, push_truncated) = missing_events_for_heads(
-            dest,
-            sync.room_id,
-            &response.heads,
-            sync.limits,
-        )?;
+        let (push_events, push_truncated) =
+            missing_events_for_heads(dest, sync.room_id, &response.heads, sync.limits)?;
         let (mut push_send, push_recv) = authenticated
             .connection
             .open_bi()
@@ -537,14 +520,7 @@ impl QuicNode {
             let sync: RoomSyncRequestV1 =
                 serde_json::from_value(request).context("parse room sync request")?;
             let served = self
-                .serve_room_sync_request(
-                    source,
-                    context,
-                    now_ms,
-                    authenticated,
-                    send,
-                    sync,
-                )
+                .serve_room_sync_request(source, context, now_ms, authenticated, send, sync)
                 .await?;
             return Ok(ServedPeerRequest::RoomSync(served));
         }
@@ -620,13 +596,11 @@ impl QuicNode {
         .await
         .context("send room sync response")?;
 
-        let (mut ack_send, push_recv) = tokio::time::timeout(
-            SYNC_CONNECT_TIMEOUT,
-            authenticated.connection.accept_bi(),
-        )
-        .await
-        .context("room sync push timed out")?
-        .context("accept room sync push stream")?;
+        let (mut ack_send, push_recv) =
+            tokio::time::timeout(SYNC_CONNECT_TIMEOUT, authenticated.connection.accept_bi())
+                .await
+                .context("room sync push timed out")?
+                .context("accept room sync push stream")?;
         let push: RoomSyncPushV1 = recv_json(push_recv, MAX_SYNC_BYTES).await?;
         if push.v != 1 || push.room_id != request.room_id {
             bail!("invalid room sync push");
@@ -771,10 +745,7 @@ fn validate_sync_limits(limits: SyncLimits) -> Result<()> {
         bail!("room sync max_events must be positive");
     }
     if limits.max_events_per_batch > MAX_SYNC_EVENTS_PER_BATCH {
-        bail!(
-            "room sync max_events exceeds {}",
-            MAX_SYNC_EVENTS_PER_BATCH
-        );
+        bail!("room sync max_events exceeds {}", MAX_SYNC_EVENTS_PER_BATCH);
     }
     Ok(())
 }
