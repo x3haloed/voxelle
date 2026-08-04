@@ -2863,6 +2863,14 @@ impl VoxelleHome {
 
     pub async fn sync_peer(&self, peer: &PeerRecord, max_events: usize) -> Result<PeerSyncReport> {
         peer.validate()?;
+        let config = self.load_config()?;
+        if peer.space_id != config.space.space_id
+            || peer.governance_room_id != config.space.governance_room_id
+            || peer.default_room != config.space.default_room_id
+            || peer.authority_peer_id != config.space.authority_peer_id
+        {
+            anyhow::bail!("peer record does not match the active home authority");
+        }
         if max_events == 0 {
             anyhow::bail!("max_events must be positive");
         }
@@ -6697,7 +6705,7 @@ mod tests {
             .sync_peer(&alice_record, 64)
             .await
             .expect_err("an endpoint record is not a membership capability");
-        assert!(sync_error.to_string().contains("not a member"));
+        assert!(sync_error.to_string().contains("active home authority"));
         service.stop().expect("stop service");
     }
 
@@ -6766,6 +6774,7 @@ mod tests {
             .connect(
                 endpoint.addr,
                 endpoint.certificate_der().expect("server cert"),
+                &endpoint.peer_id,
                 &endpoint.device_id,
             )
             .await

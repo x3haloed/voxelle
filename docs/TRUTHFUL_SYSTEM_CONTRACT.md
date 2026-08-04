@@ -203,6 +203,14 @@ lost home through an ordinary retaining peer into a fresh home, propagates the
 new head back, and proves that the retaining peer rejects a newly signed event
 from the lost device.
 
+Transport handshakes now carry the bounded identity proof that authorizes the
+claimed device. The receiver derives the principal and current device key from
+that proof, while the dialer binds the result to the expected peer record and
+transport certificate. Room synchronization derives authority from the active
+home's accepted genesis and governance state, including device revocation and
+private membership; imported topology remains reachability data. SQLite commits
+an accepted identity event and its monotonic identity head in one transaction.
+
 Long-lived identity secrets are authenticated ciphertext. Release builds use
 macOS Keychain or Windows Credential Manager for the independent unlock key;
 unit tests and explicitly opted-in debug CLI tests use a permission-restricted

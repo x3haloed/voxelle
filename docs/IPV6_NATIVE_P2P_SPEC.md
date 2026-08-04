@@ -235,6 +235,14 @@ A connection handshake must establish:
 5. Known peer identity bindings for the device.
 6. Shared room intersection, if any.
 
+The signed handshake carries a bounded, complete identity proof for the claimed
+principal. A receiver derives the current principal and device authorization
+from that proof, verifies that the handshake device key is the currently
+authorized key, and rejects expired authorization. Dialers also bind the
+response to the principal and device named by the selected peer record and to
+the authenticated transport certificate. Endpoint addresses and peer-record
+labels provide reachability only; they do not decide identity.
+
 The handshake must not require a central authority.
 
 ## 6. Discovery

@@ -1705,6 +1705,7 @@ fn validate_governance_event_body(
             let epoch =
                 int_body_field(event, "key_epoch").ok_or_else(|| invalid("key_epoch missing"))?;
             if channel.visibility != ChannelVisibility::Private
+                || !channel.private_members.contains(&event.author_peer_id)
                 || epoch <= 0
                 || epoch as u64 <= channel.key_epoch
                 || !valid_key_packages(event, &channel.private_members)

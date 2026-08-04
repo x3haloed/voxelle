@@ -10,14 +10,14 @@ use std::sync::Once;
 use std::time::Duration;
 use ts_rs::TS;
 use voxelle_core::{
-    channel_allows_peer, derive_governance_state, id_from_spki_der, verify_signature_from_spki_b64,
-    EventV1, PeerIdentity, RoomContext,
+    channel_allows_peer, derive_governance_state, derive_identity_state, id_from_spki_der,
+    verify_signature_from_spki_b64, EventV1, IdentityProofV1, PeerIdentity, RoomContext,
 };
 use voxelle_store::Store;
 use voxelle_sync::{accept_offered_events_once, missing_events_for_heads, SyncLimits, SyncStats};
 
 pub const VOXELLE_ALPN: &[u8] = b"voxelle-ipv6/0";
-const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
+const MAX_HANDSHAKE_BYTES: usize = 384 * 1024;
 const MAX_SYNC_BYTES: usize = 512 * 1024;
 const MAX_SYNC_EVENTS_PER_BATCH: usize = 4096;
 const MAX_SYNC_HEADS: usize = 256;
@@ -101,6 +101,7 @@ struct HandshakeV1 {
     peer_id: String,
     device_id: String,
     device_pub: String,
+    identity_proof: IdentityProofV1,
     quic_cert_fingerprint: String,
     sig: String,
 }
@@ -340,6 +341,7 @@ impl QuicNode {
         &self,
         remote_addr: SocketAddr,
         remote_cert_der: CertificateDer<'static>,
+        expected_remote_peer_id: &str,
         expected_remote_device_id: &str,
     ) -> Result<AuthenticatedConnection> {
         if !remote_addr.is_ipv6() {
@@ -376,6 +378,13 @@ impl QuicNode {
 
         let server_hello: HandshakeV1 = recv_handshake(recv).await?;
         let remote = validate_handshake(&server_hello, HandshakeRole::Server)?;
+        if remote.peer_id != expected_remote_peer_id {
+            bail!(
+                "remote principal id mismatch: expected {}, got {}",
+                expected_remote_peer_id,
+                remote.peer_id
+            );
+        }
         if remote.device_id != expected_remote_device_id {
             bail!(
                 "remote device id mismatch: expected {}, got {}",
@@ -428,6 +437,7 @@ impl QuicNode {
             self.connect(
                 sync.remote.addr,
                 sync.remote.certificate_der()?,
+                &sync.remote.peer_id,
                 &sync.remote.device_id,
             ),
         )
@@ -741,6 +751,7 @@ impl QuicNode {
             self.connect(
                 endpoint.addr,
                 endpoint.certificate_der()?,
+                &endpoint.peer_id,
                 &endpoint.device_id,
             ),
         )
@@ -832,6 +843,12 @@ fn room_sync_denial(
         return Ok(Some(
             "remote principal is not a member of this space".to_string(),
         ));
+    }
+    if state
+        .revoked_devices
+        .contains(&(remote.peer_id.clone(), remote.device_id.clone()))
+    {
+        return Ok(Some("remote device is revoked in this space".to_string()));
     }
     let Some(channel) = state.channels.get(room_id) else {
         return Ok(Some("requested channel does not exist".to_string()));
@@ -995,6 +1012,7 @@ fn make_handshake(
         peer_id: identity.peer_id.clone(),
         device_id: identity.device.id.clone(),
         device_pub: identity.device.spki_b64.clone(),
+        identity_proof: identity.proof.clone(),
         quic_cert_fingerprint: quic_cert_fingerprint.to_string(),
         sig: String::new(),
     };
@@ -1023,6 +1041,21 @@ fn validate_handshake(
     if device_id != hello.device_id {
         bail!("handshake device id does not match device public key");
     }
+    let identity_state =
+        derive_identity_state(&hello.identity_proof).context("derive handshake identity proof")?;
+    if identity_state.peer_id != hello.peer_id {
+        bail!("handshake principal id does not match identity proof");
+    }
+    let authorization = identity_state
+        .devices
+        .get(&hello.device_id)
+        .ok_or_else(|| anyhow!("handshake device is not authorized by the principal"))?;
+    if authorization.device_pub != hello.device_pub {
+        bail!("handshake device key does not match principal authorization");
+    }
+    if authorization.expires_ms < unix_ms() {
+        bail!("handshake device authorization is expired");
+    }
 
     verify_signature_from_spki_b64(
         &hello.device_pub,
@@ -1037,6 +1070,13 @@ fn validate_handshake(
         device_pub: hello.device_pub.clone(),
         quic_cert_fingerprint: hello.quic_cert_fingerprint.clone(),
     })
+}
+
+fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64
 }
 
 fn handshake_signing_bytes(hello: &HandshakeV1) -> Result<Vec<u8>> {
@@ -1258,6 +1298,7 @@ mod tests {
     async fn ipv6_loopback_handshake_authenticates_remote_device() -> Result<()> {
         let server_identity = PeerIdentity::generate()?;
         let client_identity = PeerIdentity::generate()?;
+        let expected_server_peer_id = server_identity.peer_id.clone();
         let expected_server_device_id = server_identity.device.id.clone();
         let expected_client_device_id = client_identity.device.id.clone();
 
@@ -1271,7 +1312,12 @@ mod tests {
 
         let accept = tokio::spawn(async move { server.accept_one().await });
         let connected = client
-            .connect(server_addr, server_cert, &expected_server_device_id)
+            .connect(
+                server_addr,
+                server_cert,
+                &expected_server_peer_id,
+                &expected_server_device_id,
+            )
             .await?;
         assert_eq!(connected.remote.device_id, expected_server_device_id);
         assert_eq!(connected.remote.quic_cert_fingerprint, server_fingerprint);
@@ -1297,6 +1343,7 @@ mod tests {
         assert_eq!(certificate.fingerprint, restored.fingerprint);
 
         let server_identity = PeerIdentity::generate()?;
+        let expected_server_peer_id = server_identity.peer_id.clone();
         let expected_server_device_id = server_identity.device.id.clone();
         let client = QuicNode::bind_ipv6_loopback(PeerIdentity::generate()?)?;
         let server = QuicNode::bind_ipv6_loopback_with_certificate(server_identity, restored)?;
@@ -1305,7 +1352,12 @@ mod tests {
 
         let accept = tokio::spawn(async move { server.accept_one().await });
         let connected = client
-            .connect(server_addr, server_cert, &expected_server_device_id)
+            .connect(
+                server_addr,
+                server_cert,
+                &expected_server_peer_id,
+                &expected_server_device_id,
+            )
             .await?;
         assert_eq!(
             connected.remote.quic_cert_fingerprint,
@@ -1322,6 +1374,7 @@ mod tests {
     #[tokio::test]
     async fn client_rejects_signed_cert_fingerprint_mismatch() -> Result<()> {
         let server_identity = PeerIdentity::generate()?;
+        let expected_server_peer_id = server_identity.peer_id.clone();
         let expected_server_device_id = server_identity.device.id.clone();
         let mut server_certificate = QuicCertificate::generate()?;
         let pinned_server_cert = server_certificate.certificate_der()?;
@@ -1334,7 +1387,12 @@ mod tests {
 
         let accept = tokio::spawn(async move { server.accept_one().await });
         let err = client
-            .connect(server_addr, pinned_server_cert, &expected_server_device_id)
+            .connect(
+                server_addr,
+                pinned_server_cert,
+                &expected_server_peer_id,
+                &expected_server_device_id,
+            )
             .await
             .expect_err("client should reject signed fingerprint mismatch");
         assert!(err
@@ -1528,9 +1586,24 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn signed_handshake_cannot_self_assert_another_principal() -> Result<()> {
+        let attacker = PeerIdentity::generate()?;
+        let victim = PeerIdentity::generate()?;
+        let mut hello = make_handshake(&attacker, HandshakeRole::Client, "sha256:test")?;
+        hello.peer_id = victim.peer_id;
+        hello.sig = attacker.device.sign(&handshake_signing_bytes(&hello)?);
+        let error = validate_handshake(&hello, HandshakeRole::Client)
+            .expect_err("device proof must bind the claimed principal");
+        assert!(error.to_string().contains("principal id"));
+        Ok(())
+    }
+
     #[tokio::test]
     async fn ipv6_loopback_handshake_rejects_unexpected_remote_device() -> Result<()> {
-        let server = QuicNode::bind_ipv6_loopback(PeerIdentity::generate()?)?;
+        let server_identity = PeerIdentity::generate()?;
+        let expected_server_peer_id = server_identity.peer_id.clone();
+        let server = QuicNode::bind_ipv6_loopback(server_identity)?;
         let client = QuicNode::bind_ipv6_loopback(PeerIdentity::generate()?)?;
         let wrong_identity = PeerIdentity::generate()?;
         let server_addr = server.local_addr()?;
@@ -1538,7 +1611,12 @@ mod tests {
 
         let accept = tokio::spawn(async move { server.accept_one().await });
         let err = client
-            .connect(server_addr, server_cert, &wrong_identity.device.id)
+            .connect(
+                server_addr,
+                server_cert,
+                &expected_server_peer_id,
+                &wrong_identity.device.id,
+            )
             .await
             .expect_err("client should reject unexpected server device id");
 

@@ -73,14 +73,27 @@ impl Store {
         if candidate_state.peer_id != event.author_peer_id {
             anyhow::bail!("accepted event author does not match identity proof");
         }
-        if let Some(known) = self.latest_identity_proof(&event.author_peer_id)? {
+        let transaction = self
+            .conn
+            .unchecked_transaction()
+            .context("start accepted-event transaction")?;
+        let known = transaction
+            .query_row(
+                "SELECT proof_json FROM identity_heads WHERE peer_id = ?1",
+                params![event.author_peer_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .context("load identity head in transaction")?
+            .map(|json| serde_json::from_str(&json).context("parse identity proof"))
+            .transpose()?;
+        if let Some(known) = known {
             if !identity_proof_extends(&known, candidate_proof)? {
                 anyhow::bail!("accepted event carries a stale or forked identity proof");
             }
         }
         let event_json = serde_json::to_string(event).context("serialize event")?;
-        let changed = self
-            .conn
+        let changed = transaction
             .execute(
                 r#"
                 INSERT OR IGNORE INTO accepted_events
@@ -90,12 +103,11 @@ impl Store {
                 params![event.event_id, event.room_id, event_json, accepted_at_ms],
             )
             .context("insert accepted event")?;
-        if changed == 1 {
-            let proof_json =
-                serde_json::to_string(candidate_proof).context("serialize identity proof")?;
-            self.conn
-                .execute(
-                    r#"
+        let proof_json =
+            serde_json::to_string(candidate_proof).context("serialize identity proof")?;
+        transaction
+            .execute(
+                r#"
                     INSERT INTO identity_heads (peer_id, sequence, head, proof_json)
                     VALUES (?1, ?2, ?3, ?4)
                     ON CONFLICT(peer_id) DO UPDATE SET
@@ -104,15 +116,17 @@ impl Store {
                         proof_json = excluded.proof_json
                     WHERE excluded.sequence > identity_heads.sequence
                     "#,
-                    params![
-                        candidate_state.peer_id,
-                        candidate_state.sequence,
-                        candidate_state.head,
-                        proof_json
-                    ],
-                )
-                .context("advance identity head")?;
-        }
+                params![
+                    candidate_state.peer_id,
+                    candidate_state.sequence,
+                    candidate_state.head,
+                    proof_json
+                ],
+            )
+            .context("advance identity head")?;
+        transaction
+            .commit()
+            .context("commit accepted event and identity head")?;
         Ok(changed == 1)
     }
 
@@ -286,10 +300,18 @@ mod tests {
         assert!(store
             .insert_accepted_event(accepted, 1_000)
             .expect("insert"));
+        store
+            .conn
+            .execute("DELETE FROM identity_heads", [])
+            .expect("simulate interrupted legacy state");
         let accepted_again = accept_event(&join, &[], &context, 1_000).expect("accepted");
         assert!(!store
             .insert_accepted_event(accepted_again, 1_001)
             .expect("idempotent insert"));
+        assert!(store
+            .latest_identity_proof(&member.peer_id)
+            .expect("repaired head")
+            .is_some());
     }
 
     #[test]

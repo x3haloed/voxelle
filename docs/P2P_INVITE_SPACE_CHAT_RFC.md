@@ -756,6 +756,18 @@ Clients **SHOULD**:
 - request missing ancestors when a DAG has gaps
 - bound memory/bandwidth via configurable limits (e.g., max events per request, max room backlog)
 
+Before serving or accepting room synchronization, an implementation **MUST**
+derive the room context from its active accepted space genesis and governance
+history. It **MUST** reject a peer whose principal is not a current member, whose
+device is revoked by current governance, or (for a private room) whose principal
+is not a current private-room member. Imported peer records and bootstrap data
+may select a route, but **MUST NOT** supply or replace this authority context.
+
+Acceptance and retention of an identity event **MUST** update the durable
+accepted-event set and the monotonic identity head atomically. Retrying an
+already accepted event must be able to repair a missing head without creating a
+second interpretation of the event.
+
 ### 10.4 Anti-Abuse at Transport Layer
 
 Peers **MUST** implement:
