@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::{de::DeserializeOwned, Serialize};
 use std::path::Path;
 use voxelle_core::{
     compute_heads, derive_identity_state, identity_proof_extends, AcceptedEvent, EventV1,
@@ -48,6 +49,11 @@ impl Store {
                     sequence INTEGER NOT NULL,
                     head TEXT NOT NULL,
                     proof_json TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS local_state (
+                    key TEXT PRIMARY KEY NOT NULL,
+                    value_json TEXT NOT NULL
                 );
                 "#,
             )
@@ -187,6 +193,37 @@ impl Store {
             )
             .context("count room events")?;
         Ok(count as usize)
+    }
+
+    pub fn local_state<T: DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        self.conn
+            .query_row(
+                "SELECT value_json FROM local_state WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .with_context(|| format!("load local state {key}"))?
+            .map(|json| {
+                serde_json::from_str(&json).with_context(|| format!("parse local state {key}"))
+            })
+            .transpose()
+    }
+
+    pub fn put_local_state<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
+        let json =
+            serde_json::to_string(value).with_context(|| format!("serialize local state {key}"))?;
+        self.conn
+            .execute(
+                r#"
+                INSERT INTO local_state (key, value_json)
+                VALUES (?1, ?2)
+                ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json
+                "#,
+                params![key, json],
+            )
+            .with_context(|| format!("store local state {key}"))?;
+        Ok(())
     }
 }
 
@@ -360,5 +397,31 @@ mod tests {
             store.room_heads("room:general").expect("heads"),
             vec![child.event_id]
         );
+    }
+
+    #[test]
+    fn typed_local_state_survives_reopen_and_replacement() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("voxelle.sqlite3");
+        {
+            let store = Store::open(&path).expect("store");
+            store
+                .put_local_state("ui.preferences", &serde_json::json!({"width": 360}))
+                .expect("insert local state");
+            store
+                .put_local_state("ui.preferences", &serde_json::json!({"width": 420}))
+                .expect("replace local state");
+        }
+
+        let reopened = Store::open(&path).expect("reopen");
+        let value: serde_json::Value = reopened
+            .local_state("ui.preferences")
+            .expect("load local state")
+            .expect("present");
+        assert_eq!(value, serde_json::json!({"width": 420}));
+        assert!(reopened
+            .local_state::<serde_json::Value>("missing")
+            .expect("load missing")
+            .is_none());
     }
 }

@@ -33,6 +33,11 @@ pub use shell::{ShellError, ShellResult, ShellState};
 
 pub const DEFAULT_ROOM_ID: &str = "room:general";
 const CALL_LIVENESS_MS: i64 = 90_000;
+const CONFIG_STATE: &str = "home.config";
+const KNOWN_PEERS_STATE: &str = "peers.known";
+const READ_STATE: &str = "rooms.read";
+const ROOM_KEYS_STATE: &str = "rooms.keys.encrypted";
+const UI_PREFERENCES_STATE: &str = "ui.preferences";
 
 pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
     resolve_home_root_from(
@@ -1010,7 +1015,7 @@ impl VoxelleHome {
         self.load_or_create_certificate()?;
 
         let default_room = default_room.into();
-        let config = if self.path("config.json").exists() {
+        let config = if self.local_state_exists(CONFIG_STATE)? {
             self.load_config()?
         } else {
             let channel_name = default_room
@@ -1025,14 +1030,13 @@ impl VoxelleHome {
                 authority_peer_id: identity.peer_id.clone(),
                 space,
             };
-            write_json(&self.path("config.json"), &config)?;
+            self.put_local_state(CONFIG_STATE, &config)?;
             config
         };
 
         let store = self.open_store()?;
         self.ensure_space_genesis(&store, &config)?;
         self.ensure_member_join(&store, &identity, &config, None)?;
-        self.refresh_recovery_capsule()?;
 
         Ok(ProfileSummary {
             home: self.root.clone(),
@@ -1106,14 +1110,20 @@ impl VoxelleHome {
                 format!("Home is initialized for {}.", config.default_room),
             )
             .detail(format!("root: {}", self.root.display())),
-            Err(error) if self.path("config.json").exists() => NetworkHealthRow::broken(
-                "home",
-                "Home",
-                "Home exists but cannot be read.",
-                Some("home.init"),
-            )
-            .detail(format!("{error:#}"))
-            .related_command("home.init"),
+            Err(error)
+                if self
+                    .local_state_exists(CONFIG_STATE)
+                    .unwrap_or_else(|_| self.path("store.sqlite3").exists()) =>
+            {
+                NetworkHealthRow::broken(
+                    "home",
+                    "Home",
+                    "Home exists but cannot be read.",
+                    Some("home.init"),
+                )
+                .detail(format!("{error:#}"))
+                .related_command("home.init")
+            }
             Err(_) => NetworkHealthRow::needs_attention(
                 "home",
                 "Home",
@@ -1694,8 +1704,7 @@ impl VoxelleHome {
         } else {
             read_state.last_read_event_ids.remove(room_id);
         }
-        write_json(&self.path("read-state.json"), &read_state)?;
-        self.refresh_recovery_capsule()
+        self.put_local_state(READ_STATE, &read_state)
     }
 
     pub fn notifications(&self) -> Result<Vec<NotificationView>> {
@@ -2231,18 +2240,13 @@ impl VoxelleHome {
                 .then_with(|| a.endpoint.peer_id.cmp(&b.endpoint.peer_id))
                 .then_with(|| a.endpoint.device_id.cmp(&b.endpoint.device_id))
         });
-        write_json(
-            &self.path("known-peers.json"),
-            &KnownPeersFile { v: 1, peers },
-        )?;
-        self.refresh_recovery_capsule()
+        self.put_local_state(KNOWN_PEERS_STATE, &KnownPeersFile { v: 1, peers })
     }
 
     pub fn known_peers(&self) -> Result<Vec<PeerRecord>> {
-        if !self.path("known-peers.json").exists() {
+        let Some(file): Option<KnownPeersFile> = self.local_state(KNOWN_PEERS_STATE)? else {
             return Ok(Vec::new());
-        }
-        let file: KnownPeersFile = read_json(&self.path("known-peers.json"))?;
+        };
         if file.v != 1 {
             anyhow::bail!("unsupported known peers version {}", file.v);
         }
@@ -2253,13 +2257,12 @@ impl VoxelleHome {
     }
 
     fn read_state(&self) -> Result<ReadStateFile> {
-        if !self.path("read-state.json").exists() {
+        let Some(state): Option<ReadStateFile> = self.local_state(READ_STATE)? else {
             return Ok(ReadStateFile {
                 v: 1,
                 last_read_event_ids: BTreeMap::new(),
             });
-        }
-        let state: ReadStateFile = read_json(&self.path("read-state.json"))?;
+        };
         if state.v != 1 {
             anyhow::bail!("unsupported read state version {}", state.v);
         }
@@ -2267,12 +2270,10 @@ impl VoxelleHome {
     }
 
     fn room_keys(&self) -> Result<RoomKeysV1> {
-        let path = self.path("room-keys.json");
-        if !path.exists() {
+        let Some(file): Option<EncryptedRoomKeysFile> = self.local_state(ROOM_KEYS_STATE)? else {
             return Ok(RoomKeysV1::default());
-        }
+        };
         let identity = self.load_identity()?;
-        let file: EncryptedRoomKeysFile = read_json(&path)?;
         if file.v != 1 {
             anyhow::bail!("unsupported encrypted room keys version {}", file.v);
         }
@@ -2324,8 +2325,8 @@ impl VoxelleHome {
                 },
             )
             .map_err(|_| anyhow::anyhow!("encrypt room keys"))?;
-        write_json(
-            &self.path("room-keys.json"),
+        self.put_local_state(
+            ROOM_KEYS_STATE,
             &EncryptedRoomKeysFile {
                 v: 1,
                 nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
@@ -2444,13 +2445,6 @@ impl VoxelleHome {
         write_secret_json(path.as_ref(), &kit)
     }
 
-    fn refresh_recovery_capsule(&self) -> Result<()> {
-        write_json(
-            &self.path("recovery-capsule.json"),
-            &self.recovery_kit()?.capsule,
-        )
-    }
-
     pub async fn recover_from_kit(
         &self,
         kit: &RecoveryKitV1,
@@ -2459,10 +2453,7 @@ impl VoxelleHome {
         if kit.v != 1 {
             anyhow::bail!("unsupported recovery kit version {}", kit.v);
         }
-        if self.path("identity.json").exists()
-            || self.path("config.json").exists()
-            || self.path("store.sqlite3").exists()
-        {
+        if self.path("identity.json").exists() || self.local_state_exists(CONFIG_STATE)? {
             anyhow::bail!("recovery requires a fresh Voxelle home");
         }
         if max_events_per_peer == 0 {
@@ -2503,16 +2494,16 @@ impl VoxelleHome {
         fs::create_dir_all(&self.root)
             .with_context(|| format!("create {}", self.root.display()))?;
         write_identity_vault(&self.path("identity.json"), &identity)?;
-        write_json(&self.path("config.json"), &payload.config)?;
-        write_json(
-            &self.path("known-peers.json"),
+        self.put_local_state(CONFIG_STATE, &payload.config)?;
+        self.put_local_state(
+            KNOWN_PEERS_STATE,
             &KnownPeersFile {
                 v: 1,
                 peers: payload.known_peers.clone(),
             },
         )?;
         self.write_ui_preferences(&payload.ui_preferences)?;
-        write_json(&self.path("read-state.json"), &payload.read_state)?;
+        self.put_local_state(READ_STATE, &payload.read_state)?;
         self.write_room_keys(&payload.room_keys)?;
         self.load_or_create_certificate()?;
         let store = self.open_store()?;
@@ -2571,7 +2562,6 @@ impl VoxelleHome {
                 )),
             }
         }
-        self.refresh_recovery_capsule()?;
         let profile = self.profile_summary()?;
         Ok(RecoveryReport {
             profile,
@@ -2664,10 +2654,7 @@ impl VoxelleHome {
         if invite.v != 1 {
             anyhow::bail!("unsupported space invite file version {}", invite.v);
         }
-        if self.path("identity.json").exists()
-            || self.path("config.json").exists()
-            || self.path("store.sqlite3").exists()
-        {
+        if self.path("identity.json").exists() || self.local_state_exists(CONFIG_STATE)? {
             anyhow::bail!("joining a space requires a fresh Voxelle home");
         }
         if max_events_per_peer == 0 {
@@ -2687,9 +2674,9 @@ impl VoxelleHome {
             default_room: invite.space.default_room_id.clone(),
             authority_peer_id: invite.space.authority_peer_id.clone(),
         };
-        write_json(&self.path("config.json"), &config)?;
-        write_json(
-            &self.path("known-peers.json"),
+        self.put_local_state(CONFIG_STATE, &config)?;
+        self.put_local_state(
+            KNOWN_PEERS_STATE,
             &KnownPeersFile {
                 v: 1,
                 peers: peers.clone(),
@@ -2731,8 +2718,6 @@ impl VoxelleHome {
                 )),
             }
         }
-        self.refresh_recovery_capsule()?;
-
         Ok(JoinSpaceReport {
             profile: self.profile_summary()?,
             invite_id: invite.invite_event.event_id.clone(),
@@ -2749,10 +2734,10 @@ impl VoxelleHome {
     }
 
     pub fn ui_preferences(&self) -> Result<UiPreferences> {
-        if !self.path("ui-preferences.json").exists() {
+        let Some(preferences): Option<UiPreferences> = self.local_state(UI_PREFERENCES_STATE)?
+        else {
             return Ok(UiPreferences::default());
-        }
-        let preferences: UiPreferences = read_json(&self.path("ui-preferences.json"))?;
+        };
         if preferences.v != 1 {
             anyhow::bail!("unsupported UI preferences version {}", preferences.v);
         }
@@ -2777,9 +2762,6 @@ impl VoxelleHome {
             }
         };
         self.write_ui_preferences(&preferences)?;
-        if self.path("identity.json").exists() {
-            self.refresh_recovery_capsule()?;
-        }
         Ok(id)
     }
 
@@ -2791,21 +2773,13 @@ impl VoxelleHome {
             .into_iter()
             .map(|placement| (placement.view_id.clone(), placement))
             .collect();
-        self.write_ui_preferences(&preferences)?;
-        if self.path("identity.json").exists() {
-            self.refresh_recovery_capsule()?;
-        }
-        Ok(())
+        self.write_ui_preferences(&preferences)
     }
 
     pub fn reset_workbench_layout(&self) -> Result<()> {
         let mut preferences = self.ui_preferences()?;
         preferences.view_placements.clear();
-        self.write_ui_preferences(&preferences)?;
-        if self.path("identity.json").exists() {
-            self.refresh_recovery_capsule()?;
-        }
-        Ok(())
+        self.write_ui_preferences(&preferences)
     }
 
     pub fn reset_ui_preference(&self, kind: UiPreferenceKind, id: &str) -> Result<()> {
@@ -2818,19 +2792,11 @@ impl VoxelleHome {
         if !removed {
             validate_ui_preference_id(kind, id)?;
         }
-        self.write_ui_preferences(&preferences)?;
-        if self.path("identity.json").exists() {
-            self.refresh_recovery_capsule()?;
-        }
-        Ok(())
+        self.write_ui_preferences(&preferences)
     }
 
     pub fn reset_all_ui_preferences(&self) -> Result<()> {
-        self.write_ui_preferences(&UiPreferences::default())?;
-        if self.path("identity.json").exists() {
-            self.refresh_recovery_capsule()?;
-        }
-        Ok(())
+        self.write_ui_preferences(&UiPreferences::default())
     }
 
     pub fn start_service(
@@ -2923,7 +2889,9 @@ impl VoxelleHome {
     }
 
     fn load_config(&self) -> Result<HomeConfig> {
-        let config: HomeConfig = read_json(&self.path("config.json"))?;
+        let config: HomeConfig = self
+            .local_state(CONFIG_STATE)?
+            .ok_or_else(|| anyhow::anyhow!("home config is unavailable"))?;
         if config.v != 1 {
             anyhow::bail!("unsupported home config version {}", config.v);
         }
@@ -2940,9 +2908,26 @@ impl VoxelleHome {
         Store::open(self.path("store.sqlite3"))
     }
 
+    fn local_state<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
+        if !self.path("store.sqlite3").exists() {
+            return Ok(None);
+        }
+        self.open_store()?.local_state(key)
+    }
+
+    fn local_state_exists(&self, key: &str) -> Result<bool> {
+        Ok(self.local_state::<serde_json::Value>(key)?.is_some())
+    }
+
+    fn put_local_state<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
+        fs::create_dir_all(&self.root)
+            .with_context(|| format!("create {}", self.root.display()))?;
+        self.open_store()?.put_local_state(key, value)
+    }
+
     fn write_ui_preferences(&self, preferences: &UiPreferences) -> Result<()> {
         validate_ui_preferences(preferences)?;
-        write_json(&self.path("ui-preferences.json"), preferences)
+        self.put_local_state(UI_PREFERENCES_STATE, preferences)
     }
 
     fn load_or_create_identity(&self) -> Result<PeerIdentity> {
@@ -3553,7 +3538,7 @@ impl VoxelleCommandHost {
     }
 
     pub async fn refresh_and_sync(&mut self) -> Result<ShellSnapshotView> {
-        if self.service.is_some() && self.home.path("config.json").exists() {
+        if self.service.is_some() && self.home.local_state_exists(CONFIG_STATE)? {
             self.sync_known_peers(256).await?;
         }
         self.snapshot()
@@ -5528,6 +5513,52 @@ mod tests {
     }
 
     #[test]
+    fn home_consolidates_local_state_without_rolling_recovery_cache() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("alice"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+        home.set_ui_preference(SetUiPreferenceRequest::Metric {
+            id: "sidebar.width".to_string(),
+            value: 420.0,
+        })
+        .expect("persist preference");
+
+        for retired in [
+            "config.json",
+            "known-peers.json",
+            "read-state.json",
+            "room-keys.json",
+            "ui-preferences.json",
+            "recovery-capsule.json",
+        ] {
+            assert!(!home.path(retired).exists(), "retired state file {retired}");
+        }
+        assert!(home.path("identity.json").exists());
+        assert!(home.path("quic-cert.json").exists());
+        assert!(home.path("store.sqlite3").exists());
+
+        let reopened = VoxelleHome::new(home.root.clone());
+        assert_eq!(
+            reopened.profile_summary().expect("profile").peer_id,
+            home.profile_summary().expect("original profile").peer_id
+        );
+        assert_eq!(
+            reopened
+                .ui_preferences()
+                .expect("preferences")
+                .metrics
+                .get("sidebar.width"),
+            Some(&420.0)
+        );
+        assert!(!reopened
+            .recovery_kit()
+            .expect("on-demand recovery kit")
+            .capsule
+            .ciphertext_b64
+            .is_empty());
+    }
+
+    #[test]
     fn recovery_capsule_is_authenticated_and_bound_to_its_card() {
         let dir = tempdir().expect("tempdir");
         let home = VoxelleHome::new(dir.path().join("alice"));
@@ -5824,9 +5855,14 @@ mod tests {
             .expect("raw room");
         assert_eq!(raw_room.len(), 1);
         assert_eq!(raw_room[0].kind, "ROOM_ENCRYPTED");
-        assert!(!fs::read_to_string(alice.path("room-keys.json"))
-            .expect("encrypted room keys")
-            .contains("keys"));
+        assert!(!alice.path("room-keys.json").exists());
+        let encrypted_keys: EncryptedRoomKeysFile = alice
+            .local_state(ROOM_KEYS_STATE)
+            .expect("load encrypted room keys")
+            .expect("encrypted room keys");
+        assert!(!serde_json::to_string(&encrypted_keys)
+            .expect("serialize encrypted room keys")
+            .contains("e2e secret phrase"));
 
         bob.sync_peer(&alice_record, 4096).await.expect("bob sync");
         assert_eq!(

@@ -6,9 +6,9 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 rusqlite = "0.32"
+serde = "1"
 serde_json = "1"
 voxelle-core = { path = "../voxelle-core" }
 
 [dev-dependencies]
 tempfile = "3"
-

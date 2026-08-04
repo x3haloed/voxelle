@@ -98,8 +98,8 @@ The surviving authorities are:
 - each space governance log for membership, roles, room definitions, bans, and
   invite revocation;
 - the event acceptance pipeline for facts admitted to durable storage;
-- the local SQLite store for retained accepted facts and reconstructible
-  projections;
+- the local SQLite store for retained accepted facts, validated local device
+  state, and reconstructible projections;
 - the frontend workbench for ephemeral layout geometry, using stable Rust-owned
   view and command identities;
 - the live-media session participants for ephemeral call state.
@@ -123,6 +123,8 @@ fixture mutations are not product evidence.
 The current Rust authorities for protocol acceptance, SQLite retention, sync,
 QUIC transport, the application command host, semantic command IDs, and
 semantic view IDs remain unless a complete verified collapse replaces them.
+The encrypted identity vault and persistent QUIC credential remain separate
+from SQLite because they carry distinct unlock and transport capabilities.
 
 New features extend the existing signed-event, accepted-store, sync, snapshot,
 and semantic-command paths. They must not introduce parallel protocol models in
@@ -258,6 +260,16 @@ projection. A three-home test proves that the excluded peer neither lists nor
 stores the private room, retained events and local key files lack the message
 plaintext, admitted peers decrypt successive epochs, and a fresh recovered
 home restores the epoch keys and history from an ordinary peer.
+
+The local durability topology now uses one SQLite database for accepted events,
+monotonic identity heads, home configuration, peer records, read cursors, UI
+preferences, and authenticated ciphertext room-key envelopes. The previous
+parallel JSON files and the unconsumed rolling recovery-capsule cache are gone.
+Recovery export derives a fresh authenticated capsule from those authoritative
+rows on demand; identity secrets remain in the independently unlocked encrypted
+vault and QUIC credentials remain a separate transport capability. A fresh
+initialized home therefore materializes only those two capability files plus
+SQLite and its crash-safety sidecars.
 
 The small-group media family has crossed its protocol and UI gates. Signed
 room-call events carry only participant presence and bounded offer, answer,
