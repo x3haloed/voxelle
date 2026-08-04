@@ -33,6 +33,8 @@ impl ShellState {
             "peer.diagnose" => host.diagnose_peer(parse_request(payload)?).await,
             "peer.sync" => host.sync_peer(parse_request(payload)?).await,
             "ui.preference.set" => host.set_ui_preference(parse_request(payload)?),
+            "workbench.layout.save" => host.set_workbench_layout(parse_request(payload)?),
+            "workbench.layout.reset" => host.reset_workbench_layout(),
             _ => {
                 return Err(ShellError {
                     message: format!("unknown command {command_id}"),

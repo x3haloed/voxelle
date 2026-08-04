@@ -286,7 +286,10 @@ pub struct UiPlace {
 pub struct UiView {
     pub id: String,
     pub label: String,
+    pub default_place_id: String,
     pub place_id: String,
+    pub order: usize,
+    pub visible: bool,
     pub description: String,
     pub editable: bool,
     pub editing_surface: String,
@@ -297,8 +300,26 @@ pub struct UiCommand {
     pub id: String,
     pub label: String,
     pub description: String,
+    pub scope: UiCommandScope,
+    pub shortcut: Option<String>,
+    pub palette: bool,
     pub editable: bool,
     pub editing_surface: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum UiCommandScope {
+    Shell,
+    Frontend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct UiViewPlacement {
+    pub view_id: String,
+    pub place_id: String,
+    pub order: usize,
+    pub visible: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -367,6 +388,7 @@ pub struct UiPreferences {
     pub semantic_tokens: BTreeMap<String, String>,
     pub metrics: BTreeMap<String, f64>,
     pub behaviors: BTreeMap<String, UiBehaviorValue>,
+    pub view_placements: BTreeMap<String, UiViewPlacement>,
 }
 
 impl Default for UiPreferences {
@@ -376,6 +398,7 @@ impl Default for UiPreferences {
             semantic_tokens: BTreeMap::new(),
             metrics: BTreeMap::new(),
             behaviors: BTreeMap::new(),
+            view_placements: BTreeMap::new(),
         }
     }
 }
@@ -391,6 +414,8 @@ pub fn shell_contract_typescript() -> String {
         UiPlace::decl(&cfg),
         UiView::decl(&cfg),
         UiCommand::decl(&cfg),
+        UiCommandScope::decl(&cfg),
+        UiViewPlacement::decl(&cfg),
         SemanticToken::decl(&cfg),
         UiMetric::decl(&cfg),
         UiBehavior::decl(&cfg),
@@ -407,6 +432,7 @@ pub fn shell_contract_typescript() -> String {
         JoinSpaceRequest::decl(&cfg),
         PeerCommandRequest::decl(&cfg),
         SetUiPreferenceRequest::decl(&cfg),
+        SetWorkbenchLayoutRequest::decl(&cfg),
         HomeScreenView::decl(&cfg),
         NetworkHealthView::decl(&cfg),
         NetworkHealthRow::decl(&cfg),
@@ -609,6 +635,11 @@ pub enum SetUiPreferenceRequest {
     SemanticToken { id: String, value: String },
     Metric { id: String, value: f64 },
     Behavior { id: String, value: UiBehaviorValue },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SetWorkbenchLayoutRequest {
+    pub placements: Vec<UiViewPlacement>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1468,6 +1499,31 @@ impl VoxelleHome {
         Ok(id)
     }
 
+    pub fn set_workbench_layout(&self, request: SetWorkbenchLayoutRequest) -> Result<()> {
+        validate_workbench_layout(&request.placements)?;
+        let mut preferences = self.ui_preferences()?;
+        preferences.view_placements = request
+            .placements
+            .into_iter()
+            .map(|placement| (placement.view_id.clone(), placement))
+            .collect();
+        self.write_ui_preferences(&preferences)?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
+        Ok(())
+    }
+
+    pub fn reset_workbench_layout(&self) -> Result<()> {
+        let mut preferences = self.ui_preferences()?;
+        preferences.view_placements.clear();
+        self.write_ui_preferences(&preferences)?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
+        Ok(())
+    }
+
     pub fn reset_ui_preference(&self, kind: UiPreferenceKind, id: &str) -> Result<()> {
         let mut preferences = self.ui_preferences()?;
         let removed = match kind {
@@ -1845,6 +1901,20 @@ impl VoxelleCommandHost {
             ServiceActivityLevel::Info,
             format!("updated UI preference {id}"),
         );
+        self.snapshot()
+    }
+
+    pub fn set_workbench_layout(
+        &mut self,
+        request: SetWorkbenchLayoutRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.set_workbench_layout(request)?;
+        self.snapshot()
+    }
+
+    pub fn reset_workbench_layout(&mut self) -> Result<ShellSnapshotView> {
+        self.home.reset_workbench_layout()?;
+        self.push_activity(ServiceActivityLevel::Info, "reset workbench layout");
         self.snapshot()
     }
 
@@ -2379,9 +2449,18 @@ fn default_ui_ontology(preferences: UiPreferences) -> UiOntologyView {
         }
     }
 
+    let mut views = default_views();
+    for view in &mut views {
+        if let Some(placement) = preferences.view_placements.get(&view.id) {
+            view.place_id = placement.place_id.clone();
+            view.order = placement.order;
+            view.visible = placement.visible;
+        }
+    }
+
     UiOntologyView {
         places: default_places(),
-        views: default_views(),
+        views,
         commands: default_commands(),
         semantic_tokens,
         metrics,
@@ -2418,54 +2497,63 @@ fn default_views() -> Vec<UiView> {
             "profile.summary",
             "Profile Summary",
             "sidebar",
+            0,
             "Local peer and device identity",
         ),
         ui_view(
             "runtime.status",
             "Runtime Status",
             "status",
+            0,
             "Online/offline and reachability state",
         ),
         ui_view(
             "network.health",
             "Network Health",
             "status",
+            1,
             "Re-entrant checklist for setup, reachability, and repair",
         ),
         ui_view(
             "field.test",
             "Field Test",
             "status",
+            2,
             "Re-entrant end-to-end workflow checks",
         ),
         ui_view(
             "invite.exchange",
             "Invite Exchange",
             "sidebar",
+            1,
             "Copyable peer record and peer import",
         ),
         ui_view(
             "peer.list",
             "Peer List",
             "sidebar",
+            2,
             "Known peers and peer actions",
         ),
         ui_view(
             "room.timeline",
             "Room Timeline",
             "main",
+            0,
             "Messages in the selected room",
         ),
         ui_view(
             "message.composer",
             "Message Composer",
             "main",
+            1,
             "Message entry and send command",
         ),
         ui_view(
             "service.activity",
             "Service Activity",
             "activity",
+            0,
             "Served requests, diagnostics, and sync events",
         ),
     ]
@@ -2473,49 +2561,117 @@ fn default_views() -> Vec<UiView> {
 
 fn default_commands() -> Vec<UiCommand> {
     vec![
-        ui_command(
+        shell_command(
             "shell.refresh",
             "Refresh",
             "Refresh the current shell snapshot",
+            Some("Mod+R"),
+            true,
         ),
-        ui_command("home.init", "Initialize Home", "Create local app state"),
-        ui_command(
+        shell_command(
+            "home.init",
+            "Create My Space",
+            "Create local identity and a private space",
+            None,
+            true,
+        ),
+        shell_command(
             "runtime.goOnline",
             "Go Online",
             "Start resident peer serving",
+            None,
+            true,
         ),
-        ui_command(
+        shell_command(
             "runtime.goOffline",
             "Go Offline",
             "Stop resident peer serving",
+            None,
+            true,
         ),
-        ui_command(
+        shell_command(
             "space.invite.create",
             "Create Space Invite",
             "Create a signed expiring invite for the current space",
+            None,
+            true,
         ),
-        ui_command(
+        shell_command(
             "space.join",
             "Join Space",
             "Join from a signed invite and synchronize automatically",
+            None,
+            true,
         ),
-        ui_command(
+        shell_command(
             "message.send",
             "Send Message",
             "Send a message to the current room",
+            None,
+            false,
         ),
-        ui_command("invite.copy", "Copy Invite", "Copy the current peer record"),
-        ui_command("peer.import", "Import Peer", "Import a peer record"),
-        ui_command("peer.diagnose", "Diagnose Peer", "Check peer reachability"),
-        ui_command(
+        frontend_command(
+            "message.composer.focus",
+            "Focus Message Composer",
+            "Move keyboard focus to the message composer",
+            Some("Mod+K"),
+            true,
+        ),
+        frontend_command(
+            "invite.copy",
+            "Copy Signed Invite",
+            "Copy the current signed membership invite",
+            None,
+            true,
+        ),
+        shell_command(
+            "peer.import",
+            "Import Peer",
+            "Import a peer availability record",
+            None,
+            true,
+        ),
+        shell_command(
+            "peer.diagnose",
+            "Diagnose Peer",
+            "Check peer reachability",
+            None,
+            true,
+        ),
+        shell_command(
             "peer.sync",
             "Sync Peer",
             "Sync governance and room events with a peer",
+            None,
+            true,
         ),
-        ui_command(
+        shell_command(
             "ui.preference.set",
             "Save Preference",
             "Persist a UI customization",
+            None,
+            false,
+        ),
+        shell_command(
+            "workbench.layout.save",
+            "Save Workbench Layout",
+            "Persist view docking, order, and visibility",
+            None,
+            false,
+        ),
+        shell_command(
+            "workbench.layout.reset",
+            "Reset Workbench Layout",
+            "Restore every view to its default dock",
+            None,
+            true,
+        ),
+        frontend_command(
+            "workbench.commandPalette.open",
+            "Show Command Palette",
+            "Search and run commands",
+            Some("Mod+Shift+P"),
+            false,
         ),
     ]
 }
@@ -2523,7 +2679,7 @@ fn default_commands() -> Vec<UiCommand> {
 pub fn shell_command_ids() -> Vec<String> {
     default_commands()
         .into_iter()
-        .filter(|command| command.id != "invite.copy")
+        .filter(|command| command.scope == UiCommandScope::Shell)
         .map(|command| command.id)
         .collect()
 }
@@ -2724,27 +2880,74 @@ fn ui_place(id: &str, label: &str, description: &str) -> UiPlace {
         id: id.to_string(),
         label: label.to_string(),
         description: description.to_string(),
-        editable: false,
+        editable: true,
         editing_surface: "layout/place editor".to_string(),
     }
 }
 
-fn ui_view(id: &str, label: &str, place_id: &str, description: &str) -> UiView {
+fn ui_view(id: &str, label: &str, place_id: &str, order: usize, description: &str) -> UiView {
     UiView {
         id: id.to_string(),
         label: label.to_string(),
+        default_place_id: place_id.to_string(),
         place_id: place_id.to_string(),
+        order,
+        visible: true,
         description: description.to_string(),
-        editable: false,
+        editable: true,
         editing_surface: "layout/place editor".to_string(),
     }
 }
 
-fn ui_command(id: &str, label: &str, description: &str) -> UiCommand {
+fn shell_command(
+    id: &str,
+    label: &str,
+    description: &str,
+    shortcut: Option<&str>,
+    palette: bool,
+) -> UiCommand {
+    ui_command(
+        id,
+        label,
+        description,
+        UiCommandScope::Shell,
+        shortcut,
+        palette,
+    )
+}
+
+fn frontend_command(
+    id: &str,
+    label: &str,
+    description: &str,
+    shortcut: Option<&str>,
+    palette: bool,
+) -> UiCommand {
+    ui_command(
+        id,
+        label,
+        description,
+        UiCommandScope::Frontend,
+        shortcut,
+        palette,
+    )
+}
+
+fn ui_command(
+    id: &str,
+    label: &str,
+    description: &str,
+    scope: UiCommandScope,
+    shortcut: Option<&str>,
+    palette: bool,
+) -> UiCommand {
     UiCommand {
         id: id.to_string(),
         label: label.to_string(),
         description: description.to_string(),
+        scope,
+        shortcut: shortcut.map(ToOwned::to_owned),
+        palette,
         editable: false,
         editing_surface: "command palette".to_string(),
     }
@@ -2825,6 +3028,63 @@ fn validate_ui_preferences(preferences: &UiPreferences) -> Result<()> {
             .with_context(|| format!("unknown UI behavior {id}"))?;
         if !same_behavior_value_kind(&default.default_value, value) {
             anyhow::bail!("UI behavior {id} value has the wrong kind");
+        }
+    }
+    if !preferences.view_placements.is_empty() {
+        for (id, placement) in &preferences.view_placements {
+            if id != &placement.view_id {
+                anyhow::bail!(
+                    "workbench placement key does not match view {}",
+                    placement.view_id
+                );
+            }
+        }
+        validate_workbench_layout(
+            &preferences
+                .view_placements
+                .values()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_workbench_layout(placements: &[UiViewPlacement]) -> Result<()> {
+    let views = default_views();
+    let places = default_places();
+    if placements.len() != views.len() {
+        anyhow::bail!(
+            "workbench layout must place every view exactly once (expected {}, got {})",
+            views.len(),
+            placements.len()
+        );
+    }
+
+    let mut by_view = BTreeMap::new();
+    let mut orders_by_place: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for placement in placements {
+        if !views.iter().any(|view| view.id == placement.view_id) {
+            anyhow::bail!("unknown workbench view {}", placement.view_id);
+        }
+        if !places.iter().any(|place| place.id == placement.place_id) {
+            anyhow::bail!("unknown workbench place {}", placement.place_id);
+        }
+        if by_view.insert(&placement.view_id, ()).is_some() {
+            anyhow::bail!(
+                "workbench view {} is placed more than once",
+                placement.view_id
+            );
+        }
+        orders_by_place
+            .entry(&placement.place_id)
+            .or_default()
+            .push(placement.order);
+    }
+    for (place, mut orders) in orders_by_place {
+        orders.sort_unstable();
+        if orders.iter().copied().ne(0..orders.len()) {
+            anyhow::bail!("workbench place {place} order must be contiguous from zero");
         }
     }
     Ok(())
@@ -3540,6 +3800,37 @@ mod tests {
             value: UiBehaviorValue::Text("absolute".to_string()),
         })
         .expect("set behavior");
+        let mut placements: Vec<UiViewPlacement> = home
+            .ui_ontology()
+            .expect("ontology")
+            .views
+            .into_iter()
+            .map(|view| UiViewPlacement {
+                view_id: view.id,
+                place_id: view.place_id,
+                order: view.order,
+                visible: view.visible,
+            })
+            .collect();
+        let profile = placements
+            .iter_mut()
+            .find(|placement| placement.view_id == "profile.summary")
+            .expect("profile placement");
+        profile.place_id = "inspector".to_string();
+        profile.order = 0;
+        for placement in placements
+            .iter_mut()
+            .filter(|placement| placement.place_id == "sidebar")
+        {
+            placement.order -= 1;
+        }
+        placements
+            .iter_mut()
+            .find(|placement| placement.view_id == "field.test")
+            .expect("field placement")
+            .visible = false;
+        home.set_workbench_layout(SetWorkbenchLayoutRequest { placements })
+            .expect("set layout");
 
         let reopened = VoxelleHome::new(dir.path().join("home"));
         let preferences = reopened.ui_preferences().expect("preferences");
@@ -3552,6 +3843,14 @@ mod tests {
             preferences.behaviors.get("timestamps.style"),
             Some(&UiBehaviorValue::Text("absolute".to_string()))
         );
+        assert_eq!(
+            preferences
+                .view_placements
+                .get("profile.summary")
+                .expect("saved profile")
+                .place_id,
+            "inspector"
+        );
 
         let ontology = reopened.ui_ontology().expect("ontology");
         assert_eq!(semantic_token_value(&ontology, "peer.reachable"), "#00ff00");
@@ -3559,6 +3858,23 @@ mod tests {
         assert_eq!(
             behavior_value(&ontology, "timestamps.style"),
             UiBehaviorValue::Text("absolute".to_string())
+        );
+        assert_eq!(
+            ontology
+                .views
+                .iter()
+                .find(|view| view.id == "profile.summary")
+                .expect("profile")
+                .place_id,
+            "inspector"
+        );
+        assert!(
+            !ontology
+                .views
+                .iter()
+                .find(|view| view.id == "field.test")
+                .expect("field test")
+                .visible
         );
 
         reopened
@@ -3576,6 +3892,15 @@ mod tests {
         assert_eq!(
             behavior_value(&defaults, "timestamps.style"),
             UiBehaviorValue::Text("relative".to_string())
+        );
+        assert_eq!(
+            defaults
+                .views
+                .iter()
+                .find(|view| view.id == "profile.summary")
+                .expect("profile")
+                .place_id,
+            "sidebar"
         );
     }
 

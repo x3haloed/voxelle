@@ -12,9 +12,13 @@ export type UiOntologyView = { places: Array<UiPlace>, views: Array<UiView>, com
 
 export type UiPlace = { id: string, label: string, description: string, editable: boolean, editing_surface: string, };
 
-export type UiView = { id: string, label: string, place_id: string, description: string, editable: boolean, editing_surface: string, };
+export type UiView = { id: string, label: string, default_place_id: string, place_id: string, order: number, visible: boolean, description: string, editable: boolean, editing_surface: string, };
 
-export type UiCommand = { id: string, label: string, description: string, editable: boolean, editing_surface: string, };
+export type UiCommand = { id: string, label: string, description: string, scope: UiCommandScope, shortcut: string | null, palette: boolean, editable: boolean, editing_surface: string, };
+
+export type UiCommandScope = "shell" | "frontend";
+
+export type UiViewPlacement = { view_id: string, place_id: string, order: number, visible: boolean, };
 
 export type SemanticToken = { id: string, label: string, default_value: string, current_value: string, used_by: Array<string>, editable: boolean, editing_surface: string, };
 
@@ -47,6 +51,8 @@ export type JoinSpaceRequest = { space_invite_json: string, max_events: number |
 export type PeerCommandRequest = { peer_id: string, device_id: string, max_events: number | null, };
 
 export type SetUiPreferenceRequest = { "kind": "semantic_token", id: string, value: string, } | { "kind": "metric", id: string, value: number, } | { "kind": "behavior", id: string, value: UiBehaviorValue, };
+
+export type SetWorkbenchLayoutRequest = { placements: Array<UiViewPlacement>, };
 
 export type HomeScreenView = { profile: ProfileSummary, runtime: RuntimeStatusView, invite: InviteExchangeView | null, peers: Array<PeerListItemView>, room: RoomTimelineView, };
 

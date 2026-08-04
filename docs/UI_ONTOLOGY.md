@@ -307,11 +307,15 @@ generated from the same Rust defaults. It is a read-only visual preview: it
 does not simulate home, service, messaging, peer, sync, or persistence
 behavior. Those commands require the real local bridge.
 
-Places and views now name, order, and compose the visible workbench. Place and
-view editing, command-palette editing, and renderer selection remain planned.
-Their records name the future owning surface but report `editable: false` until
-that surface exists. Semantic tokens, metrics, and behaviors report
-`editable: true` because the in-app Customize surface realizes those paths.
+Places and views now name, order, and compose the visible workbench. Every view
+can be dragged to any named dock, moved with its dock selector and order
+buttons, hidden, restored, or reset. Rust validates and persists the complete
+placement set, and the layout survives application restart and travels inside
+the encrypted recovery capsule. The command palette is populated from the same
+Rust-owned command records used by visible buttons and shortcuts; command scope
+distinguishes shell actions from local presentation actions. Renderer selection
+remains planned. Semantic tokens, metrics, behaviors, places, and views report
+`editable: true` because their in-app editing paths now exist.
 
 ## 6. Framework Direction
 

@@ -210,6 +210,16 @@ Windows NSIS artifact, with SHA-256 manifests and narrow per-app Gatekeeper and
 SmartScreen instructions. A native Windows build and first launch still require
 the external Windows runner named in the evidence horizon.
 
-The next irreversible risk is the workbench: carry every existing semantic view
-through real docking, persisted layout, keyboard shortcuts, and a single command
-palette authority before adding more horizontal feature surfaces.
+The workbench risk has crossed its first lived gate. Every Rust-registered view
+can move among all five docks by drag/drop or an accessible selector, reorder,
+hide, restore, and reset. Rust rejects incomplete, duplicate, unknown, or
+non-contiguous layouts and persists accepted placements in the same preference
+state carried by recovery. The command palette, buttons, shortcut matching, and
+shell command discovery consume the Rust-owned command registry. A packaged
+Tauri run moved and hid views, filtered and invoked the palette from the native
+keyboard shortcut, quit, relaunched, and projected the saved layout through the
+real bridge.
+
+The next risk frontier is horizontal Discord feature growth. Each family must
+extend signed event acceptance, retained projection, sync, command DTOs, and a
+dockable view together; a frontend-only resemblance is not completion.

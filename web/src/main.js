@@ -5,6 +5,13 @@ import {
   ontologyPresentation,
   visibleActivity,
 } from "./ui-ontology.mjs";
+import {
+  filterPaletteCommands,
+  moveView,
+  setViewVisible,
+  shiftView,
+  shortcutMatches,
+} from "./workbench.mjs";
 
 const app = document.querySelector("#app");
 const shell = createShellClient();
@@ -21,6 +28,9 @@ const uiState = {
   messageDraft: "",
   bindDraft: "",
   advertiseDraft: "",
+  draggedViewId: "",
+  paletteOpen: false,
+  paletteQuery: "",
 };
 
 const viewRenderers = {
@@ -73,12 +83,35 @@ function render() {
   app.replaceChildren(
     header(currentSnapshot),
     workbenchShell(currentSnapshot),
+    ...(uiState.paletteOpen ? [commandPalette(currentSnapshot)] : []),
   );
   if (presentation.activityAutoScroll) {
     const activity = app.querySelector(".activity-list");
     activity?.scrollTo?.({ top: activity.scrollHeight });
   }
+  if (uiState.paletteOpen) {
+    window.requestAnimationFrame(() => {
+      const input = app.querySelector(".command-palette-input");
+      input?.focus();
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+    });
+  }
 }
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && uiState.paletteOpen) {
+    event.preventDefault();
+    uiState.paletteOpen = false;
+    render();
+    return;
+  }
+  const command = currentSnapshot.ui_ontology.commands.find((candidate) =>
+    shortcutMatches(event, candidate.shortcut)
+  );
+  if (!command) return;
+  event.preventDefault();
+  runCommand(command.id).catch(reportError);
+});
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function header(snapshot) {
@@ -92,6 +125,7 @@ function header(snapshot) {
     customizationEditor(snapshot),
     shellMode(),
     runtimeState(snapshot),
+    commandButton("workbench.commandPalette.open"),
     commandButton("shell.refresh"),
   );
 
@@ -210,25 +244,65 @@ function preferenceForm(preference, input, request) {
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function workbenchShell(snapshot) {
-  const shellEl = element("section", "workbench");
-  const mainRegion = element("div", "workbench-region main-region");
-  const sideRegion = element("aside", "workbench-region side-region");
-
-  for (const view of snapshot.ui_ontology.views) {
-    const panelEl = workbenchPanel(view, snapshot);
-    if (sidePlace(view.place_id)) {
-      sideRegion.append(panelEl);
-    } else {
-      mainRegion.append(panelEl);
+  const container = element("section", "workbench-container");
+  const hidden = snapshot.ui_ontology.views.filter((view) => !view.visible);
+  if (hidden.length > 0) {
+    const shelf = element("nav", "hidden-view-shelf");
+    shelf.setAttribute("aria-label", "Hidden workbench views");
+    shelf.append(element("span", "muted", "Hidden views"));
+    for (const view of hidden) {
+      shelf.append(actionButton(`Show ${view.label}`, () => {
+        saveLayout(setViewVisible(snapshot.ui_ontology.views, view.id, true)).catch(reportError);
+      }));
     }
+    shelf.append(commandButton("workbench.layout.reset"));
+    container.append(shelf);
   }
 
-  shellEl.append(mainRegion, sideRegion);
-  return shellEl;
+  const shellEl = element("section", "workbench");
+  for (const place of snapshot.ui_ontology.places) {
+    shellEl.append(dockZone(place, snapshot));
+  }
+  container.append(shellEl);
+  return container;
 }
 
-function sidePlace(placeId) {
-  return placeId === "sidebar" || placeId === "activity" || placeId === "inspector";
+function dockZone(place, snapshot) {
+  const zone = element("section", `dock-zone dock-${place.id}`);
+  zone.dataset.placeId = place.id;
+  zone.setAttribute("aria-label", `${place.label} dock`);
+  const heading = element("div", "dock-zone-header");
+  heading.append(
+    element("span", "dock-zone-label", place.label),
+    element("span", "view-id", place.id),
+  );
+  zone.append(heading);
+  zone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    zone.dataset.dragOver = "true";
+  });
+  zone.addEventListener("dragleave", () => delete zone.dataset.dragOver);
+  zone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    delete zone.dataset.dragOver;
+    const viewId = event.dataTransfer?.getData("text/x-voxelle-view")
+      || uiState.draggedViewId;
+    if (viewId) {
+      saveLayout(moveView(snapshot.ui_ontology.views, viewId, place.id)).catch(reportError);
+    }
+  });
+
+  const views = snapshot.ui_ontology.views
+    .filter((view) => view.visible && view.place_id === place.id)
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+  if (views.length === 0) {
+    zone.append(element("p", "dock-empty", "Drop a view here"));
+  } else {
+    for (const view of views) {
+      zone.append(workbenchPanel(view, snapshot));
+    }
+  }
+  return zone;
 }
 
 /**
@@ -240,7 +314,7 @@ function workbenchPanel(viewDefinition, snapshot) {
   section.dataset.panelId = `panel.${viewDefinition.id}`;
   section.dataset.viewId = viewDefinition.id;
   section.dataset.placeId = viewDefinition.place_id;
-  section.append(panelHeader(viewDefinition));
+  section.append(panelHeader(viewDefinition, snapshot));
 
   const view = element("div", "panel-view");
   const renderer = viewRenderers[viewDefinition.id] ?? unknownView;
@@ -249,13 +323,48 @@ function workbenchPanel(viewDefinition, snapshot) {
   return section;
 }
 
-/** @param {import("./shell-contract").UiView} viewDefinition */
-function panelHeader(viewDefinition) {
+function panelHeader(viewDefinition, snapshot) {
   const headerEl = element("div", "panel-header");
+  headerEl.draggable = true;
+  headerEl.addEventListener("dragstart", (event) => {
+    uiState.draggedViewId = viewDefinition.id;
+    event.dataTransfer?.setData("text/x-voxelle-view", viewDefinition.id);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  });
+  headerEl.addEventListener("dragend", () => {
+    uiState.draggedViewId = "";
+  });
   const titleGroup = element("div", "panel-title");
   titleGroup.append(element("h2", "", viewDefinition.label));
   titleGroup.append(element("span", "view-id", viewDefinition.id));
-  headerEl.append(titleGroup);
+  const controls = element("div", "panel-controls");
+  const placeSelect = element("select", "dock-select");
+  placeSelect.setAttribute("aria-label", `Dock ${viewDefinition.label}`);
+  for (const place of snapshot.ui_ontology.places) {
+    const option = element("option", "", place.label);
+    option.value = place.id;
+    option.selected = place.id === viewDefinition.place_id;
+    placeSelect.append(option);
+  }
+  placeSelect.addEventListener("pointerdown", (event) => event.stopPropagation());
+  placeSelect.addEventListener("change", () => {
+    saveLayout(moveView(snapshot.ui_ontology.views, viewDefinition.id, placeSelect.value))
+      .catch(reportError);
+  });
+  controls.append(
+    actionButton("↑", () => {
+      saveLayout(shiftView(snapshot.ui_ontology.views, viewDefinition.id, -1)).catch(reportError);
+    }, `Move ${viewDefinition.label} earlier`),
+    actionButton("↓", () => {
+      saveLayout(shiftView(snapshot.ui_ontology.views, viewDefinition.id, 1)).catch(reportError);
+    }, `Move ${viewDefinition.label} later`),
+    placeSelect,
+    actionButton("×", () => {
+      saveLayout(setViewVisible(snapshot.ui_ontology.views, viewDefinition.id, false))
+        .catch(reportError);
+    }, `Hide ${viewDefinition.label}`),
+  );
+  headerEl.append(titleGroup, controls);
   return headerEl;
 }
 
@@ -591,6 +700,80 @@ function unknownView() {
   return element("p", "summary", "Unknown view");
 }
 
+function commandPalette(snapshot) {
+  const backdrop = element("div", "command-palette-backdrop");
+  backdrop.addEventListener("pointerdown", (event) => {
+    if (event.target === backdrop) {
+      uiState.paletteOpen = false;
+      render();
+    }
+  });
+  const dialog = element("section", "command-palette");
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-label", "Command Palette");
+  const form = element("form", "command-palette-form");
+  const input = element("input", "command-palette-input");
+  input.type = "search";
+  input.placeholder = "Type a command";
+  input.value = uiState.paletteQuery;
+  input.setAttribute("aria-label", "Search commands");
+  const list = element("ol", "command-palette-list");
+  const updateResults = () => {
+    uiState.paletteQuery = input.value;
+    populatePaletteResults(list, snapshot);
+  };
+  input.addEventListener("input", updateResults);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const first = filterPaletteCommands(
+      snapshot.ui_ontology.commands,
+      uiState.paletteQuery,
+    )[0];
+    if (first) executePaletteCommand(first.id);
+  });
+  form.append(input);
+  dialog.append(form);
+  populatePaletteResults(list, snapshot);
+  dialog.append(list);
+  backdrop.append(dialog);
+  return backdrop;
+}
+
+function populatePaletteResults(list, snapshot) {
+  list.replaceChildren();
+  const commands = filterPaletteCommands(
+    snapshot.ui_ontology.commands,
+    uiState.paletteQuery,
+  );
+  if (commands.length === 0) {
+    list.append(element("li", "command-palette-empty", "No matching commands"));
+  }
+  for (const command of commands) {
+    const item = element("li", "");
+    const button = element("button", "command-palette-result");
+    button.type = "button";
+    const copy = element("span", "command-palette-copy");
+    copy.append(
+      element("strong", "", command.label),
+      element("small", "muted", command.description),
+    );
+    button.append(copy);
+    if (command.shortcut) {
+      button.append(element("kbd", "", command.shortcut.replace("Mod", navigator.platform.includes("Mac") ? "⌘" : "Ctrl")));
+    }
+    button.addEventListener("click", () => executePaletteCommand(command.id));
+    item.append(button);
+    list.append(item);
+  }
+}
+
+function executePaletteCommand(commandId) {
+  uiState.paletteOpen = false;
+  uiState.paletteQuery = "";
+  runCommand(commandId).catch(reportError);
+}
+
 /**
  * @param {Array<[string, string]>} rows
  */
@@ -618,6 +801,10 @@ function commandButton(command, payload) {
   const button = element("button", "command-button", commandLabel(command));
   button.type = "button";
   button.dataset.command = command;
+  const definition = currentSnapshot.ui_ontology.commands.find((item) => item.id === command);
+  if (definition?.shortcut) {
+    button.title = `${definition.description} (${definition.shortcut})`;
+  }
   button.disabled = uiState.busyCommand !== "";
   if (uiState.busyCommand === command) {
     button.textContent = "Working";
@@ -626,6 +813,20 @@ function commandButton(command, payload) {
     runCommand(command, payload).catch(reportError);
   });
   return button;
+}
+
+function actionButton(label, action, title = label) {
+  const button = element("button", "command-button", label);
+  button.type = "button";
+  button.title = title;
+  button.disabled = uiState.busyCommand !== "";
+  button.addEventListener("pointerdown", (event) => event.stopPropagation());
+  button.addEventListener("click", action);
+  return button;
+}
+
+async function saveLayout(placements) {
+  await runCommand("workbench.layout.save", { placements });
 }
 
 /** @param {string} command */
@@ -646,6 +847,16 @@ async function runCommand(command, payload) {
   render();
   try {
     switch (command) {
+      case "workbench.commandPalette.open":
+        uiState.paletteOpen = true;
+        uiState.paletteQuery = "";
+        return;
+      case "message.composer.focus":
+        uiState.paletteOpen = false;
+        window.requestAnimationFrame(() => {
+          app.querySelector(".message-input")?.focus();
+        });
+        return;
       case "shell.refresh":
         await refresh();
         return;
@@ -713,8 +924,17 @@ async function runCommand(command, payload) {
           /** @type {import("./shell-contract").SetUiPreferenceRequest} */ (payload),
         );
         return;
+      case "workbench.layout.save":
+        currentSnapshot = await shell.execute(
+          command,
+          /** @type {import("./shell-contract").SetWorkbenchLayoutRequest} */ (payload),
+        );
+        return;
+      case "workbench.layout.reset":
+        currentSnapshot = await shell.execute(command, {});
+        return;
       default:
-        appendActivity(currentSnapshot, `unhandled ${command}`);
+        throw new Error(`No command handler is registered for ${command}`);
     }
   } finally {
     uiState.busyCommand = "";
