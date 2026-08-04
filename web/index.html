@@ -8,6 +8,15 @@
   </head>
   <body>
     <main id="app" class="app-shell" aria-live="polite"></main>
+    <script>
+      window.addEventListener("error", (event) => {
+        document.querySelector("#app").textContent = `Voxelle failed to render: ${event.message}`;
+      });
+      window.addEventListener("unhandledrejection", (event) => {
+        const message = event.reason?.message ?? String(event.reason);
+        document.querySelector("#app").textContent = `Voxelle failed to render: ${message}`;
+      });
+    </script>
     <script type="module" src="./src/main.js"></script>
   </body>
 </html>

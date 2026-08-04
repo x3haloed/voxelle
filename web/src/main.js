@@ -1,4 +1,5 @@
 import { createShellClient } from "./shell-client.js";
+import { captureCallMedia } from "./call-media.mjs";
 import {
   applyOntology,
   messageTimestamp,
@@ -37,6 +38,14 @@ const uiState = {
   draggedViewId: "",
   paletteOpen: false,
   paletteQuery: "",
+  localMediaStream: null,
+  remoteMediaStreams: new Map(),
+  peerConnections: new Map(),
+  pendingIce: new Map(),
+  seenCallSignals: new Set(),
+  processingCallSignals: false,
+  mediaNotice: null,
+  lastCallHeartbeatMs: 0,
 };
 
 const viewRenderers = {
@@ -53,6 +62,7 @@ const viewRenderers = {
   "notification.center": notificationCenterView,
   "room.timeline": roomTimelineView,
   "message.composer": messageComposerView,
+  "call.mesh": callMeshView,
   "service.activity": activityView,
 };
 
@@ -73,7 +83,22 @@ window.setInterval(async () => {
     return;
   }
   try {
-    await refresh();
+    const localPeerId = currentSnapshot.home?.profile.peer_id;
+    const call = currentSnapshot.home?.call;
+    if (
+      uiState.localMediaStream
+      && localPeerId
+      && call?.participants.includes(localPeerId)
+      && Date.now() - uiState.lastCallHeartbeatMs >= 20_000
+    ) {
+      currentSnapshot = await shell.execute("call.heartbeat", {
+        room: currentSnapshot.home?.room.room_id ?? null,
+        call_id: call.call_id,
+      });
+      uiState.lastCallHeartbeatMs = Date.now();
+    } else {
+      await refresh();
+    }
     render();
   } catch (error) {
     uiState.error = error instanceof Error ? error.message : String(error);
@@ -87,6 +112,15 @@ async function refresh() {
 }
 
 function render() {
+  const localPeerId = currentSnapshot.home?.profile.peer_id;
+  if (
+    uiState.localMediaStream
+    && localPeerId
+    && !currentSnapshot.home?.call.participants.includes(localPeerId)
+  ) {
+    stopLocalMedia();
+    uiState.mediaNotice = "Call session ended or the four-peer mesh was full.";
+  }
   const presentation = applyOntology(
     document.documentElement,
     currentSnapshot.ui_ontology,
@@ -107,6 +141,8 @@ function render() {
       input?.setSelectionRange?.(input.value.length, input.value.length);
     });
   }
+  attachCallMedia();
+  processCallSignals().catch(reportError);
 }
 
 document.addEventListener("keydown", (event) => {
@@ -874,6 +910,178 @@ function messageComposerView() {
   return form;
 }
 
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function callMeshView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const call = snapshot.home?.call;
+  const localPeerId = snapshot.home?.profile.peer_id;
+  const joined = Boolean(localPeerId && call?.participants.includes(localPeerId));
+  const controls = element("div", "control-row");
+  controls.append(
+    commandButton("call.join", { video: false }),
+    commandButton("call.join", { video: true }),
+    commandButton("call.leave"),
+  );
+  controls.children[0].textContent = "Join voice";
+  controls.children[1].textContent = "Join video";
+  const status = element(
+    "p",
+    "summary",
+    joined
+      ? `${call?.participants.length ?? 0} of 4 peers in direct mesh`
+      : "Media stays in direct WebRTC connections; replicated signed events carry signaling only.",
+  );
+  const videos = element("div", "call-grid");
+  if (joined) {
+    const localVideo = element("video", "call-video");
+    localVideo.autoplay = true;
+    localVideo.muted = true;
+    localVideo.playsInline = true;
+    localVideo.dataset.peerId = "local";
+    videos.append(callTile("You", localVideo));
+    for (const peerId of call?.participants ?? []) {
+      if (peerId === localPeerId) continue;
+      const video = element("video", "call-video");
+      video.autoplay = true;
+      video.playsInline = true;
+      video.dataset.peerId = peerId;
+      videos.append(callTile(shortId(peerId), video));
+    }
+  }
+  fragment.append(status);
+  if (uiState.mediaNotice) {
+    fragment.append(element("p", "call-warning", uiState.mediaNotice));
+  }
+  fragment.append(controls, videos);
+  return fragment;
+}
+
+function callTile(label, video) {
+  const tile = element("figure", "call-tile");
+  tile.append(video, element("figcaption", "mono", label));
+  return tile;
+}
+
+function attachCallMedia() {
+  const localVideo = app.querySelector('video[data-peer-id="local"]');
+  if (localVideo && localVideo.srcObject !== uiState.localMediaStream) {
+    localVideo.srcObject = uiState.localMediaStream;
+  }
+  for (const [peerId, stream] of uiState.remoteMediaStreams) {
+    const video = [...app.querySelectorAll("video[data-peer-id]")]
+      .find((candidate) => candidate.dataset.peerId === peerId);
+    if (video && video.srcObject !== stream) video.srcObject = stream;
+  }
+}
+
+async function processCallSignals() {
+  if (uiState.processingCallSignals || !uiState.localMediaStream || !currentSnapshot.home) return;
+  uiState.processingCallSignals = true;
+  try {
+    const localPeerId = currentSnapshot.home.profile.peer_id;
+    const call = currentSnapshot.home.call;
+    for (const signal of call.signals) {
+      if (uiState.seenCallSignals.has(signal.event_id)) continue;
+      if (signal.kind === "CALL_JOIN" && signal.author_peer_id !== localPeerId) {
+        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+        if (localPeerId.localeCompare(signal.author_peer_id) < 0 && pc.signalingState === "stable") {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await sendCallSignal("offer", signal.author_peer_id, JSON.stringify(offer), null);
+        }
+      } else if (signal.kind === "CALL_LEAVE" && signal.author_peer_id !== localPeerId) {
+        closePeerConnection(signal.author_peer_id);
+      } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_OFFER" && signal.sdp) {
+        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+        await pc.setRemoteDescription(JSON.parse(signal.sdp));
+        await flushPendingIce(signal.author_peer_id, pc);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await sendCallSignal("answer", signal.author_peer_id, JSON.stringify(answer), null);
+      } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_ANSWER" && signal.sdp) {
+        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+        await pc.setRemoteDescription(JSON.parse(signal.sdp));
+        await flushPendingIce(signal.author_peer_id, pc);
+      } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_ICE" && signal.candidate) {
+        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+        const candidate = JSON.parse(signal.candidate);
+        if (pc.remoteDescription) await pc.addIceCandidate(candidate);
+        else {
+          const pending = uiState.pendingIce.get(signal.author_peer_id) ?? [];
+          pending.push(candidate);
+          uiState.pendingIce.set(signal.author_peer_id, pending);
+        }
+      }
+      uiState.seenCallSignals.add(signal.event_id);
+    }
+  } finally {
+    uiState.processingCallSignals = false;
+    attachCallMedia();
+  }
+}
+
+function ensurePeerConnection(peerId, callId) {
+  const existing = uiState.peerConnections.get(peerId);
+  if (existing) return existing;
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  for (const track of uiState.localMediaStream?.getTracks() ?? []) {
+    pc.addTrack(track, uiState.localMediaStream);
+  }
+  pc.addEventListener("icecandidate", (event) => {
+    if (event.candidate) {
+      sendCallSignal("ice", peerId, null, JSON.stringify(event.candidate.toJSON())).catch(reportError);
+    }
+  });
+  pc.addEventListener("track", (event) => {
+    let stream = uiState.remoteMediaStreams.get(peerId);
+    if (!stream) {
+      stream = new MediaStream();
+      uiState.remoteMediaStreams.set(peerId, stream);
+    }
+    stream.addTrack(event.track);
+    attachCallMedia();
+  });
+  pc.addEventListener("connectionstatechange", () => {
+    if (["failed", "closed"].includes(pc.connectionState)) closePeerConnection(peerId);
+  });
+  pc.__voxelleCallId = callId;
+  uiState.peerConnections.set(peerId, pc);
+  return pc;
+}
+
+async function flushPendingIce(peerId, pc) {
+  for (const candidate of uiState.pendingIce.get(peerId) ?? []) {
+    await pc.addIceCandidate(candidate);
+  }
+  uiState.pendingIce.delete(peerId);
+}
+
+async function sendCallSignal(signal_type, target_peer_id, sdp, candidate) {
+  currentSnapshot = await shell.execute("call.signal", {
+    room: currentSnapshot.home?.room.room_id ?? null,
+    call_id: currentSnapshot.home?.call.call_id ?? "",
+    target_peer_id,
+    signal_type,
+    sdp,
+    candidate,
+  });
+  render();
+}
+
+function closePeerConnection(peerId) {
+  uiState.peerConnections.get(peerId)?.close();
+  uiState.peerConnections.delete(peerId);
+  uiState.remoteMediaStreams.delete(peerId);
+  uiState.pendingIce.delete(peerId);
+}
+
+function stopLocalMedia() {
+  for (const track of uiState.localMediaStream?.getTracks() ?? []) track.stop();
+  uiState.localMediaStream = null;
+  for (const peerId of [...uiState.peerConnections.keys()]) closePeerConnection(peerId);
+  uiState.seenCallSignals.clear();
+}
+
 function unknownView() {
   return element("p", "summary", "Unknown view");
 }
@@ -1134,6 +1342,42 @@ async function runCommand(command, payload) {
           room: null,
           limit: 50,
         });
+        return;
+      case "call.join": {
+        if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
+          throw new Error("This WebView does not provide WebRTC media capture");
+        }
+        stopLocalMedia();
+        const capture = await captureCallMedia(navigator.mediaDevices, Boolean(payload?.video));
+        uiState.localMediaStream = capture.stream;
+        uiState.mediaNotice = capture.notice;
+        try {
+          currentSnapshot = await shell.execute(command, {
+            room: currentSnapshot.home?.room.room_id ?? null,
+            video: capture.video,
+          });
+          uiState.lastCallHeartbeatMs = Date.now();
+        } catch (error) {
+          stopLocalMedia();
+          throw error;
+        }
+        return;
+      }
+      case "call.leave":
+        currentSnapshot = await shell.execute(command, {
+          room: currentSnapshot.home?.room.room_id ?? null,
+          call_id: currentSnapshot.home?.call.call_id ?? "",
+        });
+        stopLocalMedia();
+        uiState.mediaNotice = null;
+        uiState.lastCallHeartbeatMs = 0;
+        return;
+      case "call.heartbeat":
+        currentSnapshot = await shell.execute(command, payload);
+        uiState.lastCallHeartbeatMs = Date.now();
+        return;
+      case "call.signal":
+        currentSnapshot = await shell.execute(command, payload);
         return;
       case "role.create": {
         const name = payload?.name ?? window.prompt("Role name");

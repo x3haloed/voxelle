@@ -32,6 +32,7 @@ mod shell;
 pub use shell::{ShellError, ShellResult, ShellState};
 
 pub const DEFAULT_ROOM_ID: &str = "room:general";
+const CALL_LIVENESS_MS: i64 = 90_000;
 
 pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
     resolve_home_root_from(
@@ -258,6 +259,27 @@ pub struct NotificationView {
     pub kind: String,
     #[ts(type = "number")]
     pub created_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallSignalView {
+    pub event_id: String,
+    pub kind: String,
+    pub call_id: String,
+    pub author_peer_id: String,
+    pub target_peer_id: Option<String>,
+    pub video: Option<bool>,
+    pub sdp: Option<String>,
+    pub candidate: Option<String>,
+    #[ts(type = "number")]
+    pub created_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallView {
+    pub call_id: String,
+    pub participants: Vec<String>,
+    pub signals: Vec<CallSignalView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -520,6 +542,8 @@ pub fn shell_contract_typescript() -> String {
         ProfileView::decl(&cfg),
         SearchResultView::decl(&cfg),
         NotificationView::decl(&cfg),
+        CallSignalView::decl(&cfg),
+        CallView::decl(&cfg),
         PeerRecord::decl(&cfg),
         UiOntologyView::decl(&cfg),
         UiPlace::decl(&cfg),
@@ -542,6 +566,9 @@ pub fn shell_contract_typescript() -> String {
         MarkReadRequest::decl(&cfg),
         CreateChannelRequest::decl(&cfg),
         RotateChannelKeyRequest::decl(&cfg),
+        CallJoinRequest::decl(&cfg),
+        CallSignalRequest::decl(&cfg),
+        CallLeaveRequest::decl(&cfg),
         MessageTargetRequest::decl(&cfg),
         EditMessageRequest::decl(&cfg),
         ReactionRequest::decl(&cfg),
@@ -630,7 +657,7 @@ pub struct VoxelleCommandHost {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoxelleServiceEvent {
-    Served(ServedPeerRequest),
+    Served(Box<ServedPeerRequest>),
     Failed(String),
     Stopped,
 }
@@ -638,32 +665,33 @@ pub enum VoxelleServiceEvent {
 impl VoxelleServiceEvent {
     pub fn summary(&self) -> String {
         match self {
-            VoxelleServiceEvent::Served(ServedPeerRequest::Diagnostic(report)) => {
-                if report.reachable {
+            VoxelleServiceEvent::Served(served) => match served.as_ref() {
+                ServedPeerRequest::Diagnostic(report) if report.reachable => {
                     let remote = report
                         .remote
                         .as_ref()
                         .map(|remote| short_peer_label(&remote.peer_id))
                         .unwrap_or_else(|| "peer".to_string());
                     format!("served diagnostic: {remote} reached this home")
-                } else {
+                }
+                ServedPeerRequest::Diagnostic(report) => {
                     format!(
                         "served diagnostic: unreachable ({})",
                         report.error.as_deref().unwrap_or("no error detail")
                     )
                 }
-            }
-            VoxelleServiceEvent::Served(ServedPeerRequest::RoomSync(sync)) => {
-                let truncated = if sync.truncated { ", truncated" } else { "" };
-                format!(
-                    "served sync: room {}, offered {}, accepted {}, rejected {} event(s){}",
-                    sync.room_id,
-                    sync.offered,
-                    sync.accepted_from_remote,
-                    sync.rejected_from_remote,
-                    truncated
-                )
-            }
+                ServedPeerRequest::RoomSync(sync) => {
+                    let truncated = if sync.truncated { ", truncated" } else { "" };
+                    format!(
+                        "served sync: room {}, offered {}, accepted {}, rejected {} event(s){}",
+                        sync.room_id,
+                        sync.offered,
+                        sync.accepted_from_remote,
+                        sync.rejected_from_remote,
+                        truncated
+                    )
+                }
+            },
             VoxelleServiceEvent::Failed(error) => format!("service error: {error}"),
             VoxelleServiceEvent::Stopped => "service stopped".to_string(),
         }
@@ -758,6 +786,31 @@ pub struct CreateChannelRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct RotateChannelKeyRequest {
     pub room_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallJoinRequest {
+    pub room: Option<String>,
+    #[serde(default)]
+    pub video: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallSignalRequest {
+    pub room: Option<String>,
+    pub call_id: String,
+    pub target_peer_id: String,
+    pub signal_type: String,
+    #[serde(default)]
+    pub sdp: Option<String>,
+    #[serde(default)]
+    pub candidate: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallLeaveRequest {
+    pub room: Option<String>,
+    pub call_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -871,6 +924,7 @@ pub struct HomeScreenView {
     pub roles: Vec<RoleView>,
     pub profiles: Vec<ProfileView>,
     pub notifications: Vec<NotificationView>,
+    pub call: CallView,
     pub room: RoomTimelineView,
 }
 
@@ -1036,6 +1090,7 @@ impl VoxelleHome {
             roles: self.roles()?,
             profiles: self.profiles()?,
             notifications: self.notifications()?,
+            call: self.call_view(&selected_room)?,
             room: RoomTimelineView {
                 room_id: selected_room.clone(),
                 messages: self.read_messages(Some(&selected_room))?,
@@ -1688,7 +1743,7 @@ impl VoxelleHome {
                 }
             }
         }
-        notifications.sort_by(|left, right| right.created_ms.cmp(&left.created_ms));
+        notifications.sort_by_key(|item| std::cmp::Reverse(item.created_ms));
         Ok(notifications)
     }
 
@@ -1805,9 +1860,139 @@ impl VoxelleHome {
                 }
             }
         }
-        results.sort_by(|left, right| right.message.created_ms.cmp(&left.message.created_ms));
+        results.sort_by_key(|item| std::cmp::Reverse(item.message.created_ms));
         results.truncate(request.limit.unwrap_or(50).clamp(1, 100));
         Ok(results)
+    }
+
+    pub fn call_view(&self, room_id: &str) -> Result<CallView> {
+        let call_id = room_call_id(room_id);
+        let mut events = self.decrypted_room_events(room_id)?;
+        events.sort_by(|left, right| {
+            left.created_ms
+                .cmp(&right.created_ms)
+                .then(left.event_id.cmp(&right.event_id))
+        });
+        let now = now_ms();
+        let mut last_seen = BTreeMap::new();
+        for event in &events {
+            if event
+                .body
+                .get("call_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(call_id.as_str())
+            {
+                continue;
+            }
+            if matches!(event.kind.as_str(), "CALL_JOIN" | "CALL_HEARTBEAT") {
+                last_seen.insert(event.author_peer_id.clone(), event.created_ms);
+            } else if event.kind == "CALL_LEAVE" {
+                last_seen.remove(&event.author_peer_id);
+            }
+        }
+        let participants: Vec<String> = last_seen
+            .into_iter()
+            .filter(|(_, seen_ms)| now.saturating_sub(*seen_ms) <= CALL_LIVENESS_MS)
+            .map(|(peer_id, _)| peer_id)
+            .take(4)
+            .collect();
+        let signals = if participants.is_empty() {
+            Vec::new()
+        } else {
+            events
+                .into_iter()
+                .filter(|event| {
+                    event.kind.starts_with("CALL_")
+                        && now.saturating_sub(event.created_ms) <= CALL_LIVENESS_MS
+                        && event
+                            .body
+                            .get("call_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(call_id.as_str())
+                })
+                .map(|event| CallSignalView {
+                    event_id: event.event_id,
+                    kind: event.kind,
+                    call_id: call_id.clone(),
+                    author_peer_id: event.author_peer_id,
+                    target_peer_id: event
+                        .body
+                        .get("target_peer_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned),
+                    video: event.body.get("video").and_then(serde_json::Value::as_bool),
+                    sdp: event
+                        .body
+                        .get("sdp")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned),
+                    candidate: event
+                        .body
+                        .get("candidate")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned),
+                    created_ms: event.created_ms,
+                })
+                .collect()
+        };
+        Ok(CallView {
+            call_id,
+            participants,
+            signals,
+        })
+    }
+
+    pub fn join_call(&self, request: &CallJoinRequest) -> Result<EventV1> {
+        let config = self.load_config()?;
+        let room_id = request.room.as_deref().unwrap_or(&config.default_room);
+        let identity = self.load_identity()?;
+        let call = self.call_view(room_id)?;
+        if call.participants.contains(&identity.peer_id) {
+            anyhow::bail!("already joined to the room call");
+        }
+        if call.participants.len() >= 4 {
+            anyhow::bail!("room calls are limited to four peers");
+        }
+        self.create_room_event(
+            Some(room_id),
+            "CALL_JOIN",
+            serde_json::json!({ "call_id": call.call_id, "video": request.video }),
+        )
+    }
+
+    pub fn signal_call(&self, request: &CallSignalRequest) -> Result<EventV1> {
+        let kind = match request.signal_type.as_str() {
+            "offer" => "CALL_OFFER",
+            "answer" => "CALL_ANSWER",
+            "ice" => "CALL_ICE",
+            _ => anyhow::bail!("unknown call signal type"),
+        };
+        self.create_room_event(
+            request.room.as_deref(),
+            kind,
+            serde_json::json!({
+                "call_id": request.call_id,
+                "target_peer_id": request.target_peer_id,
+                "sdp": request.sdp,
+                "candidate": request.candidate,
+            }),
+        )
+    }
+
+    pub fn heartbeat_call(&self, request: &CallLeaveRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "CALL_HEARTBEAT",
+            serde_json::json!({ "call_id": request.call_id }),
+        )
+    }
+
+    pub fn leave_call(&self, request: &CallLeaveRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "CALL_LEAVE",
+            serde_json::json!({ "call_id": request.call_id }),
+        )
     }
 
     fn create_room_event(
@@ -1822,13 +2007,18 @@ impl VoxelleHome {
         let room = room.unwrap_or(&config.default_room);
         let created_ms = now_ms();
         let parents = store.room_heads(room)?;
+        let delegation_scope = if kind.starts_with("CALL_") {
+            "room:call"
+        } else {
+            "room:post"
+        };
         let semantic_event = create_event(
             &identity,
             create_delegation(
                 &identity,
                 created_ms - 60_000,
                 created_ms + 30 * 24 * 60 * 60_000,
-                vec!["room:post".to_string()],
+                vec![delegation_scope.to_string()],
             )?,
             room,
             created_ms,
@@ -1877,7 +2067,7 @@ impl VoxelleHome {
                     &identity,
                     created_ms - 60_000,
                     created_ms + 30 * 24 * 60 * 60_000,
-                    vec!["room:post".to_string()],
+                    vec![delegation_scope.to_string()],
                 )?,
                 room,
                 created_ms,
@@ -3229,6 +3419,47 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
+    pub async fn join_call(&mut self, mut request: CallJoinRequest) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        if self.service.is_none() {
+            self.service = Some(
+                self.home
+                    .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)?,
+            );
+            self.push_activity(ServiceActivityLevel::Info, "service started for room call");
+        }
+        self.home.join_call(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
+    pub async fn signal_call(
+        &mut self,
+        mut request: CallSignalRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.signal_call(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
+    pub async fn heartbeat_call(
+        &mut self,
+        mut request: CallLeaveRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.heartbeat_call(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
+    pub async fn leave_call(&mut self, mut request: CallLeaveRequest) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.leave_call(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
     pub async fn edit_message(
         &mut self,
         mut request: EditMessageRequest,
@@ -3868,7 +4099,7 @@ async fn run_service_loop(
             result = server.serve_next_request() => {
                 match result {
                     Ok(served) => {
-                        let _ = event_tx.send(VoxelleServiceEvent::Served(served));
+                        let _ = event_tx.send(VoxelleServiceEvent::Served(Box::new(served)));
                     }
                     Err(error) => {
                         let _ = event_tx.send(VoxelleServiceEvent::Failed(format!("{error:#}")));
@@ -4038,6 +4269,13 @@ fn default_views() -> Vec<UiView> {
             "main",
             1,
             "Message entry and send command",
+        ),
+        ui_view(
+            "call.mesh",
+            "Voice & Video",
+            "main",
+            2,
+            "Direct WebRTC mesh for two to four room members",
         ),
         ui_view(
             "service.activity",
@@ -4224,6 +4462,34 @@ fn default_commands() -> Vec<UiCommand> {
             "Search Messages",
             "Search the local replicated message index",
             Some("Mod+F"),
+            true,
+        ),
+        shell_command(
+            "call.join",
+            "Join Voice & Video",
+            "Capture local media and join the selected room mesh",
+            Some("Mod+Shift+V"),
+            true,
+        ),
+        shell_command(
+            "call.signal",
+            "Send Call Signal",
+            "Replicate an authenticated WebRTC negotiation signal",
+            None,
+            false,
+        ),
+        shell_command(
+            "call.heartbeat",
+            "Keep Call Alive",
+            "Replicate short-lived room call presence",
+            None,
+            false,
+        ),
+        shell_command(
+            "call.leave",
+            "Leave Voice & Video",
+            "Leave the selected room call and stop local capture",
+            None,
             true,
         ),
         frontend_command(
@@ -4927,6 +5193,16 @@ fn private_event_aad(room_id: &str, epoch: u64, author_peer_id: &str) -> String 
     format!("voxelle/private-event/v1\n{room_id}\n{epoch}\n{author_peer_id}")
 }
 
+fn room_call_id(room_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"voxelle/room-call/v1\0");
+    digest.update(room_id.as_bytes());
+    format!(
+        "call:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+    )
+}
+
 fn recovery_capsule_key(card: &RecoveryCardV1) -> Result<[u8; 32]> {
     if card.v != 1 {
         anyhow::bail!("unsupported recovery card version {}", card.v);
@@ -5017,6 +5293,8 @@ pub fn read_identity_vault(path: &Path) -> Result<PeerIdentity> {
     file.decrypt(&key)
 }
 
+// The explicit returns keep mutually exclusive target/test cfg branches legible.
+#[allow(clippy::needless_return)]
 fn identity_vault_key(path: &Path, create: bool) -> Result<[u8; 32]> {
     #[cfg(test)]
     {

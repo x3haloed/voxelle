@@ -1,6 +1,6 @@
 # Voxelle Truthful System Contract
 
-Status: active implementation contract  
+Status: locally verified complete through the scoped Discord feature families
 Scope: implementation through the Discord feature families  
 Governing method: truthful system construction
 
@@ -220,6 +220,42 @@ Tauri run moved and hid views, filtered and invoked the palette from the native
 keyboard shortcut, quit, relaunched, and projected the saved layout through the
 real bridge.
 
-The next risk frontier is horizontal Discord feature growth. Each family must
-extend signed event acceptance, retained projection, sync, command DTOs, and a
-dockable view together; a frontend-only resemblance is not completion.
+The public Discord families have crossed their operational gate. Space
+governance now carries channel definitions, profiles, roles, permissions,
+bans, and invites. Signed room events carry posts, edits, redaction tombstones,
+reactions, mentions, threads, pins, and content-addressed attachments. SQLite
+retains the accepted facts; multi-room QUIC anti-entropy forwards them through
+ordinary peers; the app projects unread cursors, mention notifications, and
+local full-text search. A serialized two-home test exercises those commands
+through the same host used by the native shell.
+
+Private channels have crossed their first confidentiality and recovery gate.
+Each member publishes a signed X25519 encryption key, private channel creation
+wraps a random epoch key independently to each admitted member, and every
+private room fact is carried inside an authenticated encrypted envelope. A
+decrypted inner fact is revalidated by the ordinary semantic authority before
+projection. A three-home test proves that the excluded peer neither lists nor
+stores the private room, retained events and local key files lack the message
+plaintext, admitted peers decrypt successive epochs, and a fresh recovered
+home restores the epoch keys and history from an ordinary peer.
+
+The small-group media family has crossed its protocol and UI gates. Signed
+room-call events carry only participant presence and bounded offer, answer,
+and ICE signaling; audio and video remain in direct WebRTC connections with no
+STUN, TURN, SFU, or Voxelle service. Concurrent joins converge to the same
+deterministically selected four peers without rejecting otherwise valid facts,
+and heartbeat expiry releases a slot after a crash. Public and private rooms
+reuse the same acceptance, encryption, storage, and sync path. Deterministic UI
+tests exercise camera requests, voice fallback when hardware is absent, and
+permission-denial truthfulness. This verification machine has no physical
+camera or microphone, so physical-device capture is not claimed as lived local
+evidence.
+
+The final local fixed-point pass is green: full workspace tests, strict lint for
+the changed authorities, generated-contract equality, macOS Intel compilation,
+ad-hoc-signed bundle inspection, packaged native onboarding and palette
+exercise, and resource inspection all pass. The app bundle is 15 MiB on the
+verified arm64 host. Windows compilation reaches native dependencies, but a
+Windows SDK and lived runner are not present on this Mac. Windows first launch
+and physical media devices therefore remain the external gates already named
+in the evidence horizon, not locally completed claims.

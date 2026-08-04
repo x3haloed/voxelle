@@ -20,6 +20,10 @@ export type SearchResultView = { room_id: string, message: MessageView, };
 
 export type NotificationView = { event_id: string, room_id: string, author_peer_id: string, summary: string, kind: string, created_ms: number, };
 
+export type CallSignalView = { event_id: string, kind: string, call_id: string, author_peer_id: string, target_peer_id: string | null, video: boolean | null, sdp: string | null, candidate: string | null, created_ms: number, };
+
+export type CallView = { call_id: string, participants: Array<string>, signals: Array<CallSignalView>, };
+
 export type PeerRecord = { v: number, label: string | null, space_id: string, governance_room_id: string, default_room: string, authority_peer_id: string, endpoint: PeerEndpoint, };
 
 export type UiOntologyView = { places: Array<UiPlace>, views: Array<UiView>, commands: Array<UiCommand>, semantic_tokens: Array<SemanticToken>, metrics: Array<UiMetric>, behaviors: Array<UiBehavior>, renderers: Array<UiRenderer>, };
@@ -64,6 +68,12 @@ export type CreateChannelRequest = { name: string, topic: string, private_member
 
 export type RotateChannelKeyRequest = { room_id: string, };
 
+export type CallJoinRequest = { room: string | null, video: boolean, };
+
+export type CallSignalRequest = { room: string | null, call_id: string, target_peer_id: string, signal_type: string, sdp: string | null, candidate: string | null, };
+
+export type CallLeaveRequest = { room: string | null, call_id: string, };
+
 export type MessageTargetRequest = { target_event_id: string, room: string | null, };
 
 export type EditMessageRequest = { target_event_id: string, text: string, room: string | null, mentions: Array<string>, };
@@ -94,7 +104,7 @@ export type SetUiPreferenceRequest = { "kind": "semantic_token", id: string, val
 
 export type SetWorkbenchLayoutRequest = { placements: Array<UiViewPlacement>, };
 
-export type HomeScreenView = { profile: ProfileSummary, runtime: RuntimeStatusView, invite: InviteExchangeView | null, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, room: RoomTimelineView, };
+export type HomeScreenView = { profile: ProfileSummary, runtime: RuntimeStatusView, invite: InviteExchangeView | null, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, call: CallView, room: RoomTimelineView, };
 
 export type NetworkHealthView = { rows: Array<NetworkHealthRow>, };
 

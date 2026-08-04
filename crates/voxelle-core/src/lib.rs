@@ -13,6 +13,7 @@ use std::io::{self, Write};
 const OID_ED25519: spki::ObjectIdentifier = spki::ObjectIdentifier::new_unwrap("1.3.101.112");
 pub const GOVERNANCE_ROOM_ID: &str = "governance";
 pub const MAX_EVENT_FUTURE_SKEW_MS: i64 = 5 * 60_000;
+const CALL_LIVENESS_MS: i64 = 90_000;
 
 #[derive(Debug, Clone)]
 pub struct Keypair {
@@ -498,6 +499,7 @@ fn default_device_scopes() -> Vec<String> {
         "room:governance".to_string(),
         "room:join".to_string(),
         "room:post".to_string(),
+        "room:call".to_string(),
     ]
 }
 
@@ -1707,12 +1709,11 @@ fn validate_governance_event_body(
                 ));
             }
         }
-        "DEVICE_REVOKE" => {
+        "DEVICE_REVOKE"
             if string_body_field(event, "peer_id").is_none()
-                || string_body_field(event, "device_id").is_none()
-            {
-                return Err(invalid("device revocation fields missing"));
-            }
+                || string_body_field(event, "device_id").is_none() =>
+        {
+            return Err(invalid("device revocation fields missing"));
         }
         _ => {}
     }
@@ -1858,6 +1859,94 @@ fn validate_room_event_body(
             }
         }
         "IDENTITY_UPDATE" => require_post()?,
+        "CALL_JOIN" => {
+            require_post()?;
+            let call_id = string_body_field(event, "call_id")
+                .ok_or_else(|| AcceptError::Invalid("call_id missing".to_string()))?;
+            if !valid_short_text(&call_id, 128) {
+                return Err(AcceptError::Invalid("call_id is invalid".to_string()));
+            }
+            if event
+                .body
+                .get("video")
+                .and_then(serde_json::Value::as_bool)
+                .is_none()
+            {
+                return Err(AcceptError::Invalid("call video flag missing".to_string()));
+            }
+        }
+        "CALL_LEAVE" => {
+            require_post()?;
+            let call_id = string_body_field(event, "call_id")
+                .ok_or_else(|| AcceptError::Invalid("call_id missing".to_string()))?;
+            if !valid_short_text(&call_id, 128) {
+                return Err(AcceptError::Invalid("call_id is invalid".to_string()));
+            }
+            if !active_call_participants(
+                accepted_events,
+                &event.room_id,
+                &call_id,
+                event.created_ms,
+            )
+            .contains(author)
+            {
+                return Err(AcceptError::NotAuthorized);
+            }
+        }
+        "CALL_HEARTBEAT" => {
+            require_post()?;
+            let call_id = string_body_field(event, "call_id")
+                .ok_or_else(|| AcceptError::Invalid("call_id missing".to_string()))?;
+            if !valid_short_text(&call_id, 128)
+                || !active_call_participants(
+                    accepted_events,
+                    &event.room_id,
+                    &call_id,
+                    event.created_ms,
+                )
+                .contains(author)
+            {
+                return Err(AcceptError::NotAuthorized);
+            }
+        }
+        "CALL_OFFER" | "CALL_ANSWER" | "CALL_ICE" => {
+            require_post()?;
+            let call_id = string_body_field(event, "call_id")
+                .ok_or_else(|| AcceptError::Invalid("call_id missing".to_string()))?;
+            if !valid_short_text(&call_id, 128) {
+                return Err(AcceptError::Invalid("call_id is invalid".to_string()));
+            }
+            let target = string_body_field(event, "target_peer_id")
+                .ok_or_else(|| AcceptError::Invalid("call target missing".to_string()))?;
+            if !valid_short_text(&target, 256) {
+                return Err(AcceptError::Invalid("call target is invalid".to_string()));
+            }
+            let participants = active_call_participants(
+                accepted_events,
+                &event.room_id,
+                &call_id,
+                event.created_ms,
+            );
+            if target == author || !participants.contains(author) || !participants.contains(&target)
+            {
+                return Err(AcceptError::NotAuthorized);
+            }
+            let field = if event.kind == "CALL_ICE" {
+                "candidate"
+            } else {
+                "sdp"
+            };
+            let maximum = if field == "candidate" {
+                16 * 1024
+            } else {
+                128 * 1024
+            };
+            let value = string_body_field(event, field)
+                .ok_or_else(|| AcceptError::Invalid(format!("call {field} missing")))?;
+            if value.is_empty() || value.len() > maximum {
+                return Err(AcceptError::Invalid(format!("call {field} is invalid")));
+            }
+        }
         "ROOM_ENCRYPTED" => {
             require_post()?;
             let epoch = int_body_field(event, "key_epoch")
@@ -1883,10 +1972,48 @@ fn validate_room_event_body(
                 ));
             }
         }
-        kind if kind.starts_with("CALL_") => require_post()?,
         _ => require_post()?,
     }
     Ok(())
+}
+
+fn active_call_participants(
+    accepted_events: &[EventV1],
+    room_id: &str,
+    call_id: &str,
+    at_ms: i64,
+) -> BTreeSet<String> {
+    let mut events: Vec<&EventV1> = accepted_events
+        .iter()
+        .filter(|event| {
+            event.room_id == room_id
+                && matches!(
+                    event.kind.as_str(),
+                    "CALL_JOIN" | "CALL_HEARTBEAT" | "CALL_LEAVE"
+                )
+                && string_body_field(event, "call_id").as_deref() == Some(call_id)
+                && event.created_ms <= at_ms
+        })
+        .collect();
+    events.sort_by(|left, right| {
+        left.created_ms
+            .cmp(&right.created_ms)
+            .then(left.event_id.cmp(&right.event_id))
+    });
+    let mut last_seen = BTreeMap::new();
+    for event in events {
+        if matches!(event.kind.as_str(), "CALL_JOIN" | "CALL_HEARTBEAT") {
+            last_seen.insert(event.author_peer_id.clone(), event.created_ms);
+        } else {
+            last_seen.remove(&event.author_peer_id);
+        }
+    }
+    last_seen
+        .into_iter()
+        .filter(|(_, seen_ms)| at_ms.saturating_sub(*seen_ms) <= CALL_LIVENESS_MS)
+        .map(|(peer_id, _)| peer_id)
+        .take(4)
+        .collect()
 }
 
 pub fn validate_room_event_semantics(
@@ -2027,7 +2154,8 @@ pub fn topo_sort_deterministic(events: &[EventV1]) -> Vec<String> {
 
     let mut ready: Vec<String> = indegree
         .iter()
-        .filter_map(|(id, degree)| (*degree == 0).then(|| id.clone()))
+        .filter(|(_, degree)| **degree == 0)
+        .map(|(id, _)| id.clone())
         .collect();
     let mut out = Vec::with_capacity(by_id.len());
 
@@ -2350,6 +2478,92 @@ mod tests {
             json!({ "text": "hello" }),
         )
         .expect("message")
+    }
+
+    #[test]
+    fn call_authority_converges_mesh_to_four_and_requires_participant_targets() {
+        let identities: Vec<PeerIdentity> = (0..5)
+            .map(|_| PeerIdentity::generate_at(1_000).expect("identity"))
+            .collect();
+        let context = RoomContext::new(identities[0].peer_id.clone());
+        let call_id = "call:test";
+        let mut accepted = Vec::new();
+        for identity in &identities {
+            let join = member_join(identity);
+            accept_event(&join, &accepted, &context, 1_000).expect("membership accepted");
+            accepted.push(join);
+        }
+        for (index, identity) in identities.iter().enumerate() {
+            let join = create_event(
+                identity,
+                delegation_for(identity, vec!["room:call".to_string()]),
+                "room:general",
+                1_100 + index as i64,
+                "CALL_JOIN",
+                compute_heads(&accepted),
+                json!({ "call_id": call_id, "video": index % 2 == 0 }),
+            )
+            .expect("join event");
+            accept_event(&join, &accepted, &context, 1_200).expect("concurrent join accepted");
+            accepted.push(join);
+        }
+        let participants = active_call_participants(&accepted, "room:general", call_id, 1_200);
+        assert_eq!(participants.len(), 4);
+        let mut selected = participants.iter();
+        let author_id = selected.next().expect("selected author");
+        let target_id = selected.next().expect("selected target");
+        let author = identities
+            .iter()
+            .find(|identity| identity.peer_id == *author_id)
+            .expect("author identity");
+        let offer = create_event(
+            author,
+            delegation_for(author, vec!["room:call".to_string()]),
+            "room:general",
+            1_200,
+            "CALL_OFFER",
+            compute_heads(&accepted),
+            json!({
+                "call_id": call_id,
+                "target_peer_id": target_id,
+                "sdp": "v=0",
+                "candidate": null,
+            }),
+        )
+        .expect("offer");
+        accept_event(&offer, &accepted, &context, 1_200).expect("participant offer accepted");
+
+        let excluded = identities
+            .iter()
+            .find(|identity| !participants.contains(&identity.peer_id))
+            .expect("excluded fifth peer");
+        let excluded_offer = create_event(
+            excluded,
+            delegation_for(excluded, vec!["room:call".to_string()]),
+            "room:general",
+            1_201,
+            "CALL_OFFER",
+            compute_heads(&accepted),
+            json!({
+                "call_id": call_id,
+                "target_peer_id": target_id,
+                "sdp": "v=0",
+                "candidate": null,
+            }),
+        )
+        .expect("excluded offer");
+        assert_eq!(
+            accept_event(&excluded_offer, &accepted, &context, 1_201)
+                .expect_err("excluded peer cannot signal"),
+            AcceptError::NotAuthorized
+        );
+        assert!(active_call_participants(
+            &accepted,
+            "room:general",
+            call_id,
+            1_200 + CALL_LIVENESS_MS + 1,
+        )
+        .is_empty());
     }
 
     fn authority_governance_event(
@@ -2715,7 +2929,7 @@ mod tests {
             "MEMBER_BAN",
             json!({ "peer_id": member.peer_id }),
         );
-        accept_event(&ban, &[join.clone()], &context, 1_050).expect("ban accepted");
+        accept_event(&ban, std::slice::from_ref(&join), &context, 1_050).expect("ban accepted");
 
         let event = message(&member, 1_100, vec![]);
         let err = accept_event(&event, &[join, ban], &context, 1_100).expect_err("banned");
@@ -2738,7 +2952,8 @@ mod tests {
                 "device_id": member.device.id,
             }),
         );
-        accept_event(&revoke, &[join.clone()], &context, 1_050).expect("revoke accepted");
+        accept_event(&revoke, std::slice::from_ref(&join), &context, 1_050)
+            .expect("revoke accepted");
 
         let event = message(&member, 1_100, vec![]);
         let err = accept_event(&event, &[join, revoke], &context, 1_100).expect_err("revoked");

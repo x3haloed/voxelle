@@ -441,6 +441,40 @@ textarea {
   margin: 0;
 }
 
+.call-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--metric-panel-gap);
+}
+
+.call-warning {
+  color: var(--activity-error, #ffbd77);
+  margin: 0.35rem 0;
+}
+
+.call-tile {
+  margin: 0;
+  min-height: 140px;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  border: 1px solid var(--token-panel-border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #111;
+  color: #fff;
+}
+
+.call-video {
+  width: 100%;
+  min-height: 120px;
+  object-fit: cover;
+  background: #111;
+}
+
+.call-tile figcaption {
+  padding: 6px 8px;
+}
+
 .error-banner {
   margin-bottom: 12px;
   padding: 10px 12px;

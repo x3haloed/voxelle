@@ -33,6 +33,10 @@ impl ShellState {
             "channel.markRead" => host.mark_read(parse_request(payload)?),
             "channel.create" => host.create_channel(parse_request(payload)?).await,
             "channel.rotateKey" => host.rotate_channel_key(parse_request(payload)?).await,
+            "call.join" => host.join_call(parse_request(payload)?).await,
+            "call.signal" => host.signal_call(parse_request(payload)?).await,
+            "call.heartbeat" => host.heartbeat_call(parse_request(payload)?).await,
+            "call.leave" => host.leave_call(parse_request(payload)?).await,
             "message.edit" => host.edit_message(parse_request(payload)?).await,
             "message.redact" => host.redact_message(parse_request(payload)?).await,
             "reaction.add" => host.set_reaction(parse_request(payload)?, true).await,
@@ -274,6 +278,83 @@ mod tests {
             .await
             .expect("bob join");
         let bob_peer_id = bob_joined.home.expect("bob home").profile.peer_id;
+
+        alice
+            .execute_serialized_command(
+                "call.join",
+                serde_json::json!({ "room": null, "video": false }),
+            )
+            .await
+            .expect("alice joins call");
+        bob.execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("bob sees alice call");
+        let bob_call = bob
+            .execute_serialized_command(
+                "call.join",
+                serde_json::json!({ "room": null, "video": true }),
+            )
+            .await
+            .expect("bob joins call")
+            .home
+            .expect("bob home")
+            .call;
+        assert_eq!(bob_call.participants.len(), 2);
+        let call_id = bob_call.call_id.clone();
+        alice
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("alice sees bob call");
+        alice
+            .execute_serialized_command(
+                "call.signal",
+                serde_json::json!({
+                    "room": null,
+                    "call_id": call_id.clone(),
+                    "target_peer_id": bob_peer_id,
+                    "signal_type": "offer",
+                    "sdp": "{\"type\":\"offer\",\"sdp\":\"v=0\"}",
+                    "candidate": null
+                }),
+            )
+            .await
+            .expect("signed offer signal");
+        let bob_signaled = bob
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("bob receives offer");
+        assert!(bob_signaled
+            .home
+            .expect("bob home")
+            .call
+            .signals
+            .iter()
+            .any(|signal| signal.kind == "CALL_OFFER" && signal.author_peer_id == alice_peer_id));
+        alice
+            .execute_serialized_command(
+                "call.heartbeat",
+                serde_json::json!({ "room": null, "call_id": call_id.clone() }),
+            )
+            .await
+            .expect("alice heartbeat");
+        bob.execute_serialized_command(
+            "call.leave",
+            serde_json::json!({ "room": null, "call_id": call_id }),
+        )
+        .await
+        .expect("bob leaves call");
+        let alice_after_leave = alice
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("alice sees bob leave");
+        assert_eq!(
+            alice_after_leave
+                .home
+                .expect("alice home")
+                .call
+                .participants,
+            vec![alice_peer_id.clone()]
+        );
 
         let channel_snapshot = alice
             .execute_serialized_command(
