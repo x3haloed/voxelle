@@ -13,12 +13,36 @@ use voxelle_core::{
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
-    QuicNode, ServedPeerRequest, ServedRoomSync,
+    QuicNode, ServedPeerRequest,
 };
 use voxelle_store::Store;
 use voxelle_sync::{SyncLimits, SyncStats};
 
+mod shell;
+
+pub use shell::{ShellError, ShellResult, ShellState};
+
 pub const DEFAULT_ROOM_ID: &str = "room:general";
+
+pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
+    resolve_home_root_from(
+        explicit,
+        std::env::var_os("VOXELLE_HOME_ROOT").map(PathBuf::from),
+        dirs::home_dir(),
+    )
+}
+
+fn resolve_home_root_from(
+    explicit: Option<PathBuf>,
+    configured: Option<PathBuf>,
+    platform_home: Option<PathBuf>,
+) -> PathBuf {
+    explicit.or(configured).unwrap_or_else(|| {
+        platform_home
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".voxelle")
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct VoxelleHome {
@@ -34,11 +58,30 @@ pub struct HomeConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IdentityFile {
-    pub v: u8,
-    pub peer_secret_b64: String,
-    pub device_secret_b64: String,
-    pub peer_id: String,
-    pub device_id: String,
+    v: u8,
+    peer_secret_b64: String,
+    device_secret_b64: String,
+    peer_id: String,
+    device_id: String,
+}
+
+impl IdentityFile {
+    pub fn from_identity(identity: &PeerIdentity) -> Self {
+        Self {
+            v: 1,
+            peer_secret_b64: identity.peer.secret_key_b64(),
+            device_secret_b64: identity.device.secret_key_b64(),
+            peer_id: identity.peer.id.clone(),
+            device_id: identity.device.id.clone(),
+        }
+    }
+
+    pub fn to_identity(&self) -> Result<PeerIdentity> {
+        if self.v != 1 {
+            anyhow::bail!("unsupported identity version {}", self.v);
+        }
+        PeerIdentity::from_secret_keys_b64(&self.peer_secret_b64, &self.device_secret_b64)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -216,6 +259,7 @@ pub fn shell_contract_typescript() -> String {
         SendMessageRequest::decl(&cfg),
         ImportPeerRecordRequest::decl(&cfg),
         PeerCommandRequest::decl(&cfg),
+        SetUiPreferenceRequest::decl(&cfg),
         HomeScreenView::decl(&cfg),
         NetworkHealthView::decl(&cfg),
         NetworkHealthRow::decl(&cfg),
@@ -224,24 +268,53 @@ pub fn shell_contract_typescript() -> String {
         RuntimeState::decl(&cfg),
         InviteExchangeView::decl(&cfg),
         PeerListItemView::decl(&cfg),
-        PeerActionState::decl(&cfg),
         RoomTimelineView::decl(&cfg),
     ];
-    typescript_module(declarations)
+    let mut output = typescript_module(declarations);
+    output.push_str("export ");
+    output.push_str(&ShellError::decl(&cfg));
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output
+}
+
+pub fn write_shell_contract(path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, shell_contract_typescript())?;
+    Ok(())
+}
+
+pub fn ui_ontology_fixture_javascript() -> Result<String> {
+    let ontology = default_ui_ontology(UiPreferences::default());
+    Ok(format!(
+        "// This file is generated from the Rust UI ontology. Do not edit by hand.\n\nexport const defaultUiOntology = {};\n",
+        serde_json::to_string(&ontology)?
+    ))
+}
+
+pub fn write_ui_ontology_fixture(path: impl AsRef<Path>) -> Result<()> {
+    let path = path.as_ref();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, ui_ontology_fixture_javascript()?)?;
+    Ok(())
 }
 
 #[derive(Debug)]
-pub struct VoxelleRuntime {
+struct PeerServer {
     home: VoxelleHome,
     node: QuicNode,
-    endpoint: PeerEndpoint,
-    local_report: LocalReachabilityReport,
+    online: OnlineHome,
 }
 
 #[derive(Debug)]
 pub struct VoxelleService {
-    summary: ListenSummary,
-    default_room: String,
+    online: OnlineHome,
     events: mpsc::Receiver<VoxelleServiceEvent>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
@@ -294,9 +367,10 @@ impl VoxelleServiceEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ListenSummary {
+pub struct OnlineHome {
     pub endpoint: PeerEndpoint,
     pub local_report: LocalReachabilityReport,
+    pub default_room: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -360,6 +434,14 @@ pub struct PeerCommandRequest {
     pub peer_id: String,
     pub device_id: String,
     pub max_events: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SetUiPreferenceRequest {
+    SemanticToken { id: String, value: String },
+    Metric { id: String, value: f64 },
+    Behavior { id: String, value: UiBehaviorValue },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -428,14 +510,6 @@ pub struct PeerListItemView {
     #[ts(type = "string")]
     pub addr: SocketAddr,
     pub default_room: String,
-    pub diagnostic_state: PeerActionState,
-    pub sync_state: PeerActionState,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[serde(rename_all = "snake_case")]
-pub enum PeerActionState {
-    NotRun,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -449,32 +523,8 @@ impl VoxelleHome {
         Self { root: root.into() }
     }
 
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    pub fn identity_path(&self) -> PathBuf {
-        self.root.join("identity.json")
-    }
-
-    pub fn certificate_path(&self) -> PathBuf {
-        self.root.join("quic-cert.json")
-    }
-
-    pub fn store_path(&self) -> PathBuf {
-        self.root.join("store.sqlite3")
-    }
-
-    pub fn config_path(&self) -> PathBuf {
-        self.root.join("config.json")
-    }
-
-    pub fn known_peers_path(&self) -> PathBuf {
-        self.root.join("known-peers.json")
-    }
-
-    pub fn ui_preferences_path(&self) -> PathBuf {
-        self.root.join("ui-preferences.json")
+    fn path(&self, name: &str) -> PathBuf {
+        self.root.join(name)
     }
 
     pub fn init(&self, default_room: impl Into<String>) -> Result<ProfileSummary> {
@@ -484,7 +534,7 @@ impl VoxelleHome {
         self.load_or_create_certificate()?;
 
         let default_room = default_room.into();
-        let config = if self.config_path().exists() {
+        let config = if self.path("config.json").exists() {
             self.load_config()?
         } else {
             let config = HomeConfig {
@@ -492,7 +542,7 @@ impl VoxelleHome {
                 default_room,
                 authority_peer_id: identity.peer.id.clone(),
             };
-            write_json(&self.config_path(), &config)?;
+            write_json(&self.path("config.json"), &config)?;
             config
         };
 
@@ -520,12 +570,12 @@ impl VoxelleHome {
         })
     }
 
-    pub fn home_screen_view(&self, runtime: Option<&VoxelleRuntime>) -> Result<HomeScreenView> {
+    pub fn home_screen_view(&self, online: Option<&OnlineHome>) -> Result<HomeScreenView> {
         let config = self.load_config()?;
-        let invite = runtime
-            .map(|runtime| runtime.invite_view(None, None))
+        let invite = online
+            .map(|online| online.invite_view(None, None))
             .transpose()?;
-        let runtime = runtime
+        let runtime = online
             .map(RuntimeStatusView::online)
             .unwrap_or_else(RuntimeStatusView::offline);
         Ok(HomeScreenView {
@@ -544,37 +594,7 @@ impl VoxelleHome {
         })
     }
 
-    pub fn home_screen_view_service(
-        &self,
-        service: Option<&VoxelleService>,
-    ) -> Result<HomeScreenView> {
-        let config = self.load_config()?;
-        let invite = service
-            .map(|service| service.invite_view(None, None))
-            .transpose()?;
-        let runtime = service
-            .map(RuntimeStatusView::from_service)
-            .unwrap_or_else(RuntimeStatusView::offline);
-        Ok(HomeScreenView {
-            profile: self.profile_summary()?,
-            runtime,
-            invite,
-            peers: self
-                .known_peers()?
-                .into_iter()
-                .map(PeerListItemView::from_peer_record)
-                .collect(),
-            room: RoomTimelineView {
-                room_id: config.default_room,
-                messages: self.read_messages(None)?,
-            },
-        })
-    }
-
-    pub fn network_health_view(
-        &self,
-        service: Option<&VoxelleService>,
-    ) -> Result<NetworkHealthView> {
+    pub fn network_health_view(&self, online: Option<&OnlineHome>) -> Result<NetworkHealthView> {
         let home_status = match self.load_config() {
             Ok(config) => NetworkHealthRow::working(
                 "home",
@@ -582,7 +602,7 @@ impl VoxelleHome {
                 format!("Home is initialized for {}.", config.default_room),
             )
             .detail(format!("root: {}", self.root.display())),
-            Err(error) if self.root.exists() => NetworkHealthRow::broken(
+            Err(error) if self.path("config.json").exists() => NetworkHealthRow::broken(
                 "home",
                 "Home",
                 "Home exists but cannot be read.",
@@ -611,7 +631,7 @@ impl VoxelleHome {
                 ),
             )
             .detail(format!("device: {}", short_peer_label(&identity.device.id))),
-            Err(error) if self.identity_path().exists() => NetworkHealthRow::broken(
+            Err(error) if self.path("identity.json").exists() => NetworkHealthRow::broken(
                 "identity",
                 "Identity",
                 "Identity file exists but cannot be loaded.",
@@ -636,7 +656,7 @@ impl VoxelleHome {
                 "Persistent QUIC certificate is available.",
             )
             .detail(format!("fingerprint: {}", certificate.fingerprint)),
-            Err(error) if self.certificate_path().exists() => NetworkHealthRow::broken(
+            Err(error) if self.path("quic-cert.json").exists() => NetworkHealthRow::broken(
                 "certificate",
                 "Certificate",
                 "Certificate file exists but cannot be loaded.",
@@ -668,11 +688,11 @@ impl VoxelleHome {
         }
         .related_view("network.health");
 
-        let service_status = match service {
-            Some(service) => NetworkHealthRow::working(
+        let service_status = match online {
+            Some(online) => NetworkHealthRow::working(
                 "service",
                 "Service",
-                format!("Resident service is online at {}.", service.endpoint().addr),
+                format!("Resident service is online at {}.", online.endpoint.addr),
             )
             .related_command("runtime.goOffline"),
             None => NetworkHealthRow::needs_attention(
@@ -685,22 +705,17 @@ impl VoxelleHome {
         }
         .related_view("runtime.status");
 
-        let bind_status = match service {
-            Some(service) if service.local_report().listen_addr.is_ipv6() => {
-                NetworkHealthRow::working(
-                    "bind",
-                    "Bind",
-                    format!("Listening on {}.", service.local_report().listen_addr),
-                )
-                .related_command("runtime.goOffline")
-            }
-            Some(service) => NetworkHealthRow::broken(
+        let bind_status = match online {
+            Some(online) if online.local_report.listen_addr.is_ipv6() => NetworkHealthRow::working(
                 "bind",
                 "Bind",
-                format!(
-                    "Listener is not IPv6: {}.",
-                    service.local_report().listen_addr
-                ),
+                format!("Listening on {}.", online.local_report.listen_addr),
+            )
+            .related_command("runtime.goOffline"),
+            Some(online) => NetworkHealthRow::broken(
+                "bind",
+                "Bind",
+                format!("Listener is not IPv6: {}.", online.local_report.listen_addr),
                 Some("runtime.goOffline"),
             )
             .related_command("runtime.goOffline"),
@@ -714,8 +729,8 @@ impl VoxelleHome {
         }
         .related_view("runtime.status");
 
-        let advertise_status = match service {
-            Some(service) => advertised_address_row(service.local_report()),
+        let advertise_status = match online {
+            Some(online) => advertised_address_row(&online.local_report),
             None => NetworkHealthRow::unknown(
                 "advertise",
                 "Advertise",
@@ -726,8 +741,8 @@ impl VoxelleHome {
         }
         .related_view("runtime.status");
 
-        let invite_status = match service {
-            Some(service) => match service.invite_view(None, None) {
+        let invite_status = match online {
+            Some(online) => match online.invite_view(None, None) {
                 Ok(invite) => NetworkHealthRow::new(
                     "invite",
                     "Invite",
@@ -889,40 +904,6 @@ impl VoxelleHome {
         Ok(messages)
     }
 
-    pub fn export_endpoint(&self, advertised_addr: SocketAddr) -> Result<PeerEndpoint> {
-        if !advertised_addr.is_ipv6() {
-            anyhow::bail!("advertised address must be IPv6");
-        }
-        let identity = self.load_identity()?;
-        let certificate = self.load_certificate()?;
-        Ok(PeerEndpoint {
-            v: 1,
-            addr: advertised_addr,
-            peer_id: identity.peer.id,
-            device_id: identity.device.id,
-            quic_cert_der_b64: certificate.cert_der_b64,
-            quic_cert_fingerprint: certificate.fingerprint,
-        })
-    }
-
-    pub fn export_peer_record(
-        &self,
-        advertised_addr: SocketAddr,
-        label: Option<String>,
-        room: Option<&str>,
-    ) -> Result<PeerRecord> {
-        let config = self.load_config()?;
-        let default_room = room.unwrap_or(&config.default_room).to_string();
-        let record = PeerRecord {
-            v: 1,
-            label,
-            default_room,
-            endpoint: self.export_endpoint(advertised_addr)?,
-        };
-        record.validate()?;
-        Ok(record)
-    }
-
     pub fn import_peer_record(&self, record: PeerRecord) -> Result<()> {
         record.validate()?;
         let mut peers = self.known_peers()?;
@@ -937,14 +918,17 @@ impl VoxelleHome {
                 .then_with(|| a.endpoint.peer_id.cmp(&b.endpoint.peer_id))
                 .then_with(|| a.endpoint.device_id.cmp(&b.endpoint.device_id))
         });
-        write_json(&self.known_peers_path(), &KnownPeersFile { v: 1, peers })
+        write_json(
+            &self.path("known-peers.json"),
+            &KnownPeersFile { v: 1, peers },
+        )
     }
 
     pub fn known_peers(&self) -> Result<Vec<PeerRecord>> {
-        if !self.known_peers_path().exists() {
+        if !self.path("known-peers.json").exists() {
             return Ok(Vec::new());
         }
-        let file: KnownPeersFile = read_json(&self.known_peers_path())?;
+        let file: KnownPeersFile = read_json(&self.path("known-peers.json"))?;
         if file.v != 1 {
             anyhow::bail!("unsupported known peers version {}", file.v);
         }
@@ -959,10 +943,10 @@ impl VoxelleHome {
     }
 
     pub fn ui_preferences(&self) -> Result<UiPreferences> {
-        if !self.ui_preferences_path().exists() {
+        if !self.path("ui-preferences.json").exists() {
             return Ok(UiPreferences::default());
         }
-        let preferences: UiPreferences = read_json(&self.ui_preferences_path())?;
+        let preferences: UiPreferences = read_json(&self.path("ui-preferences.json"))?;
         if preferences.v != 1 {
             anyhow::bail!("unsupported UI preferences version {}", preferences.v);
         }
@@ -970,53 +954,24 @@ impl VoxelleHome {
         Ok(preferences)
     }
 
-    pub fn set_semantic_token(&self, id: &str, value: impl Into<String>) -> Result<()> {
-        let default = default_semantic_tokens()
-            .into_iter()
-            .find(|token| token.id == id)
-            .with_context(|| format!("unknown semantic token {id}"))?;
-        if !default.editable {
-            anyhow::bail!("semantic token {id} is not editable");
-        }
-        let value = value.into();
-        if value.trim().is_empty() {
-            anyhow::bail!("semantic token value is empty");
-        }
+    pub fn set_ui_preference(&self, request: SetUiPreferenceRequest) -> Result<String> {
         let mut preferences = self.ui_preferences()?;
-        preferences.semantic_tokens.insert(id.to_string(), value);
-        self.write_ui_preferences(&preferences)
-    }
-
-    pub fn set_metric(&self, id: &str, value: f64) -> Result<()> {
-        let default = default_metrics()
-            .into_iter()
-            .find(|metric| metric.id == id)
-            .with_context(|| format!("unknown UI metric {id}"))?;
-        if !default.editable {
-            anyhow::bail!("UI metric {id} is not editable");
-        }
-        if !value.is_finite() || value < 0.0 {
-            anyhow::bail!("UI metric value must be a finite non-negative number");
-        }
-        let mut preferences = self.ui_preferences()?;
-        preferences.metrics.insert(id.to_string(), value);
-        self.write_ui_preferences(&preferences)
-    }
-
-    pub fn set_behavior(&self, id: &str, value: UiBehaviorValue) -> Result<()> {
-        let default = default_behaviors()
-            .into_iter()
-            .find(|behavior| behavior.id == id)
-            .with_context(|| format!("unknown UI behavior {id}"))?;
-        if !default.editable {
-            anyhow::bail!("UI behavior {id} is not editable");
-        }
-        if !same_behavior_value_kind(&default.default_value, &value) {
-            anyhow::bail!("UI behavior {id} value has the wrong kind");
-        }
-        let mut preferences = self.ui_preferences()?;
-        preferences.behaviors.insert(id.to_string(), value);
-        self.write_ui_preferences(&preferences)
+        let id = match request {
+            SetUiPreferenceRequest::SemanticToken { id, value } => {
+                preferences.semantic_tokens.insert(id.clone(), value);
+                id
+            }
+            SetUiPreferenceRequest::Metric { id, value } => {
+                preferences.metrics.insert(id.clone(), value);
+                id
+            }
+            SetUiPreferenceRequest::Behavior { id, value } => {
+                preferences.behaviors.insert(id.clone(), value);
+                id
+            }
+        };
+        self.write_ui_preferences(&preferences)?;
+        Ok(id)
     }
 
     pub fn reset_ui_preference(&self, kind: UiPreferenceKind, id: &str) -> Result<()> {
@@ -1036,14 +991,6 @@ impl VoxelleHome {
         self.write_ui_preferences(&UiPreferences::default())
     }
 
-    pub fn listen(
-        &self,
-        bind: SocketAddr,
-        advertise: Option<SocketAddr>,
-    ) -> Result<VoxelleRuntime> {
-        VoxelleRuntime::start(self.clone(), bind, advertise)
-    }
-
     pub fn start_service(
         &self,
         bind: SocketAddr,
@@ -1054,48 +1001,30 @@ impl VoxelleHome {
 
     pub async fn diagnose_peer(&self, peer: &PeerRecord) -> Result<PeerReachabilityReport> {
         peer.validate()?;
-        self.diagnose_endpoint(&peer.endpoint).await
-    }
-
-    pub async fn diagnose_endpoint(
-        &self,
-        endpoint: &PeerEndpoint,
-    ) -> Result<PeerReachabilityReport> {
         let identity = self.load_identity()?;
         let certificate = self.load_certificate()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
-        Ok(node.diagnose_peer(endpoint).await)
+        Ok(node.diagnose_peer(&peer.endpoint).await)
     }
 
     pub async fn sync_peer(&self, peer: &PeerRecord, max_events: usize) -> Result<PeerSyncReport> {
         peer.validate()?;
-        self.sync_endpoint(&peer.endpoint, Some(&peer.default_room), max_events)
-            .await
-    }
-
-    pub async fn sync_endpoint(
-        &self,
-        endpoint: &PeerEndpoint,
-        room: Option<&str>,
-        max_events: usize,
-    ) -> Result<PeerSyncReport> {
-        endpoint.validate()?;
         if max_events == 0 {
             anyhow::bail!("max_events must be positive");
         }
 
         let identity = self.load_identity()?;
         let certificate = self.load_certificate()?;
-        let config = self.load_config()?;
-        let store = self.open_store()?;
+        let mut store = self.open_store()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
+        let endpoint = &peer.endpoint;
         let context = RoomContext::new(endpoint.peer_id.clone());
         let limits = SyncLimits {
             max_events_per_batch: max_events,
         };
         let governance = node
             .sync_room_once(
-                &store,
+                &mut store,
                 endpoint.addr,
                 endpoint.certificate_der()?,
                 &endpoint.device_id,
@@ -1105,14 +1034,13 @@ impl VoxelleHome {
                 limits,
             )
             .await?;
-        let room_id = room.unwrap_or(&config.default_room);
         let room = node
             .sync_room_once(
-                &store,
+                &mut store,
                 endpoint.addr,
                 endpoint.certificate_der()?,
                 &endpoint.device_id,
-                room_id,
+                &peer.default_room,
                 &context,
                 now_ms(),
                 limits,
@@ -1122,57 +1050,48 @@ impl VoxelleHome {
         Ok(PeerSyncReport { governance, room })
     }
 
-    pub fn load_identity(&self) -> Result<PeerIdentity> {
-        let file: IdentityFile = read_json(&self.identity_path())?;
-        if file.v != 1 {
-            anyhow::bail!("unsupported identity version {}", file.v);
-        }
-        PeerIdentity::from_secret_keys_b64(&file.peer_secret_b64, &file.device_secret_b64)
+    fn load_identity(&self) -> Result<PeerIdentity> {
+        let file: IdentityFile = read_json(&self.path("identity.json"))?;
+        file.to_identity()
     }
 
-    pub fn load_certificate(&self) -> Result<QuicCertificate> {
-        read_json(&self.certificate_path())
+    fn load_certificate(&self) -> Result<QuicCertificate> {
+        read_json(&self.path("quic-cert.json"))
     }
 
-    pub fn load_config(&self) -> Result<HomeConfig> {
-        let config: HomeConfig = read_json(&self.config_path())?;
+    fn load_config(&self) -> Result<HomeConfig> {
+        let config: HomeConfig = read_json(&self.path("config.json"))?;
         if config.v != 1 {
             anyhow::bail!("unsupported home config version {}", config.v);
         }
         Ok(config)
     }
 
-    pub fn open_store(&self) -> Result<Store> {
-        Store::open(self.store_path())
+    fn open_store(&self) -> Result<Store> {
+        Store::open(self.path("store.sqlite3"))
     }
 
     fn write_ui_preferences(&self, preferences: &UiPreferences) -> Result<()> {
         validate_ui_preferences(preferences)?;
-        write_json(&self.ui_preferences_path(), preferences)
+        write_json(&self.path("ui-preferences.json"), preferences)
     }
 
     fn load_or_create_identity(&self) -> Result<PeerIdentity> {
-        if self.identity_path().exists() {
+        if self.path("identity.json").exists() {
             return self.load_identity();
         }
         let identity = PeerIdentity::generate()?;
-        let file = IdentityFile {
-            v: 1,
-            peer_secret_b64: identity.peer.secret_key_b64(),
-            device_secret_b64: identity.device.secret_key_b64(),
-            peer_id: identity.peer.id.clone(),
-            device_id: identity.device.id.clone(),
-        };
-        write_json(&self.identity_path(), &file)?;
+        let file = IdentityFile::from_identity(&identity);
+        write_json(&self.path("identity.json"), &file)?;
         Ok(identity)
     }
 
     fn load_or_create_certificate(&self) -> Result<QuicCertificate> {
-        if self.certificate_path().exists() {
+        if self.path("quic-cert.json").exists() {
             return self.load_certificate();
         }
         let certificate = QuicCertificate::generate()?;
-        write_json(&self.certificate_path(), &certificate)?;
+        write_json(&self.path("quic-cert.json"), &certificate)?;
         Ok(certificate)
     }
 
@@ -1231,14 +1150,6 @@ impl VoxelleCommandHost {
         }
     }
 
-    pub fn home(&self) -> &VoxelleHome {
-        &self.home
-    }
-
-    pub fn is_online(&self) -> bool {
-        self.service.is_some()
-    }
-
     pub fn snapshot(&mut self) -> Result<ShellSnapshotView> {
         self.drain_service_events();
         self.snapshot_without_drain()
@@ -1263,7 +1174,7 @@ impl VoxelleCommandHost {
             .bind
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0));
         let service = self.home.start_service(bind, request.advertise)?;
-        let addr = service.endpoint().addr;
+        let addr = service.online().endpoint.addr;
         self.service = Some(service);
         self.push_activity(
             ServiceActivityLevel::Info,
@@ -1303,6 +1214,18 @@ impl VoxelleCommandHost {
             .unwrap_or_else(|| short_peer_label(&peer_record.endpoint.peer_id));
         self.home.import_peer_record(peer_record)?;
         self.push_activity(ServiceActivityLevel::Info, format!("imported peer {label}"));
+        self.snapshot()
+    }
+
+    pub fn set_ui_preference(
+        &mut self,
+        request: SetUiPreferenceRequest,
+    ) -> Result<ShellSnapshotView> {
+        let id = self.home.set_ui_preference(request)?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("updated UI preference {id}"),
+        );
         self.snapshot()
     }
 
@@ -1352,15 +1275,16 @@ impl VoxelleCommandHost {
     }
 
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
-        let (home, home_error) = match self.home.home_screen_view_service(self.service.as_ref()) {
+        let online = self.service.as_ref().map(VoxelleService::online);
+        let (home, home_error) = match self.home.home_screen_view(online) {
             Ok(home) => (Some(home), None),
             Err(error) => (None, Some(format!("{error:#}"))),
         };
         Ok(ShellSnapshotView {
-            home_root: self.home.root().to_path_buf(),
+            home_root: self.home.root.clone(),
             home,
             home_error,
-            network_health: self.home.network_health_view(self.service.as_ref())?,
+            network_health: self.home.network_health_view(online)?,
             ui_ontology: self.home.ui_ontology()?,
             service_activity: self.activity.clone(),
         })
@@ -1433,6 +1357,32 @@ impl PeerRecord {
     }
 }
 
+impl OnlineHome {
+    pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
+        let record = PeerRecord {
+            v: 1,
+            label,
+            default_room: room.unwrap_or(&self.default_room).to_string(),
+            endpoint: self.endpoint.clone(),
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    pub fn invite_view(
+        &self,
+        label: Option<String>,
+        room: Option<&str>,
+    ) -> Result<InviteExchangeView> {
+        let peer_record = self.peer_record(label, room)?;
+        let peer_record_json = serde_json::to_string_pretty(&peer_record)? + "\n";
+        Ok(InviteExchangeView {
+            peer_record,
+            peer_record_json,
+        })
+    }
+}
+
 impl RuntimeStatusView {
     fn offline() -> Self {
         Self {
@@ -1443,21 +1393,12 @@ impl RuntimeStatusView {
         }
     }
 
-    fn online(runtime: &VoxelleRuntime) -> Self {
+    fn online(online: &OnlineHome) -> Self {
         Self {
             state: RuntimeState::Online,
-            listen_addr: Some(runtime.local_report.listen_addr),
-            advertised_addr: Some(runtime.local_report.advertised_addr),
-            reachability_notes: runtime.local_report.notes.clone(),
-        }
-    }
-
-    fn from_service(service: &VoxelleService) -> Self {
-        Self {
-            state: RuntimeState::Online,
-            listen_addr: Some(service.summary.local_report.listen_addr),
-            advertised_addr: Some(service.summary.local_report.advertised_addr),
-            reachability_notes: service.summary.local_report.notes.clone(),
+            listen_addr: Some(online.local_report.listen_addr),
+            advertised_addr: Some(online.local_report.advertised_addr),
+            reachability_notes: online.local_report.notes.clone(),
         }
     }
 }
@@ -1473,8 +1414,6 @@ impl PeerListItemView {
             device_id: record.endpoint.device_id,
             addr: record.endpoint.addr,
             default_room: record.default_room,
-            diagnostic_state: PeerActionState::NotRun,
-            sync_state: PeerActionState::NotRun,
         }
     }
 }
@@ -1566,108 +1505,32 @@ impl NetworkHealthRow {
     }
 }
 
-impl VoxelleRuntime {
-    pub fn start(
-        home: VoxelleHome,
-        bind: SocketAddr,
-        advertise: Option<SocketAddr>,
-    ) -> Result<Self> {
+impl PeerServer {
+    fn start(home: VoxelleHome, bind: SocketAddr, advertise: Option<SocketAddr>) -> Result<Self> {
         let identity = home.load_identity()?;
         let certificate = home.load_certificate()?;
         let node = QuicNode::bind_with_certificate(identity, certificate, bind)?;
         let advertised_addr = advertise.unwrap_or(node.local_addr()?);
         let endpoint = node.peer_endpoint(advertised_addr)?;
         let local_report = node.local_reachability_report(advertised_addr)?;
+        let default_room = home.load_config()?.default_room;
         Ok(Self {
             home,
             node,
-            endpoint,
-            local_report,
+            online: OnlineHome {
+                endpoint,
+                local_report,
+                default_room,
+            },
         })
     }
 
-    pub fn home(&self) -> &VoxelleHome {
-        &self.home
-    }
-
-    pub fn endpoint(&self) -> &PeerEndpoint {
-        &self.endpoint
-    }
-
-    pub fn local_report(&self) -> &LocalReachabilityReport {
-        &self.local_report
-    }
-
-    pub fn summary(&self) -> ListenSummary {
-        ListenSummary {
-            endpoint: self.endpoint.clone(),
-            local_report: self.local_report.clone(),
-        }
-    }
-
-    pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
-        let default_room = match room {
-            Some(room) => room.to_string(),
-            None => self.home.load_config()?.default_room,
-        };
-        let record = PeerRecord {
-            v: 1,
-            label,
-            default_room,
-            endpoint: self.endpoint.clone(),
-        };
-        record.validate()?;
-        Ok(record)
-    }
-
-    pub fn invite_view(
-        &self,
-        label: Option<String>,
-        room: Option<&str>,
-    ) -> Result<InviteExchangeView> {
-        let peer_record = self.peer_record(label, room)?;
-        let peer_record_json = serde_json::to_string_pretty(&peer_record)? + "\n";
-        Ok(InviteExchangeView {
-            peer_record,
-            peer_record_json,
-        })
-    }
-
-    pub async fn serve_sync_once(&self, home: &VoxelleHome) -> Result<ServedRoomSync> {
-        let store = home.open_store()?;
-        self.node.serve_room_sync_once(&store).await
-    }
-
-    pub async fn serve_sync_requests(
-        &self,
-        home: &VoxelleHome,
-        count: usize,
-    ) -> Result<Vec<ServedRoomSync>> {
-        let mut served = Vec::with_capacity(count);
-        for _ in 0..count {
-            served.push(self.serve_sync_once(home).await?);
-        }
-        Ok(served)
-    }
-
-    pub async fn serve_diagnostic_once(&self) -> Result<PeerReachabilityReport> {
-        self.node.serve_diagnostic_once().await
-    }
-
-    pub async fn serve_next_request(&self) -> Result<ServedPeerRequest> {
+    async fn serve_next_request(&self) -> Result<ServedPeerRequest> {
         let store = self.home.open_store()?;
         self.node.serve_peer_request_once(&store).await
     }
 
-    pub async fn serve_requests(&self, count: usize) -> Result<Vec<ServedPeerRequest>> {
-        let mut served = Vec::with_capacity(count);
-        for _ in 0..count {
-            served.push(self.serve_next_request().await?);
-        }
-        Ok(served)
-    }
-
-    pub async fn stop(self) {
+    async fn stop(self) {
         self.node.close(b"runtime stopped");
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), self.node.wait_idle())
             .await;
@@ -1680,62 +1543,25 @@ impl VoxelleService {
         bind: SocketAddr,
         advertise: Option<SocketAddr>,
     ) -> Result<Self> {
-        let runtime = VoxelleRuntime::start(home, bind, advertise)?;
-        let summary = runtime.summary();
-        let default_room = runtime.home.load_config()?.default_room;
+        let server = PeerServer::start(home, bind, advertise)?;
+        let online = server.online.clone();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let (event_tx, events) = mpsc::channel();
         let thread = thread::Builder::new()
             .name("voxelle-service".to_string())
-            .spawn(move || run_service_thread(runtime, stop_rx, event_tx))
+            .spawn(move || run_service_thread(server, stop_rx, event_tx))
             .context("spawn voxelle service thread")?;
 
         Ok(Self {
-            summary,
-            default_room,
+            online,
             events,
             stop: Some(stop_tx),
             thread: Some(thread),
         })
     }
 
-    pub fn summary(&self) -> &ListenSummary {
-        &self.summary
-    }
-
-    pub fn endpoint(&self) -> &PeerEndpoint {
-        &self.summary.endpoint
-    }
-
-    pub fn local_report(&self) -> &LocalReachabilityReport {
-        &self.summary.local_report
-    }
-
-    pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
-        let default_room = room
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| self.default_room.clone());
-        let record = PeerRecord {
-            v: 1,
-            label,
-            default_room,
-            endpoint: self.summary.endpoint.clone(),
-        };
-        record.validate()?;
-        Ok(record)
-    }
-
-    pub fn invite_view(
-        &self,
-        label: Option<String>,
-        room: Option<&str>,
-    ) -> Result<InviteExchangeView> {
-        let peer_record = self.peer_record(label, room)?;
-        let peer_record_json = serde_json::to_string_pretty(&peer_record)? + "\n";
-        Ok(InviteExchangeView {
-            peer_record,
-            peer_record_json,
-        })
+    pub fn online(&self) -> &OnlineHome {
+        &self.online
     }
 
     pub fn try_recv_event(&self) -> Option<VoxelleServiceEvent> {
@@ -1769,7 +1595,7 @@ impl Drop for VoxelleService {
 }
 
 fn run_service_thread(
-    runtime: VoxelleRuntime,
+    server: PeerServer,
     stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::Sender<VoxelleServiceEvent>,
 ) {
@@ -1782,18 +1608,18 @@ fn run_service_thread(
         ));
         return;
     };
-    task_runtime.block_on(run_service_loop(runtime, stop_rx, event_tx));
+    task_runtime.block_on(run_service_loop(server, stop_rx, event_tx));
 }
 
 async fn run_service_loop(
-    runtime: VoxelleRuntime,
+    server: PeerServer,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::Sender<VoxelleServiceEvent>,
 ) {
     loop {
         tokio::select! {
             _ = &mut stop_rx => break,
-            result = runtime.serve_next_request() => {
+            result = server.serve_next_request() => {
                 match result {
                     Ok(served) => {
                         let _ = event_tx.send(VoxelleServiceEvent::Served(served));
@@ -1806,7 +1632,7 @@ async fn run_service_loop(
             }
         }
     }
-    runtime.stop().await;
+    server.stop().await;
     let _ = event_tx.send(VoxelleServiceEvent::Stopped);
 }
 
@@ -1849,37 +1675,19 @@ fn default_places() -> Vec<UiPlace> {
             "sidebar",
             "Sidebar",
             "Navigation and secondary app surfaces",
-            true,
-            "layout/place editor",
         ),
-        ui_place(
-            "main",
-            "Main",
-            "Primary room and message surfaces",
-            true,
-            "layout/place editor",
-        ),
+        ui_place("main", "Main", "Primary room and message surfaces"),
         ui_place(
             "inspector",
             "Inspector",
             "Future selected peer or message details",
-            true,
-            "layout/place editor",
         ),
         ui_place(
             "activity",
             "Activity",
             "Service, diagnostic, and sync activity",
-            true,
-            "layout/place editor",
         ),
-        ui_place(
-            "status",
-            "Status",
-            "Runtime and reachability state",
-            true,
-            "layout/place editor",
-        ),
+        ui_place("status", "Status", "Runtime and reachability state"),
     ]
 }
 
@@ -1902,6 +1710,12 @@ fn default_views() -> Vec<UiView> {
             "Network Health",
             "status",
             "Re-entrant checklist for setup, reachability, and repair",
+        ),
+        ui_view(
+            "field.test",
+            "Field Test",
+            "status",
+            "Re-entrant end-to-end workflow checks",
         ),
         ui_view(
             "invite.exchange",
@@ -1938,6 +1752,11 @@ fn default_views() -> Vec<UiView> {
 
 fn default_commands() -> Vec<UiCommand> {
     vec![
+        ui_command(
+            "shell.refresh",
+            "Refresh",
+            "Refresh the current shell snapshot",
+        ),
         ui_command("home.init", "Initialize Home", "Create local app state"),
         ui_command(
             "runtime.goOnline",
@@ -1962,7 +1781,20 @@ fn default_commands() -> Vec<UiCommand> {
             "Sync Peer",
             "Sync governance and room events with a peer",
         ),
+        ui_command(
+            "ui.preference.set",
+            "Save Preference",
+            "Persist a UI customization",
+        ),
     ]
+}
+
+pub fn shell_command_ids() -> Vec<String> {
+    default_commands()
+        .into_iter()
+        .filter(|command| command.id != "invite.copy")
+        .map(|command| command.id)
+        .collect()
 }
 
 fn default_semantic_tokens() -> Vec<SemanticToken> {
@@ -1971,91 +1803,91 @@ fn default_semantic_tokens() -> Vec<SemanticToken> {
             "app.background",
             "App Background",
             "Canvas",
-            "system.canvas",
+            "Canvas",
             &["profile.summary", "room.timeline"],
         ),
         semantic_token(
             "panel.background",
             "Panel Background",
             "Panel surface",
-            "system.panel",
+            "Canvas",
             &["peer.list", "invite.exchange", "service.activity"],
         ),
         semantic_token(
             "panel.border",
             "Panel Border",
             "Panel boundary",
-            "system.border",
+            "ButtonBorder",
             &["sidebar", "inspector"],
         ),
         semantic_token(
             "text.primary",
             "Primary Text",
             "Primary readable text",
-            "system.text",
+            "CanvasText",
             &["profile.summary", "room.timeline", "message.composer"],
         ),
         semantic_token(
             "text.secondary",
             "Secondary Text",
             "Secondary metadata text",
-            "system.text.secondary",
+            "GrayText",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
             "runtime.online",
             "Runtime Online",
             "Online runtime state",
-            "system.success",
+            "#18794e",
             &["runtime.status"],
         ),
         semantic_token(
             "runtime.offline",
             "Runtime Offline",
             "Offline runtime state",
-            "system.muted",
+            "GrayText",
             &["runtime.status"],
         ),
         semantic_token(
             "peer.reachable",
             "Peer Reachable",
             "Reachable peer diagnostic",
-            "system.success",
+            "#18794e",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
             "peer.unreachable",
             "Peer Unreachable",
             "Unreachable peer diagnostic",
-            "system.error",
+            "#b42318",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
             "message.own.background",
             "Own Message Background",
             "Messages authored by this peer",
-            "system.message.own",
+            "#e8f1ff",
             &["room.timeline"],
         ),
         semantic_token(
             "message.remote.background",
             "Remote Message Background",
             "Messages authored by other peers",
-            "system.message.remote",
+            "#f2f2f2",
             &["room.timeline"],
         ),
         semantic_token(
             "activity.info",
             "Activity Info",
             "Informational activity entries",
-            "system.info",
+            "LinkText",
             &["service.activity"],
         ),
         semantic_token(
             "activity.error",
             "Activity Error",
             "Error activity entries",
-            "system.error",
+            "#b42318",
             &["service.activity"],
         ),
     ]
@@ -2156,19 +1988,13 @@ fn default_renderers() -> Vec<UiRenderer> {
     ]
 }
 
-fn ui_place(
-    id: &str,
-    label: &str,
-    description: &str,
-    editable: bool,
-    editing_surface: &str,
-) -> UiPlace {
+fn ui_place(id: &str, label: &str, description: &str) -> UiPlace {
     UiPlace {
         id: id.to_string(),
         label: label.to_string(),
         description: description.to_string(),
-        editable,
-        editing_surface: editing_surface.to_string(),
+        editable: false,
+        editing_surface: "layout/place editor".to_string(),
     }
 }
 
@@ -2178,7 +2004,7 @@ fn ui_view(id: &str, label: &str, place_id: &str, description: &str) -> UiView {
         label: label.to_string(),
         place_id: place_id.to_string(),
         description: description.to_string(),
-        editable: true,
+        editable: false,
         editing_surface: "layout/place editor".to_string(),
     }
 }
@@ -2188,7 +2014,7 @@ fn ui_command(id: &str, label: &str, description: &str) -> UiCommand {
         id: id.to_string(),
         label: label.to_string(),
         description: description.to_string(),
-        editable: true,
+        editable: false,
         editing_surface: "command palette".to_string(),
     }
 }
@@ -2243,7 +2069,7 @@ fn renderer(id: &str, label: &str, renders: &str, default_renderer: &str) -> UiR
         renders: renders.to_string(),
         default_renderer: default_renderer.to_string(),
         current_renderer: default_renderer.to_string(),
-        editable: true,
+        editable: false,
         editing_surface: "renderer settings".to_string(),
     }
 }
@@ -2417,14 +2243,39 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn home_init_send_read_and_endpoint_export_are_app_actions() {
+    fn home_root_resolution_preserves_override_precedence_and_portable_default() {
+        let explicit = PathBuf::from("explicit-home");
+        let configured = PathBuf::from("configured-home");
+        let platform_home = PathBuf::from("platform-home");
+
+        assert_eq!(
+            resolve_home_root_from(
+                Some(explicit.clone()),
+                Some(configured.clone()),
+                Some(platform_home.clone()),
+            ),
+            explicit
+        );
+        assert_eq!(
+            resolve_home_root_from(None, Some(configured.clone()), Some(platform_home.clone())),
+            configured
+        );
+        assert_eq!(
+            resolve_home_root_from(None, None, Some(platform_home.clone())),
+            platform_home.join(".voxelle")
+        );
+        assert_eq!(
+            resolve_home_root_from(None, None, None),
+            PathBuf::from(".").join(".voxelle")
+        );
+    }
+
+    #[test]
+    fn home_init_send_and_read_are_app_actions() {
         let dir = tempdir().expect("tempdir");
         let home = VoxelleHome::new(dir.path().join("alice"));
 
         let profile = home.init(DEFAULT_ROOM_ID).expect("init");
-        assert!(home.identity_path().exists());
-        assert!(home.certificate_path().exists());
-        assert!(home.store_path().exists());
         assert_eq!(profile.default_room, DEFAULT_ROOM_ID);
         assert_eq!(profile.peer_id, profile.authority_peer_id);
 
@@ -2436,13 +2287,6 @@ mod tests {
         let messages = home.read_messages(None).expect("read");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].text, "hello from app layer");
-
-        let endpoint = home
-            .export_endpoint(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 4040))
-            .expect("endpoint");
-        endpoint.validate().expect("valid endpoint");
-        assert_eq!(endpoint.peer_id, profile.peer_id);
-        assert_eq!(endpoint.device_id, profile.device_id);
     }
 
     #[test]
@@ -2456,13 +2300,6 @@ mod tests {
         assert_eq!(first.peer_id, second.peer_id);
         assert_eq!(first.device_id, second.device_id);
         assert_eq!(second.default_room, DEFAULT_ROOM_ID);
-        assert_eq!(
-            home.open_store()
-                .expect("store")
-                .room_event_count(GOVERNANCE_ROOM_ID)
-                .expect("count"),
-            1
-        );
     }
 
     #[test]
@@ -2479,10 +2316,7 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.id == "peer.sync"));
-        assert_eq!(
-            semantic_token_value(&ontology, "peer.reachable"),
-            "system.success"
-        );
+        assert_eq!(semantic_token_value(&ontology, "peer.reachable"), "#18794e");
         assert_eq!(metric_value(&ontology, "sidebar.width"), 360.0);
         assert_eq!(
             behavior_value(&ontology, "timestamps.visible"),
@@ -2500,16 +2334,23 @@ mod tests {
         let home = VoxelleHome::new(dir.path().join("home"));
         home.init(DEFAULT_ROOM_ID).expect("init");
 
-        home.set_semantic_token("peer.reachable", "#00ff00")
-            .expect("set token");
-        home.set_metric("sidebar.width", 420.0).expect("set metric");
-        home.set_behavior(
-            "timestamps.style",
-            UiBehaviorValue::Text("absolute".to_string()),
-        )
+        home.set_ui_preference(SetUiPreferenceRequest::SemanticToken {
+            id: "peer.reachable".to_string(),
+            value: "#00ff00".to_string(),
+        })
+        .expect("set token");
+        home.set_ui_preference(SetUiPreferenceRequest::Metric {
+            id: "sidebar.width".to_string(),
+            value: 420.0,
+        })
+        .expect("set metric");
+        home.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "timestamps.style".to_string(),
+            value: UiBehaviorValue::Text("absolute".to_string()),
+        })
         .expect("set behavior");
 
-        let reopened = VoxelleHome::new(home.root().to_path_buf());
+        let reopened = VoxelleHome::new(dir.path().join("home"));
         let preferences = reopened.ui_preferences().expect("preferences");
         assert_eq!(
             preferences.semantic_tokens.get("peer.reachable"),
@@ -2540,10 +2381,7 @@ mod tests {
             .reset_all_ui_preferences()
             .expect("reset all preferences");
         let defaults = reopened.ui_ontology().expect("default ontology");
-        assert_eq!(
-            semantic_token_value(&defaults, "peer.reachable"),
-            "system.success"
-        );
+        assert_eq!(semantic_token_value(&defaults, "peer.reachable"), "#18794e");
         assert_eq!(
             behavior_value(&defaults, "timestamps.style"),
             UiBehaviorValue::Text("relative".to_string())
@@ -2556,13 +2394,23 @@ mod tests {
         let home = VoxelleHome::new(dir.path().join("home"));
         home.init(DEFAULT_ROOM_ID).expect("init");
 
-        assert!(home.set_semantic_token("unknown.token", "#fff").is_err());
-        assert!(home.set_metric("sidebar.width", -1.0).is_err());
         assert!(home
-            .set_behavior(
-                "timestamps.visible",
-                UiBehaviorValue::Text("yes".to_string())
-            )
+            .set_ui_preference(SetUiPreferenceRequest::SemanticToken {
+                id: "unknown.token".to_string(),
+                value: "#fff".to_string(),
+            })
+            .is_err());
+        assert!(home
+            .set_ui_preference(SetUiPreferenceRequest::Metric {
+                id: "sidebar.width".to_string(),
+                value: -1.0,
+            })
+            .is_err());
+        assert!(home
+            .set_ui_preference(SetUiPreferenceRequest::Behavior {
+                id: "timestamps.visible".to_string(),
+                value: UiBehaviorValue::Text("yes".to_string()),
+            })
             .is_err());
     }
 
@@ -2632,10 +2480,10 @@ mod tests {
             network_health_status(&bob_imported.network_health, "peers"),
             NetworkHealthStatus::Working
         );
-        let peer = bob.home().known_peers().expect("known peers")[0].clone();
+        let peer = &bob_imported.home.as_ref().expect("home view").peers[0];
         let request = PeerCommandRequest {
-            peer_id: peer.endpoint.peer_id.clone(),
-            device_id: peer.endpoint.device_id.clone(),
+            peer_id: peer.peer_id.clone(),
+            device_id: peer.device_id.clone(),
             max_events: Some(64),
         };
 
@@ -2688,6 +2536,30 @@ mod tests {
         );
         assert_eq!(
             network_health_status(&health, "service"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        assert_eq!(
+            network_health_row(&health, "home")
+                .primary_action
+                .as_deref(),
+            Some("home.init")
+        );
+    }
+
+    #[test]
+    fn customizing_before_initialization_keeps_home_recoverable() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.set_ui_preference(SetUiPreferenceRequest::Metric {
+            id: "sidebar.width".to_string(),
+            value: 512.0,
+        })
+        .expect("save preference");
+
+        let health = home.network_health_view(None).expect("health");
+
+        assert_eq!(
+            network_health_status(&health, "home"),
             NetworkHealthStatus::NeedsAttention
         );
         assert_eq!(
@@ -2755,7 +2627,9 @@ mod tests {
             .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("service");
 
-        let health = home.network_health_view(Some(&service)).expect("health");
+        let health = home
+            .network_health_view(Some(service.online()))
+            .expect("health");
 
         assert_eq!(
             network_health_status(&health, "service"),
@@ -2789,10 +2663,11 @@ mod tests {
         let peer = VoxelleHome::new(dir.path().join("peer"));
         home.init(DEFAULT_ROOM_ID).expect("home init");
         peer.init(DEFAULT_ROOM_ID).expect("peer init");
-        let peer_runtime = peer
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("peer runtime");
-        let peer_record = peer_runtime
+        let peer_service = peer
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("peer service");
+        let peer_record = peer_service
+            .online()
             .peer_record(Some("Peer".to_string()), None)
             .expect("peer record");
         home.import_peer_record(peer_record).expect("import");
@@ -2819,105 +2694,7 @@ mod tests {
                 .as_deref(),
             Some("peer.sync")
         );
-    }
-
-    #[tokio::test]
-    async fn two_homes_sync_messages_over_ipv6_loopback() {
-        let dir = tempdir().expect("tempdir");
-        let alice = VoxelleHome::new(dir.path().join("alice"));
-        let bob = VoxelleHome::new(dir.path().join("bob"));
-
-        alice.init(DEFAULT_ROOM_ID).expect("alice init");
-        bob.init(DEFAULT_ROOM_ID).expect("bob init");
-        alice.send_message("hello over quic", None).expect("send");
-
-        let listener = alice
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("listen");
-        let endpoint = listener.endpoint().clone();
-
-        let (diagnostic_served, report) = tokio::join!(
-            listener.serve_diagnostic_once(),
-            bob.diagnose_endpoint(&endpoint)
-        );
-        let report = report.expect("diagnose");
-        assert!(report.reachable);
-        diagnostic_served.expect("diagnostic served");
-
-        let listener = alice
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("listen");
-        let endpoint = listener.endpoint().clone();
-        let (served, report) = tokio::join!(
-            listener.serve_sync_requests(&alice, 2),
-            bob.sync_endpoint(&endpoint, None, 64)
-        );
-        let served = served.expect("sync served");
-        let report = report.expect("sync peer");
-
-        assert_eq!(served[0].room_id, GOVERNANCE_ROOM_ID);
-        assert_eq!(served[1].room_id, DEFAULT_ROOM_ID);
-        assert_eq!(report.governance.accepted, 1);
-        assert_eq!(report.room.accepted, 1);
-        assert_eq!(
-            bob.read_messages(None).expect("bob messages")[0].text,
-            "hello over quic"
-        );
-    }
-
-    #[tokio::test]
-    async fn runtime_serves_repeated_diagnostics_and_sync() {
-        let dir = tempdir().expect("tempdir");
-        let alice = VoxelleHome::new(dir.path().join("alice"));
-        let bob = VoxelleHome::new(dir.path().join("bob"));
-
-        alice.init(DEFAULT_ROOM_ID).expect("alice init");
-        bob.init(DEFAULT_ROOM_ID).expect("bob init");
-        alice.send_message("first", None).expect("first send");
-
-        let runtime = VoxelleRuntime::start(
-            alice.clone(),
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
-            None,
-        )
-        .expect("runtime");
-        let endpoint = runtime.endpoint().clone();
-
-        let client = async {
-            let diagnostic = bob.diagnose_endpoint(&endpoint).await.expect("diagnose");
-            assert!(diagnostic.reachable);
-
-            let first = bob
-                .sync_endpoint(&endpoint, None, 64)
-                .await
-                .expect("first sync");
-            assert_eq!(first.governance.accepted, 1);
-            assert_eq!(first.room.accepted, 1);
-
-            alice.send_message("second", None).expect("second send");
-
-            let second = bob
-                .sync_endpoint(&endpoint, None, 64)
-                .await
-                .expect("second sync");
-            assert_eq!(second.governance.offered, 0);
-            assert_eq!(second.room.accepted, 1);
-        };
-
-        let (served, _) = tokio::join!(runtime.serve_requests(5), client);
-        let served = served.expect("served requests");
-        assert!(matches!(served[0], ServedPeerRequest::Diagnostic(_)));
-        assert!(matches!(served[1], ServedPeerRequest::RoomSync(_)));
-        assert!(matches!(served[2], ServedPeerRequest::RoomSync(_)));
-        assert!(matches!(served[3], ServedPeerRequest::RoomSync(_)));
-        assert!(matches!(served[4], ServedPeerRequest::RoomSync(_)));
-
-        let messages = bob.read_messages(None).expect("bob messages");
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[0].text, "first");
-        assert_eq!(messages[1].text, "second");
-
-        runtime.stop().await;
+        peer_service.stop().expect("stop peer service");
     }
 
     #[tokio::test]
@@ -2932,10 +2709,11 @@ mod tests {
             .send_message("from imported peer", None)
             .expect("send");
 
-        let runtime = alice
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("runtime");
-        let alice_record = runtime
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("service");
+        let alice_record = service
+            .online()
             .peer_record(Some("Alice".to_string()), None)
             .expect("peer record");
         bob.import_peer_record(alice_record.clone())
@@ -2953,26 +2731,17 @@ mod tests {
             vec![renamed_record]
         );
 
-        let client = async {
-            let diagnostic = bob.diagnose_peer(&alice_record).await.expect("diagnose");
-            assert!(diagnostic.reachable);
+        let diagnostic = bob.diagnose_peer(&alice_record).await.expect("diagnose");
+        assert!(diagnostic.reachable);
 
-            let sync = bob.sync_peer(&alice_record, 64).await.expect("sync");
-            assert_eq!(sync.governance.accepted, 1);
-            assert_eq!(sync.room.accepted, 1);
-        };
-
-        let (served, _) = tokio::join!(runtime.serve_requests(3), client);
-        let served = served.expect("served requests");
-        assert!(matches!(served[0], ServedPeerRequest::Diagnostic(_)));
-        assert!(matches!(served[1], ServedPeerRequest::RoomSync(_)));
-        assert!(matches!(served[2], ServedPeerRequest::RoomSync(_)));
+        let sync = bob.sync_peer(&alice_record, 64).await.expect("sync");
+        assert_eq!(sync.governance.accepted, 1);
+        assert_eq!(sync.room.accepted, 1);
         assert_eq!(
             bob.read_messages(None).expect("bob messages")[0].text,
             "from imported peer"
         );
-
-        runtime.stop().await;
+        service.stop().expect("stop service");
     }
 
     #[tokio::test]
@@ -2991,6 +2760,7 @@ mod tests {
             .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("service");
         let record = service
+            .online()
             .peer_record(Some("Alice".to_string()), None)
             .expect("record");
 
@@ -3041,19 +2811,22 @@ mod tests {
         assert_eq!(offline.room.room_id, DEFAULT_ROOM_ID);
         assert_eq!(offline.room.messages[0].text, "visible message");
 
-        let runtime = home
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("runtime");
-        let peer_runtime = peer_home
-            .listen(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
-            .expect("peer runtime");
-        let peer_record = peer_runtime
+        let service = home
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("service");
+        let peer_service = peer_home
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("peer service");
+        let peer_record = peer_service
+            .online()
             .peer_record(Some("Peer One".to_string()), None)
             .expect("peer record");
         home.import_peer_record(peer_record.clone())
             .expect("import peer");
 
-        let online = home.home_screen_view(Some(&runtime)).expect("online view");
+        let online = home
+            .home_screen_view(Some(service.online()))
+            .expect("online view");
         assert_eq!(online.runtime.state, RuntimeState::Online);
         assert!(online.runtime.listen_addr.is_some());
         assert!(online.invite.is_some());
@@ -3066,8 +2839,8 @@ mod tests {
         assert_eq!(online.peers.len(), 1);
         assert_eq!(online.peers[0].label, "Peer One");
         assert_eq!(online.peers[0].peer_id, peer_record.endpoint.peer_id);
-        assert_eq!(online.peers[0].diagnostic_state, PeerActionState::NotRun);
-        assert_eq!(online.peers[0].sync_state, PeerActionState::NotRun);
+        service.stop().expect("stop service");
+        peer_service.stop().expect("stop peer service");
     }
 
     fn semantic_token_value(ontology: &UiOntologyView, id: &str) -> String {

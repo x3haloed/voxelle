@@ -23,10 +23,8 @@ use std::{
 use tokio::{net::TcpListener, signal, time};
 use tracing::info;
 use voxelle_app::{
-    ImportPeerRecordRequest, InitHomeRequest, PeerCommandRequest, SendMessageRequest,
-    ShellSnapshotView, StartServiceRequest,
+    resolve_home_root, shell_command_ids, ShellError, ShellSnapshotView, ShellState,
 };
-use voxelle_shell::{ShellError, ShellState};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -99,7 +97,7 @@ async fn main() -> Result<()> {
         .init();
 
     let cli = Cli::parse();
-    let home = cli.home.unwrap_or_else(default_home);
+    let home = resolve_home_root(cli.home);
     let listener = TcpListener::bind(SocketAddr::new(cli.host, cli.port))
         .await
         .context("bind inhabitant sidecar")?;
@@ -140,16 +138,7 @@ impl DiscoveryView {
             pid: std::process::id(),
             started_at_unix_ms: unix_ms(),
             capabilities: CapabilitiesView {
-                commands: vec![
-                    "snapshot".to_string(),
-                    "init_home".to_string(),
-                    "start_service".to_string(),
-                    "stop_service".to_string(),
-                    "send_message".to_string(),
-                    "import_peer_record".to_string(),
-                    "diagnose_peer".to_string(),
-                    "sync_peer".to_string(),
-                ],
+                commands: shell_command_ids(),
                 events: vec!["service.ready".to_string(), "heartbeat".to_string()],
             },
         }
@@ -161,7 +150,11 @@ async fn get_discovery(State(state): State<Arc<AppState>>) -> Json<DiscoveryView
 }
 
 async fn snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    match state.shell.snapshot() {
+    match state
+        .shell
+        .execute_serialized_command("shell.refresh", Value::Null)
+        .await
+    {
         Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
         Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response(),
     }
@@ -172,7 +165,7 @@ async fn command(
     Path(command_id): Path<String>,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
-    let result = run_command(&state.shell, &command_id, payload);
+    let result = run_command(&state.shell, &command_id, payload).await;
     let status = if result.ok {
         StatusCode::OK
     } else {
@@ -181,32 +174,8 @@ async fn command(
     (status, Json(result)).into_response()
 }
 
-fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionResult {
-    let result = match command_id {
-        "snapshot" => shell.snapshot(),
-        "init_home" => {
-            parse_request::<InitHomeRequest>(payload).and_then(|request| shell.init_home(request))
-        }
-        "start_service" => parse_request::<StartServiceRequest>(payload)
-            .and_then(|request| shell.start_service(request)),
-        "stop_service" => shell.stop_service(),
-        "send_message" => parse_request::<SendMessageRequest>(payload)
-            .and_then(|request| shell.send_message(request)),
-        "import_peer_record" => parse_request::<ImportPeerRecordRequest>(payload)
-            .and_then(|request| shell.import_peer_record(request)),
-        "diagnose_peer" => match parse_request::<PeerCommandRequest>(payload) {
-            Ok(request) => block_on_shell_call(shell.diagnose_peer(request)),
-            Err(error) => Err(error),
-        },
-        "sync_peer" => match parse_request::<PeerCommandRequest>(payload) {
-            Ok(request) => block_on_shell_call(shell.sync_peer(request)),
-            Err(error) => Err(error),
-        },
-        _ => Err(ShellError {
-            message: format!("unknown command {command_id}"),
-        }),
-    };
-
+async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionResult {
+    let result = shell.execute_serialized_command(command_id, payload).await;
     match result {
         Ok(snapshot) => ActionResult {
             ok: true,
@@ -223,18 +192,6 @@ fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionRe
             error: Some(error),
         },
     }
-}
-
-fn block_on_shell_call(
-    call: impl std::future::Future<Output = Result<ShellSnapshotView, ShellError>>,
-) -> Result<ShellSnapshotView, ShellError> {
-    tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(call))
-}
-
-fn parse_request<T: serde::de::DeserializeOwned>(payload: Value) -> Result<T, ShellError> {
-    serde_json::from_value(payload).map_err(|error| ShellError {
-        message: format!("invalid command payload: {error}"),
-    })
 }
 
 async fn events(
@@ -314,13 +271,6 @@ fn write_discovery_file(
     std::fs::write(&path, format!("{json}\n"))
         .with_context(|| format!("write {}", path.display()))?;
     Ok(())
-}
-
-fn default_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".voxelle")
 }
 
 fn app_url(addr: SocketAddr) -> String {

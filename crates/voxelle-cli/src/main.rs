@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use voxelle_app::{VoxelleHome, DEFAULT_ROOM_ID};
+use voxelle_app::{IdentityFile, VoxelleHome, DEFAULT_ROOM_ID};
 use voxelle_core::{
     accept_event, create_delegation, create_event, PeerIdentity, RoomContext, GOVERNANCE_ROOM_ID,
 };
@@ -45,10 +45,6 @@ enum Command {
         #[arg(long)]
         room: Option<String>,
     },
-    Endpoint {
-        #[command(subcommand)]
-        command: EndpointCommand,
-    },
     Identity {
         #[command(subcommand)]
         command: IdentityCommand,
@@ -68,18 +64,6 @@ enum Command {
     Diagnose {
         #[command(subcommand)]
         command: DiagnoseCommand,
-    },
-}
-
-#[derive(Debug, Subcommand)]
-enum EndpointCommand {
-    Export {
-        #[arg(long)]
-        home: PathBuf,
-        #[arg(long)]
-        advertise: SocketAddr,
-        #[arg(long)]
-        out: Option<PathBuf>,
     },
 }
 
@@ -167,15 +151,6 @@ enum DiagnoseCommand {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct IdentityFile {
-    v: u8,
-    peer_secret_b64: String,
-    device_secret_b64: String,
-    peer_id: String,
-    device_id: String,
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -183,13 +158,6 @@ async fn main() -> Result<()> {
         Command::Init { home, room } => app_init(&home, &room),
         Command::Send { home, text, room } => app_send(&home, &text, room.as_deref()),
         Command::Read { home, room } => app_read(&home, room.as_deref()),
-        Command::Endpoint { command } => match command {
-            EndpointCommand::Export {
-                home,
-                advertise,
-                out,
-            } => app_endpoint_export(&home, advertise, out.as_deref()),
-        },
         Command::Identity { command } => match command {
             IdentityCommand::Create { out } => identity_create(&out),
         },
@@ -253,26 +221,11 @@ fn app_read(home: &Path, room: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn app_endpoint_export(home: &Path, advertise: SocketAddr, out: Option<&Path>) -> Result<()> {
-    let endpoint = VoxelleHome::new(home).export_endpoint(advertise)?;
-    if let Some(out) = out {
-        write_json(out, &endpoint)?;
-    }
-    println!("{}", serde_json::to_string_pretty(&endpoint)?);
-    Ok(())
-}
-
 fn identity_create(out: &Path) -> Result<()> {
     let identity = PeerIdentity::generate()?;
-    let file = IdentityFile {
-        v: 1,
-        peer_secret_b64: identity.peer.secret_key_b64(),
-        device_secret_b64: identity.device.secret_key_b64(),
-        peer_id: identity.peer.id.clone(),
-        device_id: identity.device.id.clone(),
-    };
+    let file = IdentityFile::from_identity(&identity);
     write_json(out, &file)?;
-    println!("{}", file.peer_id);
+    println!("{}", identity.peer.id);
     Ok(())
 }
 
@@ -423,10 +376,7 @@ fn member_join(identity: &PeerIdentity) -> Result<voxelle_core::EventV1> {
 fn load_identity(path: &Path) -> Result<PeerIdentity> {
     let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let file: IdentityFile = serde_json::from_str(&raw).context("parse identity file")?;
-    if file.v != 1 {
-        anyhow::bail!("unsupported identity version");
-    }
-    PeerIdentity::from_secret_keys_b64(&file.peer_secret_b64, &file.device_secret_b64)
+    file.to_identity()
 }
 
 fn load_or_create_certificate(path: &Path) -> Result<QuicCertificate> {

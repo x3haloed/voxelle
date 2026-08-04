@@ -9,7 +9,6 @@ use voxelle_net::{PeerEndpoint, QuicCertificate};
 fn cli_home_workflow_drives_app_actions() {
     let dir = tempdir().expect("tempdir");
     let home = dir.path().join("alice");
-    let endpoint_path = dir.path().join("alice.endpoint.json");
 
     Command::cargo_bin("voxelle")
         .unwrap()
@@ -40,21 +39,6 @@ fn cli_home_workflow_drives_app_actions() {
         .assert()
         .success()
         .stdout(predicate::str::contains("\"text\": \"hello home\""));
-
-    Command::cargo_bin("voxelle")
-        .unwrap()
-        .args(["endpoint", "export", "--home"])
-        .arg(&home)
-        .args(["--advertise", "[::1]:4040", "--out"])
-        .arg(&endpoint_path)
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\"addr\": \"[::1]:4040\""));
-
-    let endpoint: PeerEndpoint =
-        serde_json::from_str(&std::fs::read_to_string(&endpoint_path).expect("read endpoint"))
-            .expect("parse endpoint");
-    endpoint.validate().expect("valid endpoint");
 }
 
 #[test]

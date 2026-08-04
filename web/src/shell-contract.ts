@@ -42,6 +42,8 @@ export type ImportPeerRecordRequest = { peer_record_json: string, };
 
 export type PeerCommandRequest = { peer_id: string, device_id: string, max_events: number | null, };
 
+export type SetUiPreferenceRequest = { "kind": "semantic_token", id: string, value: string, } | { "kind": "metric", id: string, value: number, } | { "kind": "behavior", id: string, value: UiBehaviorValue, };
+
 export type HomeScreenView = { profile: ProfileSummary, runtime: RuntimeStatusView, invite: InviteExchangeView | null, peers: Array<PeerListItemView>, room: RoomTimelineView, };
 
 export type NetworkHealthView = { rows: Array<NetworkHealthRow>, };
@@ -56,9 +58,7 @@ export type RuntimeState = "offline" | "online";
 
 export type InviteExchangeView = { peer_record: PeerRecord, peer_record_json: string, };
 
-export type PeerListItemView = { label: string, peer_id: string, device_id: string, addr: string, default_room: string, diagnostic_state: PeerActionState, sync_state: PeerActionState, };
-
-export type PeerActionState = "not_run";
+export type PeerListItemView = { label: string, peer_id: string, device_id: string, addr: string, default_room: string, };
 
 export type RoomTimelineView = { room_id: string, messages: Array<MessageView>, };
 

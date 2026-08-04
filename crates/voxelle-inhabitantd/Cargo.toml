@@ -18,4 +18,3 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 voxelle-app = { path = "../voxelle-app" }
-voxelle-shell = { path = "../voxelle-shell" }
