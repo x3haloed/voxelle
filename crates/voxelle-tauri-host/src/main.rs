@@ -1,10 +1,20 @@
 use serde_json::Value;
-use tauri::State;
+use std::sync::Arc;
+use tauri::{Emitter, Manager, State};
 use voxelle_app::{ShellError, ShellSnapshotView, ShellState};
 
 fn main() {
     tauri::Builder::default()
-        .manage(ShellState::new(voxelle_app::resolve_home_root(None)))
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            app.manage(ShellState::new_with_notifier(
+                voxelle_app::resolve_home_root(None),
+                Arc::new(move || {
+                    let _ = app_handle.emit("voxelle://snapshot-invalidated", ());
+                }),
+            ));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![execute_shell_command])
         .run(tauri::generate_context!())
         .expect("run Voxelle Tauri host");

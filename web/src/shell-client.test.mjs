@@ -21,3 +21,32 @@ test("standalone preview never claims a product command succeeded", async () => 
     false,
   );
 });
+
+test("native shell subscribes to Rust snapshot invalidations", async () => {
+  let eventName = "";
+  let listener = null;
+  globalThis.window = {
+    __TAURI__: {
+      core: {
+        invoke: async () => ({ home: null }),
+      },
+      event: {
+        listen: async (name, callback) => {
+          eventName = name;
+          listener = callback;
+          return () => {};
+        },
+      },
+    },
+  };
+  const client = createShellClient();
+  let invalidated = false;
+  await client.onSnapshotInvalidated(() => {
+    invalidated = true;
+  });
+
+  assert.equal(client.mode, "tauri");
+  assert.equal(eventName, "voxelle://snapshot-invalidated");
+  listener();
+  assert.equal(invalidated, true);
+});

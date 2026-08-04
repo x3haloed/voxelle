@@ -1,5 +1,6 @@
 import { createShellClient } from "./shell-client.js";
 import { captureCallMedia } from "./call-media.mjs";
+import { reconcileChildren } from "./dom-reconcile.mjs";
 import {
   applyOntology,
   messageTimestamp,
@@ -67,6 +68,8 @@ const viewRenderers = {
 };
 
 let currentSnapshot = await shell.execute("shell.refresh");
+let refreshInFlight = false;
+let refreshQueued = false;
 if (
   ontologyPresentation(currentSnapshot.ui_ontology).startOnlineOnLaunch
   && currentSnapshot.home?.runtime.state === "offline"
@@ -78,33 +81,49 @@ if (
 }
 render();
 
-window.setInterval(async () => {
-  if (uiState.busyCommand || currentSnapshot.home?.runtime.state !== "online") {
+await shell.onSnapshotInvalidated(() => {
+  publishRefresh().catch(reportError);
+});
+
+async function publishRefresh() {
+  if (refreshInFlight || uiState.busyCommand) {
+    refreshQueued = true;
     return;
   }
+  refreshInFlight = true;
   try {
-    const localPeerId = currentSnapshot.home?.profile.peer_id;
-    const call = currentSnapshot.home?.call;
-    if (
-      uiState.localMediaStream
-      && localPeerId
-      && call?.participants.includes(localPeerId)
-      && Date.now() - uiState.lastCallHeartbeatMs >= 20_000
-    ) {
-      currentSnapshot = await shell.execute("call.heartbeat", {
-        room: currentSnapshot.home?.room.room_id ?? null,
-        call_id: call.call_id,
-      });
-      uiState.lastCallHeartbeatMs = Date.now();
-    } else {
+    do {
+      refreshQueued = false;
       await refresh();
-    }
+    } while (refreshQueued);
+    render();
+  } finally {
+    refreshInFlight = false;
+  }
+}
+
+window.setInterval(async () => {
+  const localPeerId = currentSnapshot.home?.profile.peer_id;
+  const call = currentSnapshot.home?.call;
+  if (
+    refreshInFlight
+    || uiState.busyCommand
+    || !uiState.localMediaStream
+    || !localPeerId
+    || !call?.participants.includes(localPeerId)
+    || Date.now() - uiState.lastCallHeartbeatMs < 20_000
+  ) return;
+  try {
+    currentSnapshot = await shell.execute("call.heartbeat", {
+      room: currentSnapshot.home?.room.room_id ?? null,
+      call_id: call.call_id,
+    });
+    uiState.lastCallHeartbeatMs = Date.now();
     render();
   } catch (error) {
-    uiState.error = error instanceof Error ? error.message : String(error);
-    render();
+    reportError(error);
   }
-}, 5_000);
+}, 1_000);
 
 async function refresh() {
   currentSnapshot = await shell.execute("shell.refresh");
@@ -125,11 +144,13 @@ function render() {
     document.documentElement,
     currentSnapshot.ui_ontology,
   );
-  app.replaceChildren(
+  const desired = document.createElement("div");
+  desired.append(
     header(currentSnapshot),
     workbenchShell(currentSnapshot),
     ...(uiState.paletteOpen ? [commandPalette(currentSnapshot)] : []),
   );
+  reconcileChildren(app, desired);
   if (presentation.activityAutoScroll) {
     const activity = app.querySelector(".activity-list");
     activity?.scrollTo?.({ top: activity.scrollHeight });
@@ -295,11 +316,12 @@ function workbenchShell(snapshot) {
   const hidden = snapshot.ui_ontology.views.filter((view) => !view.visible);
   if (hidden.length > 0) {
     const shelf = element("nav", "hidden-view-shelf");
+    shelf.dataset.renderKey = "hidden-view-shelf";
     shelf.setAttribute("aria-label", "Hidden workbench views");
     shelf.append(element("span", "muted", "Hidden views"));
     for (const view of hidden) {
       shelf.append(actionButton(`Show ${view.label}`, () => {
-        saveLayout(setViewVisible(snapshot.ui_ontology.views, view.id, true)).catch(reportError);
+        saveLayout(setViewVisible(currentSnapshot.ui_ontology.views, view.id, true)).catch(reportError);
       }));
     }
     shelf.append(commandButton("workbench.layout.reset"));
@@ -307,6 +329,7 @@ function workbenchShell(snapshot) {
   }
 
   const shellEl = element("section", "workbench");
+  shellEl.dataset.renderKey = "workbench";
   for (const place of snapshot.ui_ontology.places) {
     shellEl.append(dockZone(place, snapshot));
   }
@@ -316,6 +339,7 @@ function workbenchShell(snapshot) {
 
 function dockZone(place, snapshot) {
   const zone = element("section", `dock-zone dock-${place.id}`);
+  zone.dataset.renderKey = `dock:${place.id}`;
   zone.dataset.placeId = place.id;
   zone.setAttribute("aria-label", `${place.label} dock`);
   const heading = element("div", "dock-zone-header");
@@ -335,7 +359,7 @@ function dockZone(place, snapshot) {
     const viewId = event.dataTransfer?.getData("text/x-voxelle-view")
       || uiState.draggedViewId;
     if (viewId) {
-      saveLayout(moveView(snapshot.ui_ontology.views, viewId, place.id)).catch(reportError);
+      saveLayout(moveView(currentSnapshot.ui_ontology.views, viewId, place.id)).catch(reportError);
     }
   });
 
@@ -358,6 +382,7 @@ function dockZone(place, snapshot) {
  */
 function workbenchPanel(viewDefinition, snapshot) {
   const section = element("section", "panel");
+  section.dataset.renderKey = `view:${viewDefinition.id}`;
   section.dataset.panelId = `panel.${viewDefinition.id}`;
   section.dataset.viewId = viewDefinition.id;
   section.dataset.placeId = viewDefinition.place_id;
@@ -395,19 +420,19 @@ function panelHeader(viewDefinition, snapshot) {
   }
   placeSelect.addEventListener("pointerdown", (event) => event.stopPropagation());
   placeSelect.addEventListener("change", () => {
-    saveLayout(moveView(snapshot.ui_ontology.views, viewDefinition.id, placeSelect.value))
+    saveLayout(moveView(currentSnapshot.ui_ontology.views, viewDefinition.id, placeSelect.value))
       .catch(reportError);
   });
   controls.append(
     actionButton("↑", () => {
-      saveLayout(shiftView(snapshot.ui_ontology.views, viewDefinition.id, -1)).catch(reportError);
+      saveLayout(shiftView(currentSnapshot.ui_ontology.views, viewDefinition.id, -1)).catch(reportError);
     }, `Move ${viewDefinition.label} earlier`),
     actionButton("↓", () => {
-      saveLayout(shiftView(snapshot.ui_ontology.views, viewDefinition.id, 1)).catch(reportError);
+      saveLayout(shiftView(currentSnapshot.ui_ontology.views, viewDefinition.id, 1)).catch(reportError);
     }, `Move ${viewDefinition.label} later`),
     placeSelect,
     actionButton("×", () => {
-      saveLayout(setViewVisible(snapshot.ui_ontology.views, viewDefinition.id, false))
+      saveLayout(setViewVisible(currentSnapshot.ui_ontology.views, viewDefinition.id, false))
         .catch(reportError);
     }, `Hide ${viewDefinition.label}`),
   );
@@ -529,6 +554,7 @@ function serviceOptions() {
  */
 function healthRow(row) {
   const item = element("li", "health-row");
+  item.dataset.renderKey = `health:${row.id}`;
   item.dataset.status = row.status;
   item.dataset.healthRowId = row.id;
 
@@ -567,6 +593,7 @@ function activityView(snapshot) {
     snapshot.ui_ontology,
   )) {
     const row = element("li", "");
+    row.dataset.renderKey = `activity:${activity.id}`;
     row.dataset.level = activity.level;
     row.append(
       element("span", "activity-id", String(activity.id)),
@@ -665,6 +692,7 @@ function fieldTestView(snapshot) {
   const list = element("ol", "workflow-list");
   for (const row of rows) {
     const item = element("li", "workflow-row");
+    item.dataset.renderKey = `workflow:${row.label}`;
     item.dataset.status = row.status;
     const body = element("div", "workflow-body");
     body.append(
@@ -689,6 +717,7 @@ function peerListView(snapshot) {
   const list = element("ol", "peer-list");
   for (const peer of peers) {
     const row = element("li", "peer-row");
+    row.dataset.renderKey = `peer:${peer.peer_id}:${peer.device_id}`;
     const body = element("div", "peer-body");
     body.append(element("strong", "", peer.label));
     body.append(element("span", "mono", peer.addr));
@@ -711,6 +740,7 @@ function channelListView(snapshot) {
   const list = element("ol", "peer-list");
   for (const channel of snapshot.home?.channels ?? []) {
     const row = element("li", channel.selected ? "peer-row selected" : "peer-row");
+    row.dataset.renderKey = `channel:${channel.room_id}`;
     const body = element("div", "peer-body");
     body.append(
       element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channel.name}${channel.unread_count > 0 ? ` (${channel.unread_count})` : ""}`),
@@ -745,6 +775,7 @@ function memberProfilesView(snapshot) {
   const list = element("ol", "peer-list");
   for (const profile of snapshot.home?.profiles ?? []) {
     const row = element("li", "peer-row");
+    row.dataset.renderKey = `profile:${profile.peer_id}`;
     const body = element("div", "peer-body");
     body.append(
       element("strong", "", profile.display_name),
@@ -773,6 +804,7 @@ function roleListView(snapshot) {
   const list = element("ol", "peer-list");
   for (const role of snapshot.home?.roles ?? []) {
     const row = element("li", "peer-row");
+    row.dataset.renderKey = `role:${role.role_id}`;
     const body = element("div", "peer-body");
     body.append(
       element("strong", "", role.name),
@@ -800,6 +832,7 @@ function messageSearchView(snapshot) {
   const results = element("ol", "message-list");
   for (const result of snapshot.search_results) {
     const row = element("li", "message remote");
+    row.dataset.renderKey = `search:${result.message.event_id}`;
     row.append(
       element("span", "mono", result.room_id),
       element("span", "muted", shortId(result.message.author_peer_id)),
@@ -819,6 +852,7 @@ function notificationCenterView(snapshot) {
   const list = element("ol", "activity-list");
   for (const notification of snapshot.home?.notifications ?? []) {
     const row = element("li", "");
+    row.dataset.renderKey = `notification:${notification.event_id}`;
     row.append(
       element("strong", "", `@ ${shortId(notification.author_peer_id)}`),
       element("span", "mono", notification.room_id),
@@ -837,6 +871,7 @@ function roomTimelineView(snapshot) {
   for (const message of messages) {
     const own = message.author_peer_id === snapshot.home?.profile.peer_id;
     const row = element("li", own ? "message own" : "message remote");
+    row.dataset.renderKey = `message:${message.event_id}`;
     row.append(element("span", "muted", shortId(message.author_peer_id)));
     const timestamp = messageTimestamp(message, snapshot.ui_ontology);
     if (timestamp !== null) {
@@ -1436,6 +1471,7 @@ async function runCommand(command, payload) {
   } finally {
     uiState.busyCommand = "";
     render();
+    if (refreshQueued) queueMicrotask(() => publishRefresh().catch(reportError));
   }
 }
 
