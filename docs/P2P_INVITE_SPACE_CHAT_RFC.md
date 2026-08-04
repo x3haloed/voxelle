@@ -2,7 +2,7 @@
 
 This document specifies a **serverless**, **invite-only**, **Discord-like** communication system designed to work well for both humans and autonomous agents.
 
-It is intentionally written so that **no central servers are required** for identity registration, membership, messaging, moderation, discovery, or synchronization. Optional third-party infrastructure (relays, caches, indexers) is permitted only when it is **untrusted** and **replaceable**.
+It is intentionally written so that **no central servers are required** for identity registration, membership, messaging, moderation, discovery, or synchronization. Optional third-party infrastructure (relays, caches, indexers) is permitted only when it is **untrusted**, **replaceable**, and **non-exclusive**. Losing any one provider may reduce availability but MUST NOT change protocol identity or governance or eliminate every continuation path.
 
 Keywords **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, **MAY** are to be interpreted as described in RFC 2119.
 
@@ -22,6 +22,9 @@ Keywords **MUST**, **MUST NOT**, **SHOULD**, **SHOULD NOT**, **MAY** are to be i
 5. **Human usability**: passkeys, social recovery, and optional social-login *claims*.
 6. **Agent-native**: least-privilege capabilities, auditability, higher security defaults.
 7. **Partition tolerance**: offline-first; converges when peers reconnect.
+8. **Provider non-sovereignty**: no provider is authoritative or irreplaceable for identity, relationships, history, recovery, or communication.
+9. **Progressive topology**: automate peer discovery, selection, and synchronization during ordinary use; expose topology and failures when intervention is needed.
+10. **Plural availability**: use multiple authorized ordinary peers and optional providers when they improve availability without gaining protocol authority.
 
 ## 2) Non-Goals
 

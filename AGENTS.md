@@ -73,8 +73,11 @@ the product contract:
    membership, permissions, message validity, recovery, encryption keys,
    storage, routing, or update integrity. Ordinary peers may add availability
    without acquiring protocol authority. Endpoint or bootstrap data never
-   grants membership. See the contract's **Trust And Authority**, IPv6 spec
-   §2.3, and P2P RFC §§1–3.
+   grants membership. No single externally administered provider may be
+   authoritative or irreplaceable for identity, relationships, retained
+   history, recovery, or communication. Optional providers must remain
+   untrusted, replaceable, and non-exclusive. See the contract's **Trust And
+   Authority**, IPv6 spec §§2.3–2.5, and P2P RFC §§1–3.
 3. **One admission truth.** Untrusted facts are authenticated and semantically
    validated before durable admission. Membership, roles, bans, device
    revocation, room policy, input bounds, and creation-time validity pass
@@ -102,8 +105,12 @@ the product contract:
    loss, recovery, revocation, resynchronization, and continued operation remain
    complete real paths. Discord-like feature families use the same authority,
    retention, synchronization, and projection story. Failures and unavailable
-   states remain explicit. See the contract's **Capability And Envelope** and
-   **Construction And Verification Order**.
+   states remain explicit. Ordinary success automates peer selection and sync;
+   topology becomes visible when degraded operation or intervention requires
+   it. Within the envelope, use plural ordinary peers and replaceable providers
+   to improve availability without granting authority. See the contract's
+   **Capability And Envelope**, **Trust And Authority**, and **Construction And
+   Verification Order**.
 8. **UI ontology and authority boundary.** Every named view remains dockable;
    placement and visibility survive restart; and one semantic command vocabulary
    drives buttons, shortcuts, the palette, and automation. The frontend does not

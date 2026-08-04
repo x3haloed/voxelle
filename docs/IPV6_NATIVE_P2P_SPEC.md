@@ -10,10 +10,12 @@ Voxelle is a native, local-first, IPv6-only peer-to-peer room system.
 
 The system prioritizes:
 
-1. No Voxelle-operated centralized infrastructure.
-2. A stable base that works under explicit network requirements.
-3. Durable rooms whose state can survive peer churn, address churn, and intermittent connectivity.
-4. Legible failure modes over transparent fallback complexity.
+1. No provider with protocol authority or an irreplaceable role.
+2. Low-friction ordinary use through automatic peer selection and synchronization.
+3. Maximum available uptime from plural ordinary peers and replaceable providers.
+4. A stable base that works under explicit network requirements.
+5. Durable rooms whose state can survive peer churn, address churn, and intermittent connectivity.
+6. Legible failure modes when automation cannot complete the path.
 
 Voxelle is not designed to work on every network. IPv6 support and usable peer reachability are structural requirements of the application.
 
@@ -51,11 +53,31 @@ The base system must not depend on Voxelle-operated servers for:
 
 Users may choose to run always-on peers, personal servers, NAS devices, VPS nodes, or shared community peers. These are ordinary protocol participants, not privileged infrastructure.
 
+No single externally administered provider may be authoritative or
+irreplaceable for identity, relationships, retained history, recovery, or
+communication. Optional providers may add discovery, reachability, retention,
+notifications, recovery availability, or distribution only while remaining
+untrusted, replaceable, and non-exclusive. Losing one may degrade availability;
+it must not change protocol identity or governance or eliminate every
+continuation path.
+
 ### 2.4 Local-First Truth
 
 Room truth is carried by signed, append-only events. Transport only moves events. Transport does not define authority, ordering, membership, or validity.
 
 Any peer with the relevant room state must be able to validate, store, merge, and forward events without asking a central service.
+
+### 2.5 Progressive Topology And Plural Availability
+
+Ordinary successful use should automatically discover, select, and synchronize
+through available authorized peers without requiring people to manage network
+topology. The application must still expose truthful unavailable and degraded
+states, with manual diagnostics and control when intervention is needed.
+
+Within the trust and connectivity envelope, implementations should use multiple
+reachable ordinary peers and replaceable providers when doing so improves
+reachability, retention, or recovery without granting additional protocol
+authority.
 
 ## 3. Non-Goals
 
@@ -631,4 +653,3 @@ These questions must be answered before a production-quality room model:
 - How should a room checkpoint or compaction event be validated?
 - What LAN discovery data is safe to advertise by default?
 - Whether inbound reachability testing can be purely peer-assisted or needs a user-selected test peer.
-

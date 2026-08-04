@@ -86,6 +86,14 @@ real desktop shell:
 Do not build a giant abstract design system before the app has enough surface
 area to teach us.
 
+### 2.5 Topology Should Be Progressive
+
+Ordinary successful use should not require people to understand addresses,
+peer records, forwarding roles, synchronization, or provider selection. The UI
+should automate those mechanisms through the Rust-owned command path, then
+surface topology, degraded states, diagnostics, and manual control when they are
+needed. Convenience must not make a provider authoritative or irreplaceable.
+
 ## 3. Primitive Categories
 
 ### 3.1 Places

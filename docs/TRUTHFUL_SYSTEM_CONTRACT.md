@@ -15,6 +15,10 @@ space, communicate through available ordinary peers, lose its local state,
 recover onto a new device, revoke the lost device, resynchronize retained data,
 and continue through the same authorities used during normal operation.
 
+No single externally administered provider may be a protocol authority or an
+irreplaceable dependency for a person's identity, relationships, retained
+history, recovery, or communication.
+
 ## Capability And Envelope
 
 The target is a native macOS and Windows application for private groups of 2 to
@@ -71,6 +75,22 @@ capsules, store room history, or forward media. Those roles grant availability,
 not protocol authority. Release hosting and a static invite helper may be
 optional conveniences; signed artifacts and complete invite payloads must be
 mirrorable.
+
+Optional providers may improve discovery, reachability, retention, recovery
+availability, notifications, or distribution only when they remain untrusted,
+replaceable, non-exclusive, and unable to change protocol identity or
+governance. Losing any one provider may reduce availability but must leave a
+complete continuation path through another provider or ordinary peers.
+
+Within that boundary, Voxelle pursues two subordinate product values:
+
+- **Progressive topology:** ordinary successful use does not require people to
+  understand addresses, peer records, forwarding, synchronization, or provider
+  selection. The app automates them while exposing truthful degraded states and
+  manual control when intervention is needed.
+- **Plural availability:** the runtime uses every authorized ordinary peer and
+  replaceable provider that can improve reachability, retention, or recovery
+  without granting additional protocol authority.
 
 The surviving authorities are:
 
