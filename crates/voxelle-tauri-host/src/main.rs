@@ -11,12 +11,12 @@ fn main() {
 }
 
 #[tauri::command]
-fn execute_shell_command(
+async fn execute_shell_command(
     state: State<'_, ShellState>,
     command_id: String,
     payload: Value,
 ) -> Result<ShellSnapshotView, ShellError> {
-    tauri::async_runtime::block_on(state.execute_serialized_command(&command_id, payload))
+    state.execute_serialized_command(&command_id, payload).await
 }
 
 #[cfg(test)]
