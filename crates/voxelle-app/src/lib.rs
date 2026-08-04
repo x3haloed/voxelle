@@ -39,6 +39,7 @@ const KNOWN_PEERS_STATE: &str = "peers.known";
 const READ_STATE: &str = "rooms.read";
 const ROOM_KEYS_STATE: &str = "rooms.keys.encrypted";
 const UI_PREFERENCES_STATE: &str = "ui.preferences";
+const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
 
 pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
     resolve_home_root_from(
@@ -4041,7 +4042,7 @@ impl VoxelleService {
         let server = PeerServer::start(home, bind, advertise)?;
         let online = server.online.clone();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
-        let (event_tx, events) = mpsc::channel();
+        let (event_tx, events) = mpsc::sync_channel(SERVICE_EVENT_QUEUE_CAPACITY);
         let thread = thread::Builder::new()
             .name("voxelle-service".to_string())
             .spawn(move || run_service_thread(server, stop_rx, event_tx, snapshot_invalidated))
@@ -4092,14 +4093,14 @@ impl Drop for VoxelleService {
 fn run_service_thread(
     server: PeerServer,
     stop_rx: tokio::sync::oneshot::Receiver<()>,
-    event_tx: mpsc::Sender<VoxelleServiceEvent>,
+    event_tx: mpsc::SyncSender<VoxelleServiceEvent>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
 ) {
     let Ok(task_runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     else {
-        let _ = event_tx.send(VoxelleServiceEvent::Failed(
+        let _ = event_tx.try_send(VoxelleServiceEvent::Failed(
             "failed to create service runtime".to_string(),
         ));
         return;
@@ -4115,7 +4116,7 @@ fn run_service_thread(
 async fn run_service_loop(
     server: PeerServer,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
-    event_tx: mpsc::Sender<VoxelleServiceEvent>,
+    event_tx: mpsc::SyncSender<VoxelleServiceEvent>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
 ) {
     loop {
@@ -4124,20 +4125,21 @@ async fn run_service_loop(
             result = server.serve_next_request() => {
                 match result {
                     Ok(served) => {
-                        let _ = event_tx.send(VoxelleServiceEvent::Served(Box::new(served)));
-                        snapshot_invalidated();
+                        if event_tx.try_send(VoxelleServiceEvent::Served(Box::new(served))).is_ok() {
+                            snapshot_invalidated();
+                        }
                     }
                     Err(error) => {
-                        let _ = event_tx.send(VoxelleServiceEvent::Failed(format!("{error:#}")));
-                        snapshot_invalidated();
-                        break;
+                        if event_tx.try_send(VoxelleServiceEvent::Failed(format!("{error:#}"))).is_ok() {
+                            snapshot_invalidated();
+                        }
                     }
                 }
             }
         }
     }
     server.stop().await;
-    let _ = event_tx.send(VoxelleServiceEvent::Stopped);
+    let _ = event_tx.try_send(VoxelleServiceEvent::Stopped);
     snapshot_invalidated();
 }
 
@@ -6657,6 +6659,43 @@ mod tests {
         };
         assert!(matches!(event, VoxelleServiceEvent::Served(_)));
         assert!(event.summary().starts_with("served "));
+        service.stop().expect("stop service");
+    }
+
+    #[tokio::test]
+    async fn malformed_peer_request_does_not_terminate_the_service() {
+        let dir = tempdir().expect("tempdir");
+        let server_home = VoxelleHome::new(dir.path().join("server"));
+        let client_home = VoxelleHome::new(dir.path().join("client"));
+        server_home.init(DEFAULT_ROOM_ID).expect("server init");
+        client_home.init(DEFAULT_ROOM_ID).expect("client init");
+        let service = server_home
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("service");
+        let endpoint = service.online().endpoint.clone();
+
+        let client_node = QuicNode::bind_ipv6_loopback_with_certificate(
+            client_home.load_identity().expect("identity"),
+            client_home.load_certificate().expect("certificate"),
+        )
+        .expect("client node");
+        let authenticated = client_node
+            .connect(
+                endpoint.addr,
+                endpoint.certificate_der().expect("server cert"),
+                &endpoint.device_id,
+            )
+            .await
+            .expect("connect");
+        let (mut send, _recv) = authenticated.connection.open_bi().await.expect("stream");
+        send.write_all(b"{}")
+            .await
+            .expect("malformed request bytes");
+        send.finish().expect("finish malformed request");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let diagnostic = client_node.diagnose_peer(&endpoint).await;
+        assert!(diagnostic.reachable);
         service.stop().expect("stop service");
     }
 

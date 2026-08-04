@@ -23,6 +23,7 @@ const MAX_SYNC_EVENTS_PER_BATCH: usize = 4096;
 const MAX_SYNC_HEADS: usize = 256;
 const DIAGNOSTIC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const SYNC_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const PEER_IO_TIMEOUT: Duration = Duration::from_secs(5);
 static RUSTLS_PROVIDER: Once = Once::new();
 
 #[derive(Debug)]
@@ -137,6 +138,24 @@ struct RoomSyncAckV1 {
     accepted: usize,
     already_present: usize,
     rejected: usize,
+}
+
+#[derive(Serialize)]
+struct RoomSyncResponseRef<'a> {
+    v: u8,
+    room_id: &'a str,
+    heads: &'a [String],
+    events: &'a [EventV1],
+    error: Option<&'a str>,
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+struct RoomSyncPushRef<'a> {
+    v: u8,
+    room_id: &'a str,
+    events: &'a [EventV1],
+    truncated: bool,
 }
 
 pub struct RoomSync<'a> {
@@ -286,10 +305,13 @@ impl QuicNode {
             .accept()
             .await
             .ok_or_else(|| anyhow!("QUIC endpoint closed"))?;
-        let connection = incoming.await.context("accept QUIC connection")?;
-        let (mut send, recv) = connection
-            .accept_bi()
+        let connection = tokio::time::timeout(PEER_IO_TIMEOUT, incoming)
             .await
+            .context("accept QUIC connection timed out")?
+            .context("accept QUIC connection")?;
+        let (mut send, recv) = tokio::time::timeout(PEER_IO_TIMEOUT, connection.accept_bi())
+            .await
+            .context("accept handshake stream timed out")?
             .context("accept handshake stream")?;
 
         let client_hello: HandshakeV1 = recv_handshake(recv).await?;
@@ -301,8 +323,9 @@ impl QuicNode {
             &self.certificate.fingerprint,
         )?;
         let bytes = serde_json::to_vec(&server_hello).context("serialize server handshake")?;
-        send.write_all(&bytes)
+        tokio::time::timeout(PEER_IO_TIMEOUT, send.write_all(&bytes))
             .await
+            .context("write server handshake timed out")?
             .context("write server handshake")?;
         send.finish().context("finish server handshake stream")?;
 
@@ -335,9 +358,9 @@ impl QuicNode {
             .await
             .context("complete QUIC connect")?;
 
-        let (mut send, recv) = connection
-            .open_bi()
+        let (mut send, recv) = tokio::time::timeout(PEER_IO_TIMEOUT, connection.open_bi())
             .await
+            .context("open handshake stream timed out")?
             .context("open handshake stream")?;
         let client_hello = make_handshake(
             &self.identity,
@@ -345,8 +368,9 @@ impl QuicNode {
             &self.certificate.fingerprint,
         )?;
         let bytes = serde_json::to_vec(&client_hello).context("serialize client handshake")?;
-        send.write_all(&bytes)
+        tokio::time::timeout(PEER_IO_TIMEOUT, send.write_all(&bytes))
             .await
+            .context("write client handshake timed out")?
             .context("write client handshake")?;
         send.finish().context("finish client handshake stream")?;
 
@@ -410,11 +434,11 @@ impl QuicNode {
         .await
         .context("room sync connect timed out")??;
 
-        let (mut send, recv) = authenticated
-            .connection
-            .open_bi()
-            .await
-            .context("open room sync stream")?;
+        let (mut send, recv) =
+            tokio::time::timeout(PEER_IO_TIMEOUT, authenticated.connection.open_bi())
+                .await
+                .context("open room sync stream timed out")?
+                .context("open room sync stream")?;
         send_json(
             &mut send,
             &RoomSyncRequestV1 {
@@ -450,13 +474,26 @@ impl QuicNode {
 
         let mut stats =
             accept_offered_events_once(dest, &response.events, sync.context, sync.now_ms)?;
-        let (push_events, push_truncated) =
+        let (mut push_events, mut push_truncated) =
             missing_events_for_heads(dest, sync.room_id, &response.heads, sync.limits)?;
-        let (mut push_send, push_recv) = authenticated
-            .connection
-            .open_bi()
-            .await
-            .context("open room sync push stream")?;
+        let push_count = fitting_event_prefix(&push_events, |events| {
+            serialize_json_bounded(
+                &RoomSyncPushRef {
+                    v: 1,
+                    room_id: sync.room_id,
+                    events,
+                    truncated: push_truncated || events.len() < push_events.len(),
+                },
+                MAX_SYNC_BYTES,
+            )
+        })?;
+        push_truncated |= push_count < push_events.len();
+        push_events.truncate(push_count);
+        let (mut push_send, push_recv) =
+            tokio::time::timeout(PEER_IO_TIMEOUT, authenticated.connection.open_bi())
+                .await
+                .context("open room sync push stream timed out")?
+                .context("open room sync push stream")?;
         send_json(
             &mut push_send,
             &RoomSyncPushV1 {
@@ -483,11 +520,11 @@ impl QuicNode {
 
     pub async fn serve_diagnostic_once(&self) -> Result<PeerReachabilityReport> {
         let authenticated = self.accept_one().await?;
-        let (mut send, recv) = authenticated
-            .connection
-            .accept_bi()
-            .await
-            .context("accept diagnostic stream")?;
+        let (mut send, recv) =
+            tokio::time::timeout(PEER_IO_TIMEOUT, authenticated.connection.accept_bi())
+                .await
+                .context("accept diagnostic stream timed out")?
+                .context("accept diagnostic stream")?;
         let ping = recv_json(recv, MAX_SYNC_BYTES).await?;
         self.serve_diagnostic_request(authenticated.remote, &mut send, ping)
             .await
@@ -500,11 +537,11 @@ impl QuicNode {
         now_ms: i64,
     ) -> Result<ServedPeerRequest> {
         let authenticated = self.accept_one().await?;
-        let (mut send, recv) = authenticated
-            .connection
-            .accept_bi()
-            .await
-            .context("accept peer request stream")?;
+        let (mut send, recv) =
+            tokio::time::timeout(PEER_IO_TIMEOUT, authenticated.connection.accept_bi())
+                .await
+                .context("accept peer request stream timed out")?
+                .context("accept peer request stream")?;
         let request: serde_json::Value = recv_json(recv, MAX_SYNC_BYTES).await?;
 
         if request.get("nonce").is_some() {
@@ -578,8 +615,23 @@ impl QuicNode {
         let limits = SyncLimits {
             max_events_per_batch: request.max_events,
         };
-        let (events, truncated) =
+        let (mut events, mut truncated) =
             missing_events_for_heads(source, &request.room_id, &request.heads, limits)?;
+        let event_count = fitting_event_prefix(&events, |candidate| {
+            serialize_json_bounded(
+                &RoomSyncResponseRef {
+                    v: 1,
+                    room_id: &request.room_id,
+                    heads: &source_heads,
+                    events: candidate,
+                    error: None,
+                    truncated: truncated || candidate.len() < events.len(),
+                },
+                MAX_SYNC_BYTES,
+            )
+        })?;
+        truncated |= event_count < events.len();
+        events.truncate(event_count);
         let offered = events.len();
 
         send_json(
@@ -601,7 +653,10 @@ impl QuicNode {
                 .await
                 .context("room sync push timed out")?
                 .context("accept room sync push stream")?;
-        let push: RoomSyncPushV1 = recv_json(push_recv, MAX_SYNC_BYTES).await?;
+        let push: RoomSyncPushV1 =
+            tokio::time::timeout(PEER_IO_TIMEOUT, recv_json(push_recv, MAX_SYNC_BYTES))
+                .await
+                .context("room sync push read timed out")??;
         if push.v != 1 || push.room_id != request.room_id {
             bail!("invalid room sync push");
         }
@@ -697,11 +752,11 @@ impl QuicNode {
                 format!("{:?}", std::time::SystemTime::now()).as_bytes()
             ))
         );
-        let (mut send, recv) = authenticated
-            .connection
-            .open_bi()
-            .await
-            .context("open diagnostic stream")?;
+        let (mut send, recv) =
+            tokio::time::timeout(PEER_IO_TIMEOUT, authenticated.connection.open_bi())
+                .await
+                .context("open diagnostic stream timed out")?
+                .context("open diagnostic stream")?;
         send_json(
             &mut send,
             &DiagnosticPingV1 {
@@ -991,20 +1046,25 @@ fn handshake_signing_bytes(hello: &HandshakeV1) -> Result<Vec<u8>> {
 }
 
 async fn recv_handshake<T: for<'de> Deserialize<'de>>(mut recv: quinn::RecvStream) -> Result<T> {
-    let bytes = recv
-        .read_to_end(MAX_HANDSHAKE_BYTES)
+    let bytes = tokio::time::timeout(PEER_IO_TIMEOUT, recv.read_to_end(MAX_HANDSHAKE_BYTES))
         .await
+        .context("handshake read timed out")?
         .context("read handshake")?;
     serde_json::from_slice(&bytes).context("parse handshake")
 }
 
 async fn send_json<T: Serialize>(send: &mut quinn::SendStream, value: &T) -> Result<()> {
-    let bytes = serde_json::to_vec(value).context("serialize stream message")?;
-    send.write_all(&bytes)
+    let bytes = serialize_json_bounded(value, MAX_SYNC_BYTES)?;
+    tokio::time::timeout(PEER_IO_TIMEOUT, send.write_all(&bytes))
         .await
+        .context("stream write timed out")?
         .context("write stream message")?;
     send.finish().context("finish stream message")?;
-    if let Some(error_code) = send.stopped().await.context("await stream delivery")? {
+    let stopped = tokio::time::timeout(PEER_IO_TIMEOUT, send.stopped())
+        .await
+        .context("stream delivery acknowledgement timed out")?
+        .context("await stream delivery")?;
+    if let Some(error_code) = stopped {
         bail!("stream stopped by peer with error {error_code}");
     }
     Ok(())
@@ -1014,11 +1074,60 @@ async fn recv_json<T: for<'de> Deserialize<'de>>(
     mut recv: quinn::RecvStream,
     max_bytes: usize,
 ) -> Result<T> {
-    let bytes = recv
-        .read_to_end(max_bytes)
+    let bytes = tokio::time::timeout(PEER_IO_TIMEOUT, recv.read_to_end(max_bytes))
         .await
+        .context("stream read timed out")?
         .context("read stream message")?;
     serde_json::from_slice(&bytes).context("parse stream message")
+}
+
+fn serialize_json_bounded<T: Serialize>(value: &T, max_bytes: usize) -> Result<Vec<u8>> {
+    struct BoundedWriter {
+        bytes: Vec<u8>,
+        max_bytes: usize,
+    }
+
+    impl std::io::Write for BoundedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            if self.bytes.len().saturating_add(buf.len()) > self.max_bytes {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "serialized stream message exceeds byte limit",
+                ));
+            }
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut writer = BoundedWriter {
+        bytes: Vec::with_capacity(max_bytes.min(16 * 1024)),
+        max_bytes,
+    };
+    serde_json::to_writer(&mut writer, value).context("serialize bounded stream message")?;
+    Ok(writer.bytes)
+}
+
+fn fitting_event_prefix(
+    events: &[EventV1],
+    mut serialize: impl FnMut(&[EventV1]) -> Result<Vec<u8>>,
+) -> Result<usize> {
+    serialize(&[]).context("empty sync frame exceeds byte limit")?;
+    let mut low = 0;
+    let mut high = events.len();
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if serialize(&events[..mid]).is_ok() {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    Ok(low)
 }
 
 #[cfg(test)]
@@ -1031,6 +1140,41 @@ mod tests {
 
     fn delegation_for(identity: &PeerIdentity, scopes: Vec<String>) -> DelegationCertV1 {
         create_delegation(identity, 900, 2_000, scopes).expect("delegation")
+    }
+
+    #[test]
+    fn bounded_json_serialization_rejects_before_exceeding_the_frame_limit() {
+        let value = serde_json::json!({"payload": "x".repeat(1024)});
+        let error = serialize_json_bounded(&value, 128).expect_err("oversized frame");
+        assert!(error
+            .to_string()
+            .contains("serialize bounded stream message"));
+        assert!(serialize_json_bounded(&value, 2048).is_ok());
+    }
+
+    #[test]
+    fn event_batches_are_trimmed_to_the_largest_encoded_prefix() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let events = (0..5)
+            .map(|index| {
+                create_event(
+                    &identity,
+                    delegation_for(&identity, vec!["room:post".to_string()]),
+                    "room:test",
+                    1_000 + index,
+                    "ROOM_POST",
+                    vec![],
+                    json!({"text": "x".repeat(64)}),
+                )
+                .expect("event")
+            })
+            .collect::<Vec<_>>();
+        let two_size = serde_json::to_vec(&events[..2]).expect("two").len();
+        let count = fitting_event_prefix(&events, |candidate| {
+            serialize_json_bounded(&candidate, two_size)
+        })
+        .expect("prefix");
+        assert_eq!(count, 2);
     }
 
     fn member_join(identity: &PeerIdentity) -> EventV1 {
