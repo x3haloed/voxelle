@@ -11,8 +11,8 @@ use std::sync::Once;
 use std::time::Duration;
 use ts_rs::TS;
 use voxelle_core::{
-    derive_governance_state, id_from_spki_der, verify_signature_from_spki_b64, EventV1,
-    PeerIdentity, RoomContext,
+    channel_allows_peer, derive_governance_state, id_from_spki_der, verify_signature_from_spki_b64,
+    EventV1, PeerIdentity, RoomContext,
 };
 use voxelle_store::Store;
 use voxelle_sync::{accept_offered_events_once, SyncLimits, SyncStats};
@@ -566,6 +566,57 @@ impl QuicNode {
                 let state = derive_governance_state(&governance, context, now_ms);
                 if !state.members.contains(&remote.peer_id) {
                     let error = "remote principal is not a member of this space".to_string();
+                    send_json(
+                        send,
+                        &RoomSyncResponseV1 {
+                            v: 1,
+                            room_id: request.room_id.clone(),
+                            events: Vec::new(),
+                            accepted_from_remote: received.accepted,
+                            already_present_from_remote: received.already_present,
+                            rejected_from_remote: received.rejected,
+                            error: Some(error),
+                            truncated: false,
+                        },
+                    )
+                    .await?;
+                    return Ok(ServedRoomSync {
+                        remote,
+                        room_id: request.room_id,
+                        offered: 0,
+                        accepted_from_remote: received.accepted,
+                        rejected_from_remote: received.rejected,
+                        truncated: false,
+                    });
+                }
+                let Some(channel) = state.channels.get(&request.room_id) else {
+                    let error = "requested channel does not exist".to_string();
+                    send_json(
+                        send,
+                        &RoomSyncResponseV1 {
+                            v: 1,
+                            room_id: request.room_id.clone(),
+                            events: Vec::new(),
+                            accepted_from_remote: received.accepted,
+                            already_present_from_remote: received.already_present,
+                            rejected_from_remote: received.rejected,
+                            error: Some(error),
+                            truncated: false,
+                        },
+                    )
+                    .await?;
+                    return Ok(ServedRoomSync {
+                        remote,
+                        room_id: request.room_id,
+                        offered: 0,
+                        accepted_from_remote: received.accepted,
+                        rejected_from_remote: received.rejected,
+                        truncated: false,
+                    });
+                };
+                if !channel_allows_peer(channel, &remote.peer_id) {
+                    let error =
+                        "remote principal is not a member of this private channel".to_string();
                     send_json(
                         send,
                         &RoomSyncResponseV1 {

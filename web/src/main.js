@@ -26,6 +26,11 @@ const uiState = {
   peerRecordDraft: "",
   spaceInviteDraft: "",
   messageDraft: "",
+  channelNameDraft: "",
+  channelTopicDraft: "",
+  profileNameDraft: "",
+  profileAboutDraft: "",
+  searchDraft: "",
   bindDraft: "",
   advertiseDraft: "",
   draggedViewId: "",
@@ -40,6 +45,10 @@ const viewRenderers = {
   "field.test": fieldTestView,
   "invite.exchange": inviteExchangeView,
   "peer.list": peerListView,
+  "channel.list": channelListView,
+  "member.profiles": memberProfilesView,
+  "role.list": roleListView,
+  "message.search": messageSearchView,
   "room.timeline": roomTimelineView,
   "message.composer": messageComposerView,
   "service.activity": activityView,
@@ -659,6 +668,106 @@ function peerListView(snapshot) {
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function channelListView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const list = element("ol", "peer-list");
+  for (const channel of snapshot.home?.channels ?? []) {
+    const row = element("li", channel.selected ? "peer-row selected" : "peer-row");
+    const body = element("div", "peer-body");
+    body.append(
+      element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channel.name}`),
+      element("span", "muted", channel.topic),
+    );
+    row.append(body, commandButton("channel.select", { room_id: channel.room_id }));
+    list.append(row);
+  }
+  const form = element("form", "field-stack");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("channel.create").catch(reportError);
+  });
+  form.append(
+    labeledInput("Name", "new-channel", uiState.channelNameDraft, (value) => { uiState.channelNameDraft = value; }),
+    labeledInput("Topic", "What belongs here?", uiState.channelTopicDraft, (value) => { uiState.channelTopicDraft = value; }),
+    submitButton("channel.create"),
+  );
+  fragment.append(list, form);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function memberProfilesView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const list = element("ol", "peer-list");
+  for (const profile of snapshot.home?.profiles ?? []) {
+    const row = element("li", "peer-row");
+    const body = element("div", "peer-body");
+    body.append(
+      element("strong", "", profile.display_name),
+      element("span", "muted", profile.about),
+      element("span", "mono", shortId(profile.peer_id)),
+    );
+    row.append(body);
+    list.append(row);
+  }
+  const form = element("form", "field-stack");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("profile.update").catch(reportError);
+  });
+  form.append(
+    labeledInput("Display name", "Your name", uiState.profileNameDraft, (value) => { uiState.profileNameDraft = value; }),
+    labeledInput("About", "A short profile", uiState.profileAboutDraft, (value) => { uiState.profileAboutDraft = value; }),
+    submitButton("profile.update"),
+  );
+  fragment.append(list, form);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function roleListView(snapshot) {
+  const list = element("ol", "peer-list");
+  for (const role of snapshot.home?.roles ?? []) {
+    const row = element("li", "peer-row");
+    const body = element("div", "peer-body");
+    body.append(
+      element("strong", "", role.name),
+      element("span", "muted", `${role.member_count} member(s)`),
+      element("span", "mono", role.permissions.join(", ") || "no permissions"),
+    );
+    row.append(body);
+    list.append(row);
+  }
+  const controls = element("div", "control-row");
+  controls.append(commandButton("role.create"), commandButton("role.grant"));
+  list.append(controls);
+  return list;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function messageSearchView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const form = element("form", "field-stack");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("message.search").catch(reportError);
+  });
+  form.append(labeledInput("Search", "Words in messages or attachment names", uiState.searchDraft, (value) => { uiState.searchDraft = value; }), submitButton("message.search"));
+  const results = element("ol", "message-list");
+  for (const result of snapshot.search_results) {
+    const row = element("li", "message remote");
+    row.append(
+      element("span", "mono", result.room_id),
+      element("span", "muted", shortId(result.message.author_peer_id)),
+      element("p", "", result.message.text),
+    );
+    results.append(row);
+  }
+  fragment.append(form, results);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function roomTimelineView(snapshot) {
   const messages = snapshot.home?.room.messages ?? [];
   const list = element("ol", "message-list");
@@ -672,7 +781,31 @@ function roomTimelineView(snapshot) {
       time.dateTime = new Date(message.created_ms).toISOString();
       row.append(time);
     }
-    row.append(element("p", "", message.text));
+    row.append(element("p", message.redacted ? "muted" : "", message.text));
+    if (message.edited_ms !== null) row.append(element("small", "muted", "edited"));
+    if (message.pinned) row.append(element("small", "muted", "pinned"));
+    if (message.reply_count > 0) row.append(element("small", "muted", `${message.reply_count} repl${message.reply_count === 1 ? "y" : "ies"}`));
+    for (const reaction of message.reactions) {
+      row.append(commandButton("reaction.add", { target_event_id: message.event_id, emoji: reaction.emoji, room: snapshot.home?.room.room_id ?? null }));
+    }
+    for (const attachment of message.attachments) {
+      const link = element("a", "mono", `${attachment.filename} · ${attachment.sha256}`);
+      link.href = `data:${attachment.mime};base64,${attachment.data_b64}`;
+      link.download = attachment.filename;
+      row.append(link);
+    }
+    const actions = element("div", "row-actions");
+    actions.append(
+      commandButton("reaction.add", { target_event_id: message.event_id, emoji: "👍", room: snapshot.home?.room.room_id ?? null }),
+      commandButton("pin.add", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
+    );
+    if (own) {
+      actions.append(
+        commandButton("message.edit", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
+        commandButton("message.redact", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
+      );
+    }
+    row.append(actions);
     list.append(row);
   }
 
@@ -691,7 +824,25 @@ function messageComposerView() {
   input.addEventListener("input", () => {
     uiState.messageDraft = input.value;
   });
-  form.append(input, submitButton("message.send"));
+  const fileInput = element("input", "");
+  fileInput.type = "file";
+  fileInput.setAttribute("aria-label", "Attach file");
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    if (file.size > 256 * 1024) {
+      reportError(new Error("attachments are limited to 256 KiB"));
+      return;
+    }
+    const data_b64 = await fileAsBase64(file);
+    await runCommand("attachment.add", {
+      filename: file.name,
+      mime: file.type || "application/octet-stream",
+      data_b64,
+      room: null,
+    });
+  });
+  form.append(input, submitButton("message.send"), fileInput);
 
   return form;
 }
@@ -902,11 +1053,79 @@ async function runCommand(command, payload) {
         return;
       case "message.send":
         currentSnapshot = await shell.execute(command, {
-          text: uiState.messageDraft,
-          room: null,
+          text: payload?.text ?? uiState.messageDraft,
+          room: payload?.room ?? null,
+          mentions: payload?.mentions ?? [],
+          thread_root_event_id: payload?.thread_root_event_id ?? null,
         });
         uiState.messageDraft = "";
         return;
+      case "channel.select":
+        currentSnapshot = await shell.execute(command, payload);
+        return;
+      case "channel.create":
+        currentSnapshot = await shell.execute(command, payload ?? {
+          name: uiState.channelNameDraft,
+          topic: uiState.channelTopicDraft,
+          private_members: [],
+        });
+        uiState.channelNameDraft = "";
+        uiState.channelTopicDraft = "";
+        return;
+      case "message.edit": {
+        const text = payload?.text ?? window.prompt("New message text");
+        if (text === null) return;
+        currentSnapshot = await shell.execute(command, { ...payload, text, mentions: payload?.mentions ?? [] });
+        return;
+      }
+      case "message.redact":
+      case "reaction.add":
+      case "reaction.remove":
+      case "pin.add":
+      case "pin.remove":
+      case "attachment.add":
+        currentSnapshot = await shell.execute(command, payload);
+        return;
+      case "profile.update":
+        currentSnapshot = await shell.execute(command, payload ?? {
+          display_name: uiState.profileNameDraft,
+          about: uiState.profileAboutDraft,
+        });
+        uiState.profileNameDraft = "";
+        uiState.profileAboutDraft = "";
+        return;
+      case "message.search":
+        currentSnapshot = await shell.execute(command, payload ?? {
+          query: uiState.searchDraft,
+          room: null,
+          limit: 50,
+        });
+        return;
+      case "role.create": {
+        const name = payload?.name ?? window.prompt("Role name");
+        if (!name) return;
+        const permissionsText = payload?.permissions?.join(",") ?? window.prompt("Permissions (comma-separated)", "message:moderate,message:pin") ?? "";
+        currentSnapshot = await shell.execute(command, {
+          name,
+          permissions: payload?.permissions ?? permissionsText.split(",").map((value) => value.trim()).filter(Boolean),
+        });
+        return;
+      }
+      case "role.grant":
+      case "role.revoke": {
+        const peer_id = payload?.peer_id ?? window.prompt("Member peer ID");
+        const role_id = payload?.role_id ?? window.prompt("Role ID");
+        if (!peer_id || !role_id) return;
+        currentSnapshot = await shell.execute(command, { peer_id, role_id });
+        return;
+      }
+      case "member.ban":
+      case "member.unban": {
+        const peer_id = payload?.peer_id ?? window.prompt("Member peer ID");
+        if (!peer_id) return;
+        currentSnapshot = await shell.execute(command, { peer_id, reason: payload?.reason ?? "" });
+        return;
+      }
       case "invite.copy":
         if (shell.mode === "preview") {
           throw new Error(
@@ -1021,6 +1240,17 @@ function labeledInput(label, placeholder, value, onInput) {
 function blankToNull(value) {
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+/** @param {File} file */
+async function fileAsBase64(file) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result)));
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("file read failed")));
+    reader.readAsDataURL(file);
+  });
+  return String(dataUrl).split(",", 2)[1] ?? "";
 }
 
 /**

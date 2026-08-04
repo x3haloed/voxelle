@@ -125,13 +125,16 @@ fn insert_after_acceptance(
     context: &RoomContext,
     now_ms: i64,
 ) -> Result<bool> {
-    let governance_events = dest.room_events(&context.governance_room_id)?;
-    let accepted = accept_event(event, &governance_events, context, now_ms)
+    let mut accepted_events = dest.room_events(&context.governance_room_id)?;
+    if event.room_id != context.governance_room_id {
+        accepted_events.extend(dest.room_events(&event.room_id)?);
+    }
+    let accepted = accept_event(event, &accepted_events, context, now_ms)
         .map_err(|e| anyhow::anyhow!("event rejected: {e:?}"))?;
     dest.insert_accepted_event(accepted, now_ms)
 }
 
-fn merge_stats(total: &mut SyncStats, next: SyncStats) {
+pub fn merge_stats(total: &mut SyncStats, next: SyncStats) {
     total.offered += next.offered;
     total.accepted += next.accepted;
     total.already_present += next.already_present;

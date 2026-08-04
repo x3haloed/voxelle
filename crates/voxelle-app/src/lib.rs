@@ -15,15 +15,16 @@ use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
     accept_event, create_delegation, create_event, create_space, create_space_invite_event,
-    topo_sort_deterministic, validate_space_at, validate_space_invite_at, EventV1, IdentityProofV1,
-    PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
+    derive_governance_state, topo_sort_deterministic, validate_space_at, validate_space_invite_at,
+    ChannelVisibility, EventV1, IdentityProofV1, PeerIdentity, RecoveryCardV1, RoomContext,
+    SpaceV1,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
     QuicNode, ServedPeerRequest,
 };
 use voxelle_store::Store;
-use voxelle_sync::{SyncLimits, SyncStats};
+use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
 
 mod shell;
 
@@ -190,6 +191,60 @@ pub struct MessageView {
     pub created_ms: i64,
     pub author_peer_id: String,
     pub text: String,
+    #[ts(type = "number | null")]
+    pub edited_ms: Option<i64>,
+    pub redacted: bool,
+    pub mentions: Vec<String>,
+    pub thread_root_event_id: Option<String>,
+    pub reply_count: usize,
+    pub pinned: bool,
+    pub reactions: Vec<ReactionView>,
+    pub attachments: Vec<AttachmentView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ReactionView {
+    pub emoji: String,
+    pub peer_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AttachmentView {
+    pub event_id: String,
+    pub filename: String,
+    pub mime: String,
+    pub sha256: String,
+    pub data_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ChannelView {
+    pub room_id: String,
+    pub name: String,
+    pub topic: String,
+    pub visibility: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RoleView {
+    pub role_id: String,
+    pub name: String,
+    pub permissions: Vec<String>,
+    pub member_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ProfileView {
+    pub peer_id: String,
+    pub display_name: String,
+    pub about: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SearchResultView {
+    pub room_id: String,
+    pub message: MessageView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -409,6 +464,12 @@ pub fn shell_contract_typescript() -> String {
         PeerEndpoint::decl(&cfg),
         ProfileSummary::decl(&cfg),
         MessageView::decl(&cfg),
+        ReactionView::decl(&cfg),
+        AttachmentView::decl(&cfg),
+        ChannelView::decl(&cfg),
+        RoleView::decl(&cfg),
+        ProfileView::decl(&cfg),
+        SearchResultView::decl(&cfg),
         PeerRecord::decl(&cfg),
         UiOntologyView::decl(&cfg),
         UiPlace::decl(&cfg),
@@ -427,6 +488,17 @@ pub fn shell_contract_typescript() -> String {
         InitHomeRequest::decl(&cfg),
         StartServiceRequest::decl(&cfg),
         SendMessageRequest::decl(&cfg),
+        SelectChannelRequest::decl(&cfg),
+        CreateChannelRequest::decl(&cfg),
+        MessageTargetRequest::decl(&cfg),
+        EditMessageRequest::decl(&cfg),
+        ReactionRequest::decl(&cfg),
+        AttachmentRequest::decl(&cfg),
+        ProfileUpdateRequest::decl(&cfg),
+        CreateRoleRequest::decl(&cfg),
+        AssignRoleRequest::decl(&cfg),
+        BanMemberRequest::decl(&cfg),
+        SearchMessagesRequest::decl(&cfg),
         ImportPeerRecordRequest::decl(&cfg),
         CreateSpaceInviteRequest::decl(&cfg),
         JoinSpaceRequest::decl(&cfg),
@@ -500,6 +572,8 @@ pub struct VoxelleCommandHost {
     activity: Vec<ServiceActivityItem>,
     next_activity_id: u64,
     last_space_invite_json: Option<String>,
+    selected_room_id: Option<String>,
+    search_results: Vec<SearchResultView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -569,6 +643,7 @@ pub struct ShellSnapshotView {
     pub network_health: NetworkHealthView,
     pub ui_ontology: UiOntologyView,
     pub service_activity: Vec<ServiceActivityItem>,
+    pub search_results: Vec<SearchResultView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -603,6 +678,88 @@ pub struct StartServiceRequest {
 pub struct SendMessageRequest {
     pub text: String,
     pub room: Option<String>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    #[serde(default)]
+    pub thread_root_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SelectChannelRequest {
+    pub room_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CreateChannelRequest {
+    pub name: String,
+    #[serde(default)]
+    pub topic: String,
+    #[serde(default)]
+    pub private_members: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageTargetRequest {
+    pub target_event_id: String,
+    pub room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct EditMessageRequest {
+    pub target_event_id: String,
+    pub text: String,
+    pub room: Option<String>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ReactionRequest {
+    pub target_event_id: String,
+    pub emoji: String,
+    pub room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AttachmentRequest {
+    pub filename: String,
+    pub mime: String,
+    pub data_b64: String,
+    pub room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ProfileUpdateRequest {
+    pub display_name: String,
+    #[serde(default)]
+    pub about: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CreateRoleRequest {
+    pub name: String,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AssignRoleRequest {
+    pub peer_id: String,
+    pub role_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct BanMemberRequest {
+    pub peer_id: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SearchMessagesRequest {
+    pub query: String,
+    pub room: Option<String>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -648,6 +805,9 @@ pub struct HomeScreenView {
     pub runtime: RuntimeStatusView,
     pub invite: Option<InviteExchangeView>,
     pub peers: Vec<PeerListItemView>,
+    pub channels: Vec<ChannelView>,
+    pub roles: Vec<RoleView>,
+    pub profiles: Vec<ProfileView>,
     pub room: RoomTimelineView,
 }
 
@@ -779,6 +939,14 @@ impl VoxelleHome {
     }
 
     pub fn home_screen_view(&self, online: Option<&OnlineHome>) -> Result<HomeScreenView> {
+        self.home_screen_view_for_room(online, None)
+    }
+
+    pub fn home_screen_view_for_room(
+        &self,
+        online: Option<&OnlineHome>,
+        selected_room: Option<&str>,
+    ) -> Result<HomeScreenView> {
         let config = self.load_config()?;
         let invite = online
             .map(|online| online.invite_view(None, None))
@@ -786,6 +954,12 @@ impl VoxelleHome {
         let runtime = online
             .map(RuntimeStatusView::online)
             .unwrap_or_else(RuntimeStatusView::offline);
+        let channels = self.channels(selected_room)?;
+        let selected_room = channels
+            .iter()
+            .find(|channel| channel.selected)
+            .map(|channel| channel.room_id.clone())
+            .unwrap_or_else(|| config.default_room.clone());
         Ok(HomeScreenView {
             profile: self.profile_summary()?,
             runtime,
@@ -795,9 +969,12 @@ impl VoxelleHome {
                 .into_iter()
                 .map(PeerListItemView::from_peer_record)
                 .collect(),
+            channels,
+            roles: self.roles()?,
+            profiles: self.profiles()?,
             room: RoomTimelineView {
-                room_id: config.default_room,
-                messages: self.read_messages(None)?,
+                room_id: selected_room.clone(),
+                messages: self.read_messages(Some(&selected_room))?,
             },
         })
     }
@@ -1060,12 +1237,373 @@ impl VoxelleHome {
     }
 
     pub fn send_message(&self, text: &str, room: Option<&str>) -> Result<EventV1> {
+        self.send_message_with_metadata(text, room, Vec::new(), None)
+    }
+
+    pub fn send_message_with_metadata(
+        &self,
+        text: &str,
+        room: Option<&str>,
+        mentions: Vec<String>,
+        thread_root_event_id: Option<String>,
+    ) -> Result<EventV1> {
+        self.create_room_event(
+            room,
+            "MSG_POST",
+            serde_json::json!({
+                "text": text,
+                "mentions": mentions,
+                "thread_root_event_id": thread_root_event_id,
+            }),
+        )
+    }
+
+    pub fn edit_message(&self, request: &EditMessageRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "MSG_EDIT",
+            serde_json::json!({
+                "target_event_id": request.target_event_id,
+                "text": request.text,
+                "mentions": request.mentions,
+            }),
+        )
+    }
+
+    pub fn redact_message(&self, request: &MessageTargetRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "MSG_REDACT",
+            serde_json::json!({ "target_event_id": request.target_event_id }),
+        )
+    }
+
+    pub fn set_reaction(&self, request: &ReactionRequest, add: bool) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            if add {
+                "REACTION_ADD"
+            } else {
+                "REACTION_REMOVE"
+            },
+            serde_json::json!({
+                "target_event_id": request.target_event_id,
+                "emoji": request.emoji,
+            }),
+        )
+    }
+
+    pub fn set_pin(&self, request: &MessageTargetRequest, add: bool) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            if add { "PIN_ADD" } else { "PIN_REMOVE" },
+            serde_json::json!({ "target_event_id": request.target_event_id }),
+        )
+    }
+
+    pub fn add_attachment(&self, request: &AttachmentRequest) -> Result<EventV1> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&request.data_b64)
+            .context("decode attachment")?;
+        let sha256 = format!(
+            "sha256:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(&bytes))
+        );
+        self.create_room_event(
+            request.room.as_deref(),
+            "ATTACHMENT_ADD",
+            serde_json::json!({
+                "filename": request.filename,
+                "mime": request.mime,
+                "sha256": sha256,
+                "data_b64": request.data_b64,
+            }),
+        )
+    }
+
+    pub fn update_profile(&self, request: &ProfileUpdateRequest) -> Result<EventV1> {
+        self.create_room_event(
+            None,
+            "PROFILE_UPDATE",
+            serde_json::json!({
+                "display_name": request.display_name,
+                "about": request.about,
+            }),
+        )
+    }
+
+    pub fn create_channel(&self, request: &CreateChannelRequest) -> Result<EventV1> {
+        if !request.private_members.is_empty() {
+            anyhow::bail!("private channels require an encrypted key epoch");
+        }
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let slug: String = request
+            .name
+            .chars()
+            .flat_map(char::to_lowercase)
+            .map(|character| {
+                if character.is_alphanumeric() {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .chars()
+            .take(48)
+            .collect();
+        if slug.is_empty() {
+            anyhow::bail!("channel name must contain a letter or number");
+        }
+        let suffix =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 6]>());
+        let room_id = format!("{}:channel:{slug}-{suffix}", config.space.space_id);
+        let event = create_event(
+            &identity,
+            create_delegation(
+                &identity,
+                now_ms() - 60_000,
+                now_ms() + 30 * 24 * 60 * 60_000,
+                vec!["room:governance".to_string()],
+            )?,
+            &config.space.governance_room_id,
+            now_ms(),
+            "CHANNEL_CREATE",
+            store.room_heads(&config.space.governance_room_id)?,
+            serde_json::json!({
+                "room_id": room_id,
+                "name": request.name,
+                "topic": request.topic,
+                "visibility": "public",
+                "private_members": [],
+                "key_epoch": 0,
+            }),
+        )?;
+        self.accept_local_event(&store, &config, &event)
+            .context("create channel")?;
+        Ok(event)
+    }
+
+    pub fn create_role(&self, request: &CreateRoleRequest) -> Result<EventV1> {
+        let slug: String = request
+            .name
+            .chars()
+            .flat_map(char::to_lowercase)
+            .map(|character| {
+                if character.is_alphanumeric() {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .chars()
+            .take(48)
+            .collect();
+        if slug.is_empty() {
+            anyhow::bail!("role name must contain a letter or number");
+        }
+        let suffix =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 6]>());
+        self.create_governance_event(
+            "ROLE_CREATE",
+            serde_json::json!({
+                "role_id": format!("role:{slug}-{suffix}"),
+                "name": request.name,
+                "permissions": request.permissions,
+            }),
+        )
+    }
+
+    pub fn assign_role(&self, request: &AssignRoleRequest, grant: bool) -> Result<EventV1> {
+        self.create_governance_event(
+            if grant { "ROLE_GRANT" } else { "ROLE_REVOKE" },
+            serde_json::json!({
+                "peer_id": request.peer_id,
+                "role_id": request.role_id,
+            }),
+        )
+    }
+
+    pub fn ban_member(&self, request: &BanMemberRequest, ban: bool) -> Result<EventV1> {
+        self.create_governance_event(
+            if ban { "MEMBER_BAN" } else { "MEMBER_UNBAN" },
+            serde_json::json!({
+                "peer_id": request.peer_id,
+                "reason": request.reason,
+            }),
+        )
+    }
+
+    pub fn read_messages(&self, room: Option<&str>) -> Result<Vec<MessageView>> {
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let room = room.unwrap_or(&config.default_room);
+        Ok(project_messages(store.room_events(room)?))
+    }
+
+    pub fn channels(&self, selected_room: Option<&str>) -> Result<Vec<ChannelView>> {
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let mut channels: Vec<ChannelView> = state
+            .channels
+            .values()
+            .filter(|channel| voxelle_core::channel_allows_peer(channel, &identity.peer_id))
+            .map(|channel| ChannelView {
+                room_id: channel.room_id.clone(),
+                name: channel.name.clone(),
+                topic: channel.topic.clone(),
+                visibility: match channel.visibility {
+                    ChannelVisibility::Public => "public",
+                    ChannelVisibility::Private => "private",
+                }
+                .to_string(),
+                selected: selected_room.unwrap_or(&config.default_room) == channel.room_id,
+            })
+            .collect();
+        channels.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then(left.room_id.cmp(&right.room_id))
+        });
+        Ok(channels)
+    }
+
+    pub fn roles(&self) -> Result<Vec<RoleView>> {
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let mut roles: Vec<RoleView> = state
+            .roles
+            .values()
+            .map(|role| RoleView {
+                role_id: role.role_id.clone(),
+                name: role.name.clone(),
+                permissions: role.permissions.iter().cloned().collect(),
+                member_count: if role.role_id == "role:everyone" {
+                    state.members.len()
+                } else {
+                    state
+                        .member_roles
+                        .values()
+                        .filter(|roles| roles.contains(&role.role_id))
+                        .count()
+                },
+            })
+            .collect();
+        roles.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(roles)
+    }
+
+    pub fn profiles(&self) -> Result<Vec<ProfileView>> {
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let mut profiles: BTreeMap<String, ProfileView> = state
+            .members
+            .iter()
+            .map(|peer_id| {
+                (
+                    peer_id.clone(),
+                    ProfileView {
+                        peer_id: peer_id.clone(),
+                        display_name: short_peer_label(peer_id),
+                        about: String::new(),
+                    },
+                )
+            })
+            .collect();
+        for channel in state.channels.values() {
+            for event in store.room_events(&channel.room_id)? {
+                if event.kind == "PROFILE_UPDATE" {
+                    profiles.insert(
+                        event.author_peer_id.clone(),
+                        ProfileView {
+                            peer_id: event.author_peer_id,
+                            display_name: event
+                                .body
+                                .get("display_name")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("Member")
+                                .to_string(),
+                            about: event
+                                .body
+                                .get("about")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(profiles.into_values().collect())
+    }
+
+    pub fn search_messages(
+        &self,
+        request: &SearchMessagesRequest,
+    ) -> Result<Vec<SearchResultView>> {
+        let query = request.query.trim().to_lowercase();
+        if query.is_empty() {
+            anyhow::bail!("search query is empty");
+        }
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        let rooms: Vec<String> = if let Some(room) = &request.room {
+            vec![room.clone()]
+        } else {
+            self.channels(None)?
+                .into_iter()
+                .map(|channel| channel.room_id)
+                .collect()
+        };
+        let mut results = Vec::new();
+        for room_id in rooms {
+            for message in self.read_messages(Some(&room_id))? {
+                let haystack = format!(
+                    "{} {} {}",
+                    message.text,
+                    message.author_peer_id,
+                    message
+                        .attachments
+                        .iter()
+                        .map(|attachment| attachment.filename.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+                .to_lowercase();
+                if terms.iter().all(|term| haystack.contains(term)) {
+                    results.push(SearchResultView {
+                        room_id: room_id.clone(),
+                        message,
+                    });
+                }
+            }
+        }
+        results.sort_by(|left, right| right.message.created_ms.cmp(&left.message.created_ms));
+        results.truncate(request.limit.unwrap_or(50).clamp(1, 100));
+        Ok(results)
+    }
+
+    fn create_room_event(
+        &self,
+        room: Option<&str>,
+        kind: &str,
+        body: serde_json::Value,
+    ) -> Result<EventV1> {
         let identity = self.load_identity()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
         let room = room.unwrap_or(&config.default_room);
-        let context = config.room_context();
-        let governance = store.room_events(&config.space.governance_room_id)?;
         let event = create_event(
             &identity,
             create_delegation(
@@ -1076,39 +1614,52 @@ impl VoxelleHome {
             )?,
             room,
             now_ms(),
-            "MSG_POST",
+            kind,
             store.room_heads(room)?,
-            serde_json::json!({ "text": text }),
+            body,
         )?;
-        let accepted = accept_event(&event, &governance, &context, now_ms())
-            .map_err(|e| anyhow::anyhow!("message rejected: {e:?}"))?;
-        store.insert_accepted_event(accepted, now_ms())?;
+        self.accept_local_event(&store, &config, &event)
+            .with_context(|| format!("accept local {kind}"))?;
         Ok(event)
     }
 
-    pub fn read_messages(&self, room: Option<&str>) -> Result<Vec<MessageView>> {
+    fn create_governance_event(&self, kind: &str, body: serde_json::Value) -> Result<EventV1> {
+        let identity = self.load_identity()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
-        let room = room.unwrap_or(&config.default_room);
-        let mut messages = Vec::new();
-        for event in store.room_events(room)? {
-            if event.kind != "MSG_POST" {
-                continue;
-            }
-            let text = event
-                .body
-                .get("text")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            messages.push(MessageView {
-                event_id: event.event_id,
-                created_ms: event.created_ms,
-                author_peer_id: event.author_peer_id,
-                text,
-            });
+        let event = create_event(
+            &identity,
+            create_delegation(
+                &identity,
+                now_ms() - 60_000,
+                now_ms() + 30 * 24 * 60 * 60_000,
+                vec!["room:governance".to_string()],
+            )?,
+            &config.space.governance_room_id,
+            now_ms(),
+            kind,
+            store.room_heads(&config.space.governance_room_id)?,
+            body,
+        )?;
+        self.accept_local_event(&store, &config, &event)
+            .with_context(|| format!("accept local {kind}"))?;
+        Ok(event)
+    }
+
+    fn accept_local_event(
+        &self,
+        store: &Store,
+        config: &HomeConfig,
+        event: &EventV1,
+    ) -> Result<()> {
+        let mut accepted_events = store.room_events(&config.space.governance_room_id)?;
+        if event.room_id != config.space.governance_room_id {
+            accepted_events.extend(store.room_events(&event.room_id)?);
         }
-        Ok(messages)
+        let accepted = accept_event(event, &accepted_events, &config.room_context(), now_ms())
+            .map_err(|error| anyhow::anyhow!("event rejected: {error:?}"))?;
+        store.insert_accepted_event(accepted, now_ms())?;
+        Ok(())
     }
 
     pub fn import_peer_record(&self, record: PeerRecord) -> Result<()> {
@@ -1572,6 +2123,7 @@ impl VoxelleHome {
         }
 
         let identity = self.load_identity()?;
+        let local_peer_id = identity.peer_id.clone();
         let certificate = self.load_certificate()?;
         let mut store = self.open_store()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
@@ -1595,18 +2147,35 @@ impl VoxelleHome {
                 limits,
             )
             .await?;
-        let room = node
-            .sync_room_once(
-                &mut store,
-                endpoint.addr,
-                endpoint.certificate_der()?,
-                &endpoint.device_id,
-                &peer.default_room,
-                &context,
-                now_ms(),
-                limits,
-            )
-            .await?;
+        let governance_events = store.room_events(&peer.governance_room_id)?;
+        let state = derive_governance_state(&governance_events, &context, now_ms());
+        let mut room = SyncStats::default();
+        let mut room_ids: Vec<String> = state
+            .channels
+            .values()
+            .filter(|channel| {
+                voxelle_core::channel_allows_peer(channel, &local_peer_id)
+                    && voxelle_core::channel_allows_peer(channel, &peer.endpoint.peer_id)
+            })
+            .map(|channel| channel.room_id.clone())
+            .collect();
+        room_ids.sort();
+        room_ids.dedup();
+        for room_id in room_ids {
+            let next = node
+                .sync_room_once(
+                    &mut store,
+                    endpoint.addr,
+                    endpoint.certificate_der()?,
+                    &endpoint.device_id,
+                    &room_id,
+                    &context,
+                    now_ms(),
+                    limits,
+                )
+                .await?;
+            merge_stats(&mut room, next);
+        }
 
         Ok(PeerSyncReport { governance, room })
     }
@@ -1756,6 +2325,172 @@ impl VoxelleHome {
     }
 }
 
+fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
+    events.sort_by(|left, right| {
+        left.created_ms
+            .cmp(&right.created_ms)
+            .then(left.event_id.cmp(&right.event_id))
+    });
+    let mut messages: BTreeMap<String, MessageView> = BTreeMap::new();
+    let mut order = Vec::new();
+    let mut reactions: BTreeMap<String, BTreeMap<String, std::collections::BTreeSet<String>>> =
+        BTreeMap::new();
+    for event in &events {
+        match event.kind.as_str() {
+            "MSG_POST" => {
+                let event_id = event.event_id.clone();
+                order.push(event_id.clone());
+                messages.insert(
+                    event_id,
+                    MessageView {
+                        event_id: event.event_id.clone(),
+                        created_ms: event.created_ms,
+                        author_peer_id: event.author_peer_id.clone(),
+                        text: event
+                            .body
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        edited_ms: None,
+                        redacted: false,
+                        mentions: event
+                            .body
+                            .get("mentions")
+                            .and_then(serde_json::Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect(),
+                        thread_root_event_id: event
+                            .body
+                            .get("thread_root_event_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned),
+                        reply_count: 0,
+                        pinned: false,
+                        reactions: Vec::new(),
+                        attachments: Vec::new(),
+                    },
+                );
+            }
+            "ATTACHMENT_ADD" => {
+                let event_id = event.event_id.clone();
+                order.push(event_id.clone());
+                messages.insert(
+                    event_id,
+                    MessageView {
+                        event_id: event.event_id.clone(),
+                        created_ms: event.created_ms,
+                        author_peer_id: event.author_peer_id.clone(),
+                        text: String::new(),
+                        edited_ms: None,
+                        redacted: false,
+                        mentions: Vec::new(),
+                        thread_root_event_id: None,
+                        reply_count: 0,
+                        pinned: false,
+                        reactions: Vec::new(),
+                        attachments: vec![AttachmentView {
+                            event_id: event.event_id.clone(),
+                            filename: string_event_body(event, "filename"),
+                            mime: string_event_body(event, "mime"),
+                            sha256: string_event_body(event, "sha256"),
+                            data_b64: string_event_body(event, "data_b64"),
+                        }],
+                    },
+                );
+            }
+            "MSG_EDIT" => {
+                if let Some(message) = event_target_message(&mut messages, event) {
+                    message.text = string_event_body(event, "text");
+                    message.edited_ms = Some(event.created_ms);
+                    message.mentions = event
+                        .body
+                        .get("mentions")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect();
+                }
+            }
+            "MSG_REDACT" => {
+                if let Some(message) = event_target_message(&mut messages, event) {
+                    message.text = "Message removed".to_string();
+                    message.redacted = true;
+                    message.attachments.clear();
+                    message.mentions.clear();
+                }
+            }
+            "PIN_ADD" | "PIN_REMOVE" => {
+                if let Some(message) = event_target_message(&mut messages, event) {
+                    message.pinned = event.kind == "PIN_ADD";
+                }
+            }
+            "REACTION_ADD" | "REACTION_REMOVE" => {
+                let target = string_event_body(event, "target_event_id");
+                let emoji = string_event_body(event, "emoji");
+                let peers = reactions
+                    .entry(target)
+                    .or_default()
+                    .entry(emoji)
+                    .or_default();
+                if event.kind == "REACTION_ADD" {
+                    peers.insert(event.author_peer_id.clone());
+                } else {
+                    peers.remove(&event.author_peer_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    let roots: Vec<String> = messages
+        .values()
+        .filter_map(|message| message.thread_root_event_id.clone())
+        .collect();
+    for root in roots {
+        if let Some(message) = messages.get_mut(&root) {
+            message.reply_count += 1;
+        }
+    }
+    for (target, by_emoji) in reactions {
+        if let Some(message) = messages.get_mut(&target) {
+            message.reactions = by_emoji
+                .into_iter()
+                .filter(|(_, peers)| !peers.is_empty())
+                .map(|(emoji, peers)| ReactionView {
+                    emoji,
+                    peer_ids: peers.into_iter().collect(),
+                })
+                .collect();
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|event_id| messages.remove(&event_id))
+        .collect()
+}
+
+fn event_target_message<'a>(
+    messages: &'a mut BTreeMap<String, MessageView>,
+    event: &EventV1,
+) -> Option<&'a mut MessageView> {
+    let target = event.body.get("target_event_id")?.as_str()?;
+    messages.get_mut(target)
+}
+
+fn string_event_body(event: &EventV1, field: &str) -> String {
+    event
+        .body
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
 impl VoxelleCommandHost {
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self {
@@ -1764,6 +2499,8 @@ impl VoxelleCommandHost {
             activity: Vec::new(),
             next_activity_id: 1,
             last_space_invite_json: None,
+            selected_room_id: None,
+            search_results: Vec::new(),
         }
     }
 
@@ -1859,14 +2596,137 @@ impl VoxelleCommandHost {
     }
 
     pub async fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
-        let event = self
-            .home
-            .send_message(&request.text, request.room.as_deref())?;
+        let room = request.room.as_deref().or(self.selected_room_id.as_deref());
+        let event = self.home.send_message_with_metadata(
+            &request.text,
+            room,
+            request.mentions,
+            request.thread_root_event_id,
+        )?;
         self.push_activity(
             ServiceActivityLevel::Info,
             format!("sent message {}", event.event_id),
         );
         self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub fn select_channel(&mut self, request: SelectChannelRequest) -> Result<ShellSnapshotView> {
+        if !self
+            .home
+            .channels(Some(&request.room_id))?
+            .iter()
+            .any(|channel| channel.room_id == request.room_id)
+        {
+            anyhow::bail!("channel is unknown or inaccessible");
+        }
+        self.selected_room_id = Some(request.room_id);
+        self.snapshot()
+    }
+
+    pub async fn create_channel(
+        &mut self,
+        request: CreateChannelRequest,
+    ) -> Result<ShellSnapshotView> {
+        let event = self.home.create_channel(&request)?;
+        self.selected_room_id = event
+            .body
+            .get("room_id")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn edit_message(
+        &mut self,
+        mut request: EditMessageRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.edit_message(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn redact_message(
+        &mut self,
+        mut request: MessageTargetRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.redact_message(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn set_reaction(
+        &mut self,
+        mut request: ReactionRequest,
+        add: bool,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.set_reaction(&request, add)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn set_pin(
+        &mut self,
+        mut request: MessageTargetRequest,
+        add: bool,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.set_pin(&request, add)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn add_attachment(
+        &mut self,
+        mut request: AttachmentRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.add_attachment(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn update_profile(
+        &mut self,
+        request: ProfileUpdateRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.update_profile(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn create_role(&mut self, request: CreateRoleRequest) -> Result<ShellSnapshotView> {
+        self.home.create_role(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn assign_role(
+        &mut self,
+        request: AssignRoleRequest,
+        grant: bool,
+    ) -> Result<ShellSnapshotView> {
+        self.home.assign_role(&request, grant)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn ban_member(
+        &mut self,
+        request: BanMemberRequest,
+        ban: bool,
+    ) -> Result<ShellSnapshotView> {
+        self.home.ban_member(&request, ban)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub fn search_messages(&mut self, request: SearchMessagesRequest) -> Result<ShellSnapshotView> {
+        self.search_results = self.home.search_messages(&request)?;
         self.snapshot()
     }
 
@@ -2007,7 +2867,10 @@ impl VoxelleCommandHost {
 
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
         let online = self.service.as_ref().map(VoxelleService::online);
-        let (home, home_error) = match self.home.home_screen_view(online) {
+        let (home, home_error) = match self
+            .home
+            .home_screen_view_for_room(online, self.selected_room_id.as_deref())
+        {
             Ok(mut home) => {
                 if let Some(invite) = home.invite.as_mut() {
                     invite.space_invite_json = self.last_space_invite_json.clone();
@@ -2023,6 +2886,7 @@ impl VoxelleCommandHost {
             network_health: self.home.network_health_view(online)?,
             ui_ontology: self.home.ui_ontology()?,
             service_activity: self.activity.clone(),
+            search_results: self.search_results.clone(),
         })
     }
 
@@ -2536,6 +3400,34 @@ fn default_views() -> Vec<UiView> {
             "Known peers and peer actions",
         ),
         ui_view(
+            "channel.list",
+            "Channels",
+            "sidebar",
+            3,
+            "Public and private conversation channels",
+        ),
+        ui_view(
+            "member.profiles",
+            "Members",
+            "inspector",
+            0,
+            "Member profiles and presence identity",
+        ),
+        ui_view(
+            "role.list",
+            "Roles",
+            "inspector",
+            1,
+            "Roles, permissions, and assignments",
+        ),
+        ui_view(
+            "message.search",
+            "Message Search",
+            "inspector",
+            2,
+            "Local full-text message and attachment search",
+        ),
+        ui_view(
             "room.timeline",
             "Room Timeline",
             "main",
@@ -2609,6 +3501,118 @@ fn default_commands() -> Vec<UiCommand> {
             "Send a message to the current room",
             None,
             false,
+        ),
+        shell_command(
+            "channel.select",
+            "Select Channel",
+            "Open an accessible channel",
+            None,
+            false,
+        ),
+        shell_command(
+            "channel.create",
+            "Create Channel",
+            "Create a space channel",
+            None,
+            true,
+        ),
+        shell_command(
+            "message.edit",
+            "Edit Message",
+            "Edit one of your messages",
+            None,
+            false,
+        ),
+        shell_command(
+            "message.redact",
+            "Delete Message",
+            "Replace a message with a signed tombstone",
+            None,
+            false,
+        ),
+        shell_command(
+            "reaction.add",
+            "Add Reaction",
+            "React to a message",
+            None,
+            false,
+        ),
+        shell_command(
+            "reaction.remove",
+            "Remove Reaction",
+            "Remove your reaction",
+            None,
+            false,
+        ),
+        shell_command(
+            "pin.add",
+            "Pin Message",
+            "Pin a message when authorized",
+            None,
+            false,
+        ),
+        shell_command(
+            "pin.remove",
+            "Unpin Message",
+            "Remove a message pin when authorized",
+            None,
+            false,
+        ),
+        shell_command(
+            "attachment.add",
+            "Attach File",
+            "Send a content-addressed attachment",
+            None,
+            false,
+        ),
+        shell_command(
+            "profile.update",
+            "Update Profile",
+            "Set your shared display name and profile",
+            None,
+            true,
+        ),
+        shell_command(
+            "role.create",
+            "Create Role",
+            "Create a role and its permissions",
+            None,
+            true,
+        ),
+        shell_command(
+            "role.grant",
+            "Grant Role",
+            "Grant a role to a member",
+            None,
+            false,
+        ),
+        shell_command(
+            "role.revoke",
+            "Revoke Role",
+            "Revoke a member role",
+            None,
+            false,
+        ),
+        shell_command(
+            "member.ban",
+            "Ban Member",
+            "Ban a member from the space",
+            None,
+            false,
+        ),
+        shell_command(
+            "member.unban",
+            "Unban Member",
+            "Remove a member ban",
+            None,
+            false,
+        ),
+        shell_command(
+            "message.search",
+            "Search Messages",
+            "Search the local replicated message index",
+            Some("Mod+F"),
+            true,
         ),
         frontend_command(
             "message.composer.focus",
@@ -3812,6 +4816,12 @@ mod tests {
                 visible: view.visible,
             })
             .collect();
+        for placement in placements
+            .iter_mut()
+            .filter(|placement| placement.place_id == "inspector")
+        {
+            placement.order += 1;
+        }
         let profile = placements
             .iter_mut()
             .find(|placement| placement.view_id == "profile.summary")
@@ -3964,6 +4974,8 @@ mod tests {
             .send_message(SendMessageRequest {
                 text: "from command host".to_string(),
                 room: None,
+                mentions: Vec::new(),
+                thread_root_event_id: None,
             })
             .await
             .expect("send");

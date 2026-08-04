@@ -552,7 +552,42 @@ pub struct GovernanceState {
     pub banned: HashSet<String>,
     pub revoked_devices: HashSet<(String, String)>,
     pub active_invites: BTreeMap<String, i64>,
+    pub channels: BTreeMap<String, ChannelDefinition>,
+    pub roles: BTreeMap<String, RoleDefinition>,
+    pub member_roles: BTreeMap<String, BTreeSet<String>>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelVisibility {
+    Public,
+    Private,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChannelDefinition {
+    pub room_id: String,
+    pub name: String,
+    pub topic: String,
+    pub visibility: ChannelVisibility,
+    pub private_members: BTreeSet<String>,
+    pub key_epoch: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoleDefinition {
+    pub role_id: String,
+    pub name: String,
+    pub permissions: BTreeSet<String>,
+}
+
+pub const PERMISSION_MESSAGE_POST: &str = "message:post";
+pub const PERMISSION_MESSAGE_MODERATE: &str = "message:moderate";
+pub const PERMISSION_MESSAGE_PIN: &str = "message:pin";
+pub const PERMISSION_CHANNEL_MANAGE: &str = "channel:manage";
+pub const PERMISSION_ROLE_MANAGE: &str = "role:manage";
+pub const PERMISSION_MEMBER_BAN: &str = "member:ban";
+pub const PERMISSION_INVITE_CREATE: &str = "invite:create";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcceptError {
@@ -562,6 +597,8 @@ pub enum AcceptError {
     DeviceRevoked,
     NotAuthorized,
     InvalidGovernanceBody(String),
+    UnknownRoom,
+    PrivateRoom,
 }
 
 pub type AcceptResult<T> = std::result::Result<T, AcceptError>;
@@ -1072,6 +1109,15 @@ pub fn accept_event<'a>(
         if !state.members.contains(&event.author_peer_id) {
             return Err(AcceptError::NotMember);
         }
+        if context.require_invite {
+            let Some(channel) = state.channels.get(&event.room_id) else {
+                return Err(AcceptError::UnknownRoom);
+            };
+            if !channel_allows_peer(channel, &event.author_peer_id) {
+                return Err(AcceptError::PrivateRoom);
+            }
+        }
+        validate_room_event_body(event, accepted_room_events, &state, context)?;
         Ok(AcceptedEvent { event })
     }
 }
@@ -1103,6 +1149,34 @@ pub fn derive_governance_state(
         }
 
         match event.kind.as_str() {
+            "SPACE_CREATE" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                let Some(room_id) = string_body_field(event, "default_room_id") else {
+                    continue;
+                };
+                let name = room_id.rsplit(':').next().unwrap_or("general").to_string();
+                state.channels.insert(
+                    room_id.clone(),
+                    ChannelDefinition {
+                        room_id,
+                        name,
+                        topic: String::new(),
+                        visibility: ChannelVisibility::Public,
+                        private_members: BTreeSet::new(),
+                        key_epoch: 0,
+                    },
+                );
+                state.roles.insert(
+                    "role:everyone".to_string(),
+                    RoleDefinition {
+                        role_id: "role:everyone".to_string(),
+                        name: "Everyone".to_string(),
+                        permissions: BTreeSet::from([PERMISSION_MESSAGE_POST.to_string()]),
+                    },
+                );
+            }
             "MEMBER_JOIN" => {
                 if member_join_body_matches_author(event)
                     && member_join_has_authority(event, &state, context, event.created_ms)
@@ -1112,7 +1186,7 @@ pub fn derive_governance_state(
                 }
             }
             "INVITE_CREATE" => {
-                if event.author_peer_id != context.authority_peer_id {
+                if !governance_event_authorized(event, &state, context) {
                     continue;
                 }
                 if let Some(expires_ms) = int_body_field(event, "expires_ms") {
@@ -1124,7 +1198,7 @@ pub fn derive_governance_state(
                 }
             }
             "INVITE_REVOKE" => {
-                if event.author_peer_id != context.authority_peer_id {
+                if !governance_event_authorized(event, &state, context) {
                     continue;
                 }
                 if let Some(invite_id) = string_body_field(event, "invite_id") {
@@ -1132,7 +1206,7 @@ pub fn derive_governance_state(
                 }
             }
             "MEMBER_BAN" => {
-                if event.author_peer_id != context.authority_peer_id {
+                if !governance_event_authorized(event, &state, context) {
                     continue;
                 }
                 if let Some(peer_id) = string_body_field(event, "peer_id") {
@@ -1141,7 +1215,7 @@ pub fn derive_governance_state(
                 }
             }
             "MEMBER_UNBAN" => {
-                if event.author_peer_id != context.authority_peer_id {
+                if !governance_event_authorized(event, &state, context) {
                     continue;
                 }
                 if let Some(peer_id) = string_body_field(event, "peer_id") {
@@ -1159,11 +1233,240 @@ pub fn derive_governance_state(
                     state.revoked_devices.insert((peer_id, device_id));
                 }
             }
+            "CHANNEL_CREATE" => {
+                if !governance_event_authorized(event, &state, context) {
+                    continue;
+                }
+                if let Some(channel) = channel_from_create_event(event, context) {
+                    state
+                        .channels
+                        .entry(channel.room_id.clone())
+                        .or_insert(channel);
+                }
+            }
+            "CHANNEL_UPDATE" => {
+                if !governance_event_authorized(event, &state, context) {
+                    continue;
+                }
+                let Some(room_id) = string_body_field(event, "room_id") else {
+                    continue;
+                };
+                let Some(channel) = state.channels.get_mut(&room_id) else {
+                    continue;
+                };
+                if let Some(name) = string_body_field(event, "name") {
+                    if valid_short_text(&name, 80) {
+                        channel.name = name;
+                    }
+                }
+                if let Some(topic) = string_body_field(event, "topic") {
+                    if topic.chars().count() <= 1024 && !topic.chars().any(char::is_control) {
+                        channel.topic = topic;
+                    }
+                }
+            }
+            "CHANNEL_DELETE" => {
+                if !governance_event_authorized(event, &state, context) {
+                    continue;
+                }
+                if let Some(room_id) = string_body_field(event, "room_id") {
+                    state.channels.remove(&room_id);
+                }
+            }
+            "ROLE_CREATE" | "ROLE_UPDATE" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                if let Some(role) = role_from_event(event) {
+                    state.roles.insert(role.role_id.clone(), role);
+                }
+            }
+            "ROLE_DELETE" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                if let Some(role_id) = string_body_field(event, "role_id") {
+                    if role_id != "role:everyone" {
+                        state.roles.remove(&role_id);
+                        for roles in state.member_roles.values_mut() {
+                            roles.remove(&role_id);
+                        }
+                    }
+                }
+            }
+            "ROLE_GRANT" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                if let (Some(peer_id), Some(role_id)) = (
+                    string_body_field(event, "peer_id"),
+                    string_body_field(event, "role_id"),
+                ) {
+                    if state.members.contains(&peer_id) && state.roles.contains_key(&role_id) {
+                        state
+                            .member_roles
+                            .entry(peer_id)
+                            .or_default()
+                            .insert(role_id);
+                    }
+                }
+            }
+            "ROLE_REVOKE" => {
+                if event.author_peer_id != context.authority_peer_id {
+                    continue;
+                }
+                if let (Some(peer_id), Some(role_id)) = (
+                    string_body_field(event, "peer_id"),
+                    string_body_field(event, "role_id"),
+                ) {
+                    if let Some(roles) = state.member_roles.get_mut(&peer_id) {
+                        roles.remove(&role_id);
+                    }
+                }
+            }
             _ => {}
         }
     }
 
     state
+}
+
+pub fn peer_has_permission(
+    state: &GovernanceState,
+    context: &RoomContext,
+    peer_id: &str,
+    permission: &str,
+) -> bool {
+    if peer_id == context.authority_peer_id {
+        return true;
+    }
+    let everyone_has = state
+        .roles
+        .get("role:everyone")
+        .is_some_and(|role| role.permissions.contains(permission));
+    everyone_has
+        || state
+            .member_roles
+            .get(peer_id)
+            .into_iter()
+            .flatten()
+            .filter_map(|role_id| state.roles.get(role_id))
+            .any(|role| role.permissions.contains(permission))
+}
+
+pub fn channel_allows_peer(channel: &ChannelDefinition, peer_id: &str) -> bool {
+    channel.visibility == ChannelVisibility::Public || channel.private_members.contains(peer_id)
+}
+
+fn governance_event_authorized(
+    event: &EventV1,
+    state: &GovernanceState,
+    context: &RoomContext,
+) -> bool {
+    let permission = match event.kind.as_str() {
+        "INVITE_CREATE" | "INVITE_REVOKE" => PERMISSION_INVITE_CREATE,
+        "MEMBER_BAN" | "MEMBER_UNBAN" => PERMISSION_MEMBER_BAN,
+        "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE" => PERMISSION_CHANNEL_MANAGE,
+        _ => return event.author_peer_id == context.authority_peer_id,
+    };
+    peer_has_permission(state, context, &event.author_peer_id, permission)
+}
+
+fn channel_from_create_event(event: &EventV1, context: &RoomContext) -> Option<ChannelDefinition> {
+    let room_id = string_body_field(event, "room_id")?;
+    let prefix = context.governance_room_id.strip_suffix(":governance")?;
+    if !room_id.starts_with(&format!("{prefix}:channel:")) {
+        return None;
+    }
+    let name = string_body_field(event, "name")?;
+    if !valid_short_text(&name, 80) {
+        return None;
+    }
+    let topic = string_body_field(event, "topic").unwrap_or_default();
+    if topic.chars().count() > 1024 || topic.chars().any(char::is_control) {
+        return None;
+    }
+    let visibility = match string_body_field(event, "visibility")?.as_str() {
+        "public" => ChannelVisibility::Public,
+        "private" => ChannelVisibility::Private,
+        _ => return None,
+    };
+    let private_members: BTreeSet<String> = event
+        .body
+        .get("private_members")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect();
+    if visibility == ChannelVisibility::Private
+        && (private_members.is_empty() || private_members.len() > 50)
+    {
+        return None;
+    }
+    let key_epoch = event
+        .body
+        .get("key_epoch")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    if visibility == ChannelVisibility::Public && key_epoch != 0 {
+        return None;
+    }
+    Some(ChannelDefinition {
+        room_id,
+        name,
+        topic,
+        visibility,
+        private_members,
+        key_epoch,
+    })
+}
+
+fn role_from_event(event: &EventV1) -> Option<RoleDefinition> {
+    let role_id = string_body_field(event, "role_id")?;
+    if !role_id.starts_with("role:") || role_id == "role:everyone" {
+        return None;
+    }
+    let name = string_body_field(event, "name")?;
+    if !valid_short_text(&name, 80) {
+        return None;
+    }
+    let permissions: BTreeSet<String> = event
+        .body
+        .get("permissions")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .collect();
+    let allowed = [
+        PERMISSION_MESSAGE_POST,
+        PERMISSION_MESSAGE_MODERATE,
+        PERMISSION_MESSAGE_PIN,
+        PERMISSION_CHANNEL_MANAGE,
+        PERMISSION_ROLE_MANAGE,
+        PERMISSION_MEMBER_BAN,
+        PERMISSION_INVITE_CREATE,
+    ];
+    if permissions.is_empty()
+        || permissions.len() > allowed.len()
+        || permissions
+            .iter()
+            .any(|permission| !allowed.contains(&permission.as_str()))
+    {
+        return None;
+    }
+    Some(RoleDefinition {
+        role_id,
+        name,
+        permissions,
+    })
+}
+
+fn valid_short_text(value: &str, max: usize) -> bool {
+    let length = value.chars().count();
+    (1..=max).contains(&length) && value.trim() == value && !value.chars().any(char::is_control)
 }
 
 fn accept_governance_event<'a>(
@@ -1187,10 +1490,20 @@ fn accept_governance_event<'a>(
             }
             Ok(AcceptedEvent { event })
         }
-        "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" | "INVITE_CREATE" | "INVITE_REVOKE" => {
+        "MEMBER_BAN" | "MEMBER_UNBAN" | "INVITE_CREATE" | "INVITE_REVOKE" | "CHANNEL_CREATE"
+        | "CHANNEL_UPDATE" | "CHANNEL_DELETE" => {
+            if !governance_event_authorized(event, state, context) {
+                return Err(AcceptError::NotAuthorized);
+            }
+            validate_governance_event_body(event, state, context)?;
+            Ok(AcceptedEvent { event })
+        }
+        "DEVICE_REVOKE" | "ROLE_CREATE" | "ROLE_UPDATE" | "ROLE_DELETE" | "ROLE_GRANT"
+        | "ROLE_REVOKE" => {
             if event.author_peer_id != context.authority_peer_id {
                 return Err(AcceptError::NotAuthorized);
             }
+            validate_governance_event_body(event, state, context)?;
             Ok(AcceptedEvent { event })
         }
         _ => {
@@ -1202,11 +1515,274 @@ fn accept_governance_event<'a>(
     }
 }
 
+fn validate_governance_event_body(
+    event: &EventV1,
+    state: &GovernanceState,
+    context: &RoomContext,
+) -> AcceptResult<()> {
+    let invalid = |reason: &str| AcceptError::InvalidGovernanceBody(reason.to_string());
+    match event.kind.as_str() {
+        "MEMBER_BAN" | "MEMBER_UNBAN" => {
+            let peer_id =
+                string_body_field(event, "peer_id").ok_or_else(|| invalid("peer_id missing"))?;
+            if !peer_id.starts_with("p:") || peer_id == context.authority_peer_id {
+                return Err(invalid("invalid or protected peer_id"));
+            }
+        }
+        "INVITE_CREATE" => {
+            let expires =
+                int_body_field(event, "expires_ms").ok_or_else(|| invalid("expires_ms missing"))?;
+            if expires <= event.created_ms {
+                return Err(invalid("invite expiry must follow creation"));
+            }
+        }
+        "INVITE_REVOKE" => {
+            if string_body_field(event, "invite_id").is_none() {
+                return Err(invalid("invite_id missing"));
+            }
+        }
+        "CHANNEL_CREATE" => {
+            let channel = channel_from_create_event(event, context)
+                .ok_or_else(|| invalid("invalid channel definition"))?;
+            if state.channels.contains_key(&channel.room_id) {
+                return Err(invalid("channel already exists"));
+            }
+            if channel.visibility == ChannelVisibility::Private
+                && (!channel.private_members.contains(&event.author_peer_id)
+                    || channel
+                        .private_members
+                        .iter()
+                        .any(|peer_id| !state.members.contains(peer_id)))
+            {
+                return Err(invalid(
+                    "private channel members must be current space members",
+                ));
+            }
+        }
+        "CHANNEL_UPDATE" | "CHANNEL_DELETE" => {
+            let room_id =
+                string_body_field(event, "room_id").ok_or_else(|| invalid("room_id missing"))?;
+            if !state.channels.contains_key(&room_id) {
+                return Err(invalid("channel does not exist"));
+            }
+        }
+        "ROLE_CREATE" | "ROLE_UPDATE" => {
+            let role = role_from_event(event).ok_or_else(|| invalid("invalid role definition"))?;
+            if event.kind == "ROLE_CREATE" && state.roles.contains_key(&role.role_id) {
+                return Err(invalid("role already exists"));
+            }
+            if event.kind == "ROLE_UPDATE" && !state.roles.contains_key(&role.role_id) {
+                return Err(invalid("role does not exist"));
+            }
+        }
+        "ROLE_DELETE" => {
+            let role_id =
+                string_body_field(event, "role_id").ok_or_else(|| invalid("role_id missing"))?;
+            if role_id == "role:everyone" || !state.roles.contains_key(&role_id) {
+                return Err(invalid("role cannot be deleted"));
+            }
+        }
+        "ROLE_GRANT" | "ROLE_REVOKE" => {
+            let peer_id =
+                string_body_field(event, "peer_id").ok_or_else(|| invalid("peer_id missing"))?;
+            let role_id =
+                string_body_field(event, "role_id").ok_or_else(|| invalid("role_id missing"))?;
+            if !state.members.contains(&peer_id) || !state.roles.contains_key(&role_id) {
+                return Err(invalid(
+                    "role assignment requires a current member and role",
+                ));
+            }
+        }
+        "DEVICE_REVOKE" => {
+            if string_body_field(event, "peer_id").is_none()
+                || string_body_field(event, "device_id").is_none()
+            {
+                return Err(invalid("device revocation fields missing"));
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_room_event_body(
+    event: &EventV1,
+    accepted_events: &[EventV1],
+    state: &GovernanceState,
+    context: &RoomContext,
+) -> AcceptResult<()> {
+    let body_size = serde_json::to_vec(&event.body)
+        .map_err(|error| AcceptError::Invalid(error.to_string()))?
+        .len();
+    if body_size > 384 * 1024 {
+        return Err(AcceptError::Invalid(
+            "event body exceeds 384 KiB".to_string(),
+        ));
+    }
+    let author = event.author_peer_id.as_str();
+    let require_post = || {
+        if !context.require_invite
+            || peer_has_permission(state, context, author, PERMISSION_MESSAGE_POST)
+        {
+            Ok(())
+        } else {
+            Err(AcceptError::NotAuthorized)
+        }
+    };
+    let target = |kind: &str| -> AcceptResult<&EventV1> {
+        let target_id = string_body_field(event, "target_event_id")
+            .ok_or_else(|| AcceptError::Invalid(format!("{kind} target_event_id missing")))?;
+        accepted_events
+            .iter()
+            .find(|candidate| candidate.room_id == event.room_id && candidate.event_id == target_id)
+            .ok_or_else(|| AcceptError::Invalid(format!("{kind} target does not exist")))
+    };
+
+    match event.kind.as_str() {
+        "MSG_POST" => {
+            require_post()?;
+            let text = string_body_field(event, "text")
+                .ok_or_else(|| AcceptError::Invalid("MSG_POST text missing".to_string()))?;
+            if !valid_message_text(&text) {
+                return Err(AcceptError::Invalid("MSG_POST text is invalid".to_string()));
+            }
+            validate_mentions(event)?;
+            if let Some(thread_root) = string_body_field(event, "thread_root_event_id") {
+                if !accepted_events.iter().any(|candidate| {
+                    candidate.room_id == event.room_id
+                        && candidate.event_id == thread_root
+                        && candidate.kind == "MSG_POST"
+                }) {
+                    return Err(AcceptError::Invalid(
+                        "thread root does not exist".to_string(),
+                    ));
+                }
+            }
+        }
+        "MSG_EDIT" => {
+            require_post()?;
+            let original = target("MSG_EDIT")?;
+            if original.kind != "MSG_POST" || original.author_peer_id != event.author_peer_id {
+                return Err(AcceptError::NotAuthorized);
+            }
+            let text = string_body_field(event, "text")
+                .ok_or_else(|| AcceptError::Invalid("MSG_EDIT text missing".to_string()))?;
+            if !valid_message_text(&text) {
+                return Err(AcceptError::Invalid("MSG_EDIT text is invalid".to_string()));
+            }
+            validate_mentions(event)?;
+        }
+        "MSG_REDACT" => {
+            let original = target("MSG_REDACT")?;
+            if original.kind != "MSG_POST"
+                || (original.author_peer_id != event.author_peer_id
+                    && !peer_has_permission(state, context, author, PERMISSION_MESSAGE_MODERATE))
+            {
+                return Err(AcceptError::NotAuthorized);
+            }
+        }
+        "REACTION_ADD" | "REACTION_REMOVE" => {
+            require_post()?;
+            target("reaction")?;
+            let emoji = string_body_field(event, "emoji")
+                .ok_or_else(|| AcceptError::Invalid("reaction emoji missing".to_string()))?;
+            if !valid_short_text(&emoji, 32) {
+                return Err(AcceptError::Invalid(
+                    "reaction emoji is invalid".to_string(),
+                ));
+            }
+        }
+        "PIN_ADD" | "PIN_REMOVE" => {
+            if !peer_has_permission(state, context, author, PERMISSION_MESSAGE_PIN) {
+                return Err(AcceptError::NotAuthorized);
+            }
+            target("pin")?;
+        }
+        "ATTACHMENT_ADD" => {
+            require_post()?;
+            let filename = string_body_field(event, "filename")
+                .ok_or_else(|| AcceptError::Invalid("attachment filename missing".to_string()))?;
+            let mime = string_body_field(event, "mime")
+                .ok_or_else(|| AcceptError::Invalid("attachment mime missing".to_string()))?;
+            let sha256 = string_body_field(event, "sha256")
+                .ok_or_else(|| AcceptError::Invalid("attachment sha256 missing".to_string()))?;
+            let data = string_body_field(event, "data_b64")
+                .ok_or_else(|| AcceptError::Invalid("attachment data missing".to_string()))?;
+            if !valid_short_text(&filename, 255)
+                || !valid_short_text(&mime, 127)
+                || !sha256.starts_with("sha256:")
+            {
+                return Err(AcceptError::Invalid(
+                    "attachment metadata is invalid".to_string(),
+                ));
+            }
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(data)
+                .map_err(|_| AcceptError::Invalid("attachment base64 is invalid".to_string()))?;
+            if bytes.is_empty() || bytes.len() > 256 * 1024 {
+                return Err(AcceptError::Invalid(
+                    "attachment must be 1 to 256 KiB".to_string(),
+                ));
+            }
+            if format!("sha256:{}", base64url_sha256(&bytes)) != sha256 {
+                return Err(AcceptError::Invalid("attachment hash mismatch".to_string()));
+            }
+        }
+        "PROFILE_UPDATE" => {
+            require_post()?;
+            let display_name = string_body_field(event, "display_name")
+                .ok_or_else(|| AcceptError::Invalid("profile display_name missing".to_string()))?;
+            if !valid_short_text(&display_name, 80) {
+                return Err(AcceptError::Invalid(
+                    "profile display_name is invalid".to_string(),
+                ));
+            }
+            if string_body_field(event, "about").is_some_and(|about| {
+                about.chars().count() > 512 || about.chars().any(char::is_control)
+            }) {
+                return Err(AcceptError::Invalid("profile about is invalid".to_string()));
+            }
+        }
+        "IDENTITY_UPDATE" => require_post()?,
+        kind if kind.starts_with("CALL_") => require_post()?,
+        _ => require_post()?,
+    }
+    Ok(())
+}
+
+fn validate_mentions(event: &EventV1) -> AcceptResult<()> {
+    let Some(mentions) = event.body.get("mentions") else {
+        return Ok(());
+    };
+    let mentions = mentions
+        .as_array()
+        .ok_or_else(|| AcceptError::Invalid("mentions must be an array".to_string()))?;
+    if mentions.len() > 50
+        || mentions.iter().any(|mention| {
+            !mention
+                .as_str()
+                .is_some_and(|peer_id| peer_id.starts_with("p:"))
+        })
+    {
+        return Err(AcceptError::Invalid("mentions are invalid".to_string()));
+    }
+    Ok(())
+}
+
+fn valid_message_text(value: &str) -> bool {
+    let length = value.chars().count();
+    (1..=4000).contains(&length) && value.trim() == value && !value.contains('\0')
+}
+
 fn required_scope_for_kind(kind: &str) -> &'static str {
     match kind {
         "MEMBER_JOIN" => "room:join",
         "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" | "INVITE_CREATE" | "INVITE_REVOKE"
-        | "SPACE_CREATE" => "room:governance",
+        | "SPACE_CREATE" | "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE"
+        | "ROLE_CREATE" | "ROLE_UPDATE" | "ROLE_DELETE" | "ROLE_GRANT" | "ROLE_REVOKE" => {
+            "room:governance"
+        }
+        k if k.starts_with("CALL_") => "room:call",
         k if k.starts_with("MSG_") || k.starts_with("REACTION_") || k.starts_with("PIN_") => {
             "room:post"
         }
