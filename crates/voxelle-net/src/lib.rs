@@ -11,7 +11,8 @@ use std::sync::Once;
 use std::time::Duration;
 use ts_rs::TS;
 use voxelle_core::{
-    id_from_spki_der, verify_signature_from_spki_b64, EventV1, PeerIdentity, RoomContext,
+    channel_allows_peer, derive_governance_state, id_from_spki_der, verify_signature_from_spki_b64,
+    EventV1, PeerIdentity, RoomContext,
 };
 use voxelle_store::Store;
 use voxelle_sync::{accept_offered_events_once, SyncLimits, SyncStats};
@@ -20,6 +21,7 @@ pub const VOXELLE_ALPN: &[u8] = b"voxelle-ipv6/0";
 const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
 const MAX_SYNC_BYTES: usize = 512 * 1024;
 const DIAGNOSTIC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const SYNC_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 static RUSTLS_PROVIDER: Once = Once::new();
 
 #[derive(Debug)]
@@ -106,6 +108,7 @@ struct RoomSyncRequestV1 {
     v: u8,
     room_id: String,
     known_event_ids: Vec<String>,
+    offered_events: Vec<EventV1>,
     max_events: usize,
 }
 
@@ -114,6 +117,10 @@ struct RoomSyncResponseV1 {
     v: u8,
     room_id: String,
     events: Vec<EventV1>,
+    accepted_from_remote: usize,
+    already_present_from_remote: usize,
+    rejected_from_remote: usize,
+    error: Option<String>,
     truncated: bool,
 }
 
@@ -135,6 +142,8 @@ pub struct ServedRoomSync {
     pub remote: AuthenticatedPeer,
     pub room_id: String,
     pub offered: usize,
+    pub accepted_from_remote: usize,
+    pub rejected_from_remote: usize,
     pub truncated: bool,
 }
 
@@ -209,7 +218,7 @@ impl QuicNode {
         Ok(PeerEndpoint {
             v: 1,
             addr: advertised_addr,
-            peer_id: self.identity.peer.id.clone(),
+            peer_id: self.identity.peer_id.clone(),
             device_id: self.identity.device.id.clone(),
             quic_cert_der_b64: self.certificate.cert_der_b64.clone(),
             quic_cert_fingerprint: self.certificate.fingerprint.clone(),
@@ -342,7 +351,12 @@ impl QuicNode {
         })
     }
 
-    pub async fn serve_room_sync_once(&self, source: &Store) -> Result<ServedRoomSync> {
+    pub async fn serve_room_sync_once(
+        &self,
+        source: &Store,
+        context: &RoomContext,
+        now_ms: i64,
+    ) -> Result<ServedRoomSync> {
         let authenticated = self.accept_one().await?;
         let (mut send, recv) = authenticated
             .connection
@@ -351,8 +365,15 @@ impl QuicNode {
             .context("accept room sync stream")?;
 
         let request = recv_json(recv, MAX_SYNC_BYTES).await?;
-        self.serve_room_sync_request(source, authenticated.remote, &mut send, request)
-            .await
+        self.serve_room_sync_request(
+            source,
+            context,
+            now_ms,
+            authenticated.remote,
+            &mut send,
+            request,
+        )
+        .await
     }
 
     pub async fn sync_room_once(
@@ -366,15 +387,25 @@ impl QuicNode {
         now_ms: i64,
         limits: SyncLimits,
     ) -> Result<SyncStats> {
-        let authenticated = self
-            .connect(remote_addr, remote_cert_der, expected_remote_device_id)
-            .await?;
-        let known_event_ids = dest
+        let authenticated = tokio::time::timeout(
+            SYNC_CONNECT_TIMEOUT,
+            self.connect(remote_addr, remote_cert_der, expected_remote_device_id),
+        )
+        .await
+        .context("room sync connect timed out")??;
+        let mut local_events = dest
             .room_events(room_id)
-            .with_context(|| format!("load known room events for {room_id}"))?
-            .into_iter()
-            .map(|event| event.event_id)
+            .with_context(|| format!("load known room events for {room_id}"))?;
+        local_events.sort_by(|a, b| {
+            a.created_ms
+                .cmp(&b.created_ms)
+                .then_with(|| a.event_id.cmp(&b.event_id))
+        });
+        let known_event_ids = local_events
+            .iter()
+            .map(|event| event.event_id.clone())
             .collect();
+        local_events.truncate(limits.max_events_per_batch);
 
         let (mut send, recv) = authenticated
             .connection
@@ -387,6 +418,7 @@ impl QuicNode {
                 v: 1,
                 room_id: room_id.to_string(),
                 known_event_ids,
+                offered_events: local_events.clone(),
                 max_events: limits.max_events_per_batch,
             },
         )
@@ -404,8 +436,15 @@ impl QuicNode {
                 response.room_id
             );
         }
+        if let Some(error) = response.error {
+            bail!("remote rejected room sync: {error}");
+        }
 
         let mut stats = accept_offered_events_once(dest, &response.events, context, now_ms)?;
+        stats.sent = local_events.len();
+        stats.remote_accepted = response.accepted_from_remote;
+        stats.remote_already_present = response.already_present_from_remote;
+        stats.remote_rejected = response.rejected_from_remote;
         stats.truncated = response.truncated;
         authenticated.connection.close(0u32.into(), b"sync done");
         Ok(stats)
@@ -423,7 +462,12 @@ impl QuicNode {
             .await
     }
 
-    pub async fn serve_peer_request_once(&self, source: &Store) -> Result<ServedPeerRequest> {
+    pub async fn serve_peer_request_once(
+        &self,
+        source: &Store,
+        context: &RoomContext,
+        now_ms: i64,
+    ) -> Result<ServedPeerRequest> {
         let authenticated = self.accept_one().await?;
         let (mut send, recv) = authenticated
             .connection
@@ -445,7 +489,14 @@ impl QuicNode {
             let sync: RoomSyncRequestV1 =
                 serde_json::from_value(request).context("parse room sync request")?;
             let served = self
-                .serve_room_sync_request(source, authenticated.remote, &mut send, sync)
+                .serve_room_sync_request(
+                    source,
+                    context,
+                    now_ms,
+                    authenticated.remote,
+                    &mut send,
+                    sync,
+                )
                 .await?;
             return Ok(ServedPeerRequest::RoomSync(served));
         }
@@ -456,6 +507,8 @@ impl QuicNode {
     async fn serve_room_sync_request(
         &self,
         source: &Store,
+        context: &RoomContext,
+        now_ms: i64,
         remote: AuthenticatedPeer,
         send: &mut quinn::SendStream,
         request: RoomSyncRequestV1,
@@ -465,6 +518,129 @@ impl QuicNode {
         }
         if request.max_events == 0 {
             bail!("room sync request max_events must be positive");
+        }
+
+        if request.offered_events.len() > request.max_events {
+            bail!("room sync offered_events exceeds requested bound");
+        }
+
+        let received = accept_offered_events_once(source, &request.offered_events, context, now_ms)
+            .context("accept remote room events")?;
+
+        if context.require_invite {
+            let space_prefix = context
+                .governance_room_id
+                .strip_suffix(":governance")
+                .ok_or_else(|| anyhow!("configured governance room is not space-namespaced"))?;
+            if request.room_id != context.governance_room_id
+                && !request
+                    .room_id
+                    .starts_with(&format!("{space_prefix}:channel:"))
+            {
+                let error = "room sync request is outside the configured space".to_string();
+                send_json(
+                    send,
+                    &RoomSyncResponseV1 {
+                        v: 1,
+                        room_id: request.room_id.clone(),
+                        events: Vec::new(),
+                        accepted_from_remote: received.accepted,
+                        already_present_from_remote: received.already_present,
+                        rejected_from_remote: received.rejected,
+                        error: Some(error),
+                        truncated: false,
+                    },
+                )
+                .await?;
+                return Ok(ServedRoomSync {
+                    remote,
+                    room_id: request.room_id,
+                    offered: 0,
+                    accepted_from_remote: received.accepted,
+                    rejected_from_remote: received.rejected,
+                    truncated: false,
+                });
+            }
+            if request.room_id != context.governance_room_id {
+                let governance = source.room_events(&context.governance_room_id)?;
+                let state = derive_governance_state(&governance, context, now_ms);
+                if !state.members.contains(&remote.peer_id) {
+                    let error = "remote principal is not a member of this space".to_string();
+                    send_json(
+                        send,
+                        &RoomSyncResponseV1 {
+                            v: 1,
+                            room_id: request.room_id.clone(),
+                            events: Vec::new(),
+                            accepted_from_remote: received.accepted,
+                            already_present_from_remote: received.already_present,
+                            rejected_from_remote: received.rejected,
+                            error: Some(error),
+                            truncated: false,
+                        },
+                    )
+                    .await?;
+                    return Ok(ServedRoomSync {
+                        remote,
+                        room_id: request.room_id,
+                        offered: 0,
+                        accepted_from_remote: received.accepted,
+                        rejected_from_remote: received.rejected,
+                        truncated: false,
+                    });
+                }
+                let Some(channel) = state.channels.get(&request.room_id) else {
+                    let error = "requested channel does not exist".to_string();
+                    send_json(
+                        send,
+                        &RoomSyncResponseV1 {
+                            v: 1,
+                            room_id: request.room_id.clone(),
+                            events: Vec::new(),
+                            accepted_from_remote: received.accepted,
+                            already_present_from_remote: received.already_present,
+                            rejected_from_remote: received.rejected,
+                            error: Some(error),
+                            truncated: false,
+                        },
+                    )
+                    .await?;
+                    return Ok(ServedRoomSync {
+                        remote,
+                        room_id: request.room_id,
+                        offered: 0,
+                        accepted_from_remote: received.accepted,
+                        rejected_from_remote: received.rejected,
+                        truncated: false,
+                    });
+                };
+                if !channel_allows_peer(channel, &remote.peer_id) {
+                    let error =
+                        "remote principal is not a member of this private channel".to_string();
+                    send_json(
+                        send,
+                        &RoomSyncResponseV1 {
+                            v: 1,
+                            room_id: request.room_id.clone(),
+                            events: Vec::new(),
+                            accepted_from_remote: received.accepted,
+                            already_present_from_remote: received.already_present,
+                            rejected_from_remote: received.rejected,
+                            error: Some(error),
+                            truncated: false,
+                        },
+                    )
+                    .await?;
+                    return Ok(ServedRoomSync {
+                        remote,
+                        room_id: request.room_id,
+                        offered: 0,
+                        accepted_from_remote: received.accepted,
+                        rejected_from_remote: received.rejected,
+                        truncated: false,
+                    });
+                }
+            }
         }
 
         let known: BTreeSet<_> = request.known_event_ids.into_iter().collect();
@@ -488,6 +664,10 @@ impl QuicNode {
                 v: 1,
                 room_id: request.room_id.clone(),
                 events,
+                accepted_from_remote: received.accepted,
+                already_present_from_remote: received.already_present,
+                rejected_from_remote: received.rejected,
+                error: None,
                 truncated,
             },
         )
@@ -498,6 +678,8 @@ impl QuicNode {
             remote,
             room_id: request.room_id,
             offered,
+            accepted_from_remote: received.accepted,
+            rejected_from_remote: received.rejected,
             truncated,
         })
     }
@@ -752,7 +934,7 @@ fn make_handshake(
     let mut hello = HandshakeV1 {
         v: 1,
         role,
-        peer_id: identity.peer.id.clone(),
+        peer_id: identity.peer_id.clone(),
         device_id: identity.device.id.clone(),
         device_pub: identity.device.spki_b64.clone(),
         quic_cert_fingerprint: quic_cert_fingerprint.to_string(),
@@ -845,7 +1027,7 @@ mod tests {
     };
 
     fn delegation_for(identity: &PeerIdentity, scopes: Vec<String>) -> DelegationCertV1 {
-        create_delegation(&identity.peer, &identity.device, 900, 2_000, scopes).expect("delegation")
+        create_delegation(identity, 900, 2_000, scopes).expect("delegation")
     }
 
     fn member_join(identity: &PeerIdentity) -> EventV1 {
@@ -857,8 +1039,9 @@ mod tests {
             "MEMBER_JOIN",
             vec![],
             json!({
-                "peer_id": identity.peer.id,
+                "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
+                "encryption_pub": identity.encryption_public_b64(),
             }),
         )
         .expect("member join")
@@ -982,7 +1165,7 @@ mod tests {
     async fn authenticated_quic_sync_converges_room_events() -> Result<()> {
         let authority = PeerIdentity::generate()?;
         let alice = PeerIdentity::generate()?;
-        let context = RoomContext::new(authority.peer.id.clone());
+        let context = RoomContext::new(authority.peer_id.clone());
         let source_store = Store::open_in_memory()?;
         let mut dest_store = Store::open_in_memory()?;
 
@@ -1000,9 +1183,13 @@ mod tests {
         let server_cert = server.certificate_der();
 
         let server_fut = async {
-            let served = server.serve_room_sync_once(&source_store).await?;
+            let served = server
+                .serve_room_sync_once(&source_store, &context, 1_200)
+                .await?;
             let served_room = served.room_id.clone();
-            let second = server.serve_room_sync_once(&source_store).await?;
+            let second = server
+                .serve_room_sync_once(&source_store, &context, 1_200)
+                .await?;
             Ok::<_, anyhow::Error>((served_room, second.room_id))
         };
 

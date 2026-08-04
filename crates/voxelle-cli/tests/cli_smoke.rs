@@ -5,26 +5,28 @@ use tempfile::tempdir;
 use voxelle_core::PeerIdentity;
 use voxelle_net::{PeerEndpoint, QuicCertificate};
 
+fn voxelle() -> Command {
+    let mut command = Command::cargo_bin("voxelle").expect("voxelle binary");
+    command.env("VOXELLE_VAULT_BACKEND", "test-file");
+    command
+}
+
 #[test]
 fn cli_home_workflow_drives_app_actions() {
     let dir = tempdir().expect("tempdir");
     let home = dir.path().join("alice");
+    let recovery_kit = dir.path().join("alice.voxrecover");
+    let recovered_home = dir.path().join("alice-recovered");
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["init", "--home"])
         .arg(&home)
         .assert()
         .success()
-        .stdout(predicate::str::contains(
-            "\"default_room\": \"room:general\"",
-        ))
-        .stdout(predicate::str::contains(
-            "\"authority_peer_id\": \"ed25519:",
-        ));
+        .stdout(predicate::str::contains(":channel:general\""))
+        .stdout(predicate::str::contains("\"authority_peer_id\": \"p:"));
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["send", "--home"])
         .arg(&home)
         .args(["--text", "hello home"])
@@ -32,13 +34,30 @@ fn cli_home_workflow_drives_app_actions() {
         .success()
         .stdout(predicate::str::starts_with("e:"));
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["read", "--home"])
         .arg(&home)
         .assert()
         .success()
         .stdout(predicate::str::contains("\"text\": \"hello home\""));
+
+    voxelle()
+        .args(["recovery", "export", "--home"])
+        .arg(&home)
+        .args(["--out"])
+        .arg(&recovery_kit)
+        .assert()
+        .success();
+
+    voxelle()
+        .args(["recovery", "restore", "--home"])
+        .arg(&recovered_home)
+        .args(["--kit"])
+        .arg(&recovery_kit)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"peers_reached\": 0"))
+        .stdout(predicate::str::contains("\"peer_id\": \"p:"));
 }
 
 #[test]
@@ -48,20 +67,18 @@ fn cli_creates_identity_room_message_and_syncs_local_store() {
     let store_a = dir.path().join("a.sqlite3");
     let store_b = dir.path().join("b.sqlite3");
 
-    let output = Command::cargo_bin("voxelle")
-        .unwrap()
+    let output = voxelle()
         .args(["identity", "create", "--out"])
         .arg(&identity)
         .assert()
         .success()
-        .stdout(predicate::str::starts_with("ed25519:"))
+        .stdout(predicate::str::starts_with("p:"))
         .get_output()
         .stdout
         .clone();
     let authority = String::from_utf8(output).unwrap().trim().to_string();
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["room", "create", "--identity"])
         .arg(&identity)
         .args(["--store"])
@@ -70,8 +87,7 @@ fn cli_creates_identity_room_message_and_syncs_local_store() {
         .success()
         .stdout(predicate::str::contains("room=room:general"));
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["event", "send", "--identity"])
         .arg(&identity)
         .args(["--store"])
@@ -81,8 +97,7 @@ fn cli_creates_identity_room_message_and_syncs_local_store() {
         .success()
         .stdout(predicate::str::starts_with("e:"));
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["sync", "local", "--from"])
         .arg(&store_a)
         .args(["--to"])
@@ -92,16 +107,14 @@ fn cli_creates_identity_room_message_and_syncs_local_store() {
         .success()
         .stdout(predicate::str::contains("accepted=2"));
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["room", "count", "--store"])
         .arg(&store_b)
         .assert()
         .success()
         .stdout("1\n");
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["room", "heads", "--store"])
         .arg(&store_b)
         .assert()
@@ -116,8 +129,7 @@ fn cli_diagnose_connect_reports_unreachable_peer_endpoint() {
     let cert = dir.path().join("client.quic-cert.json");
     let endpoint_path = dir.path().join("endpoint.json");
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["identity", "create", "--out"])
         .arg(&identity)
         .assert()
@@ -128,7 +140,7 @@ fn cli_diagnose_connect_reports_unreachable_peer_endpoint() {
     let endpoint = PeerEndpoint {
         v: 1,
         addr: SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 9),
-        peer_id: remote_identity.peer.id,
+        peer_id: remote_identity.peer_id,
         device_id: remote_identity.device.id,
         quic_cert_der_b64: remote_cert.cert_der_b64,
         quic_cert_fingerprint: remote_cert.fingerprint,
@@ -139,8 +151,7 @@ fn cli_diagnose_connect_reports_unreachable_peer_endpoint() {
     )
     .expect("write endpoint");
 
-    Command::cargo_bin("voxelle")
-        .unwrap()
+    voxelle()
         .args(["diagnose", "connect", "--identity"])
         .arg(&identity)
         .args(["--cert"])

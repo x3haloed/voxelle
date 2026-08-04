@@ -1,28 +1,38 @@
 use anyhow::{Context, Result};
+use base64::Engine;
+use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
-    accept_event, create_delegation, create_event, EventV1, PeerIdentity, RoomContext,
-    GOVERNANCE_ROOM_ID,
+    accept_event, create_delegation, create_event, create_space, create_space_invite_event,
+    derive_governance_state, topo_sort_deterministic, validate_room_event_semantics,
+    validate_space_at, validate_space_invite_at, ChannelVisibility, EventV1, IdentityProofV1,
+    PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
     QuicNode, ServedPeerRequest,
 };
 use voxelle_store::Store;
-use voxelle_sync::{SyncLimits, SyncStats};
+use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
 mod shell;
 
 pub use shell::{ShellError, ShellResult, ShellState};
 
 pub const DEFAULT_ROOM_ID: &str = "room:general";
+const CALL_LIVENESS_MS: i64 = 90_000;
 
 pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
     resolve_home_root_from(
@@ -49,38 +59,120 @@ pub struct VoxelleHome {
     root: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct HomeConfig {
     pub v: u8,
+    pub space: SpaceV1,
     pub default_room: String,
     pub authority_peer_id: String,
+}
+
+impl HomeConfig {
+    fn room_context(&self) -> RoomContext {
+        RoomContext::for_space(
+            self.authority_peer_id.clone(),
+            self.space.governance_room_id.clone(),
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IdentityFile {
     v: u8,
-    peer_secret_b64: String,
+    nonce_b64: String,
+    ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct IdentitySecretsV1 {
+    v: u8,
+    root_secret_b64: String,
     device_secret_b64: String,
+    recovery_secret_b64: String,
+    proof: IdentityProofV1,
     peer_id: String,
     device_id: String,
 }
 
-impl IdentityFile {
-    pub fn from_identity(identity: &PeerIdentity) -> Self {
+impl IdentitySecretsV1 {
+    fn from_identity(identity: &PeerIdentity) -> Self {
         Self {
             v: 1,
-            peer_secret_b64: identity.peer.secret_key_b64(),
+            root_secret_b64: identity.peer.secret_key_b64(),
             device_secret_b64: identity.device.secret_key_b64(),
-            peer_id: identity.peer.id.clone(),
+            recovery_secret_b64: identity.recovery.secret_key_b64(),
+            proof: identity.proof.clone(),
+            peer_id: identity.peer_id.clone(),
             device_id: identity.device.id.clone(),
         }
     }
 
-    pub fn to_identity(&self) -> Result<PeerIdentity> {
+    fn to_identity(&self) -> Result<PeerIdentity> {
         if self.v != 1 {
             anyhow::bail!("unsupported identity version {}", self.v);
         }
-        PeerIdentity::from_secret_keys_b64(&self.peer_secret_b64, &self.device_secret_b64)
+        let identity = PeerIdentity::from_secret_keys_b64(
+            &self.root_secret_b64,
+            &self.device_secret_b64,
+            &self.recovery_secret_b64,
+            self.proof.clone(),
+        )?;
+        if identity.peer_id != self.peer_id || identity.device.id != self.device_id {
+            anyhow::bail!("identity metadata does not match signed identity proof");
+        }
+        Ok(identity)
+    }
+}
+
+impl IdentityFile {
+    fn encrypt(identity: &PeerIdentity, key: &[u8; 32]) -> Result<Self> {
+        let secrets = IdentitySecretsV1::from_identity(identity);
+        let plaintext = serde_json::to_vec(&secrets).context("serialize identity secrets")?;
+        let cipher = XChaCha20Poly1305::new(key.into());
+        let mut nonce = [0_u8; 24];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &plaintext,
+                    aad: b"voxelle/identity-vault/v1",
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("encrypt identity vault"))?;
+        Ok(Self {
+            v: 1,
+            nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+            ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+        })
+    }
+
+    fn decrypt(&self, key: &[u8; 32]) -> Result<PeerIdentity> {
+        if self.v != 1 {
+            anyhow::bail!("unsupported identity vault version {}", self.v);
+        }
+        let nonce = base64::engine::general_purpose::STANDARD
+            .decode(&self.nonce_b64)
+            .context("decode identity vault nonce")?;
+        let nonce: [u8; 24] = nonce
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("identity vault nonce must be 24 bytes"))?;
+        let ciphertext = base64::engine::general_purpose::STANDARD
+            .decode(&self.ciphertext_b64)
+            .context("decode identity vault ciphertext")?;
+        let cipher = XChaCha20Poly1305::new(key.into());
+        let plaintext = cipher
+            .decrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &ciphertext,
+                    aad: b"voxelle/identity-vault/v1",
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("identity vault authentication failed"))?;
+        let secrets: IdentitySecretsV1 =
+            serde_json::from_slice(&plaintext).context("parse identity secrets")?;
+        secrets.to_identity()
     }
 }
 
@@ -101,13 +193,103 @@ pub struct MessageView {
     pub created_ms: i64,
     pub author_peer_id: String,
     pub text: String,
+    #[ts(type = "number | null")]
+    pub edited_ms: Option<i64>,
+    pub redacted: bool,
+    pub mentions: Vec<String>,
+    pub thread_root_event_id: Option<String>,
+    pub reply_count: usize,
+    pub pinned: bool,
+    pub reactions: Vec<ReactionView>,
+    pub attachments: Vec<AttachmentView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ReactionView {
+    pub emoji: String,
+    pub peer_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AttachmentView {
+    pub event_id: String,
+    pub filename: String,
+    pub mime: String,
+    pub sha256: String,
+    pub data_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ChannelView {
+    pub room_id: String,
+    pub name: String,
+    pub topic: String,
+    pub visibility: String,
+    pub selected: bool,
+    pub unread_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RoleView {
+    pub role_id: String,
+    pub name: String,
+    pub permissions: Vec<String>,
+    pub member_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ProfileView {
+    pub peer_id: String,
+    pub display_name: String,
+    pub about: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SearchResultView {
+    pub room_id: String,
+    pub message: MessageView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct NotificationView {
+    pub event_id: String,
+    pub room_id: String,
+    pub author_peer_id: String,
+    pub summary: String,
+    pub kind: String,
+    #[ts(type = "number")]
+    pub created_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallSignalView {
+    pub event_id: String,
+    pub kind: String,
+    pub call_id: String,
+    pub author_peer_id: String,
+    pub target_peer_id: Option<String>,
+    pub video: Option<bool>,
+    pub sdp: Option<String>,
+    pub candidate: Option<String>,
+    #[ts(type = "number")]
+    pub created_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallView {
+    pub call_id: String,
+    pub participants: Vec<String>,
+    pub signals: Vec<CallSignalView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct PeerRecord {
     pub v: u8,
     pub label: Option<String>,
+    pub space_id: String,
+    pub governance_room_id: String,
     pub default_room: String,
+    pub authority_peer_id: String,
     pub endpoint: PeerEndpoint,
 }
 
@@ -115,6 +297,95 @@ pub struct PeerRecord {
 struct KnownPeersFile {
     v: u8,
     peers: Vec<PeerRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ReadStateFile {
+    v: u8,
+    last_read_event_ids: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct EncryptedRoomKeysFile {
+    v: u8,
+    nonce_b64: String,
+    ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RoomKeysV1 {
+    v: u8,
+    keys: BTreeMap<String, BTreeMap<u64, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PrivateEventPlaintext {
+    kind: String,
+    body: serde_json::Value,
+}
+
+impl Default for RoomKeysV1 {
+    fn default() -> Self {
+        Self {
+            v: 1,
+            keys: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryCapsuleV1 {
+    pub v: u8,
+    pub peer_id: String,
+    pub nonce_b64: String,
+    pub ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryKitV1 {
+    pub v: u8,
+    pub card: RecoveryCardV1,
+    pub capsule: RecoveryCapsuleV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct RecoveryPayloadV1 {
+    v: u8,
+    identity_proof: IdentityProofV1,
+    config: HomeConfig,
+    governance_events: Vec<EventV1>,
+    known_peers: Vec<PeerRecord>,
+    ui_preferences: UiPreferences,
+    read_state: ReadStateFile,
+    room_keys: RoomKeysV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryReport {
+    pub profile: ProfileSummary,
+    pub peers_attempted: usize,
+    pub peers_reached: usize,
+    pub events_recovered: usize,
+    pub events_pushed: usize,
+    pub peer_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SpaceInviteFileV1 {
+    pub v: u8,
+    pub space: SpaceV1,
+    pub invite_event: EventV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct JoinSpaceReport {
+    pub profile: ProfileSummary,
+    pub invite_id: String,
+    pub peers_attempted: usize,
+    pub peers_reached: usize,
+    pub events_received: usize,
+    pub events_pushed: usize,
+    pub peer_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -141,7 +412,10 @@ pub struct UiPlace {
 pub struct UiView {
     pub id: String,
     pub label: String,
+    pub default_place_id: String,
     pub place_id: String,
+    pub order: usize,
+    pub visible: bool,
     pub description: String,
     pub editable: bool,
     pub editing_surface: String,
@@ -152,8 +426,26 @@ pub struct UiCommand {
     pub id: String,
     pub label: String,
     pub description: String,
+    pub scope: UiCommandScope,
+    pub shortcut: Option<String>,
+    pub palette: bool,
     pub editable: bool,
     pub editing_surface: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum UiCommandScope {
+    Shell,
+    Frontend,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct UiViewPlacement {
+    pub view_id: String,
+    pub place_id: String,
+    pub order: usize,
+    pub visible: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -222,6 +514,7 @@ pub struct UiPreferences {
     pub semantic_tokens: BTreeMap<String, String>,
     pub metrics: BTreeMap<String, f64>,
     pub behaviors: BTreeMap<String, UiBehaviorValue>,
+    pub view_placements: BTreeMap<String, UiViewPlacement>,
 }
 
 impl Default for UiPreferences {
@@ -231,6 +524,7 @@ impl Default for UiPreferences {
             semantic_tokens: BTreeMap::new(),
             metrics: BTreeMap::new(),
             behaviors: BTreeMap::new(),
+            view_placements: BTreeMap::new(),
         }
     }
 }
@@ -241,11 +535,22 @@ pub fn shell_contract_typescript() -> String {
         PeerEndpoint::decl(&cfg),
         ProfileSummary::decl(&cfg),
         MessageView::decl(&cfg),
+        ReactionView::decl(&cfg),
+        AttachmentView::decl(&cfg),
+        ChannelView::decl(&cfg),
+        RoleView::decl(&cfg),
+        ProfileView::decl(&cfg),
+        SearchResultView::decl(&cfg),
+        NotificationView::decl(&cfg),
+        CallSignalView::decl(&cfg),
+        CallView::decl(&cfg),
         PeerRecord::decl(&cfg),
         UiOntologyView::decl(&cfg),
         UiPlace::decl(&cfg),
         UiView::decl(&cfg),
         UiCommand::decl(&cfg),
+        UiCommandScope::decl(&cfg),
+        UiViewPlacement::decl(&cfg),
         SemanticToken::decl(&cfg),
         UiMetric::decl(&cfg),
         UiBehavior::decl(&cfg),
@@ -257,9 +562,28 @@ pub fn shell_contract_typescript() -> String {
         InitHomeRequest::decl(&cfg),
         StartServiceRequest::decl(&cfg),
         SendMessageRequest::decl(&cfg),
+        SelectChannelRequest::decl(&cfg),
+        MarkReadRequest::decl(&cfg),
+        CreateChannelRequest::decl(&cfg),
+        RotateChannelKeyRequest::decl(&cfg),
+        CallJoinRequest::decl(&cfg),
+        CallSignalRequest::decl(&cfg),
+        CallLeaveRequest::decl(&cfg),
+        MessageTargetRequest::decl(&cfg),
+        EditMessageRequest::decl(&cfg),
+        ReactionRequest::decl(&cfg),
+        AttachmentRequest::decl(&cfg),
+        ProfileUpdateRequest::decl(&cfg),
+        CreateRoleRequest::decl(&cfg),
+        AssignRoleRequest::decl(&cfg),
+        BanMemberRequest::decl(&cfg),
+        SearchMessagesRequest::decl(&cfg),
         ImportPeerRecordRequest::decl(&cfg),
+        CreateSpaceInviteRequest::decl(&cfg),
+        JoinSpaceRequest::decl(&cfg),
         PeerCommandRequest::decl(&cfg),
         SetUiPreferenceRequest::decl(&cfg),
+        SetWorkbenchLayoutRequest::decl(&cfg),
         HomeScreenView::decl(&cfg),
         NetworkHealthView::decl(&cfg),
         NetworkHealthRow::decl(&cfg),
@@ -326,11 +650,14 @@ pub struct VoxelleCommandHost {
     service: Option<VoxelleService>,
     activity: Vec<ServiceActivityItem>,
     next_activity_id: u64,
+    last_space_invite_json: Option<String>,
+    selected_room_id: Option<String>,
+    search_results: Vec<SearchResultView>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoxelleServiceEvent {
-    Served(ServedPeerRequest),
+    Served(Box<ServedPeerRequest>),
     Failed(String),
     Stopped,
 }
@@ -338,28 +665,33 @@ pub enum VoxelleServiceEvent {
 impl VoxelleServiceEvent {
     pub fn summary(&self) -> String {
         match self {
-            VoxelleServiceEvent::Served(ServedPeerRequest::Diagnostic(report)) => {
-                if report.reachable {
+            VoxelleServiceEvent::Served(served) => match served.as_ref() {
+                ServedPeerRequest::Diagnostic(report) if report.reachable => {
                     let remote = report
                         .remote
                         .as_ref()
                         .map(|remote| short_peer_label(&remote.peer_id))
                         .unwrap_or_else(|| "peer".to_string());
                     format!("served diagnostic: {remote} reached this home")
-                } else {
+                }
+                ServedPeerRequest::Diagnostic(report) => {
                     format!(
                         "served diagnostic: unreachable ({})",
                         report.error.as_deref().unwrap_or("no error detail")
                     )
                 }
-            }
-            VoxelleServiceEvent::Served(ServedPeerRequest::RoomSync(sync)) => {
-                let truncated = if sync.truncated { ", truncated" } else { "" };
-                format!(
-                    "served sync: room {}, offered {} event(s){}",
-                    sync.room_id, sync.offered, truncated
-                )
-            }
+                ServedPeerRequest::RoomSync(sync) => {
+                    let truncated = if sync.truncated { ", truncated" } else { "" };
+                    format!(
+                        "served sync: room {}, offered {}, accepted {}, rejected {} event(s){}",
+                        sync.room_id,
+                        sync.offered,
+                        sync.accepted_from_remote,
+                        sync.rejected_from_remote,
+                        truncated
+                    )
+                }
+            },
             VoxelleServiceEvent::Failed(error) => format!("service error: {error}"),
             VoxelleServiceEvent::Stopped => "service stopped".to_string(),
         }
@@ -371,6 +703,9 @@ pub struct OnlineHome {
     pub endpoint: PeerEndpoint,
     pub local_report: LocalReachabilityReport,
     pub default_room: String,
+    pub authority_peer_id: String,
+    pub space_id: String,
+    pub governance_room_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,6 +723,7 @@ pub struct ShellSnapshotView {
     pub network_health: NetworkHealthView,
     pub ui_ontology: UiOntologyView,
     pub service_activity: Vec<ServiceActivityItem>,
+    pub search_results: Vec<SearchResultView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -422,11 +758,140 @@ pub struct StartServiceRequest {
 pub struct SendMessageRequest {
     pub text: String,
     pub room: Option<String>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+    #[serde(default)]
+    pub thread_root_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SelectChannelRequest {
+    pub room_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MarkReadRequest {
+    pub room_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CreateChannelRequest {
+    pub name: String,
+    #[serde(default)]
+    pub topic: String,
+    #[serde(default)]
+    pub private_members: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RotateChannelKeyRequest {
+    pub room_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallJoinRequest {
+    pub room: Option<String>,
+    #[serde(default)]
+    pub video: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallSignalRequest {
+    pub room: Option<String>,
+    pub call_id: String,
+    pub target_peer_id: String,
+    pub signal_type: String,
+    #[serde(default)]
+    pub sdp: Option<String>,
+    #[serde(default)]
+    pub candidate: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallLeaveRequest {
+    pub room: Option<String>,
+    pub call_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageTargetRequest {
+    pub target_event_id: String,
+    pub room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct EditMessageRequest {
+    pub target_event_id: String,
+    pub text: String,
+    pub room: Option<String>,
+    #[serde(default)]
+    pub mentions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ReactionRequest {
+    pub target_event_id: String,
+    pub emoji: String,
+    pub room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AttachmentRequest {
+    pub filename: String,
+    pub mime: String,
+    pub data_b64: String,
+    pub room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ProfileUpdateRequest {
+    pub display_name: String,
+    #[serde(default)]
+    pub about: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CreateRoleRequest {
+    pub name: String,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AssignRoleRequest {
+    pub peer_id: String,
+    pub role_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct BanMemberRequest {
+    pub peer_id: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SearchMessagesRequest {
+    pub query: String,
+    pub room: Option<String>,
+    pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct ImportPeerRecordRequest {
     pub peer_record_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CreateSpaceInviteRequest {
+    #[ts(type = "number | null")]
+    pub expires_minutes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct JoinSpaceRequest {
+    pub space_invite_json: String,
+    pub max_events: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -445,11 +910,21 @@ pub enum SetUiPreferenceRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SetWorkbenchLayoutRequest {
+    pub placements: Vec<UiViewPlacement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct HomeScreenView {
     pub profile: ProfileSummary,
     pub runtime: RuntimeStatusView,
     pub invite: Option<InviteExchangeView>,
     pub peers: Vec<PeerListItemView>,
+    pub channels: Vec<ChannelView>,
+    pub roles: Vec<RoleView>,
+    pub profiles: Vec<ProfileView>,
+    pub notifications: Vec<NotificationView>,
+    pub call: CallView,
     pub room: RoomTimelineView,
 }
 
@@ -500,6 +975,7 @@ pub enum RuntimeState {
 pub struct InviteExchangeView {
     pub peer_record: PeerRecord,
     pub peer_record_json: String,
+    pub space_invite_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -537,21 +1013,30 @@ impl VoxelleHome {
         let config = if self.path("config.json").exists() {
             self.load_config()?
         } else {
+            let channel_name = default_room
+                .rsplit(':')
+                .next()
+                .filter(|name| !name.is_empty())
+                .unwrap_or("general");
+            let space = create_space(&identity, "My Space", channel_name, now_ms())?;
             let config = HomeConfig {
                 v: 1,
-                default_room,
-                authority_peer_id: identity.peer.id.clone(),
+                default_room: space.default_room_id.clone(),
+                authority_peer_id: identity.peer_id.clone(),
+                space,
             };
             write_json(&self.path("config.json"), &config)?;
             config
         };
 
         let store = self.open_store()?;
-        self.ensure_member_join(&store, &identity, &config)?;
+        self.ensure_space_genesis(&store, &config)?;
+        self.ensure_member_join(&store, &identity, &config, None)?;
+        self.refresh_recovery_capsule()?;
 
         Ok(ProfileSummary {
             home: self.root.clone(),
-            peer_id: identity.peer.id,
+            peer_id: identity.peer_id,
             device_id: identity.device.id,
             default_room: config.default_room,
             authority_peer_id: config.authority_peer_id,
@@ -563,7 +1048,7 @@ impl VoxelleHome {
         let config = self.load_config()?;
         Ok(ProfileSummary {
             home: self.root.clone(),
-            peer_id: identity.peer.id,
+            peer_id: identity.peer_id,
             device_id: identity.device.id,
             default_room: config.default_room,
             authority_peer_id: config.authority_peer_id,
@@ -571,6 +1056,14 @@ impl VoxelleHome {
     }
 
     pub fn home_screen_view(&self, online: Option<&OnlineHome>) -> Result<HomeScreenView> {
+        self.home_screen_view_for_room(online, None)
+    }
+
+    pub fn home_screen_view_for_room(
+        &self,
+        online: Option<&OnlineHome>,
+        selected_room: Option<&str>,
+    ) -> Result<HomeScreenView> {
         let config = self.load_config()?;
         let invite = online
             .map(|online| online.invite_view(None, None))
@@ -578,6 +1071,12 @@ impl VoxelleHome {
         let runtime = online
             .map(RuntimeStatusView::online)
             .unwrap_or_else(RuntimeStatusView::offline);
+        let channels = self.channels(selected_room)?;
+        let selected_room = channels
+            .iter()
+            .find(|channel| channel.selected)
+            .map(|channel| channel.room_id.clone())
+            .unwrap_or_else(|| config.default_room.clone());
         Ok(HomeScreenView {
             profile: self.profile_summary()?,
             runtime,
@@ -587,9 +1086,14 @@ impl VoxelleHome {
                 .into_iter()
                 .map(PeerListItemView::from_peer_record)
                 .collect(),
+            channels,
+            roles: self.roles()?,
+            profiles: self.profiles()?,
+            notifications: self.notifications()?,
+            call: self.call_view(&selected_room)?,
             room: RoomTimelineView {
-                room_id: config.default_room,
-                messages: self.read_messages(None)?,
+                room_id: selected_room.clone(),
+                messages: self.read_messages(Some(&selected_room))?,
             },
         })
     }
@@ -627,7 +1131,7 @@ impl VoxelleHome {
                 "Identity",
                 format!(
                     "Local peer {} is available.",
-                    short_peer_label(&identity.peer.id)
+                    short_peer_label(&identity.peer_id)
                 ),
             )
             .detail(format!("device: {}", short_peer_label(&identity.device.id))),
@@ -852,56 +1356,865 @@ impl VoxelleHome {
     }
 
     pub fn send_message(&self, text: &str, room: Option<&str>) -> Result<EventV1> {
+        self.send_message_with_metadata(text, room, Vec::new(), None)
+    }
+
+    pub fn send_message_with_metadata(
+        &self,
+        text: &str,
+        room: Option<&str>,
+        mentions: Vec<String>,
+        thread_root_event_id: Option<String>,
+    ) -> Result<EventV1> {
+        self.create_room_event(
+            room,
+            "MSG_POST",
+            serde_json::json!({
+                "text": text,
+                "mentions": mentions,
+                "thread_root_event_id": thread_root_event_id,
+            }),
+        )
+    }
+
+    pub fn edit_message(&self, request: &EditMessageRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "MSG_EDIT",
+            serde_json::json!({
+                "target_event_id": request.target_event_id,
+                "text": request.text,
+                "mentions": request.mentions,
+            }),
+        )
+    }
+
+    pub fn redact_message(&self, request: &MessageTargetRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "MSG_REDACT",
+            serde_json::json!({ "target_event_id": request.target_event_id }),
+        )
+    }
+
+    pub fn set_reaction(&self, request: &ReactionRequest, add: bool) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            if add {
+                "REACTION_ADD"
+            } else {
+                "REACTION_REMOVE"
+            },
+            serde_json::json!({
+                "target_event_id": request.target_event_id,
+                "emoji": request.emoji,
+            }),
+        )
+    }
+
+    pub fn set_pin(&self, request: &MessageTargetRequest, add: bool) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            if add { "PIN_ADD" } else { "PIN_REMOVE" },
+            serde_json::json!({ "target_event_id": request.target_event_id }),
+        )
+    }
+
+    pub fn add_attachment(&self, request: &AttachmentRequest) -> Result<EventV1> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&request.data_b64)
+            .context("decode attachment")?;
+        let sha256 = format!(
+            "sha256:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(&bytes))
+        );
+        self.create_room_event(
+            request.room.as_deref(),
+            "ATTACHMENT_ADD",
+            serde_json::json!({
+                "filename": request.filename,
+                "mime": request.mime,
+                "sha256": sha256,
+                "data_b64": request.data_b64,
+            }),
+        )
+    }
+
+    pub fn update_profile(&self, request: &ProfileUpdateRequest) -> Result<EventV1> {
+        self.create_room_event(
+            None,
+            "PROFILE_UPDATE",
+            serde_json::json!({
+                "display_name": request.display_name,
+                "about": request.about,
+            }),
+        )
+    }
+
+    pub fn create_channel(&self, request: &CreateChannelRequest) -> Result<EventV1> {
         let identity = self.load_identity()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
-        let room = room.unwrap_or(&config.default_room);
-        let context = RoomContext::new(config.authority_peer_id);
-        let governance = store.room_events(GOVERNANCE_ROOM_ID)?;
+        let slug: String = request
+            .name
+            .chars()
+            .flat_map(char::to_lowercase)
+            .map(|character| {
+                if character.is_alphanumeric() {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .chars()
+            .take(48)
+            .collect();
+        if slug.is_empty() {
+            anyhow::bail!("channel name must contain a letter or number");
+        }
+        let suffix =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 6]>());
+        let room_id = format!("{}:channel:{slug}-{suffix}", config.space.space_id);
+        let mut private_members: std::collections::BTreeSet<String> =
+            request.private_members.iter().cloned().collect();
+        let private = !private_members.is_empty();
+        let (key_epoch, key_packages, room_key) = if private {
+            private_members.insert(identity.peer_id.clone());
+            let governance = store.room_events(&config.space.governance_room_id)?;
+            let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+            if private_members
+                .iter()
+                .any(|peer_id| !state.members.contains(peer_id))
+            {
+                anyhow::bail!("private channel members must already belong to the space");
+            }
+            let mut room_key = [0_u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut room_key);
+            let packages = create_room_key_packages(
+                &room_id,
+                1,
+                &room_key,
+                &private_members,
+                &state.member_encryption_keys,
+            )?;
+            (1_u64, packages, Some(room_key))
+        } else {
+            (0_u64, Vec::new(), None)
+        };
         let event = create_event(
             &identity,
             create_delegation(
-                &identity.peer,
-                &identity.device,
+                &identity,
                 now_ms() - 60_000,
                 now_ms() + 30 * 24 * 60 * 60_000,
-                vec!["room:post".to_string()],
+                vec!["room:governance".to_string()],
             )?,
-            room,
+            &config.space.governance_room_id,
             now_ms(),
-            "MSG_POST",
-            store.room_heads(room)?,
-            serde_json::json!({ "text": text }),
+            "CHANNEL_CREATE",
+            store.room_heads(&config.space.governance_room_id)?,
+            serde_json::json!({
+                "room_id": room_id.clone(),
+                "name": request.name,
+                "topic": request.topic,
+                "visibility": if private { "private" } else { "public" },
+                "private_members": private_members,
+                "key_epoch": key_epoch,
+                "key_packages": key_packages,
+            }),
         )?;
-        let accepted = accept_event(&event, &governance, &context, now_ms())
-            .map_err(|e| anyhow::anyhow!("message rejected: {e:?}"))?;
-        store.insert_accepted_event(accepted, now_ms())?;
+        self.accept_local_event(&store, &config, &event)
+            .context("create channel")?;
+        if let Some(room_key) = room_key {
+            self.store_room_key(&room_id, key_epoch, &room_key)?;
+        }
         Ok(event)
+    }
+
+    pub fn rotate_channel_key(&self, request: &RotateChannelKeyRequest) -> Result<EventV1> {
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let channel = state
+            .channels
+            .get(&request.room_id)
+            .ok_or_else(|| anyhow::anyhow!("channel does not exist"))?;
+        if channel.visibility != ChannelVisibility::Private {
+            anyhow::bail!("only private channels have rotatable keys");
+        }
+        let epoch = channel.key_epoch.saturating_add(1);
+        let mut room_key = [0_u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut room_key);
+        let packages = create_room_key_packages(
+            &request.room_id,
+            epoch,
+            &room_key,
+            &channel.private_members,
+            &state.member_encryption_keys,
+        )?;
+        let event = self.create_governance_event(
+            "CHANNEL_KEY_ROTATE",
+            serde_json::json!({
+                "room_id": request.room_id,
+                "key_epoch": epoch,
+                "key_packages": packages,
+            }),
+        )?;
+        self.store_room_key(&request.room_id, epoch, &room_key)?;
+        Ok(event)
+    }
+
+    pub fn create_role(&self, request: &CreateRoleRequest) -> Result<EventV1> {
+        let slug: String = request
+            .name
+            .chars()
+            .flat_map(char::to_lowercase)
+            .map(|character| {
+                if character.is_alphanumeric() {
+                    character
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .chars()
+            .take(48)
+            .collect();
+        if slug.is_empty() {
+            anyhow::bail!("role name must contain a letter or number");
+        }
+        let suffix =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 6]>());
+        self.create_governance_event(
+            "ROLE_CREATE",
+            serde_json::json!({
+                "role_id": format!("role:{slug}-{suffix}"),
+                "name": request.name,
+                "permissions": request.permissions,
+            }),
+        )
+    }
+
+    pub fn assign_role(&self, request: &AssignRoleRequest, grant: bool) -> Result<EventV1> {
+        self.create_governance_event(
+            if grant { "ROLE_GRANT" } else { "ROLE_REVOKE" },
+            serde_json::json!({
+                "peer_id": request.peer_id,
+                "role_id": request.role_id,
+            }),
+        )
+    }
+
+    pub fn ban_member(&self, request: &BanMemberRequest, ban: bool) -> Result<EventV1> {
+        self.create_governance_event(
+            if ban { "MEMBER_BAN" } else { "MEMBER_UNBAN" },
+            serde_json::json!({
+                "peer_id": request.peer_id,
+                "reason": request.reason,
+            }),
+        )
     }
 
     pub fn read_messages(&self, room: Option<&str>) -> Result<Vec<MessageView>> {
         let config = self.load_config()?;
-        let store = self.open_store()?;
         let room = room.unwrap_or(&config.default_room);
-        let mut messages = Vec::new();
-        for event in store.room_events(room)? {
-            if event.kind != "MSG_POST" {
+        Ok(project_messages(self.decrypted_room_events(room)?))
+    }
+
+    pub fn channels(&self, selected_room: Option<&str>) -> Result<Vec<ChannelView>> {
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let read_state = self.read_state()?;
+        let mut unread_counts = BTreeMap::new();
+        for channel in state.channels.values() {
+            if voxelle_core::channel_allows_peer(channel, &identity.peer_id) {
+                unread_counts.insert(
+                    channel.room_id.clone(),
+                    unread_count(
+                        self.decrypted_room_events(&channel.room_id)?,
+                        read_state.last_read_event_ids.get(&channel.room_id),
+                        &identity.peer_id,
+                    ),
+                );
+            }
+        }
+        let mut channels: Vec<ChannelView> = state
+            .channels
+            .values()
+            .filter(|channel| voxelle_core::channel_allows_peer(channel, &identity.peer_id))
+            .map(|channel| ChannelView {
+                room_id: channel.room_id.clone(),
+                name: channel.name.clone(),
+                topic: channel.topic.clone(),
+                visibility: match channel.visibility {
+                    ChannelVisibility::Public => "public",
+                    ChannelVisibility::Private => "private",
+                }
+                .to_string(),
+                selected: selected_room.unwrap_or(&config.default_room) == channel.room_id,
+                unread_count: unread_counts.get(&channel.room_id).copied().unwrap_or(0),
+            })
+            .collect();
+        channels.sort_by(|left, right| {
+            left.name
+                .cmp(&right.name)
+                .then(left.room_id.cmp(&right.room_id))
+        });
+        Ok(channels)
+    }
+
+    pub fn mark_read(&self, room: Option<&str>) -> Result<()> {
+        let config = self.load_config()?;
+        let room_id = room.unwrap_or(&config.default_room);
+        if !self
+            .channels(Some(room_id))?
+            .iter()
+            .any(|channel| channel.room_id == room_id)
+        {
+            anyhow::bail!("channel is unknown or inaccessible");
+        }
+        let mut read_state = self.read_state()?;
+        let mut events = self.open_store()?.room_events(room_id)?;
+        events.sort_by(|left, right| {
+            left.created_ms
+                .cmp(&right.created_ms)
+                .then(left.event_id.cmp(&right.event_id))
+        });
+        if let Some(event) = events.last() {
+            read_state
+                .last_read_event_ids
+                .insert(room_id.to_string(), event.event_id.clone());
+        } else {
+            read_state.last_read_event_ids.remove(room_id);
+        }
+        write_json(&self.path("read-state.json"), &read_state)?;
+        self.refresh_recovery_capsule()
+    }
+
+    pub fn notifications(&self) -> Result<Vec<NotificationView>> {
+        let identity = self.load_identity()?;
+        let read_state = self.read_state()?;
+        let mut notifications = Vec::new();
+        for channel in self.channels(None)? {
+            let mut events = self.decrypted_room_events(&channel.room_id)?;
+            events.sort_by(|left, right| {
+                left.created_ms
+                    .cmp(&right.created_ms)
+                    .then(left.event_id.cmp(&right.event_id))
+            });
+            let start = unread_start(
+                &events,
+                read_state.last_read_event_ids.get(&channel.room_id),
+            );
+            for event in events.into_iter().skip(start) {
+                if event.author_peer_id == identity.peer_id || event.kind != "MSG_POST" {
+                    continue;
+                }
+                let mentioned = event
+                    .body
+                    .get("mentions")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|mentions| {
+                        mentions
+                            .iter()
+                            .any(|mention| mention.as_str() == Some(&identity.peer_id))
+                    });
+                if mentioned {
+                    notifications.push(NotificationView {
+                        event_id: event.event_id,
+                        room_id: event.room_id,
+                        author_peer_id: event.author_peer_id,
+                        summary: event
+                            .body
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("Mentioned you")
+                            .to_string(),
+                        kind: "mention".to_string(),
+                        created_ms: event.created_ms,
+                    });
+                }
+            }
+        }
+        notifications.sort_by_key(|item| std::cmp::Reverse(item.created_ms));
+        Ok(notifications)
+    }
+
+    pub fn roles(&self) -> Result<Vec<RoleView>> {
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let mut roles: Vec<RoleView> = state
+            .roles
+            .values()
+            .map(|role| RoleView {
+                role_id: role.role_id.clone(),
+                name: role.name.clone(),
+                permissions: role.permissions.iter().cloned().collect(),
+                member_count: if role.role_id == "role:everyone" {
+                    state.members.len()
+                } else {
+                    state
+                        .member_roles
+                        .values()
+                        .filter(|roles| roles.contains(&role.role_id))
+                        .count()
+                },
+            })
+            .collect();
+        roles.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(roles)
+    }
+
+    pub fn profiles(&self) -> Result<Vec<ProfileView>> {
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let mut profiles: BTreeMap<String, ProfileView> = state
+            .members
+            .iter()
+            .map(|peer_id| {
+                (
+                    peer_id.clone(),
+                    ProfileView {
+                        peer_id: peer_id.clone(),
+                        display_name: short_peer_label(peer_id),
+                        about: String::new(),
+                    },
+                )
+            })
+            .collect();
+        for channel in state.channels.values() {
+            for event in store.room_events(&channel.room_id)? {
+                if event.kind == "PROFILE_UPDATE" {
+                    profiles.insert(
+                        event.author_peer_id.clone(),
+                        ProfileView {
+                            peer_id: event.author_peer_id,
+                            display_name: event
+                                .body
+                                .get("display_name")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("Member")
+                                .to_string(),
+                            about: event
+                                .body
+                                .get("about")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .to_string(),
+                        },
+                    );
+                }
+            }
+        }
+        Ok(profiles.into_values().collect())
+    }
+
+    pub fn search_messages(
+        &self,
+        request: &SearchMessagesRequest,
+    ) -> Result<Vec<SearchResultView>> {
+        let query = request.query.trim().to_lowercase();
+        if query.is_empty() {
+            anyhow::bail!("search query is empty");
+        }
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        let rooms: Vec<String> = if let Some(room) = &request.room {
+            vec![room.clone()]
+        } else {
+            self.channels(None)?
+                .into_iter()
+                .map(|channel| channel.room_id)
+                .collect()
+        };
+        let mut results = Vec::new();
+        for room_id in rooms {
+            for message in self.read_messages(Some(&room_id))? {
+                let haystack = format!(
+                    "{} {} {}",
+                    message.text,
+                    message.author_peer_id,
+                    message
+                        .attachments
+                        .iter()
+                        .map(|attachment| attachment.filename.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+                .to_lowercase();
+                if terms.iter().all(|term| haystack.contains(term)) {
+                    results.push(SearchResultView {
+                        room_id: room_id.clone(),
+                        message,
+                    });
+                }
+            }
+        }
+        results.sort_by_key(|item| std::cmp::Reverse(item.message.created_ms));
+        results.truncate(request.limit.unwrap_or(50).clamp(1, 100));
+        Ok(results)
+    }
+
+    pub fn call_view(&self, room_id: &str) -> Result<CallView> {
+        let call_id = room_call_id(room_id);
+        let mut events = self.decrypted_room_events(room_id)?;
+        events.sort_by(|left, right| {
+            left.created_ms
+                .cmp(&right.created_ms)
+                .then(left.event_id.cmp(&right.event_id))
+        });
+        let now = now_ms();
+        let mut last_seen = BTreeMap::new();
+        for event in &events {
+            if event
+                .body
+                .get("call_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(call_id.as_str())
+            {
                 continue;
             }
-            let text = event
-                .body
-                .get("text")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .to_string();
-            messages.push(MessageView {
-                event_id: event.event_id,
-                created_ms: event.created_ms,
-                author_peer_id: event.author_peer_id,
-                text,
-            });
+            if matches!(event.kind.as_str(), "CALL_JOIN" | "CALL_HEARTBEAT") {
+                last_seen.insert(event.author_peer_id.clone(), event.created_ms);
+            } else if event.kind == "CALL_LEAVE" {
+                last_seen.remove(&event.author_peer_id);
+            }
         }
-        Ok(messages)
+        let participants: Vec<String> = last_seen
+            .into_iter()
+            .filter(|(_, seen_ms)| now.saturating_sub(*seen_ms) <= CALL_LIVENESS_MS)
+            .map(|(peer_id, _)| peer_id)
+            .take(4)
+            .collect();
+        let signals = if participants.is_empty() {
+            Vec::new()
+        } else {
+            events
+                .into_iter()
+                .filter(|event| {
+                    event.kind.starts_with("CALL_")
+                        && now.saturating_sub(event.created_ms) <= CALL_LIVENESS_MS
+                        && event
+                            .body
+                            .get("call_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(call_id.as_str())
+                })
+                .map(|event| CallSignalView {
+                    event_id: event.event_id,
+                    kind: event.kind,
+                    call_id: call_id.clone(),
+                    author_peer_id: event.author_peer_id,
+                    target_peer_id: event
+                        .body
+                        .get("target_peer_id")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned),
+                    video: event.body.get("video").and_then(serde_json::Value::as_bool),
+                    sdp: event
+                        .body
+                        .get("sdp")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned),
+                    candidate: event
+                        .body
+                        .get("candidate")
+                        .and_then(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned),
+                    created_ms: event.created_ms,
+                })
+                .collect()
+        };
+        Ok(CallView {
+            call_id,
+            participants,
+            signals,
+        })
+    }
+
+    pub fn join_call(&self, request: &CallJoinRequest) -> Result<EventV1> {
+        let config = self.load_config()?;
+        let room_id = request.room.as_deref().unwrap_or(&config.default_room);
+        let identity = self.load_identity()?;
+        let call = self.call_view(room_id)?;
+        if call.participants.contains(&identity.peer_id) {
+            anyhow::bail!("already joined to the room call");
+        }
+        if call.participants.len() >= 4 {
+            anyhow::bail!("room calls are limited to four peers");
+        }
+        self.create_room_event(
+            Some(room_id),
+            "CALL_JOIN",
+            serde_json::json!({ "call_id": call.call_id, "video": request.video }),
+        )
+    }
+
+    pub fn signal_call(&self, request: &CallSignalRequest) -> Result<EventV1> {
+        let kind = match request.signal_type.as_str() {
+            "offer" => "CALL_OFFER",
+            "answer" => "CALL_ANSWER",
+            "ice" => "CALL_ICE",
+            _ => anyhow::bail!("unknown call signal type"),
+        };
+        self.create_room_event(
+            request.room.as_deref(),
+            kind,
+            serde_json::json!({
+                "call_id": request.call_id,
+                "target_peer_id": request.target_peer_id,
+                "sdp": request.sdp,
+                "candidate": request.candidate,
+            }),
+        )
+    }
+
+    pub fn heartbeat_call(&self, request: &CallLeaveRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "CALL_HEARTBEAT",
+            serde_json::json!({ "call_id": request.call_id }),
+        )
+    }
+
+    pub fn leave_call(&self, request: &CallLeaveRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "CALL_LEAVE",
+            serde_json::json!({ "call_id": request.call_id }),
+        )
+    }
+
+    fn create_room_event(
+        &self,
+        room: Option<&str>,
+        kind: &str,
+        body: serde_json::Value,
+    ) -> Result<EventV1> {
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let room = room.unwrap_or(&config.default_room);
+        let created_ms = now_ms();
+        let parents = store.room_heads(room)?;
+        let delegation_scope = if kind.starts_with("CALL_") {
+            "room:call"
+        } else {
+            "room:post"
+        };
+        let semantic_event = create_event(
+            &identity,
+            create_delegation(
+                &identity,
+                created_ms - 60_000,
+                created_ms + 30 * 24 * 60 * 60_000,
+                vec![delegation_scope.to_string()],
+            )?,
+            room,
+            created_ms,
+            kind,
+            parents.clone(),
+            body.clone(),
+        )?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), created_ms);
+        let channel = state
+            .channels
+            .get(room)
+            .ok_or_else(|| anyhow::anyhow!("room is not a current channel"))?;
+        let event = if channel.visibility == ChannelVisibility::Private {
+            self.import_private_room_keys()?;
+            let mut accepted = governance;
+            accepted.extend(self.decrypted_room_events(room)?);
+            validate_room_event_semantics(
+                &semantic_event,
+                &accepted,
+                &config.room_context(),
+                created_ms,
+            )
+            .map_err(|error| anyhow::anyhow!("private event semantics rejected: {error:?}"))?;
+            let key = self.room_key(room, channel.key_epoch)?;
+            let cipher = XChaCha20Poly1305::new((&key).into());
+            let mut nonce = [0_u8; 24];
+            rand::rngs::OsRng.fill_bytes(&mut nonce);
+            let plaintext = serde_json::to_vec(&PrivateEventPlaintext {
+                kind: kind.to_string(),
+                body,
+            })?;
+            let aad = private_event_aad(room, channel.key_epoch, &identity.peer_id);
+            let ciphertext = cipher
+                .encrypt(
+                    XNonce::from_slice(&nonce),
+                    chacha20poly1305::aead::Payload {
+                        msg: &plaintext,
+                        aad: aad.as_bytes(),
+                    },
+                )
+                .map_err(|_| anyhow::anyhow!("encrypt private room event"))?;
+            create_event(
+                &identity,
+                create_delegation(
+                    &identity,
+                    created_ms - 60_000,
+                    created_ms + 30 * 24 * 60 * 60_000,
+                    vec![delegation_scope.to_string()],
+                )?,
+                room,
+                created_ms,
+                "ROOM_ENCRYPTED",
+                parents,
+                serde_json::json!({
+                    "key_epoch": channel.key_epoch,
+                    "nonce_b64": base64::engine::general_purpose::STANDARD.encode(nonce),
+                    "ciphertext_b64": base64::engine::general_purpose::STANDARD.encode(ciphertext),
+                }),
+            )?
+        } else {
+            semantic_event
+        };
+        self.accept_local_event(&store, &config, &event)
+            .with_context(|| format!("accept local {kind}"))?;
+        Ok(event)
+    }
+
+    fn decrypted_room_events(&self, room_id: &str) -> Result<Vec<EventV1>> {
+        self.import_private_room_keys()?;
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let private = state
+            .channels
+            .get(room_id)
+            .is_some_and(|channel| channel.visibility == ChannelVisibility::Private);
+        let mut raw_events = store.room_events(room_id)?;
+        raw_events.sort_by(|left, right| {
+            left.created_ms
+                .cmp(&right.created_ms)
+                .then(left.event_id.cmp(&right.event_id))
+        });
+        if !private {
+            return Ok(raw_events);
+        }
+        let mut accepted = governance;
+        let mut decrypted = Vec::new();
+        for raw in raw_events {
+            if raw.kind != "ROOM_ENCRYPTED" {
+                continue;
+            }
+            let Some(epoch) = raw
+                .body
+                .get("key_epoch")
+                .and_then(serde_json::Value::as_u64)
+            else {
+                continue;
+            };
+            let Ok(key) = self.room_key(room_id, epoch) else {
+                continue;
+            };
+            let Some(nonce_b64) = raw
+                .body
+                .get("nonce_b64")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(ciphertext_b64) = raw
+                .body
+                .get("ciphertext_b64")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Ok(nonce) = base64::engine::general_purpose::STANDARD.decode(nonce_b64) else {
+                continue;
+            };
+            let Ok(nonce) = <[u8; 24]>::try_from(nonce) else {
+                continue;
+            };
+            let Ok(ciphertext) = base64::engine::general_purpose::STANDARD.decode(ciphertext_b64)
+            else {
+                continue;
+            };
+            let cipher = XChaCha20Poly1305::new((&key).into());
+            let aad = private_event_aad(room_id, epoch, &raw.author_peer_id);
+            let Ok(plaintext) = cipher.decrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &ciphertext,
+                    aad: aad.as_bytes(),
+                },
+            ) else {
+                continue;
+            };
+            let Ok(inner) = serde_json::from_slice::<PrivateEventPlaintext>(&plaintext) else {
+                continue;
+            };
+            let mut event = raw;
+            event.kind = inner.kind;
+            event.body = inner.body;
+            if validate_room_event_semantics(
+                &event,
+                &accepted,
+                &config.room_context(),
+                event.created_ms,
+            )
+            .is_ok()
+            {
+                accepted.push(event.clone());
+                decrypted.push(event);
+            }
+        }
+        Ok(decrypted)
+    }
+
+    fn create_governance_event(&self, kind: &str, body: serde_json::Value) -> Result<EventV1> {
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let event = create_event(
+            &identity,
+            create_delegation(
+                &identity,
+                now_ms() - 60_000,
+                now_ms() + 30 * 24 * 60 * 60_000,
+                vec!["room:governance".to_string()],
+            )?,
+            &config.space.governance_room_id,
+            now_ms(),
+            kind,
+            store.room_heads(&config.space.governance_room_id)?,
+            body,
+        )?;
+        self.accept_local_event(&store, &config, &event)
+            .with_context(|| format!("accept local {kind}"))?;
+        Ok(event)
+    }
+
+    fn accept_local_event(
+        &self,
+        store: &Store,
+        config: &HomeConfig,
+        event: &EventV1,
+    ) -> Result<()> {
+        let mut accepted_events = store.room_events(&config.space.governance_room_id)?;
+        if event.room_id != config.space.governance_room_id {
+            accepted_events.extend(store.room_events(&event.room_id)?);
+        }
+        let accepted = accept_event(event, &accepted_events, &config.room_context(), now_ms())
+            .map_err(|error| anyhow::anyhow!("event rejected: {error:?}"))?;
+        store.insert_accepted_event(accepted, now_ms())?;
+        Ok(())
     }
 
     pub fn import_peer_record(&self, record: PeerRecord) -> Result<()> {
@@ -921,7 +2234,8 @@ impl VoxelleHome {
         write_json(
             &self.path("known-peers.json"),
             &KnownPeersFile { v: 1, peers },
-        )
+        )?;
+        self.refresh_recovery_capsule()
     }
 
     pub fn known_peers(&self) -> Result<Vec<PeerRecord>> {
@@ -936,6 +2250,498 @@ impl VoxelleHome {
             record.validate()?;
         }
         Ok(file.peers)
+    }
+
+    fn read_state(&self) -> Result<ReadStateFile> {
+        if !self.path("read-state.json").exists() {
+            return Ok(ReadStateFile {
+                v: 1,
+                last_read_event_ids: BTreeMap::new(),
+            });
+        }
+        let state: ReadStateFile = read_json(&self.path("read-state.json"))?;
+        if state.v != 1 {
+            anyhow::bail!("unsupported read state version {}", state.v);
+        }
+        Ok(state)
+    }
+
+    fn room_keys(&self) -> Result<RoomKeysV1> {
+        let path = self.path("room-keys.json");
+        if !path.exists() {
+            return Ok(RoomKeysV1::default());
+        }
+        let identity = self.load_identity()?;
+        let file: EncryptedRoomKeysFile = read_json(&path)?;
+        if file.v != 1 {
+            anyhow::bail!("unsupported encrypted room keys version {}", file.v);
+        }
+        let nonce: [u8; 24] = base64::engine::general_purpose::STANDARD
+            .decode(&file.nonce_b64)
+            .context("decode room keys nonce")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("room keys nonce must be 24 bytes"))?;
+        let ciphertext = base64::engine::general_purpose::STANDARD
+            .decode(&file.ciphertext_b64)
+            .context("decode room keys ciphertext")?;
+        let key = identity_vault_key(&self.path("identity.json"), false)?;
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        let aad = format!("voxelle/room-keys/v1\n{}", identity.peer_id);
+        let plaintext = cipher
+            .decrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &ciphertext,
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("room keys authentication failed"))?;
+        let keys: RoomKeysV1 =
+            serde_json::from_slice(&plaintext).context("parse decrypted room keys")?;
+        if keys.v != 1 {
+            anyhow::bail!("unsupported room keys version {}", keys.v);
+        }
+        Ok(keys)
+    }
+
+    fn write_room_keys(&self, keys: &RoomKeysV1) -> Result<()> {
+        if keys.v != 1 {
+            anyhow::bail!("unsupported room keys version {}", keys.v);
+        }
+        let identity = self.load_identity()?;
+        let key = identity_vault_key(&self.path("identity.json"), false)?;
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        let mut nonce = [0_u8; 24];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let plaintext = serde_json::to_vec(keys).context("serialize room keys")?;
+        let aad = format!("voxelle/room-keys/v1\n{}", identity.peer_id);
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &plaintext,
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("encrypt room keys"))?;
+        write_json(
+            &self.path("room-keys.json"),
+            &EncryptedRoomKeysFile {
+                v: 1,
+                nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+                ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+            },
+        )
+    }
+
+    fn store_room_key(&self, room_id: &str, epoch: u64, key: &[u8; 32]) -> Result<()> {
+        let mut keys = self.room_keys()?;
+        keys.keys
+            .entry(room_id.to_string())
+            .or_default()
+            .insert(epoch, base64::engine::general_purpose::STANDARD.encode(key));
+        self.write_room_keys(&keys)
+    }
+
+    fn room_key(&self, room_id: &str, epoch: u64) -> Result<[u8; 32]> {
+        let keys = self.room_keys()?;
+        let encoded = keys
+            .keys
+            .get(room_id)
+            .and_then(|epochs| epochs.get(&epoch))
+            .ok_or_else(|| anyhow::anyhow!("private room key epoch {epoch} is unavailable"))?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .context("decode private room key")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("private room key must be 32 bytes"))
+    }
+
+    fn import_private_room_keys(&self) -> Result<()> {
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        let governance = self
+            .open_store()?
+            .room_events(&config.space.governance_room_id)?;
+        let mut keys = self.room_keys()?;
+        let mut changed = false;
+        for event in governance {
+            if !matches!(event.kind.as_str(), "CHANNEL_CREATE" | "CHANNEL_KEY_ROTATE") {
+                continue;
+            }
+            let Some(room_id) = event
+                .body
+                .get("room_id")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(epoch) = event
+                .body
+                .get("key_epoch")
+                .and_then(serde_json::Value::as_u64)
+            else {
+                continue;
+            };
+            if keys
+                .keys
+                .get(room_id)
+                .is_some_and(|epochs| epochs.contains_key(&epoch))
+            {
+                continue;
+            }
+            let package = event
+                .body
+                .get("key_packages")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|packages| {
+                    packages.iter().find(|package| {
+                        package.get("peer_id").and_then(serde_json::Value::as_str)
+                            == Some(identity.peer_id.as_str())
+                    })
+                });
+            let Some(package) = package else { continue };
+            let key = unwrap_room_key_package(&identity, room_id, epoch, package)?;
+            keys.keys
+                .entry(room_id.to_string())
+                .or_default()
+                .insert(epoch, base64::engine::general_purpose::STANDARD.encode(key));
+            changed = true;
+        }
+        if changed {
+            self.write_room_keys(&keys)?;
+        }
+        Ok(())
+    }
+
+    pub fn recovery_kit(&self) -> Result<RecoveryKitV1> {
+        let identity = self.load_identity()?;
+        let card = identity.recovery_card();
+        let config = self.load_config()?;
+        let governance_events = self
+            .open_store()?
+            .room_events(&config.space.governance_room_id)?;
+        let payload = RecoveryPayloadV1 {
+            v: 1,
+            identity_proof: identity.proof.clone(),
+            config,
+            governance_events,
+            known_peers: self.known_peers()?,
+            ui_preferences: self.ui_preferences()?,
+            read_state: self.read_state()?,
+            room_keys: self.room_keys()?,
+        };
+        let capsule = encrypt_recovery_capsule(&card, &identity.peer_id, &payload)?;
+        Ok(RecoveryKitV1 {
+            v: 1,
+            card,
+            capsule,
+        })
+    }
+
+    pub fn write_recovery_kit(&self, path: impl AsRef<Path>) -> Result<()> {
+        let kit = self.recovery_kit()?;
+        write_secret_json(path.as_ref(), &kit)
+    }
+
+    fn refresh_recovery_capsule(&self) -> Result<()> {
+        write_json(
+            &self.path("recovery-capsule.json"),
+            &self.recovery_kit()?.capsule,
+        )
+    }
+
+    pub async fn recover_from_kit(
+        &self,
+        kit: &RecoveryKitV1,
+        max_events_per_peer: usize,
+    ) -> Result<RecoveryReport> {
+        if kit.v != 1 {
+            anyhow::bail!("unsupported recovery kit version {}", kit.v);
+        }
+        if self.path("identity.json").exists()
+            || self.path("config.json").exists()
+            || self.path("store.sqlite3").exists()
+        {
+            anyhow::bail!("recovery requires a fresh Voxelle home");
+        }
+        if max_events_per_peer == 0 {
+            anyhow::bail!("max_events_per_peer must be positive");
+        }
+
+        let payload = decrypt_recovery_capsule(&kit.card, &kit.capsule)?;
+        if payload.v != 1 {
+            anyhow::bail!("unsupported recovery payload version {}", payload.v);
+        }
+        if payload.identity_proof.genesis != kit.card.genesis {
+            anyhow::bail!("recovery capsule identity does not match recovery card");
+        }
+        let identity = PeerIdentity::recover(&kit.card, &payload.identity_proof, now_ms())?;
+        validate_space_at(&payload.config.space, now_ms())?;
+        if payload.config.default_room != payload.config.space.default_room_id
+            || payload.config.authority_peer_id != payload.config.space.authority_peer_id
+        {
+            anyhow::bail!("recovery config duplicates do not match signed space genesis");
+        }
+        for peer in &payload.known_peers {
+            peer.validate()?;
+        }
+        validate_ui_preferences(&payload.ui_preferences)?;
+        if payload.read_state.v != 1 {
+            anyhow::bail!(
+                "unsupported recovered read state version {}",
+                payload.read_state.v
+            );
+        }
+        if payload.room_keys.v != 1 {
+            anyhow::bail!(
+                "unsupported recovered room keys version {}",
+                payload.room_keys.v
+            );
+        }
+
+        fs::create_dir_all(&self.root)
+            .with_context(|| format!("create {}", self.root.display()))?;
+        write_identity_vault(&self.path("identity.json"), &identity)?;
+        write_json(&self.path("config.json"), &payload.config)?;
+        write_json(
+            &self.path("known-peers.json"),
+            &KnownPeersFile {
+                v: 1,
+                peers: payload.known_peers.clone(),
+            },
+        )?;
+        self.write_ui_preferences(&payload.ui_preferences)?;
+        write_json(&self.path("read-state.json"), &payload.read_state)?;
+        self.write_room_keys(&payload.room_keys)?;
+        self.load_or_create_certificate()?;
+        let store = self.open_store()?;
+        self.ensure_space_genesis(&store, &payload.config)?;
+        let event_by_id: BTreeMap<String, EventV1> = payload
+            .governance_events
+            .iter()
+            .cloned()
+            .map(|event| (event.event_id.clone(), event))
+            .collect();
+        let mut events_recovered = 0;
+        for event_id in topo_sort_deterministic(&payload.governance_events) {
+            if store.has_event(&event_id)? {
+                continue;
+            }
+            let event = event_by_id
+                .get(&event_id)
+                .ok_or_else(|| anyhow::anyhow!("recovery governance event disappeared"))?;
+            let governance = store.room_events(&payload.config.space.governance_room_id)?;
+            let accepted =
+                accept_event(event, &governance, &payload.config.room_context(), now_ms())
+                    .map_err(|error| {
+                        anyhow::anyhow!("recovery governance event rejected: {error:?}")
+                    })?;
+            store.insert_accepted_event(accepted, now_ms())?;
+            events_recovered += 1;
+        }
+
+        let mut peers_reached = 0;
+        let mut events_pushed = 0;
+        let mut peer_errors = Vec::new();
+        for peer in &payload.known_peers {
+            match self.sync_peer(peer, max_events_per_peer).await {
+                Ok(report) => {
+                    peers_reached += 1;
+                    events_recovered += report.governance.accepted + report.room.accepted;
+                }
+                Err(error) => peer_errors.push(format!(
+                    "{}: {error:#}",
+                    peer.label.as_deref().unwrap_or("unlabelled peer")
+                )),
+            }
+        }
+
+        self.ensure_member_join(&store, &identity, &payload.config, None)?;
+        self.ensure_identity_announcement(&store, &identity, &payload.config)?;
+        for peer in &payload.known_peers {
+            match self.sync_peer(peer, max_events_per_peer).await {
+                Ok(report) => {
+                    events_pushed +=
+                        report.governance.remote_accepted + report.room.remote_accepted;
+                }
+                Err(error) => peer_errors.push(format!(
+                    "{} during recovery propagation: {error:#}",
+                    peer.label.as_deref().unwrap_or("unlabelled peer")
+                )),
+            }
+        }
+        self.refresh_recovery_capsule()?;
+        let profile = self.profile_summary()?;
+        Ok(RecoveryReport {
+            profile,
+            peers_attempted: payload.known_peers.len(),
+            peers_reached,
+            events_recovered,
+            events_pushed,
+            peer_errors,
+        })
+    }
+
+    pub fn create_space_invite(
+        &self,
+        online: &OnlineHome,
+        expires_ms: i64,
+    ) -> Result<SpaceInviteFileV1> {
+        self.create_space_invite_with_bootstraps(online, &[], expires_ms)
+    }
+
+    pub fn create_space_invite_with_bootstraps(
+        &self,
+        online: &OnlineHome,
+        additional_bootstraps: &[PeerRecord],
+        expires_ms: i64,
+    ) -> Result<SpaceInviteFileV1> {
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        if online.space_id != config.space.space_id
+            || online.authority_peer_id != config.authority_peer_id
+        {
+            anyhow::bail!("online endpoint does not describe the configured space");
+        }
+        let store = self.open_store()?;
+        let mut bootstraps = vec![online.peer_record(Some("Inviter".to_string()), None)?];
+        for peer in additional_bootstraps {
+            peer.validate()?;
+            if peer.space_id != config.space.space_id
+                || peer.governance_room_id != config.space.governance_room_id
+                || peer.default_room != config.space.default_room_id
+                || peer.authority_peer_id != config.space.authority_peer_id
+            {
+                anyhow::bail!("additional bootstrap peer does not match the configured space");
+            }
+            if !bootstraps.iter().any(|existing| existing.same_peer(peer)) {
+                bootstraps.push(peer.clone());
+            }
+        }
+        if bootstraps.len() > 8 {
+            anyhow::bail!("a space invite supports at most 8 bootstrap peers");
+        }
+        let event = create_space_invite_event(
+            &identity,
+            &config.space,
+            bootstraps
+                .into_iter()
+                .map(serde_json::to_value)
+                .collect::<serde_json::Result<Vec<_>>>()?,
+            expires_ms,
+            now_ms(),
+            store.room_heads(&config.space.governance_room_id)?,
+        )?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let accepted = accept_event(&event, &governance, &config.room_context(), now_ms())
+            .map_err(|error| anyhow::anyhow!("space invite rejected: {error:?}"))?;
+        store.insert_accepted_event(accepted, now_ms())?;
+        Ok(SpaceInviteFileV1 {
+            v: 1,
+            space: config.space,
+            invite_event: event,
+        })
+    }
+
+    pub fn write_space_invite(
+        &self,
+        online: &OnlineHome,
+        expires_ms: i64,
+        path: impl AsRef<Path>,
+    ) -> Result<()> {
+        write_json(
+            path.as_ref(),
+            &self.create_space_invite(online, expires_ms)?,
+        )
+    }
+
+    pub async fn join_space_from_invite(
+        &self,
+        invite: &SpaceInviteFileV1,
+        max_events_per_peer: usize,
+    ) -> Result<JoinSpaceReport> {
+        if invite.v != 1 {
+            anyhow::bail!("unsupported space invite file version {}", invite.v);
+        }
+        if self.path("identity.json").exists()
+            || self.path("config.json").exists()
+            || self.path("store.sqlite3").exists()
+        {
+            anyhow::bail!("joining a space requires a fresh Voxelle home");
+        }
+        if max_events_per_peer == 0 {
+            anyhow::bail!("max_events_per_peer must be positive");
+        }
+        validate_space_invite_at(&invite.space, &invite.invite_event, now_ms())?;
+        let peers = invite.bootstrap_peers()?;
+
+        fs::create_dir_all(&self.root)
+            .with_context(|| format!("create {}", self.root.display()))?;
+        let identity = PeerIdentity::generate_at(now_ms())?;
+        write_identity_vault(&self.path("identity.json"), &identity)?;
+        self.load_or_create_certificate()?;
+        let config = HomeConfig {
+            v: 1,
+            space: invite.space.clone(),
+            default_room: invite.space.default_room_id.clone(),
+            authority_peer_id: invite.space.authority_peer_id.clone(),
+        };
+        write_json(&self.path("config.json"), &config)?;
+        write_json(
+            &self.path("known-peers.json"),
+            &KnownPeersFile {
+                v: 1,
+                peers: peers.clone(),
+            },
+        )?;
+        let store = self.open_store()?;
+        self.ensure_space_genesis(&store, &config)?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let accepted_invite = accept_event(
+            &invite.invite_event,
+            &governance,
+            &config.room_context(),
+            now_ms(),
+        )
+        .map_err(|error| anyhow::anyhow!("space invite rejected locally: {error:?}"))?;
+        store.insert_accepted_event(accepted_invite, now_ms())?;
+
+        let mut peers_reached = 0;
+        let mut events_received = 0;
+        let mut events_pushed = 0;
+        let mut peer_errors = Vec::new();
+        self.ensure_member_join(
+            &store,
+            &identity,
+            &config,
+            Some(&invite.invite_event.event_id),
+        )?;
+        for peer in &peers {
+            match self.sync_peer(peer, max_events_per_peer).await {
+                Ok(report) => {
+                    peers_reached += 1;
+                    events_received += report.governance.accepted + report.room.accepted;
+                    events_pushed +=
+                        report.governance.remote_accepted + report.room.remote_accepted;
+                }
+                Err(error) => peer_errors.push(format!(
+                    "{}: {error:#}",
+                    peer.label.as_deref().unwrap_or("unlabelled peer")
+                )),
+            }
+        }
+        self.refresh_recovery_capsule()?;
+
+        Ok(JoinSpaceReport {
+            profile: self.profile_summary()?,
+            invite_id: invite.invite_event.event_id.clone(),
+            peers_attempted: peers.len(),
+            peers_reached,
+            events_received,
+            events_pushed,
+            peer_errors,
+        })
     }
 
     pub fn ui_ontology(&self) -> Result<UiOntologyView> {
@@ -971,7 +2777,35 @@ impl VoxelleHome {
             }
         };
         self.write_ui_preferences(&preferences)?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
         Ok(id)
+    }
+
+    pub fn set_workbench_layout(&self, request: SetWorkbenchLayoutRequest) -> Result<()> {
+        validate_workbench_layout(&request.placements)?;
+        let mut preferences = self.ui_preferences()?;
+        preferences.view_placements = request
+            .placements
+            .into_iter()
+            .map(|placement| (placement.view_id.clone(), placement))
+            .collect();
+        self.write_ui_preferences(&preferences)?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
+        Ok(())
+    }
+
+    pub fn reset_workbench_layout(&self) -> Result<()> {
+        let mut preferences = self.ui_preferences()?;
+        preferences.view_placements.clear();
+        self.write_ui_preferences(&preferences)?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
+        Ok(())
     }
 
     pub fn reset_ui_preference(&self, kind: UiPreferenceKind, id: &str) -> Result<()> {
@@ -984,11 +2818,19 @@ impl VoxelleHome {
         if !removed {
             validate_ui_preference_id(kind, id)?;
         }
-        self.write_ui_preferences(&preferences)
+        self.write_ui_preferences(&preferences)?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
+        Ok(())
     }
 
     pub fn reset_all_ui_preferences(&self) -> Result<()> {
-        self.write_ui_preferences(&UiPreferences::default())
+        self.write_ui_preferences(&UiPreferences::default())?;
+        if self.path("identity.json").exists() {
+            self.refresh_recovery_capsule()?;
+        }
+        Ok(())
     }
 
     pub fn start_service(
@@ -1014,11 +2856,15 @@ impl VoxelleHome {
         }
 
         let identity = self.load_identity()?;
+        let local_peer_id = identity.peer_id.clone();
         let certificate = self.load_certificate()?;
         let mut store = self.open_store()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
         let endpoint = &peer.endpoint;
-        let context = RoomContext::new(endpoint.peer_id.clone());
+        let context = RoomContext::for_space(
+            peer.authority_peer_id.clone(),
+            peer.governance_room_id.clone(),
+        );
         let limits = SyncLimits {
             max_events_per_batch: max_events,
         };
@@ -1028,31 +2874,48 @@ impl VoxelleHome {
                 endpoint.addr,
                 endpoint.certificate_der()?,
                 &endpoint.device_id,
-                GOVERNANCE_ROOM_ID,
+                &peer.governance_room_id,
                 &context,
                 now_ms(),
                 limits,
             )
             .await?;
-        let room = node
-            .sync_room_once(
-                &mut store,
-                endpoint.addr,
-                endpoint.certificate_der()?,
-                &endpoint.device_id,
-                &peer.default_room,
-                &context,
-                now_ms(),
-                limits,
-            )
-            .await?;
+        self.import_private_room_keys()?;
+        let governance_events = store.room_events(&peer.governance_room_id)?;
+        let state = derive_governance_state(&governance_events, &context, now_ms());
+        let mut room = SyncStats::default();
+        let mut room_ids: Vec<String> = state
+            .channels
+            .values()
+            .filter(|channel| {
+                voxelle_core::channel_allows_peer(channel, &local_peer_id)
+                    && voxelle_core::channel_allows_peer(channel, &peer.endpoint.peer_id)
+            })
+            .map(|channel| channel.room_id.clone())
+            .collect();
+        room_ids.sort();
+        room_ids.dedup();
+        for room_id in room_ids {
+            let next = node
+                .sync_room_once(
+                    &mut store,
+                    endpoint.addr,
+                    endpoint.certificate_der()?,
+                    &endpoint.device_id,
+                    &room_id,
+                    &context,
+                    now_ms(),
+                    limits,
+                )
+                .await?;
+            merge_stats(&mut room, next);
+        }
 
         Ok(PeerSyncReport { governance, room })
     }
 
     fn load_identity(&self) -> Result<PeerIdentity> {
-        let file: IdentityFile = read_json(&self.path("identity.json"))?;
-        file.to_identity()
+        read_identity_vault(&self.path("identity.json"))
     }
 
     fn load_certificate(&self) -> Result<QuicCertificate> {
@@ -1063,6 +2926,12 @@ impl VoxelleHome {
         let config: HomeConfig = read_json(&self.path("config.json"))?;
         if config.v != 1 {
             anyhow::bail!("unsupported home config version {}", config.v);
+        }
+        validate_space_at(&config.space, now_ms()).context("validate configured space")?;
+        if config.default_room != config.space.default_room_id
+            || config.authority_peer_id != config.space.authority_peer_id
+        {
+            anyhow::bail!("home config duplicates do not match signed space genesis");
         }
         Ok(config)
     }
@@ -1080,9 +2949,8 @@ impl VoxelleHome {
         if self.path("identity.json").exists() {
             return self.load_identity();
         }
-        let identity = PeerIdentity::generate()?;
-        let file = IdentityFile::from_identity(&identity);
-        write_json(&self.path("identity.json"), &file)?;
+        let identity = PeerIdentity::generate_at(now_ms())?;
+        write_identity_vault(&self.path("identity.json"), &identity)?;
         Ok(identity)
     }
 
@@ -1095,49 +2963,294 @@ impl VoxelleHome {
         Ok(certificate)
     }
 
+    fn ensure_space_genesis(&self, store: &Store, config: &HomeConfig) -> Result<()> {
+        if store.has_event(&config.space.genesis.event_id)? {
+            return Ok(());
+        }
+        let context = config.room_context();
+        let accepted = accept_event(&config.space.genesis, &[], &context, now_ms())
+            .map_err(|error| anyhow::anyhow!("space genesis rejected: {error:?}"))?;
+        store.insert_accepted_event(accepted, now_ms())?;
+        Ok(())
+    }
+
     fn ensure_member_join(
         &self,
         store: &Store,
         identity: &PeerIdentity,
         config: &HomeConfig,
+        invite_id: Option<&str>,
     ) -> Result<()> {
-        let existing_join = store
-            .room_events(GOVERNANCE_ROOM_ID)?
-            .into_iter()
-            .any(|event| {
-                event.kind == "MEMBER_JOIN"
-                    && event.author_peer_id == identity.peer.id
-                    && event.body.get("peer_id").and_then(|value| value.as_str())
-                        == Some(identity.peer.id.as_str())
-            });
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let existing_join = governance.iter().any(|event| {
+            event.kind == "MEMBER_JOIN"
+                && event.author_peer_id == identity.peer_id
+                && event.body.get("peer_id").and_then(|value| value.as_str())
+                    == Some(identity.peer_id.as_str())
+        });
         if existing_join {
             return Ok(());
         }
 
-        let context = RoomContext::new(config.authority_peer_id.clone());
+        let context = config.room_context();
         let join = create_event(
             identity,
             create_delegation(
-                &identity.peer,
-                &identity.device,
+                identity,
                 now_ms() - 60_000,
                 now_ms() + 30 * 24 * 60 * 60_000,
                 vec!["room:join".to_string()],
             )?,
-            GOVERNANCE_ROOM_ID,
+            &config.space.governance_room_id,
             now_ms(),
             "MEMBER_JOIN",
-            vec![],
+            store.room_heads(&config.space.governance_room_id)?,
             serde_json::json!({
-                "peer_id": identity.peer.id,
+                "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
+                "encryption_pub": identity_encryption_public_b64(identity)?,
+                "invite_id": invite_id,
             }),
         )?;
-        let accepted = accept_event(&join, &[], &context, now_ms())
+        let accepted = accept_event(&join, &governance, &context, now_ms())
             .map_err(|e| anyhow::anyhow!("member join rejected: {e:?}"))?;
         store.insert_accepted_event(accepted, now_ms())?;
         Ok(())
     }
+
+    fn ensure_identity_announcement(
+        &self,
+        store: &Store,
+        identity: &PeerIdentity,
+        config: &HomeConfig,
+    ) -> Result<()> {
+        let existing = store
+            .room_events(&config.default_room)?
+            .into_iter()
+            .any(|event| {
+                event.kind == "IDENTITY_UPDATE"
+                    && event.author_peer_id == identity.peer_id
+                    && event.author_device_id == identity.device.id
+            });
+        if existing {
+            return Ok(());
+        }
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let event = create_event(
+            identity,
+            create_delegation(
+                identity,
+                now_ms() - 60_000,
+                now_ms() + 30 * 24 * 60 * 60_000,
+                vec!["room:post".to_string()],
+            )?,
+            &config.default_room,
+            now_ms(),
+            "IDENTITY_UPDATE",
+            store.room_heads(&config.default_room)?,
+            serde_json::json!({
+                "peer_id": identity.peer_id,
+                "device_id": identity.device.id,
+            }),
+        )?;
+        let accepted = accept_event(&event, &governance, &config.room_context(), now_ms())
+            .map_err(|error| anyhow::anyhow!("identity announcement rejected: {error:?}"))?;
+        store.insert_accepted_event(accepted, now_ms())?;
+        Ok(())
+    }
+}
+
+fn unread_start(events: &[EventV1], last_read_event_id: Option<&String>) -> usize {
+    last_read_event_id
+        .and_then(|event_id| events.iter().position(|event| &event.event_id == event_id))
+        .map_or(0, |index| index + 1)
+}
+
+fn unread_count(
+    mut events: Vec<EventV1>,
+    last_read_event_id: Option<&String>,
+    local_peer_id: &str,
+) -> usize {
+    events.sort_by(|left, right| {
+        left.created_ms
+            .cmp(&right.created_ms)
+            .then(left.event_id.cmp(&right.event_id))
+    });
+    let start = unread_start(&events, last_read_event_id);
+    events
+        .into_iter()
+        .skip(start)
+        .filter(|event| {
+            event.author_peer_id != local_peer_id
+                && matches!(event.kind.as_str(), "MSG_POST" | "ATTACHMENT_ADD")
+        })
+        .count()
+}
+
+fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
+    events.sort_by(|left, right| {
+        left.created_ms
+            .cmp(&right.created_ms)
+            .then(left.event_id.cmp(&right.event_id))
+    });
+    let mut messages: BTreeMap<String, MessageView> = BTreeMap::new();
+    let mut order = Vec::new();
+    let mut reactions: BTreeMap<String, BTreeMap<String, std::collections::BTreeSet<String>>> =
+        BTreeMap::new();
+    for event in &events {
+        match event.kind.as_str() {
+            "MSG_POST" => {
+                let event_id = event.event_id.clone();
+                order.push(event_id.clone());
+                messages.insert(
+                    event_id,
+                    MessageView {
+                        event_id: event.event_id.clone(),
+                        created_ms: event.created_ms,
+                        author_peer_id: event.author_peer_id.clone(),
+                        text: event
+                            .body
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .to_string(),
+                        edited_ms: None,
+                        redacted: false,
+                        mentions: event
+                            .body
+                            .get("mentions")
+                            .and_then(serde_json::Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect(),
+                        thread_root_event_id: event
+                            .body
+                            .get("thread_root_event_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned),
+                        reply_count: 0,
+                        pinned: false,
+                        reactions: Vec::new(),
+                        attachments: Vec::new(),
+                    },
+                );
+            }
+            "ATTACHMENT_ADD" => {
+                let event_id = event.event_id.clone();
+                order.push(event_id.clone());
+                messages.insert(
+                    event_id,
+                    MessageView {
+                        event_id: event.event_id.clone(),
+                        created_ms: event.created_ms,
+                        author_peer_id: event.author_peer_id.clone(),
+                        text: String::new(),
+                        edited_ms: None,
+                        redacted: false,
+                        mentions: Vec::new(),
+                        thread_root_event_id: None,
+                        reply_count: 0,
+                        pinned: false,
+                        reactions: Vec::new(),
+                        attachments: vec![AttachmentView {
+                            event_id: event.event_id.clone(),
+                            filename: string_event_body(event, "filename"),
+                            mime: string_event_body(event, "mime"),
+                            sha256: string_event_body(event, "sha256"),
+                            data_b64: string_event_body(event, "data_b64"),
+                        }],
+                    },
+                );
+            }
+            "MSG_EDIT" => {
+                if let Some(message) = event_target_message(&mut messages, event) {
+                    message.text = string_event_body(event, "text");
+                    message.edited_ms = Some(event.created_ms);
+                    message.mentions = event
+                        .body
+                        .get("mentions")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                        .collect();
+                }
+            }
+            "MSG_REDACT" => {
+                if let Some(message) = event_target_message(&mut messages, event) {
+                    message.text = "Message removed".to_string();
+                    message.redacted = true;
+                    message.attachments.clear();
+                    message.mentions.clear();
+                }
+            }
+            "PIN_ADD" | "PIN_REMOVE" => {
+                if let Some(message) = event_target_message(&mut messages, event) {
+                    message.pinned = event.kind == "PIN_ADD";
+                }
+            }
+            "REACTION_ADD" | "REACTION_REMOVE" => {
+                let target = string_event_body(event, "target_event_id");
+                let emoji = string_event_body(event, "emoji");
+                let peers = reactions
+                    .entry(target)
+                    .or_default()
+                    .entry(emoji)
+                    .or_default();
+                if event.kind == "REACTION_ADD" {
+                    peers.insert(event.author_peer_id.clone());
+                } else {
+                    peers.remove(&event.author_peer_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    let roots: Vec<String> = messages
+        .values()
+        .filter_map(|message| message.thread_root_event_id.clone())
+        .collect();
+    for root in roots {
+        if let Some(message) = messages.get_mut(&root) {
+            message.reply_count += 1;
+        }
+    }
+    for (target, by_emoji) in reactions {
+        if let Some(message) = messages.get_mut(&target) {
+            message.reactions = by_emoji
+                .into_iter()
+                .filter(|(_, peers)| !peers.is_empty())
+                .map(|(emoji, peers)| ReactionView {
+                    emoji,
+                    peer_ids: peers.into_iter().collect(),
+                })
+                .collect();
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|event_id| messages.remove(&event_id))
+        .collect()
+}
+
+fn event_target_message<'a>(
+    messages: &'a mut BTreeMap<String, MessageView>,
+    event: &EventV1,
+) -> Option<&'a mut MessageView> {
+    let target = event.body.get("target_event_id")?.as_str()?;
+    messages.get_mut(target)
+}
+
+fn string_event_body(event: &EventV1, field: &str) -> String {
+    event
+        .body
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+        .to_string()
 }
 
 impl VoxelleCommandHost {
@@ -1147,6 +3260,9 @@ impl VoxelleCommandHost {
             service: None,
             activity: Vec::new(),
             next_activity_id: 1,
+            last_space_invite_json: None,
+            selected_room_id: None,
+            search_results: Vec::new(),
         }
     }
 
@@ -1191,14 +3307,255 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
-    pub fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
-        let event = self
+    pub fn create_space_invite(
+        &mut self,
+        request: CreateSpaceInviteRequest,
+    ) -> Result<ShellSnapshotView> {
+        let online = self
+            .service
+            .as_ref()
+            .map(VoxelleService::online)
+            .ok_or_else(|| anyhow::anyhow!("go online before creating a space invite"))?;
+        let minutes = request
+            .expires_minutes
+            .unwrap_or(24 * 60)
+            .clamp(1, 30 * 24 * 60);
+        let expires_ms = now_ms().saturating_add((minutes as i64).saturating_mul(60_000));
+        let invite = self.home.create_space_invite(online, expires_ms)?;
+        self.last_space_invite_json = Some(serde_json::to_string_pretty(&invite)? + "\n");
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "created signed space invite {}",
+                invite.invite_event.event_id
+            ),
+        );
+        self.snapshot()
+    }
+
+    pub async fn join_space(&mut self, request: JoinSpaceRequest) -> Result<ShellSnapshotView> {
+        let invite: SpaceInviteFileV1 = serde_json::from_str(&request.space_invite_json)
+            .context("parse signed space invite JSON")?;
+        let report = self
             .home
-            .send_message(&request.text, request.room.as_deref())?;
+            .join_space_from_invite(&invite, request.max_events.unwrap_or(4096))
+            .await?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "joined space {} via {}, received {}, pushed {}",
+                invite.space.name, report.invite_id, report.events_received, report.events_pushed
+            ),
+        );
+        if self.service.is_none() {
+            self.service = Some(
+                self.home
+                    .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)?,
+            );
+            self.push_activity(ServiceActivityLevel::Info, "service started after join");
+        }
+        self.snapshot()
+    }
+
+    pub async fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
+        let room = request.room.as_deref().or(self.selected_room_id.as_deref());
+        let event = self.home.send_message_with_metadata(
+            &request.text,
+            room,
+            request.mentions,
+            request.thread_root_event_id,
+        )?;
         self.push_activity(
             ServiceActivityLevel::Info,
             format!("sent message {}", event.event_id),
         );
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub fn select_channel(&mut self, request: SelectChannelRequest) -> Result<ShellSnapshotView> {
+        if !self
+            .home
+            .channels(Some(&request.room_id))?
+            .iter()
+            .any(|channel| channel.room_id == request.room_id)
+        {
+            anyhow::bail!("channel is unknown or inaccessible");
+        }
+        self.home.mark_read(Some(&request.room_id))?;
+        self.selected_room_id = Some(request.room_id);
+        self.snapshot()
+    }
+
+    pub fn mark_read(&mut self, request: MarkReadRequest) -> Result<ShellSnapshotView> {
+        let room = request
+            .room_id
+            .as_deref()
+            .or(self.selected_room_id.as_deref());
+        self.home.mark_read(room)?;
+        self.snapshot()
+    }
+
+    pub async fn create_channel(
+        &mut self,
+        request: CreateChannelRequest,
+    ) -> Result<ShellSnapshotView> {
+        let event = self.home.create_channel(&request)?;
+        self.selected_room_id = event
+            .body
+            .get("room_id")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned);
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn rotate_channel_key(
+        &mut self,
+        request: RotateChannelKeyRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.rotate_channel_key(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn join_call(&mut self, mut request: CallJoinRequest) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        if self.service.is_none() {
+            self.service = Some(
+                self.home
+                    .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)?,
+            );
+            self.push_activity(ServiceActivityLevel::Info, "service started for room call");
+        }
+        self.home.join_call(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
+    pub async fn signal_call(
+        &mut self,
+        mut request: CallSignalRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.signal_call(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
+    pub async fn heartbeat_call(
+        &mut self,
+        mut request: CallLeaveRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.heartbeat_call(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
+    pub async fn leave_call(&mut self, mut request: CallLeaveRequest) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.leave_call(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
+    pub async fn edit_message(
+        &mut self,
+        mut request: EditMessageRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.edit_message(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn redact_message(
+        &mut self,
+        mut request: MessageTargetRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.redact_message(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn set_reaction(
+        &mut self,
+        mut request: ReactionRequest,
+        add: bool,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.set_reaction(&request, add)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn set_pin(
+        &mut self,
+        mut request: MessageTargetRequest,
+        add: bool,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.set_pin(&request, add)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn add_attachment(
+        &mut self,
+        mut request: AttachmentRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.add_attachment(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn update_profile(
+        &mut self,
+        request: ProfileUpdateRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.update_profile(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn create_role(&mut self, request: CreateRoleRequest) -> Result<ShellSnapshotView> {
+        self.home.create_role(&request)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn assign_role(
+        &mut self,
+        request: AssignRoleRequest,
+        grant: bool,
+    ) -> Result<ShellSnapshotView> {
+        self.home.assign_role(&request, grant)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn ban_member(
+        &mut self,
+        request: BanMemberRequest,
+        ban: bool,
+    ) -> Result<ShellSnapshotView> {
+        self.home.ban_member(&request, ban)?;
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub fn search_messages(&mut self, request: SearchMessagesRequest) -> Result<ShellSnapshotView> {
+        self.search_results = self.home.search_messages(&request)?;
+        self.snapshot()
+    }
+
+    pub async fn refresh_and_sync(&mut self) -> Result<ShellSnapshotView> {
+        if self.service.is_some() && self.home.path("config.json").exists() {
+            self.sync_known_peers(256).await?;
+        }
         self.snapshot()
     }
 
@@ -1226,6 +3583,20 @@ impl VoxelleCommandHost {
             ServiceActivityLevel::Info,
             format!("updated UI preference {id}"),
         );
+        self.snapshot()
+    }
+
+    pub fn set_workbench_layout(
+        &mut self,
+        request: SetWorkbenchLayoutRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.set_workbench_layout(request)?;
+        self.snapshot()
+    }
+
+    pub fn reset_workbench_layout(&mut self) -> Result<ShellSnapshotView> {
+        self.home.reset_workbench_layout()?;
+        self.push_activity(ServiceActivityLevel::Info, "reset workbench layout");
         self.snapshot()
     }
 
@@ -1274,10 +3645,60 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
+    async fn sync_known_peers(&mut self, max_events: usize) -> Result<()> {
+        let peers = self.home.known_peers()?;
+        let mut tasks = tokio::task::JoinSet::new();
+        for peer in peers {
+            let home = self.home.clone();
+            tasks.spawn(async move {
+                let result = home
+                    .sync_peer(&peer, max_events)
+                    .await
+                    .map_err(|error| format!("{error:#}"));
+                (peer, result)
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            let (peer, sync) = result.context("automatic peer sync task failed")?;
+            let label = peer
+                .label
+                .as_deref()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
+            match sync {
+                Ok(report) => {
+                    let received = report.governance.accepted + report.room.accepted;
+                    let pushed = report.governance.remote_accepted + report.room.remote_accepted;
+                    if received > 0 || pushed > 0 {
+                        self.push_activity(
+                            ServiceActivityLevel::Info,
+                            format!(
+                                "automatic sync with {label}: received {received}, pushed {pushed}"
+                            ),
+                        );
+                    }
+                }
+                Err(error) => self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!("automatic sync could not reach {label}: {error}"),
+                ),
+            }
+        }
+        Ok(())
+    }
+
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
         let online = self.service.as_ref().map(VoxelleService::online);
-        let (home, home_error) = match self.home.home_screen_view(online) {
-            Ok(home) => (Some(home), None),
+        let (home, home_error) = match self
+            .home
+            .home_screen_view_for_room(online, self.selected_room_id.as_deref())
+        {
+            Ok(mut home) => {
+                if let Some(invite) = home.invite.as_mut() {
+                    invite.space_invite_json = self.last_space_invite_json.clone();
+                }
+                (Some(home), None)
+            }
             Err(error) => (None, Some(format!("{error:#}"))),
         };
         Ok(ShellSnapshotView {
@@ -1287,6 +3708,7 @@ impl VoxelleCommandHost {
             network_health: self.home.network_health_view(online)?,
             ui_ontology: self.home.ui_ontology()?,
             service_activity: self.activity.clone(),
+            search_results: self.search_results.clone(),
         })
     }
 
@@ -1348,6 +3770,17 @@ impl PeerRecord {
         if self.default_room.trim().is_empty() {
             anyhow::bail!("peer record default room is empty");
         }
+        if !self.space_id.starts_with("s:")
+            || self.governance_room_id != format!("{}:governance", self.space_id)
+            || !self
+                .default_room
+                .starts_with(&format!("{}:channel:", self.space_id))
+        {
+            anyhow::bail!("peer record room identifiers do not match its space");
+        }
+        if !self.authority_peer_id.starts_with("p:") {
+            anyhow::bail!("peer record authority is not a principal ID");
+        }
         self.endpoint.validate()
     }
 
@@ -1357,12 +3790,49 @@ impl PeerRecord {
     }
 }
 
+impl SpaceInviteFileV1 {
+    pub fn validate_at(&self, now_ms: i64) -> Result<()> {
+        if self.v != 1 {
+            anyhow::bail!("unsupported space invite file version {}", self.v);
+        }
+        validate_space_invite_at(&self.space, &self.invite_event, now_ms)?;
+        self.bootstrap_peers().map(|_| ())
+    }
+
+    pub fn bootstrap_peers(&self) -> Result<Vec<PeerRecord>> {
+        let values = self
+            .invite_event
+            .body
+            .get("bootstrap_peers")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("space invite bootstrap peers missing"))?;
+        let mut peers = Vec::with_capacity(values.len());
+        for value in values {
+            let peer: PeerRecord =
+                serde_json::from_value(value.clone()).context("parse signed bootstrap peer")?;
+            peer.validate()?;
+            if peer.space_id != self.space.space_id
+                || peer.governance_room_id != self.space.governance_room_id
+                || peer.default_room != self.space.default_room_id
+                || peer.authority_peer_id != self.space.authority_peer_id
+            {
+                anyhow::bail!("signed bootstrap peer does not match invited space");
+            }
+            peers.push(peer);
+        }
+        Ok(peers)
+    }
+}
+
 impl OnlineHome {
     pub fn peer_record(&self, label: Option<String>, room: Option<&str>) -> Result<PeerRecord> {
         let record = PeerRecord {
             v: 1,
             label,
+            space_id: self.space_id.clone(),
+            governance_room_id: self.governance_room_id.clone(),
             default_room: room.unwrap_or(&self.default_room).to_string(),
+            authority_peer_id: self.authority_peer_id.clone(),
             endpoint: self.endpoint.clone(),
         };
         record.validate()?;
@@ -1379,6 +3849,7 @@ impl OnlineHome {
         Ok(InviteExchangeView {
             peer_record,
             peer_record_json,
+            space_invite_json: None,
         })
     }
 }
@@ -1513,21 +3984,27 @@ impl PeerServer {
         let advertised_addr = advertise.unwrap_or(node.local_addr()?);
         let endpoint = node.peer_endpoint(advertised_addr)?;
         let local_report = node.local_reachability_report(advertised_addr)?;
-        let default_room = home.load_config()?.default_room;
+        let config = home.load_config()?;
         Ok(Self {
             home,
             node,
             online: OnlineHome {
                 endpoint,
                 local_report,
-                default_room,
+                default_room: config.default_room,
+                authority_peer_id: config.authority_peer_id,
+                space_id: config.space.space_id,
+                governance_room_id: config.space.governance_room_id,
             },
         })
     }
 
     async fn serve_next_request(&self) -> Result<ServedPeerRequest> {
         let store = self.home.open_store()?;
-        self.node.serve_peer_request_once(&store).await
+        let context = self.home.load_config()?.room_context();
+        self.node
+            .serve_peer_request_once(&store, &context, now_ms())
+            .await
     }
 
     async fn stop(self) {
@@ -1622,7 +4099,7 @@ async fn run_service_loop(
             result = server.serve_next_request() => {
                 match result {
                     Ok(served) => {
-                        let _ = event_tx.send(VoxelleServiceEvent::Served(served));
+                        let _ = event_tx.send(VoxelleServiceEvent::Served(Box::new(served)));
                     }
                     Err(error) => {
                         let _ = event_tx.send(VoxelleServiceEvent::Failed(format!("{error:#}")));
@@ -1658,9 +4135,18 @@ fn default_ui_ontology(preferences: UiPreferences) -> UiOntologyView {
         }
     }
 
+    let mut views = default_views();
+    for view in &mut views {
+        if let Some(placement) = preferences.view_placements.get(&view.id) {
+            view.place_id = placement.place_id.clone();
+            view.order = placement.order;
+            view.visible = placement.visible;
+        }
+    }
+
     UiOntologyView {
         places: default_places(),
-        views: default_views(),
+        views,
         commands: default_commands(),
         semantic_tokens,
         metrics,
@@ -1697,54 +4183,105 @@ fn default_views() -> Vec<UiView> {
             "profile.summary",
             "Profile Summary",
             "sidebar",
+            0,
             "Local peer and device identity",
         ),
         ui_view(
             "runtime.status",
             "Runtime Status",
             "status",
+            0,
             "Online/offline and reachability state",
         ),
         ui_view(
             "network.health",
             "Network Health",
             "status",
+            1,
             "Re-entrant checklist for setup, reachability, and repair",
         ),
         ui_view(
             "field.test",
             "Field Test",
             "status",
+            2,
             "Re-entrant end-to-end workflow checks",
         ),
         ui_view(
             "invite.exchange",
             "Invite Exchange",
             "sidebar",
+            1,
             "Copyable peer record and peer import",
         ),
         ui_view(
             "peer.list",
             "Peer List",
             "sidebar",
+            2,
             "Known peers and peer actions",
+        ),
+        ui_view(
+            "channel.list",
+            "Channels",
+            "sidebar",
+            3,
+            "Public and private conversation channels",
+        ),
+        ui_view(
+            "member.profiles",
+            "Members",
+            "inspector",
+            0,
+            "Member profiles and presence identity",
+        ),
+        ui_view(
+            "role.list",
+            "Roles",
+            "inspector",
+            1,
+            "Roles, permissions, and assignments",
+        ),
+        ui_view(
+            "message.search",
+            "Message Search",
+            "inspector",
+            2,
+            "Local full-text message and attachment search",
+        ),
+        ui_view(
+            "notification.center",
+            "Notifications",
+            "activity",
+            1,
+            "Unread mentions from replicated channels",
         ),
         ui_view(
             "room.timeline",
             "Room Timeline",
             "main",
+            0,
             "Messages in the selected room",
         ),
         ui_view(
             "message.composer",
             "Message Composer",
             "main",
+            1,
             "Message entry and send command",
+        ),
+        ui_view(
+            "call.mesh",
+            "Voice & Video",
+            "main",
+            2,
+            "Direct WebRTC mesh for two to four room members",
         ),
         ui_view(
             "service.activity",
             "Service Activity",
             "activity",
+            0,
             "Served requests, diagnostics, and sync events",
         ),
     ]
@@ -1752,39 +4289,271 @@ fn default_views() -> Vec<UiView> {
 
 fn default_commands() -> Vec<UiCommand> {
     vec![
-        ui_command(
+        shell_command(
             "shell.refresh",
             "Refresh",
             "Refresh the current shell snapshot",
+            Some("Mod+R"),
+            true,
         ),
-        ui_command("home.init", "Initialize Home", "Create local app state"),
-        ui_command(
+        shell_command(
+            "home.init",
+            "Create My Space",
+            "Create local identity and a private space",
+            None,
+            true,
+        ),
+        shell_command(
             "runtime.goOnline",
             "Go Online",
             "Start resident peer serving",
+            None,
+            true,
         ),
-        ui_command(
+        shell_command(
             "runtime.goOffline",
             "Go Offline",
             "Stop resident peer serving",
+            None,
+            true,
         ),
-        ui_command(
+        shell_command(
+            "space.invite.create",
+            "Create Space Invite",
+            "Create a signed expiring invite for the current space",
+            None,
+            true,
+        ),
+        shell_command(
+            "space.join",
+            "Join Space",
+            "Join from a signed invite and synchronize automatically",
+            None,
+            true,
+        ),
+        shell_command(
             "message.send",
             "Send Message",
             "Send a message to the current room",
+            None,
+            false,
         ),
-        ui_command("invite.copy", "Copy Invite", "Copy the current peer record"),
-        ui_command("peer.import", "Import Peer", "Import a peer record"),
-        ui_command("peer.diagnose", "Diagnose Peer", "Check peer reachability"),
-        ui_command(
+        shell_command(
+            "channel.select",
+            "Select Channel",
+            "Open an accessible channel",
+            None,
+            false,
+        ),
+        shell_command(
+            "channel.markRead",
+            "Mark Channel Read",
+            "Advance the local read cursor for the selected channel",
+            Some("Shift+Escape"),
+            true,
+        ),
+        shell_command(
+            "channel.rotateKey",
+            "Rotate Private Channel Key",
+            "Advance a private channel to a freshly wrapped key epoch",
+            None,
+            false,
+        ),
+        shell_command(
+            "channel.create",
+            "Create Channel",
+            "Create a space channel",
+            None,
+            true,
+        ),
+        shell_command(
+            "message.edit",
+            "Edit Message",
+            "Edit one of your messages",
+            None,
+            false,
+        ),
+        shell_command(
+            "message.redact",
+            "Delete Message",
+            "Replace a message with a signed tombstone",
+            None,
+            false,
+        ),
+        shell_command(
+            "reaction.add",
+            "Add Reaction",
+            "React to a message",
+            None,
+            false,
+        ),
+        shell_command(
+            "reaction.remove",
+            "Remove Reaction",
+            "Remove your reaction",
+            None,
+            false,
+        ),
+        shell_command(
+            "pin.add",
+            "Pin Message",
+            "Pin a message when authorized",
+            None,
+            false,
+        ),
+        shell_command(
+            "pin.remove",
+            "Unpin Message",
+            "Remove a message pin when authorized",
+            None,
+            false,
+        ),
+        shell_command(
+            "attachment.add",
+            "Attach File",
+            "Send a content-addressed attachment",
+            None,
+            false,
+        ),
+        shell_command(
+            "profile.update",
+            "Update Profile",
+            "Set your shared display name and profile",
+            None,
+            true,
+        ),
+        shell_command(
+            "role.create",
+            "Create Role",
+            "Create a role and its permissions",
+            None,
+            true,
+        ),
+        shell_command(
+            "role.grant",
+            "Grant Role",
+            "Grant a role to a member",
+            None,
+            false,
+        ),
+        shell_command(
+            "role.revoke",
+            "Revoke Role",
+            "Revoke a member role",
+            None,
+            false,
+        ),
+        shell_command(
+            "member.ban",
+            "Ban Member",
+            "Ban a member from the space",
+            None,
+            false,
+        ),
+        shell_command(
+            "member.unban",
+            "Unban Member",
+            "Remove a member ban",
+            None,
+            false,
+        ),
+        shell_command(
+            "message.search",
+            "Search Messages",
+            "Search the local replicated message index",
+            Some("Mod+F"),
+            true,
+        ),
+        shell_command(
+            "call.join",
+            "Join Voice & Video",
+            "Capture local media and join the selected room mesh",
+            Some("Mod+Shift+V"),
+            true,
+        ),
+        shell_command(
+            "call.signal",
+            "Send Call Signal",
+            "Replicate an authenticated WebRTC negotiation signal",
+            None,
+            false,
+        ),
+        shell_command(
+            "call.heartbeat",
+            "Keep Call Alive",
+            "Replicate short-lived room call presence",
+            None,
+            false,
+        ),
+        shell_command(
+            "call.leave",
+            "Leave Voice & Video",
+            "Leave the selected room call and stop local capture",
+            None,
+            true,
+        ),
+        frontend_command(
+            "message.composer.focus",
+            "Focus Message Composer",
+            "Move keyboard focus to the message composer",
+            Some("Mod+K"),
+            true,
+        ),
+        frontend_command(
+            "invite.copy",
+            "Copy Signed Invite",
+            "Copy the current signed membership invite",
+            None,
+            true,
+        ),
+        shell_command(
+            "peer.import",
+            "Import Peer",
+            "Import a peer availability record",
+            None,
+            true,
+        ),
+        shell_command(
+            "peer.diagnose",
+            "Diagnose Peer",
+            "Check peer reachability",
+            None,
+            true,
+        ),
+        shell_command(
             "peer.sync",
             "Sync Peer",
             "Sync governance and room events with a peer",
+            None,
+            true,
         ),
-        ui_command(
+        shell_command(
             "ui.preference.set",
             "Save Preference",
             "Persist a UI customization",
+            None,
+            false,
+        ),
+        shell_command(
+            "workbench.layout.save",
+            "Save Workbench Layout",
+            "Persist view docking, order, and visibility",
+            None,
+            false,
+        ),
+        shell_command(
+            "workbench.layout.reset",
+            "Reset Workbench Layout",
+            "Restore every view to its default dock",
+            None,
+            true,
+        ),
+        frontend_command(
+            "workbench.commandPalette.open",
+            "Show Command Palette",
+            "Search and run commands",
+            Some("Mod+Shift+P"),
+            false,
         ),
     ]
 }
@@ -1792,7 +4561,7 @@ fn default_commands() -> Vec<UiCommand> {
 pub fn shell_command_ids() -> Vec<String> {
     default_commands()
         .into_iter()
-        .filter(|command| command.id != "invite.copy")
+        .filter(|command| command.scope == UiCommandScope::Shell)
         .map(|command| command.id)
         .collect()
 }
@@ -1993,27 +4762,74 @@ fn ui_place(id: &str, label: &str, description: &str) -> UiPlace {
         id: id.to_string(),
         label: label.to_string(),
         description: description.to_string(),
-        editable: false,
+        editable: true,
         editing_surface: "layout/place editor".to_string(),
     }
 }
 
-fn ui_view(id: &str, label: &str, place_id: &str, description: &str) -> UiView {
+fn ui_view(id: &str, label: &str, place_id: &str, order: usize, description: &str) -> UiView {
     UiView {
         id: id.to_string(),
         label: label.to_string(),
+        default_place_id: place_id.to_string(),
         place_id: place_id.to_string(),
+        order,
+        visible: true,
         description: description.to_string(),
-        editable: false,
+        editable: true,
         editing_surface: "layout/place editor".to_string(),
     }
 }
 
-fn ui_command(id: &str, label: &str, description: &str) -> UiCommand {
+fn shell_command(
+    id: &str,
+    label: &str,
+    description: &str,
+    shortcut: Option<&str>,
+    palette: bool,
+) -> UiCommand {
+    ui_command(
+        id,
+        label,
+        description,
+        UiCommandScope::Shell,
+        shortcut,
+        palette,
+    )
+}
+
+fn frontend_command(
+    id: &str,
+    label: &str,
+    description: &str,
+    shortcut: Option<&str>,
+    palette: bool,
+) -> UiCommand {
+    ui_command(
+        id,
+        label,
+        description,
+        UiCommandScope::Frontend,
+        shortcut,
+        palette,
+    )
+}
+
+fn ui_command(
+    id: &str,
+    label: &str,
+    description: &str,
+    scope: UiCommandScope,
+    shortcut: Option<&str>,
+    palette: bool,
+) -> UiCommand {
     UiCommand {
         id: id.to_string(),
         label: label.to_string(),
         description: description.to_string(),
+        scope,
+        shortcut: shortcut.map(ToOwned::to_owned),
+        palette,
         editable: false,
         editing_surface: "command palette".to_string(),
     }
@@ -2094,6 +4910,63 @@ fn validate_ui_preferences(preferences: &UiPreferences) -> Result<()> {
             .with_context(|| format!("unknown UI behavior {id}"))?;
         if !same_behavior_value_kind(&default.default_value, value) {
             anyhow::bail!("UI behavior {id} value has the wrong kind");
+        }
+    }
+    if !preferences.view_placements.is_empty() {
+        for (id, placement) in &preferences.view_placements {
+            if id != &placement.view_id {
+                anyhow::bail!(
+                    "workbench placement key does not match view {}",
+                    placement.view_id
+                );
+            }
+        }
+        validate_workbench_layout(
+            &preferences
+                .view_placements
+                .values()
+                .cloned()
+                .collect::<Vec<_>>(),
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_workbench_layout(placements: &[UiViewPlacement]) -> Result<()> {
+    let views = default_views();
+    let places = default_places();
+    if placements.len() != views.len() {
+        anyhow::bail!(
+            "workbench layout must place every view exactly once (expected {}, got {})",
+            views.len(),
+            placements.len()
+        );
+    }
+
+    let mut by_view = BTreeMap::new();
+    let mut orders_by_place: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
+    for placement in placements {
+        if !views.iter().any(|view| view.id == placement.view_id) {
+            anyhow::bail!("unknown workbench view {}", placement.view_id);
+        }
+        if !places.iter().any(|place| place.id == placement.place_id) {
+            anyhow::bail!("unknown workbench place {}", placement.place_id);
+        }
+        if by_view.insert(&placement.view_id, ()).is_some() {
+            anyhow::bail!(
+                "workbench view {} is placed more than once",
+                placement.view_id
+            );
+        }
+        orders_by_place
+            .entry(&placement.place_id)
+            .or_default()
+            .push(placement.order);
+    }
+    for (place, mut orders) in orders_by_place {
+        orders.sort_unstable();
+        if orders.iter().copied().ne(0..orders.len()) {
+            anyhow::bail!("workbench place {place} order must be contiguous from zero");
         }
     }
     Ok(())
@@ -2208,6 +5081,315 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
     }
 }
 
+fn identity_encryption_secret(identity: &PeerIdentity) -> Result<X25519Secret> {
+    Ok(X25519Secret::from(identity.encryption_secret_bytes()))
+}
+
+fn identity_encryption_public_b64(identity: &PeerIdentity) -> Result<String> {
+    Ok(identity.encryption_public_b64())
+}
+
+fn room_key_wrap_key(shared: &[u8; 32], room_id: &str, epoch: u64, peer_id: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"voxelle/room-key-wrap/v1\0");
+    digest.update(shared);
+    digest.update(room_id.as_bytes());
+    digest.update(epoch.to_le_bytes());
+    digest.update(peer_id.as_bytes());
+    digest.finalize().into()
+}
+
+fn create_room_key_packages(
+    room_id: &str,
+    epoch: u64,
+    room_key: &[u8; 32],
+    members: &std::collections::BTreeSet<String>,
+    encryption_keys: &BTreeMap<String, String>,
+) -> Result<Vec<serde_json::Value>> {
+    let mut packages = Vec::with_capacity(members.len());
+    for peer_id in members {
+        let public_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+            .decode(
+                encryption_keys
+                    .get(peer_id)
+                    .ok_or_else(|| anyhow::anyhow!("member {peer_id} has no encryption key"))?,
+            )
+            .context("decode member encryption public key")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("member encryption public key must be 32 bytes"))?;
+        let recipient_public = X25519PublicKey::from(public_bytes);
+        let ephemeral_secret = X25519Secret::random_from_rng(rand::rngs::OsRng);
+        let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
+        let shared = ephemeral_secret.diffie_hellman(&recipient_public);
+        let wrap_key = room_key_wrap_key(shared.as_bytes(), room_id, epoch, peer_id);
+        let cipher = XChaCha20Poly1305::new((&wrap_key).into());
+        let mut nonce = [0_u8; 24];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let aad = format!("voxelle/room-key-package/v1\n{room_id}\n{epoch}\n{peer_id}");
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: room_key,
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("encrypt room key package"))?;
+        packages.push(serde_json::json!({
+            "peer_id": peer_id,
+            "ephemeral_pub_b64": base64::engine::general_purpose::STANDARD.encode(ephemeral_public.as_bytes()),
+            "nonce_b64": base64::engine::general_purpose::STANDARD.encode(nonce),
+            "ciphertext_b64": base64::engine::general_purpose::STANDARD.encode(ciphertext),
+        }));
+    }
+    Ok(packages)
+}
+
+fn unwrap_room_key_package(
+    identity: &PeerIdentity,
+    room_id: &str,
+    epoch: u64,
+    package: &serde_json::Value,
+) -> Result<[u8; 32]> {
+    let decode = |field: &str| -> Result<Vec<u8>> {
+        base64::engine::general_purpose::STANDARD
+            .decode(
+                package
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("room key package {field} missing"))?,
+            )
+            .with_context(|| format!("decode room key package {field}"))
+    };
+    let ephemeral_public: [u8; 32] = decode("ephemeral_pub_b64")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("ephemeral public key must be 32 bytes"))?;
+    let nonce: [u8; 24] = decode("nonce_b64")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("room key package nonce must be 24 bytes"))?;
+    let ciphertext = decode("ciphertext_b64")?;
+    let secret = identity_encryption_secret(identity)?;
+    let shared = secret.diffie_hellman(&X25519PublicKey::from(ephemeral_public));
+    let wrap_key = room_key_wrap_key(shared.as_bytes(), room_id, epoch, &identity.peer_id);
+    let cipher = XChaCha20Poly1305::new((&wrap_key).into());
+    let aad = format!(
+        "voxelle/room-key-package/v1\n{room_id}\n{epoch}\n{}",
+        identity.peer_id
+    );
+    cipher
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &ciphertext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("room key package authentication failed"))?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("room key must be 32 bytes"))
+}
+
+fn private_event_aad(room_id: &str, epoch: u64, author_peer_id: &str) -> String {
+    format!("voxelle/private-event/v1\n{room_id}\n{epoch}\n{author_peer_id}")
+}
+
+fn room_call_id(room_id: &str) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"voxelle/room-call/v1\0");
+    digest.update(room_id.as_bytes());
+    format!(
+        "call:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+    )
+}
+
+fn recovery_capsule_key(card: &RecoveryCardV1) -> Result<[u8; 32]> {
+    if card.v != 1 {
+        anyhow::bail!("unsupported recovery card version {}", card.v);
+    }
+    let secret = base64::engine::general_purpose::STANDARD
+        .decode(&card.recovery_secret_b64)
+        .context("decode recovery secret")?;
+    if secret.len() != 32 {
+        anyhow::bail!("recovery secret must be 32 bytes");
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"voxelle/recovery-capsule-key/v1\0");
+    digest.update(secret);
+    Ok(digest.finalize().into())
+}
+
+fn encrypt_recovery_capsule(
+    card: &RecoveryCardV1,
+    peer_id: &str,
+    payload: &RecoveryPayloadV1,
+) -> Result<RecoveryCapsuleV1> {
+    let key = recovery_capsule_key(card)?;
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let mut nonce = [0_u8; 24];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let plaintext = serde_json::to_vec(payload).context("serialize recovery payload")?;
+    let aad = format!("voxelle/recovery-capsule/v1\n{peer_id}");
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &plaintext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("encrypt recovery capsule"))?;
+    Ok(RecoveryCapsuleV1 {
+        v: 1,
+        peer_id: peer_id.to_string(),
+        nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+        ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+    })
+}
+
+fn decrypt_recovery_capsule(
+    card: &RecoveryCardV1,
+    capsule: &RecoveryCapsuleV1,
+) -> Result<RecoveryPayloadV1> {
+    if capsule.v != 1 {
+        anyhow::bail!("unsupported recovery capsule version {}", capsule.v);
+    }
+    let expected_peer_id = voxelle_core::principal_id(&card.genesis)?;
+    if capsule.peer_id != expected_peer_id {
+        anyhow::bail!("recovery capsule principal does not match recovery card");
+    }
+    let nonce = base64::engine::general_purpose::STANDARD
+        .decode(&capsule.nonce_b64)
+        .context("decode recovery capsule nonce")?;
+    let nonce: [u8; 24] = nonce
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("recovery capsule nonce must be 24 bytes"))?;
+    let ciphertext = base64::engine::general_purpose::STANDARD
+        .decode(&capsule.ciphertext_b64)
+        .context("decode recovery capsule ciphertext")?;
+    let key = recovery_capsule_key(card)?;
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let aad = format!("voxelle/recovery-capsule/v1\n{}", capsule.peer_id);
+    let plaintext = cipher
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &ciphertext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("recovery capsule authentication failed"))?;
+    serde_json::from_slice(&plaintext).context("parse recovery payload")
+}
+
+pub fn write_identity_vault(path: &Path, identity: &PeerIdentity) -> Result<()> {
+    let key = identity_vault_key(path, true)?;
+    write_json(path, &IdentityFile::encrypt(identity, &key)?)
+}
+
+pub fn read_identity_vault(path: &Path) -> Result<PeerIdentity> {
+    let file: IdentityFile = read_json(path)?;
+    let key = identity_vault_key(path, false)?;
+    file.decrypt(&key)
+}
+
+// The explicit returns keep mutually exclusive target/test cfg branches legible.
+#[allow(clippy::needless_return)]
+fn identity_vault_key(path: &Path, create: bool) -> Result<[u8; 32]> {
+    #[cfg(test)]
+    {
+        return file_identity_vault_key(path, create);
+    }
+
+    #[cfg(not(test))]
+    if cfg!(debug_assertions)
+        && std::env::var("VOXELLE_VAULT_BACKEND").as_deref() == Ok("test-file")
+    {
+        return file_identity_vault_key(path, create);
+    }
+
+    #[cfg(all(not(test), any(target_os = "macos", target_os = "windows")))]
+    {
+        return os_identity_vault_key(path, create);
+    }
+
+    #[cfg(all(not(test), not(any(target_os = "macos", target_os = "windows"))))]
+    {
+        file_identity_vault_key(path, create)
+    }
+}
+
+#[cfg(all(not(test), any(target_os = "macos", target_os = "windows")))]
+fn os_identity_vault_key(path: &Path, create: bool) -> Result<[u8; 32]> {
+    let account_path = if path.exists() {
+        path.canonicalize()
+            .with_context(|| format!("resolve {}", path.display()))?
+    } else {
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
+        parent
+            .canonicalize()
+            .with_context(|| format!("resolve {}", parent.display()))?
+            .join(path.file_name().unwrap_or_default())
+    };
+    let mut account_digest = Sha256::new();
+    account_digest.update(b"voxelle/identity-vault-account/v1\0");
+    account_digest.update(account_path.to_string_lossy().as_bytes());
+    let account =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(account_digest.finalize());
+    let entry = keyring::Entry::new("app.voxelle.identity-vault", &account)
+        .context("open operating-system identity vault entry")?;
+    match entry.get_secret() {
+        Ok(secret) => decode_identity_vault_key(&secret),
+        Err(keyring::Error::NoEntry) if create => {
+            let mut key = [0_u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut key);
+            entry
+                .set_secret(&key)
+                .context("store identity unlock key in operating-system credential store")?;
+            Ok(key)
+        }
+        Err(keyring::Error::NoEntry) => {
+            anyhow::bail!(
+                "identity unlock key is missing from the operating-system credential store"
+            )
+        }
+        Err(error) => {
+            Err(error).context("read identity unlock key from operating-system credential store")
+        }
+    }
+}
+
+fn file_identity_vault_key(path: &Path, create: bool) -> Result<[u8; 32]> {
+    let key_path = path.with_extension("test-unlock-key");
+    if key_path.exists() {
+        return decode_identity_vault_key(
+            &fs::read(&key_path).with_context(|| format!("read {}", key_path.display()))?,
+        );
+    }
+    if !create {
+        anyhow::bail!("identity test unlock key is missing");
+    }
+    if let Some(parent) = key_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut key = [0_u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut key);
+    fs::write(&key_path, key).with_context(|| format!("write {}", key_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("protect {}", key_path.display()))?;
+    }
+    Ok(key)
+}
+
+fn decode_identity_vault_key(secret: &[u8]) -> Result<[u8; 32]> {
+    secret
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("identity unlock key must be 32 bytes"))
+}
+
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
@@ -2221,9 +5403,35 @@ fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
         .with_context(|| format!("write {}", path.display()))
 }
 
+fn write_secret_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("open {}", path.display()))?;
+    file.write_all((serde_json::to_string_pretty(value)? + "\n").as_bytes())
+        .with_context(|| format!("write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("protect {}", path.display()))?;
+    }
+    Ok(())
+}
+
 fn short_peer_label(peer_id: &str) -> String {
     peer_id
-        .strip_prefix("ed25519:")
+        .strip_prefix("p:")
+        .or_else(|| peer_id.strip_prefix("ed25519:"))
         .and_then(|rest| rest.get(..12))
         .map(|short| format!("Peer {short}"))
         .unwrap_or_else(|| "Peer".to_string())
@@ -2276,7 +5484,7 @@ mod tests {
         let home = VoxelleHome::new(dir.path().join("alice"));
 
         let profile = home.init(DEFAULT_ROOM_ID).expect("init");
-        assert_eq!(profile.default_room, DEFAULT_ROOM_ID);
+        assert!(profile.default_room.ends_with(":channel:general"));
         assert_eq!(profile.peer_id, profile.authority_peer_id);
 
         let event = home
@@ -2299,7 +5507,390 @@ mod tests {
 
         assert_eq!(first.peer_id, second.peer_id);
         assert_eq!(first.device_id, second.device_id);
-        assert_eq!(second.default_room, DEFAULT_ROOM_ID);
+        assert_eq!(second.default_room, first.default_room);
+    }
+
+    #[test]
+    fn home_identity_secrets_are_only_persisted_in_authenticated_ciphertext() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("alice"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+        let identity = home.load_identity().expect("identity");
+        let raw = fs::read_to_string(home.path("identity.json")).expect("vault file");
+
+        assert!(raw.contains("ciphertext_b64"));
+        assert!(!raw.contains("root_secret_b64"));
+        assert!(!raw.contains("device_secret_b64"));
+        assert!(!raw.contains("recovery_secret_b64"));
+        assert!(!raw.contains(&identity.peer.secret_key_b64()));
+        assert!(!raw.contains(&identity.device.secret_key_b64()));
+        assert!(!raw.contains(&identity.recovery.secret_key_b64()));
+    }
+
+    #[test]
+    fn recovery_capsule_is_authenticated_and_bound_to_its_card() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("alice"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+        let kit = home.recovery_kit().expect("recovery kit");
+        let kit_path = dir.path().join("alice.voxrecover");
+        home.write_recovery_kit(&kit_path).expect("write kit");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&kit_path)
+                    .expect("kit metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+
+        let payload = decrypt_recovery_capsule(&kit.card, &kit.capsule).expect("decrypt");
+        assert_eq!(payload.config.authority_peer_id, kit.capsule.peer_id);
+
+        let mut tampered = kit.clone();
+        tampered.capsule.ciphertext_b64.push('A');
+        assert!(decrypt_recovery_capsule(&tampered.card, &tampered.capsule).is_err());
+
+        let other = VoxelleHome::new(dir.path().join("other"));
+        other.init(DEFAULT_ROOM_ID).expect("other init");
+        let wrong_card = other.recovery_kit().expect("other kit").card;
+        assert!(decrypt_recovery_capsule(&wrong_card, &kit.capsule).is_err());
+    }
+
+    #[tokio::test]
+    async fn fresh_home_recovery_resyncs_history_and_revokes_the_lost_device() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice-lost"));
+        let bob = VoxelleHome::new(dir.path().join("bob-router"));
+        let recovered = VoxelleHome::new(dir.path().join("alice-recovered"));
+        let alice_profile = alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        alice.send_message("before loss", None).expect("message");
+
+        let alice_service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let invite = alice
+            .create_space_invite(alice_service.online(), now_ms() + 60_000)
+            .expect("invite bob");
+        let initial_replication = bob
+            .join_space_from_invite(&invite, 64)
+            .await
+            .expect("bob joins and stores alice history");
+        assert_eq!(initial_replication.peers_reached, 1);
+        assert!(initial_replication.events_received >= 2);
+        alice_service.stop().expect("alice offline");
+
+        let bob_service = bob
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("bob service");
+        let bob_router = bob_service
+            .online()
+            .peer_record(Some("Bob recovery peer".to_string()), None)
+            .expect("bob record");
+        alice
+            .import_peer_record(bob_router)
+            .expect("save recovery peer");
+        alice.mark_read(None).expect("persist read cursor");
+        let lost_read_state = alice.read_state().expect("lost read state");
+        let kit = alice.recovery_kit().expect("recovery kit");
+        let old_device_id = alice_profile.device_id;
+
+        let report = recovered
+            .recover_from_kit(&kit, 64)
+            .await
+            .expect("recover fresh home");
+        assert_eq!(report.profile.peer_id, alice_profile.peer_id);
+        assert_ne!(report.profile.device_id, old_device_id);
+        assert_eq!(report.peers_reached, 1);
+        assert!(report.events_recovered >= 2);
+        assert!(report.events_pushed >= 1, "{report:?}");
+        assert_eq!(
+            recovered.read_messages(None).expect("recovered messages")[0].text,
+            "before loss"
+        );
+        assert_eq!(
+            recovered.read_state().expect("recovered read state"),
+            lost_read_state
+        );
+        bob_service.stop().expect("bob service stop");
+
+        alice
+            .send_message("from lost device", None)
+            .expect("partitioned lost device can still sign locally");
+        let lost_service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("lost service");
+        let lost_record = lost_service
+            .online()
+            .peer_record(Some("Lost Alice".to_string()), None)
+            .expect("lost record");
+        let rejected = bob
+            .sync_peer(&lost_record, 64)
+            .await
+            .expect("sync reports rejection");
+        assert_eq!(rejected.room.rejected, 1);
+        assert!(bob
+            .read_messages(None)
+            .expect("bob messages")
+            .iter()
+            .all(|message| message.text != "from lost device"));
+        lost_service.stop().expect("lost service stop");
+    }
+
+    #[tokio::test]
+    async fn signed_invite_onboards_a_fresh_home_and_pushes_membership_and_messages() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob-fresh"));
+        let alice_profile = alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        alice
+            .send_message("welcome history", None)
+            .expect("history");
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let invite = alice
+            .create_space_invite(service.online(), now_ms() + 60_000)
+            .expect("signed invite");
+
+        invite.validate_at(now_ms()).expect("invite validates");
+        let joined = bob
+            .join_space_from_invite(&invite, 64)
+            .await
+            .expect("join from invite");
+        let bootstrap = invite.bootstrap_peers().expect("bootstrap").remove(0);
+        assert_eq!(joined.profile.authority_peer_id, alice_profile.peer_id);
+        assert_eq!(joined.peers_reached, 1);
+        assert!(joined.events_pushed >= 1, "{joined:?}");
+        assert!(bob
+            .read_messages(None)
+            .expect("bob history")
+            .iter()
+            .any(|message| message.text == "welcome history"));
+
+        bob.send_message("hello after one-action join", None)
+            .expect("bob message");
+        let pushed = bob.sync_peer(&bootstrap, 64).await.expect("push message");
+        assert!(pushed.room.remote_accepted >= 1);
+        assert!(alice
+            .read_messages(None)
+            .expect("alice messages")
+            .iter()
+            .any(|message| message.text == "hello after one-action join"));
+
+        let mut tampered = invite.clone();
+        tampered.space.name = "Mallory's Space".to_string();
+        assert!(tampered.validate_at(now_ms()).is_err());
+        service.stop().expect("service stop");
+    }
+
+    #[tokio::test]
+    async fn signed_invite_onboards_through_an_ordinary_peer_while_inviter_is_offline() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice-authority"));
+        let bob = VoxelleHome::new(dir.path().join("bob-router"));
+        let charlie = VoxelleHome::new(dir.path().join("charlie-fresh"));
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        alice
+            .send_message("history via Bob", None)
+            .expect("history");
+
+        let alice_service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let bob_invite = alice
+            .create_space_invite(alice_service.online(), now_ms() + 60_000)
+            .expect("invite bob");
+        bob.join_space_from_invite(&bob_invite, 64)
+            .await
+            .expect("bob joins");
+        let bob_service = bob
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("bob service");
+        let bob_record = bob_service
+            .online()
+            .peer_record(Some("Bob ordinary peer".to_string()), None)
+            .expect("bob record");
+        let charlie_invite = alice
+            .create_space_invite_with_bootstraps(
+                alice_service.online(),
+                std::slice::from_ref(&bob_record),
+                now_ms() + 60_000,
+            )
+            .expect("invite with ordinary peer");
+        alice_service.stop().expect("inviter offline");
+
+        let joined = charlie
+            .join_space_from_invite(&charlie_invite, 64)
+            .await
+            .expect("join through Bob");
+        assert_eq!(joined.peers_attempted, 2);
+        assert_eq!(joined.peers_reached, 1);
+        assert!(joined.events_pushed >= 1, "{joined:?}");
+        assert!(joined
+            .peer_errors
+            .iter()
+            .any(|error| error.contains("Inviter")));
+        assert!(charlie
+            .read_messages(None)
+            .expect("charlie history")
+            .iter()
+            .any(|message| message.text == "history via Bob"));
+
+        charlie
+            .send_message("Charlie through Bob", None)
+            .expect("charlie message");
+        let pushed = charlie
+            .sync_peer(&bob_record, 64)
+            .await
+            .expect("push to Bob");
+        assert!(pushed.room.remote_accepted >= 1, "{pushed:?}");
+
+        let pulled = alice
+            .sync_peer(&bob_record, 64)
+            .await
+            .expect("Alice catches up");
+        assert!(pulled.governance.accepted >= 1, "{pulled:?}");
+        assert!(pulled.room.accepted >= 1, "{pulled:?}");
+        assert!(alice
+            .read_messages(None)
+            .expect("alice messages")
+            .iter()
+            .any(|message| message.text == "Charlie through Bob"));
+        bob_service.stop().expect("bob stop");
+    }
+
+    #[tokio::test]
+    async fn private_room_is_ciphertext_for_members_only_and_survives_recovery() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+        let charlie = VoxelleHome::new(dir.path().join("charlie"));
+        let recovered = VoxelleHome::new(dir.path().join("alice-recovered"));
+        let alice_profile = alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        let alice_service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let alice_record = alice_service
+            .online()
+            .peer_record(Some("Alice".to_string()), None)
+            .expect("alice record");
+
+        let bob_invite = alice
+            .create_space_invite(alice_service.online(), now_ms() + 60_000)
+            .expect("bob invite");
+        let bob_joined = bob
+            .join_space_from_invite(&bob_invite, 4096)
+            .await
+            .expect("bob joins");
+        let bob_peer_id = bob_joined.profile.peer_id;
+        let charlie_invite = alice
+            .create_space_invite(alice_service.online(), now_ms() + 60_000)
+            .expect("charlie invite");
+        charlie
+            .join_space_from_invite(&charlie_invite, 4096)
+            .await
+            .expect("charlie joins");
+
+        let channel_event = alice
+            .create_channel(&CreateChannelRequest {
+                name: "Alice and Bob".to_string(),
+                topic: "Direct conversation".to_string(),
+                private_members: vec![bob_peer_id.clone()],
+            })
+            .expect("private channel");
+        let room_id = channel_event
+            .body
+            .get("room_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("room id")
+            .to_string();
+        let sent = alice
+            .send_message("e2e secret phrase", Some(&room_id))
+            .expect("private send");
+        assert_eq!(sent.kind, "ROOM_ENCRYPTED");
+        assert!(!serde_json::to_string(&sent)
+            .expect("event json")
+            .contains("e2e secret phrase"));
+        let raw_room = alice
+            .open_store()
+            .expect("alice store")
+            .room_events(&room_id)
+            .expect("raw room");
+        assert_eq!(raw_room.len(), 1);
+        assert_eq!(raw_room[0].kind, "ROOM_ENCRYPTED");
+        assert!(!fs::read_to_string(alice.path("room-keys.json"))
+            .expect("encrypted room keys")
+            .contains("keys"));
+
+        bob.sync_peer(&alice_record, 4096).await.expect("bob sync");
+        assert_eq!(
+            bob.read_messages(Some(&room_id)).expect("bob decrypts")[0].text,
+            "e2e secret phrase"
+        );
+        alice
+            .rotate_channel_key(&RotateChannelKeyRequest {
+                room_id: room_id.clone(),
+            })
+            .expect("rotate key epoch");
+        alice
+            .send_message("secret after rotation", Some(&room_id))
+            .expect("send under new epoch");
+        bob.sync_peer(&alice_record, 4096)
+            .await
+            .expect("bob syncs rotation");
+        let bob_messages = bob
+            .read_messages(Some(&room_id))
+            .expect("both epochs decrypt");
+        assert_eq!(bob_messages.len(), 2);
+        assert_eq!(bob_messages[1].text, "secret after rotation");
+        charlie
+            .sync_peer(&alice_record, 4096)
+            .await
+            .expect("charlie governance sync");
+        assert!(charlie
+            .channels(None)
+            .expect("charlie channels")
+            .iter()
+            .all(|channel| channel.room_id != room_id));
+        assert!(charlie
+            .open_store()
+            .expect("charlie store")
+            .room_events(&room_id)
+            .expect("charlie raw room")
+            .is_empty());
+
+        let bob_service = bob
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("bob service");
+        alice
+            .import_peer_record(
+                bob_service
+                    .online()
+                    .peer_record(Some("Bob recovery peer".to_string()), None)
+                    .expect("bob record"),
+            )
+            .expect("save recovery peer");
+        let kit = alice.recovery_kit().expect("kit with current room key");
+        alice_service.stop().expect("alice offline");
+        let report = recovered
+            .recover_from_kit(&kit, 4096)
+            .await
+            .expect("fresh recovery");
+        assert_eq!(report.profile.peer_id, alice_profile.peer_id);
+        assert_eq!(
+            recovered
+                .read_messages(Some(&room_id))
+                .expect("recovered decrypts")[1]
+                .text,
+            "secret after rotation"
+        );
+        bob_service.stop().expect("bob offline");
     }
 
     #[test]
@@ -2349,6 +5940,43 @@ mod tests {
             value: UiBehaviorValue::Text("absolute".to_string()),
         })
         .expect("set behavior");
+        let mut placements: Vec<UiViewPlacement> = home
+            .ui_ontology()
+            .expect("ontology")
+            .views
+            .into_iter()
+            .map(|view| UiViewPlacement {
+                view_id: view.id,
+                place_id: view.place_id,
+                order: view.order,
+                visible: view.visible,
+            })
+            .collect();
+        for placement in placements
+            .iter_mut()
+            .filter(|placement| placement.place_id == "inspector")
+        {
+            placement.order += 1;
+        }
+        let profile = placements
+            .iter_mut()
+            .find(|placement| placement.view_id == "profile.summary")
+            .expect("profile placement");
+        profile.place_id = "inspector".to_string();
+        profile.order = 0;
+        for placement in placements
+            .iter_mut()
+            .filter(|placement| placement.place_id == "sidebar")
+        {
+            placement.order -= 1;
+        }
+        placements
+            .iter_mut()
+            .find(|placement| placement.view_id == "field.test")
+            .expect("field placement")
+            .visible = false;
+        home.set_workbench_layout(SetWorkbenchLayoutRequest { placements })
+            .expect("set layout");
 
         let reopened = VoxelleHome::new(dir.path().join("home"));
         let preferences = reopened.ui_preferences().expect("preferences");
@@ -2361,6 +5989,14 @@ mod tests {
             preferences.behaviors.get("timestamps.style"),
             Some(&UiBehaviorValue::Text("absolute".to_string()))
         );
+        assert_eq!(
+            preferences
+                .view_placements
+                .get("profile.summary")
+                .expect("saved profile")
+                .place_id,
+            "inspector"
+        );
 
         let ontology = reopened.ui_ontology().expect("ontology");
         assert_eq!(semantic_token_value(&ontology, "peer.reachable"), "#00ff00");
@@ -2368,6 +6004,23 @@ mod tests {
         assert_eq!(
             behavior_value(&ontology, "timestamps.style"),
             UiBehaviorValue::Text("absolute".to_string())
+        );
+        assert_eq!(
+            ontology
+                .views
+                .iter()
+                .find(|view| view.id == "profile.summary")
+                .expect("profile")
+                .place_id,
+            "inspector"
+        );
+        assert!(
+            !ontology
+                .views
+                .iter()
+                .find(|view| view.id == "field.test")
+                .expect("field test")
+                .visible
         );
 
         reopened
@@ -2385,6 +6038,15 @@ mod tests {
         assert_eq!(
             behavior_value(&defaults, "timestamps.style"),
             UiBehaviorValue::Text("relative".to_string())
+        );
+        assert_eq!(
+            defaults
+                .views
+                .iter()
+                .find(|view| view.id == "profile.summary")
+                .expect("profile")
+                .place_id,
+            "sidebar"
         );
     }
 
@@ -2444,13 +6106,14 @@ mod tests {
         alice
             .init_home(InitHomeRequest { default_room: None })
             .expect("alice init");
-        bob.init_home(InitHomeRequest { default_room: None })
-            .expect("bob init");
         alice
             .send_message(SendMessageRequest {
                 text: "from command host".to_string(),
                 room: None,
+                mentions: Vec::new(),
+                thread_root_event_id: None,
             })
+            .await
             .expect("send");
 
         let alice_online = alice
@@ -2463,19 +6126,30 @@ mod tests {
             network_health_status(&alice_online.network_health, "service"),
             NetworkHealthStatus::Working
         );
-        let peer_record_json = alice_online
+        let invite_snapshot = alice
+            .create_space_invite(CreateSpaceInviteRequest {
+                expires_minutes: Some(60),
+            })
+            .expect("create invite");
+        let space_invite_json = invite_snapshot
             .home
             .as_ref()
             .expect("home view")
             .invite
             .as_ref()
             .expect("invite")
-            .peer_record_json
+            .space_invite_json
+            .as_ref()
+            .expect("signed invite")
             .clone();
 
         let bob_imported = bob
-            .import_peer_record(ImportPeerRecordRequest { peer_record_json })
-            .expect("import");
+            .join_space(JoinSpaceRequest {
+                space_invite_json,
+                max_events: Some(64),
+            })
+            .await
+            .expect("join");
         assert_eq!(
             network_health_status(&bob_imported.network_health, "peers"),
             NetworkHealthStatus::Working
@@ -2493,13 +6167,8 @@ mod tests {
             .iter()
             .any(|item| item.summary.starts_with("diagnostic reached")));
 
-        let synced = bob.sync_peer(request).await.expect("sync");
-        assert!(synced
-            .service_activity
-            .iter()
-            .any(|item| item.summary.contains("room accepted 1")));
         assert_eq!(
-            synced.home.expect("home").room.messages[0].text,
+            bob_imported.home.expect("home").room.messages[0].text,
             "from command host"
         );
 
@@ -2507,7 +6176,7 @@ mod tests {
         assert!(alice_after_serving
             .service_activity
             .iter()
-            .any(|item| item.summary.starts_with("served diagnostic:")));
+            .any(|item| item.summary.starts_with("served sync:")));
         alice.stop_service().expect("stop");
     }
 
@@ -2734,13 +6403,11 @@ mod tests {
         let diagnostic = bob.diagnose_peer(&alice_record).await.expect("diagnose");
         assert!(diagnostic.reachable);
 
-        let sync = bob.sync_peer(&alice_record, 64).await.expect("sync");
-        assert_eq!(sync.governance.accepted, 1);
-        assert_eq!(sync.room.accepted, 1);
-        assert_eq!(
-            bob.read_messages(None).expect("bob messages")[0].text,
-            "from imported peer"
-        );
+        let sync_error = bob
+            .sync_peer(&alice_record, 64)
+            .await
+            .expect_err("an endpoint record is not a membership capability");
+        assert!(sync_error.to_string().contains("not a member"));
         service.stop().expect("stop service");
     }
 
@@ -2751,7 +6418,6 @@ mod tests {
         let bob = VoxelleHome::new(dir.path().join("bob"));
 
         alice.init(DEFAULT_ROOM_ID).expect("alice init");
-        bob.init(DEFAULT_ROOM_ID).expect("bob init");
         alice
             .send_message("first service message", None)
             .expect("send");
@@ -2759,17 +6425,15 @@ mod tests {
         let service = alice
             .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
             .expect("service");
-        let record = service
-            .online()
-            .peer_record(Some("Alice".to_string()), None)
-            .expect("record");
+        let invite = alice
+            .create_space_invite(service.online(), now_ms() + 60_000)
+            .expect("invite");
+        let record = invite.bootstrap_peers().expect("bootstrap").remove(0);
 
+        let joined = bob.join_space_from_invite(&invite, 64).await.expect("join");
+        assert!(joined.events_received >= 1);
         let diagnostic = bob.diagnose_peer(&record).await.expect("diagnose");
         assert!(diagnostic.reachable);
-
-        let first = bob.sync_peer(&record, 64).await.expect("first sync");
-        assert_eq!(first.governance.accepted, 1);
-        assert_eq!(first.room.accepted, 1);
 
         alice
             .send_message("second service message", None)
@@ -2786,11 +6450,8 @@ mod tests {
         let Some(event) = service.try_recv_event() else {
             panic!("expected service event");
         };
-        assert!(matches!(
-            event,
-            VoxelleServiceEvent::Served(ServedPeerRequest::Diagnostic(_))
-        ));
-        assert!(event.summary().starts_with("served diagnostic:"));
+        assert!(matches!(event, VoxelleServiceEvent::Served(_)));
+        assert!(event.summary().starts_with("served "));
         service.stop().expect("stop service");
     }
 
@@ -2808,7 +6469,7 @@ mod tests {
         assert_eq!(offline.runtime.state, RuntimeState::Offline);
         assert!(offline.invite.is_none());
         assert!(offline.peers.is_empty());
-        assert_eq!(offline.room.room_id, DEFAULT_ROOM_ID);
+        assert_eq!(offline.room.room_id, offline.profile.default_room);
         assert_eq!(offline.room.messages[0].text, "visible message");
 
         let service = home
@@ -2835,7 +6496,7 @@ mod tests {
             .as_ref()
             .expect("invite")
             .peer_record_json
-            .contains("\"default_room\": \"room:general\""));
+            .contains(":channel:general"));
         assert_eq!(online.peers.len(), 1);
         assert_eq!(online.peers[0].label, "Peer One");
         assert_eq!(online.peers[0].peer_id, peer_record.endpoint.peer_id);

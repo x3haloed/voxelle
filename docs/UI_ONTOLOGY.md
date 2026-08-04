@@ -1,6 +1,6 @@
 # Voxelle UI Ontology
 
-Status: draft  
+Status: implemented registry baseline
 Audience: implementers  
 Scope: first-pass ontology for the customizable desktop UI
 
@@ -116,15 +116,22 @@ inspector    future selected-peer or selected-message details
 
 A view is a concrete surface that occupies a place.
 
-Initial views:
+Current registered views:
 
 - `profile.summary`
 - `runtime.status`
+- `network.health`
 - `invite.exchange`
 - `peer.list`
 - `field.test`
+- `channel.list`
+- `member.profiles`
+- `role.list`
+- `message.search`
+- `notification.center`
 - `room.timeline`
 - `message.composer`
+- `call.mesh`
 - `service.activity`
 
 Views should be bound to app-layer ViewModels or commands. They should not
@@ -134,18 +141,22 @@ assemble protocol, store, sync, or network concepts directly.
 
 A command is a user-invokable action with a stable ID.
 
-Initial commands:
+Current command families:
 
-- `shell.refresh`
-- `home.init`
-- `runtime.goOnline`
-- `runtime.goOffline`
-- `message.send`
-- `invite.copy`
-- `peer.import`
-- `peer.diagnose`
-- `peer.sync`
-- `ui.preference.set`
+- shell/home/runtime: `shell.refresh`, `home.init`, `runtime.goOnline`,
+  `runtime.goOffline`;
+- admission: `space.invite.create`, `space.join`, `invite.copy`;
+- channels and attention: `channel.create`, `channel.select`,
+  `channel.markRead`, `channel.rotateKey`;
+- messages: `message.send`, `message.edit`, `message.redact`,
+  `reaction.add`, `reaction.remove`, `pin.add`, `pin.remove`,
+  `attachment.add`, `message.search`, `message.composer.focus`;
+- people and governance: `profile.update`, `role.create`, `role.grant`,
+  `role.revoke`, `member.ban`, `member.unban`;
+- calls: `call.join`, `call.signal`, `call.heartbeat`, `call.leave`;
+- peers: `peer.import`, `peer.diagnose`, `peer.sync`;
+- workbench/preferences: `ui.preference.set`, `workbench.layout.save`,
+  `workbench.layout.reset`, `workbench.commandPalette.open`.
 
 Commands should be reachable from more than one surface over time:
 
@@ -254,9 +265,10 @@ Initial editing surfaces:
 - behavior settings
 - peer/display settings
 
-These do not all need to exist immediately. The rule is that any primitive we
-expose as customizable should know which editing surface owns it, even if that
-surface starts as planned rather than implemented.
+The command palette and layout editor now exist. Token, metric, and behavior
+values are persisted through the Rust preference authority and are reachable
+through the workbench's Customize surface. Renderer replacement remains a
+named future editing surface rather than a claimed implementation.
 
 ## 4. Primitive Record Shape
 
@@ -307,11 +319,15 @@ generated from the same Rust defaults. It is a read-only visual preview: it
 does not simulate home, service, messaging, peer, sync, or persistence
 behavior. Those commands require the real local bridge.
 
-Places and views now name, order, and compose the visible workbench. Place and
-view editing, command-palette editing, and renderer selection remain planned.
-Their records name the future owning surface but report `editable: false` until
-that surface exists. Semantic tokens, metrics, and behaviors report
-`editable: true` because the in-app Customize surface realizes those paths.
+Places and views now name, order, and compose the visible workbench. Every view
+can be dragged to any named dock, moved with its dock selector and order
+buttons, hidden, restored, or reset. Rust validates and persists the complete
+placement set, and the layout survives application restart and travels inside
+the encrypted recovery capsule. The command palette is populated from the same
+Rust-owned command records used by visible buttons and shortcuts; command scope
+distinguishes shell actions from local presentation actions. Renderer selection
+remains planned. Semantic tokens, metrics, behaviors, places, and views report
+`editable: true` because their in-app editing paths now exist.
 
 ## 6. Framework Direction
 

@@ -1,10 +1,18 @@
 import { createShellClient } from "./shell-client.js";
+import { captureCallMedia } from "./call-media.mjs";
 import {
   applyOntology,
   messageTimestamp,
   ontologyPresentation,
   visibleActivity,
 } from "./ui-ontology.mjs";
+import {
+  filterPaletteCommands,
+  moveView,
+  setViewVisible,
+  shiftView,
+  shortcutMatches,
+} from "./workbench.mjs";
 
 const app = document.querySelector("#app");
 const shell = createShellClient();
@@ -17,9 +25,27 @@ const uiState = {
   busyCommand: "",
   error: "",
   peerRecordDraft: "",
+  spaceInviteDraft: "",
   messageDraft: "",
+  channelNameDraft: "",
+  channelTopicDraft: "",
+  channelMembersDraft: "",
+  profileNameDraft: "",
+  profileAboutDraft: "",
+  searchDraft: "",
   bindDraft: "",
   advertiseDraft: "",
+  draggedViewId: "",
+  paletteOpen: false,
+  paletteQuery: "",
+  localMediaStream: null,
+  remoteMediaStreams: new Map(),
+  peerConnections: new Map(),
+  pendingIce: new Map(),
+  seenCallSignals: new Set(),
+  processingCallSignals: false,
+  mediaNotice: null,
+  lastCallHeartbeatMs: 0,
 };
 
 const viewRenderers = {
@@ -29,8 +55,14 @@ const viewRenderers = {
   "field.test": fieldTestView,
   "invite.exchange": inviteExchangeView,
   "peer.list": peerListView,
+  "channel.list": channelListView,
+  "member.profiles": memberProfilesView,
+  "role.list": roleListView,
+  "message.search": messageSearchView,
+  "notification.center": notificationCenterView,
   "room.timeline": roomTimelineView,
   "message.composer": messageComposerView,
+  "call.mesh": callMeshView,
   "service.activity": activityView,
 };
 
@@ -46,12 +78,49 @@ if (
 }
 render();
 
+window.setInterval(async () => {
+  if (uiState.busyCommand || currentSnapshot.home?.runtime.state !== "online") {
+    return;
+  }
+  try {
+    const localPeerId = currentSnapshot.home?.profile.peer_id;
+    const call = currentSnapshot.home?.call;
+    if (
+      uiState.localMediaStream
+      && localPeerId
+      && call?.participants.includes(localPeerId)
+      && Date.now() - uiState.lastCallHeartbeatMs >= 20_000
+    ) {
+      currentSnapshot = await shell.execute("call.heartbeat", {
+        room: currentSnapshot.home?.room.room_id ?? null,
+        call_id: call.call_id,
+      });
+      uiState.lastCallHeartbeatMs = Date.now();
+    } else {
+      await refresh();
+    }
+    render();
+  } catch (error) {
+    uiState.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}, 5_000);
+
 async function refresh() {
   currentSnapshot = await shell.execute("shell.refresh");
   return currentSnapshot;
 }
 
 function render() {
+  const localPeerId = currentSnapshot.home?.profile.peer_id;
+  if (
+    uiState.localMediaStream
+    && localPeerId
+    && !currentSnapshot.home?.call.participants.includes(localPeerId)
+  ) {
+    stopLocalMedia();
+    uiState.mediaNotice = "Call session ended or the four-peer mesh was full.";
+  }
   const presentation = applyOntology(
     document.documentElement,
     currentSnapshot.ui_ontology,
@@ -59,12 +128,37 @@ function render() {
   app.replaceChildren(
     header(currentSnapshot),
     workbenchShell(currentSnapshot),
+    ...(uiState.paletteOpen ? [commandPalette(currentSnapshot)] : []),
   );
   if (presentation.activityAutoScroll) {
     const activity = app.querySelector(".activity-list");
     activity?.scrollTo?.({ top: activity.scrollHeight });
   }
+  if (uiState.paletteOpen) {
+    window.requestAnimationFrame(() => {
+      const input = app.querySelector(".command-palette-input");
+      input?.focus();
+      input?.setSelectionRange?.(input.value.length, input.value.length);
+    });
+  }
+  attachCallMedia();
+  processCallSignals().catch(reportError);
 }
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && uiState.paletteOpen) {
+    event.preventDefault();
+    uiState.paletteOpen = false;
+    render();
+    return;
+  }
+  const command = currentSnapshot.ui_ontology.commands.find((candidate) =>
+    shortcutMatches(event, candidate.shortcut)
+  );
+  if (!command) return;
+  event.preventDefault();
+  runCommand(command.id).catch(reportError);
+});
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function header(snapshot) {
@@ -78,6 +172,7 @@ function header(snapshot) {
     customizationEditor(snapshot),
     shellMode(),
     runtimeState(snapshot),
+    commandButton("workbench.commandPalette.open"),
     commandButton("shell.refresh"),
   );
 
@@ -196,25 +291,65 @@ function preferenceForm(preference, input, request) {
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function workbenchShell(snapshot) {
-  const shellEl = element("section", "workbench");
-  const mainRegion = element("div", "workbench-region main-region");
-  const sideRegion = element("aside", "workbench-region side-region");
-
-  for (const view of snapshot.ui_ontology.views) {
-    const panelEl = workbenchPanel(view, snapshot);
-    if (sidePlace(view.place_id)) {
-      sideRegion.append(panelEl);
-    } else {
-      mainRegion.append(panelEl);
+  const container = element("section", "workbench-container");
+  const hidden = snapshot.ui_ontology.views.filter((view) => !view.visible);
+  if (hidden.length > 0) {
+    const shelf = element("nav", "hidden-view-shelf");
+    shelf.setAttribute("aria-label", "Hidden workbench views");
+    shelf.append(element("span", "muted", "Hidden views"));
+    for (const view of hidden) {
+      shelf.append(actionButton(`Show ${view.label}`, () => {
+        saveLayout(setViewVisible(snapshot.ui_ontology.views, view.id, true)).catch(reportError);
+      }));
     }
+    shelf.append(commandButton("workbench.layout.reset"));
+    container.append(shelf);
   }
 
-  shellEl.append(mainRegion, sideRegion);
-  return shellEl;
+  const shellEl = element("section", "workbench");
+  for (const place of snapshot.ui_ontology.places) {
+    shellEl.append(dockZone(place, snapshot));
+  }
+  container.append(shellEl);
+  return container;
 }
 
-function sidePlace(placeId) {
-  return placeId === "sidebar" || placeId === "activity" || placeId === "inspector";
+function dockZone(place, snapshot) {
+  const zone = element("section", `dock-zone dock-${place.id}`);
+  zone.dataset.placeId = place.id;
+  zone.setAttribute("aria-label", `${place.label} dock`);
+  const heading = element("div", "dock-zone-header");
+  heading.append(
+    element("span", "dock-zone-label", place.label),
+    element("span", "view-id", place.id),
+  );
+  zone.append(heading);
+  zone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    zone.dataset.dragOver = "true";
+  });
+  zone.addEventListener("dragleave", () => delete zone.dataset.dragOver);
+  zone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    delete zone.dataset.dragOver;
+    const viewId = event.dataTransfer?.getData("text/x-voxelle-view")
+      || uiState.draggedViewId;
+    if (viewId) {
+      saveLayout(moveView(snapshot.ui_ontology.views, viewId, place.id)).catch(reportError);
+    }
+  });
+
+  const views = snapshot.ui_ontology.views
+    .filter((view) => view.visible && view.place_id === place.id)
+    .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
+  if (views.length === 0) {
+    zone.append(element("p", "dock-empty", "Drop a view here"));
+  } else {
+    for (const view of views) {
+      zone.append(workbenchPanel(view, snapshot));
+    }
+  }
+  return zone;
 }
 
 /**
@@ -226,7 +361,7 @@ function workbenchPanel(viewDefinition, snapshot) {
   section.dataset.panelId = `panel.${viewDefinition.id}`;
   section.dataset.viewId = viewDefinition.id;
   section.dataset.placeId = viewDefinition.place_id;
-  section.append(panelHeader(viewDefinition));
+  section.append(panelHeader(viewDefinition, snapshot));
 
   const view = element("div", "panel-view");
   const renderer = viewRenderers[viewDefinition.id] ?? unknownView;
@@ -235,13 +370,48 @@ function workbenchPanel(viewDefinition, snapshot) {
   return section;
 }
 
-/** @param {import("./shell-contract").UiView} viewDefinition */
-function panelHeader(viewDefinition) {
+function panelHeader(viewDefinition, snapshot) {
   const headerEl = element("div", "panel-header");
+  headerEl.draggable = true;
+  headerEl.addEventListener("dragstart", (event) => {
+    uiState.draggedViewId = viewDefinition.id;
+    event.dataTransfer?.setData("text/x-voxelle-view", viewDefinition.id);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  });
+  headerEl.addEventListener("dragend", () => {
+    uiState.draggedViewId = "";
+  });
   const titleGroup = element("div", "panel-title");
   titleGroup.append(element("h2", "", viewDefinition.label));
   titleGroup.append(element("span", "view-id", viewDefinition.id));
-  headerEl.append(titleGroup);
+  const controls = element("div", "panel-controls");
+  const placeSelect = element("select", "dock-select");
+  placeSelect.setAttribute("aria-label", `Dock ${viewDefinition.label}`);
+  for (const place of snapshot.ui_ontology.places) {
+    const option = element("option", "", place.label);
+    option.value = place.id;
+    option.selected = place.id === viewDefinition.place_id;
+    placeSelect.append(option);
+  }
+  placeSelect.addEventListener("pointerdown", (event) => event.stopPropagation());
+  placeSelect.addEventListener("change", () => {
+    saveLayout(moveView(snapshot.ui_ontology.views, viewDefinition.id, placeSelect.value))
+      .catch(reportError);
+  });
+  controls.append(
+    actionButton("↑", () => {
+      saveLayout(shiftView(snapshot.ui_ontology.views, viewDefinition.id, -1)).catch(reportError);
+    }, `Move ${viewDefinition.label} earlier`),
+    actionButton("↓", () => {
+      saveLayout(shiftView(snapshot.ui_ontology.views, viewDefinition.id, 1)).catch(reportError);
+    }, `Move ${viewDefinition.label} later`),
+    placeSelect,
+    actionButton("×", () => {
+      saveLayout(setViewVisible(snapshot.ui_ontology.views, viewDefinition.id, false))
+        .catch(reportError);
+    }, `Hide ${viewDefinition.label}`),
+  );
+  headerEl.append(titleGroup, controls);
   return headerEl;
 }
 
@@ -257,6 +427,24 @@ function profileSummaryView(snapshot) {
       element("p", "summary", snapshot.home_error ?? "Home state is not available."),
       commandButton("home.init"),
     );
+    const joinForm = element("form", "field-stack");
+    joinForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      runCommand("space.join").catch(reportError);
+    });
+    const inviteInput = element("textarea", "peer-record-input");
+    inviteInput.placeholder = "Paste signed .voxinvite JSON";
+    inviteInput.value = uiState.spaceInviteDraft;
+    inviteInput.addEventListener("input", () => {
+      uiState.spaceInviteDraft = inviteInput.value;
+    });
+    joinForm.append(
+      element("h3", "", "Or join a space"),
+      element("p", "summary", "Paste the signed invite; Voxelle will create your identity, join, sync, and go online."),
+      inviteInput,
+      submitButton("space.join"),
+    );
+    empty.append(joinForm);
     fragment.append(empty);
     return fragment;
   }
@@ -393,12 +581,15 @@ function activityView(snapshot) {
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function inviteExchangeView(snapshot) {
   const fragment = document.createDocumentFragment();
-  const invite = snapshot.home?.invite?.peer_record_json ?? "";
+  const invite = snapshot.home?.invite?.space_invite_json ?? "";
   const inviteGroup = element("div", "field-stack");
-  inviteGroup.append(element("h3", "", "Local Invite"));
-  inviteGroup.append(element("p", "summary", "After this peer is online, copy this JSON into another peer's Import Peer field."));
+  inviteGroup.append(element("h3", "", "Signed Space Invite"));
+  inviteGroup.append(element("p", "summary", "Create an expiring invite after going online. It grants membership; bootstrap addresses inside it are signed availability hints."));
   inviteGroup.append(element("pre", "invite-json", invite));
-  inviteGroup.append(commandButton("invite.copy"));
+  inviteGroup.append(
+    commandButton("space.invite.create"),
+    commandButton("invite.copy"),
+  );
 
   const importGroup = element("form", "field-stack");
   importGroup.addEventListener("submit", (event) => {
@@ -439,9 +630,15 @@ function fieldTestView(snapshot) {
     },
     {
       label: "Invite available",
-      status: snapshot.home?.invite ? "working" : "unknown",
-      command: snapshot.home?.invite ? "invite.copy" : "runtime.goOnline",
-      detail: snapshot.home?.invite?.peer_record.endpoint.addr ?? "go online to create an invite",
+      status: snapshot.home?.invite?.space_invite_json ? "working" : "unknown",
+      command: snapshot.home?.invite?.space_invite_json
+        ? "invite.copy"
+        : snapshot.home?.invite
+          ? "space.invite.create"
+          : "runtime.goOnline",
+      detail: snapshot.home?.invite?.space_invite_json
+        ? "signed membership capability ready"
+        : "go online, then create a signed invite",
     },
     {
       label: "Peer imported",
@@ -509,6 +706,131 @@ function peerListView(snapshot) {
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function channelListView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const list = element("ol", "peer-list");
+  for (const channel of snapshot.home?.channels ?? []) {
+    const row = element("li", channel.selected ? "peer-row selected" : "peer-row");
+    const body = element("div", "peer-body");
+    body.append(
+      element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channel.name}${channel.unread_count > 0 ? ` (${channel.unread_count})` : ""}`),
+      element("span", "muted", channel.topic),
+    );
+    const actions = element("div", "row-actions");
+    actions.append(commandButton("channel.select", { room_id: channel.room_id }));
+    if (channel.visibility === "private") {
+      actions.append(commandButton("channel.rotateKey", { room_id: channel.room_id }));
+    }
+    row.append(body, actions);
+    list.append(row);
+  }
+  const form = element("form", "field-stack");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("channel.create").catch(reportError);
+  });
+  form.append(
+    labeledInput("Name", "new-channel", uiState.channelNameDraft, (value) => { uiState.channelNameDraft = value; }),
+    labeledInput("Topic", "What belongs here?", uiState.channelTopicDraft, (value) => { uiState.channelTopicDraft = value; }),
+    labeledInput("Private members", "Peer IDs, comma-separated; blank means public", uiState.channelMembersDraft, (value) => { uiState.channelMembersDraft = value; }),
+    submitButton("channel.create"),
+  );
+  fragment.append(list, form);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function memberProfilesView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const list = element("ol", "peer-list");
+  for (const profile of snapshot.home?.profiles ?? []) {
+    const row = element("li", "peer-row");
+    const body = element("div", "peer-body");
+    body.append(
+      element("strong", "", profile.display_name),
+      element("span", "muted", profile.about),
+      element("span", "mono", shortId(profile.peer_id)),
+    );
+    row.append(body);
+    list.append(row);
+  }
+  const form = element("form", "field-stack");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("profile.update").catch(reportError);
+  });
+  form.append(
+    labeledInput("Display name", "Your name", uiState.profileNameDraft, (value) => { uiState.profileNameDraft = value; }),
+    labeledInput("About", "A short profile", uiState.profileAboutDraft, (value) => { uiState.profileAboutDraft = value; }),
+    submitButton("profile.update"),
+  );
+  fragment.append(list, form);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function roleListView(snapshot) {
+  const list = element("ol", "peer-list");
+  for (const role of snapshot.home?.roles ?? []) {
+    const row = element("li", "peer-row");
+    const body = element("div", "peer-body");
+    body.append(
+      element("strong", "", role.name),
+      element("span", "muted", `${role.member_count} member(s)`),
+      element("span", "mono", role.permissions.join(", ") || "no permissions"),
+    );
+    row.append(body);
+    list.append(row);
+  }
+  const controls = element("div", "control-row");
+  controls.append(commandButton("role.create"), commandButton("role.grant"));
+  list.append(controls);
+  return list;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function messageSearchView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const form = element("form", "field-stack");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("message.search").catch(reportError);
+  });
+  form.append(labeledInput("Search", "Words in messages or attachment names", uiState.searchDraft, (value) => { uiState.searchDraft = value; }), submitButton("message.search"));
+  const results = element("ol", "message-list");
+  for (const result of snapshot.search_results) {
+    const row = element("li", "message remote");
+    row.append(
+      element("span", "mono", result.room_id),
+      element("span", "muted", shortId(result.message.author_peer_id)),
+      element("p", "", result.message.text),
+    );
+    results.append(row);
+  }
+  fragment.append(form, results);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function notificationCenterView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const controls = element("div", "control-row");
+  controls.append(commandButton("channel.markRead"));
+  const list = element("ol", "activity-list");
+  for (const notification of snapshot.home?.notifications ?? []) {
+    const row = element("li", "");
+    row.append(
+      element("strong", "", `@ ${shortId(notification.author_peer_id)}`),
+      element("span", "mono", notification.room_id),
+      element("span", "", notification.summary),
+    );
+    list.append(row);
+  }
+  fragment.append(controls, list);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function roomTimelineView(snapshot) {
   const messages = snapshot.home?.room.messages ?? [];
   const list = element("ol", "message-list");
@@ -522,7 +844,31 @@ function roomTimelineView(snapshot) {
       time.dateTime = new Date(message.created_ms).toISOString();
       row.append(time);
     }
-    row.append(element("p", "", message.text));
+    row.append(element("p", message.redacted ? "muted" : "", message.text));
+    if (message.edited_ms !== null) row.append(element("small", "muted", "edited"));
+    if (message.pinned) row.append(element("small", "muted", "pinned"));
+    if (message.reply_count > 0) row.append(element("small", "muted", `${message.reply_count} repl${message.reply_count === 1 ? "y" : "ies"}`));
+    for (const reaction of message.reactions) {
+      row.append(commandButton("reaction.add", { target_event_id: message.event_id, emoji: reaction.emoji, room: snapshot.home?.room.room_id ?? null }));
+    }
+    for (const attachment of message.attachments) {
+      const link = element("a", "mono", `${attachment.filename} · ${attachment.sha256}`);
+      link.href = `data:${attachment.mime};base64,${attachment.data_b64}`;
+      link.download = attachment.filename;
+      row.append(link);
+    }
+    const actions = element("div", "row-actions");
+    actions.append(
+      commandButton("reaction.add", { target_event_id: message.event_id, emoji: "👍", room: snapshot.home?.room.room_id ?? null }),
+      commandButton("pin.add", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
+    );
+    if (own) {
+      actions.append(
+        commandButton("message.edit", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
+        commandButton("message.redact", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
+      );
+    }
+    row.append(actions);
     list.append(row);
   }
 
@@ -541,13 +887,277 @@ function messageComposerView() {
   input.addEventListener("input", () => {
     uiState.messageDraft = input.value;
   });
-  form.append(input, submitButton("message.send"));
+  const fileInput = element("input", "");
+  fileInput.type = "file";
+  fileInput.setAttribute("aria-label", "Attach file");
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    if (file.size > 256 * 1024) {
+      reportError(new Error("attachments are limited to 256 KiB"));
+      return;
+    }
+    const data_b64 = await fileAsBase64(file);
+    await runCommand("attachment.add", {
+      filename: file.name,
+      mime: file.type || "application/octet-stream",
+      data_b64,
+      room: null,
+    });
+  });
+  form.append(input, submitButton("message.send"), fileInput);
 
   return form;
 }
 
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function callMeshView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const call = snapshot.home?.call;
+  const localPeerId = snapshot.home?.profile.peer_id;
+  const joined = Boolean(localPeerId && call?.participants.includes(localPeerId));
+  const controls = element("div", "control-row");
+  controls.append(
+    commandButton("call.join", { video: false }),
+    commandButton("call.join", { video: true }),
+    commandButton("call.leave"),
+  );
+  controls.children[0].textContent = "Join voice";
+  controls.children[1].textContent = "Join video";
+  const status = element(
+    "p",
+    "summary",
+    joined
+      ? `${call?.participants.length ?? 0} of 4 peers in direct mesh`
+      : "Media stays in direct WebRTC connections; replicated signed events carry signaling only.",
+  );
+  const videos = element("div", "call-grid");
+  if (joined) {
+    const localVideo = element("video", "call-video");
+    localVideo.autoplay = true;
+    localVideo.muted = true;
+    localVideo.playsInline = true;
+    localVideo.dataset.peerId = "local";
+    videos.append(callTile("You", localVideo));
+    for (const peerId of call?.participants ?? []) {
+      if (peerId === localPeerId) continue;
+      const video = element("video", "call-video");
+      video.autoplay = true;
+      video.playsInline = true;
+      video.dataset.peerId = peerId;
+      videos.append(callTile(shortId(peerId), video));
+    }
+  }
+  fragment.append(status);
+  if (uiState.mediaNotice) {
+    fragment.append(element("p", "call-warning", uiState.mediaNotice));
+  }
+  fragment.append(controls, videos);
+  return fragment;
+}
+
+function callTile(label, video) {
+  const tile = element("figure", "call-tile");
+  tile.append(video, element("figcaption", "mono", label));
+  return tile;
+}
+
+function attachCallMedia() {
+  const localVideo = app.querySelector('video[data-peer-id="local"]');
+  if (localVideo && localVideo.srcObject !== uiState.localMediaStream) {
+    localVideo.srcObject = uiState.localMediaStream;
+  }
+  for (const [peerId, stream] of uiState.remoteMediaStreams) {
+    const video = [...app.querySelectorAll("video[data-peer-id]")]
+      .find((candidate) => candidate.dataset.peerId === peerId);
+    if (video && video.srcObject !== stream) video.srcObject = stream;
+  }
+}
+
+async function processCallSignals() {
+  if (uiState.processingCallSignals || !uiState.localMediaStream || !currentSnapshot.home) return;
+  uiState.processingCallSignals = true;
+  try {
+    const localPeerId = currentSnapshot.home.profile.peer_id;
+    const call = currentSnapshot.home.call;
+    for (const signal of call.signals) {
+      if (uiState.seenCallSignals.has(signal.event_id)) continue;
+      if (signal.kind === "CALL_JOIN" && signal.author_peer_id !== localPeerId) {
+        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+        if (localPeerId.localeCompare(signal.author_peer_id) < 0 && pc.signalingState === "stable") {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await sendCallSignal("offer", signal.author_peer_id, JSON.stringify(offer), null);
+        }
+      } else if (signal.kind === "CALL_LEAVE" && signal.author_peer_id !== localPeerId) {
+        closePeerConnection(signal.author_peer_id);
+      } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_OFFER" && signal.sdp) {
+        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+        await pc.setRemoteDescription(JSON.parse(signal.sdp));
+        await flushPendingIce(signal.author_peer_id, pc);
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await sendCallSignal("answer", signal.author_peer_id, JSON.stringify(answer), null);
+      } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_ANSWER" && signal.sdp) {
+        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+        await pc.setRemoteDescription(JSON.parse(signal.sdp));
+        await flushPendingIce(signal.author_peer_id, pc);
+      } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_ICE" && signal.candidate) {
+        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+        const candidate = JSON.parse(signal.candidate);
+        if (pc.remoteDescription) await pc.addIceCandidate(candidate);
+        else {
+          const pending = uiState.pendingIce.get(signal.author_peer_id) ?? [];
+          pending.push(candidate);
+          uiState.pendingIce.set(signal.author_peer_id, pending);
+        }
+      }
+      uiState.seenCallSignals.add(signal.event_id);
+    }
+  } finally {
+    uiState.processingCallSignals = false;
+    attachCallMedia();
+  }
+}
+
+function ensurePeerConnection(peerId, callId) {
+  const existing = uiState.peerConnections.get(peerId);
+  if (existing) return existing;
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  for (const track of uiState.localMediaStream?.getTracks() ?? []) {
+    pc.addTrack(track, uiState.localMediaStream);
+  }
+  pc.addEventListener("icecandidate", (event) => {
+    if (event.candidate) {
+      sendCallSignal("ice", peerId, null, JSON.stringify(event.candidate.toJSON())).catch(reportError);
+    }
+  });
+  pc.addEventListener("track", (event) => {
+    let stream = uiState.remoteMediaStreams.get(peerId);
+    if (!stream) {
+      stream = new MediaStream();
+      uiState.remoteMediaStreams.set(peerId, stream);
+    }
+    stream.addTrack(event.track);
+    attachCallMedia();
+  });
+  pc.addEventListener("connectionstatechange", () => {
+    if (["failed", "closed"].includes(pc.connectionState)) closePeerConnection(peerId);
+  });
+  pc.__voxelleCallId = callId;
+  uiState.peerConnections.set(peerId, pc);
+  return pc;
+}
+
+async function flushPendingIce(peerId, pc) {
+  for (const candidate of uiState.pendingIce.get(peerId) ?? []) {
+    await pc.addIceCandidate(candidate);
+  }
+  uiState.pendingIce.delete(peerId);
+}
+
+async function sendCallSignal(signal_type, target_peer_id, sdp, candidate) {
+  currentSnapshot = await shell.execute("call.signal", {
+    room: currentSnapshot.home?.room.room_id ?? null,
+    call_id: currentSnapshot.home?.call.call_id ?? "",
+    target_peer_id,
+    signal_type,
+    sdp,
+    candidate,
+  });
+  render();
+}
+
+function closePeerConnection(peerId) {
+  uiState.peerConnections.get(peerId)?.close();
+  uiState.peerConnections.delete(peerId);
+  uiState.remoteMediaStreams.delete(peerId);
+  uiState.pendingIce.delete(peerId);
+}
+
+function stopLocalMedia() {
+  for (const track of uiState.localMediaStream?.getTracks() ?? []) track.stop();
+  uiState.localMediaStream = null;
+  for (const peerId of [...uiState.peerConnections.keys()]) closePeerConnection(peerId);
+  uiState.seenCallSignals.clear();
+}
+
 function unknownView() {
   return element("p", "summary", "Unknown view");
+}
+
+function commandPalette(snapshot) {
+  const backdrop = element("div", "command-palette-backdrop");
+  backdrop.addEventListener("pointerdown", (event) => {
+    if (event.target === backdrop) {
+      uiState.paletteOpen = false;
+      render();
+    }
+  });
+  const dialog = element("section", "command-palette");
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-label", "Command Palette");
+  const form = element("form", "command-palette-form");
+  const input = element("input", "command-palette-input");
+  input.type = "search";
+  input.placeholder = "Type a command";
+  input.value = uiState.paletteQuery;
+  input.setAttribute("aria-label", "Search commands");
+  const list = element("ol", "command-palette-list");
+  const updateResults = () => {
+    uiState.paletteQuery = input.value;
+    populatePaletteResults(list, snapshot);
+  };
+  input.addEventListener("input", updateResults);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const first = filterPaletteCommands(
+      snapshot.ui_ontology.commands,
+      uiState.paletteQuery,
+    )[0];
+    if (first) executePaletteCommand(first.id);
+  });
+  form.append(input);
+  dialog.append(form);
+  populatePaletteResults(list, snapshot);
+  dialog.append(list);
+  backdrop.append(dialog);
+  return backdrop;
+}
+
+function populatePaletteResults(list, snapshot) {
+  list.replaceChildren();
+  const commands = filterPaletteCommands(
+    snapshot.ui_ontology.commands,
+    uiState.paletteQuery,
+  );
+  if (commands.length === 0) {
+    list.append(element("li", "command-palette-empty", "No matching commands"));
+  }
+  for (const command of commands) {
+    const item = element("li", "");
+    const button = element("button", "command-palette-result");
+    button.type = "button";
+    const copy = element("span", "command-palette-copy");
+    copy.append(
+      element("strong", "", command.label),
+      element("small", "muted", command.description),
+    );
+    button.append(copy);
+    if (command.shortcut) {
+      button.append(element("kbd", "", command.shortcut.replace("Mod", navigator.platform.includes("Mac") ? "⌘" : "Ctrl")));
+    }
+    button.addEventListener("click", () => executePaletteCommand(command.id));
+    item.append(button);
+    list.append(item);
+  }
+}
+
+function executePaletteCommand(commandId) {
+  uiState.paletteOpen = false;
+  uiState.paletteQuery = "";
+  runCommand(commandId).catch(reportError);
 }
 
 /**
@@ -577,6 +1187,10 @@ function commandButton(command, payload) {
   const button = element("button", "command-button", commandLabel(command));
   button.type = "button";
   button.dataset.command = command;
+  const definition = currentSnapshot.ui_ontology.commands.find((item) => item.id === command);
+  if (definition?.shortcut) {
+    button.title = `${definition.description} (${definition.shortcut})`;
+  }
   button.disabled = uiState.busyCommand !== "";
   if (uiState.busyCommand === command) {
     button.textContent = "Working";
@@ -585,6 +1199,20 @@ function commandButton(command, payload) {
     runCommand(command, payload).catch(reportError);
   });
   return button;
+}
+
+function actionButton(label, action, title = label) {
+  const button = element("button", "command-button", label);
+  button.type = "button";
+  button.title = title;
+  button.disabled = uiState.busyCommand !== "";
+  button.addEventListener("pointerdown", (event) => event.stopPropagation());
+  button.addEventListener("click", action);
+  return button;
+}
+
+async function saveLayout(placements) {
+  await runCommand("workbench.layout.save", { placements });
 }
 
 /** @param {string} command */
@@ -605,6 +1233,16 @@ async function runCommand(command, payload) {
   render();
   try {
     switch (command) {
+      case "workbench.commandPalette.open":
+        uiState.paletteOpen = true;
+        uiState.paletteQuery = "";
+        return;
+      case "message.composer.focus":
+        uiState.paletteOpen = false;
+        window.requestAnimationFrame(() => {
+          app.querySelector(".message-input")?.focus();
+        });
+        return;
       case "shell.refresh":
         await refresh();
         return;
@@ -619,6 +1257,16 @@ async function runCommand(command, payload) {
         return;
       case "runtime.goOffline":
         currentSnapshot = await shell.execute(command);
+        return;
+      case "space.invite.create":
+        currentSnapshot = await shell.execute(command, { expires_minutes: 1440 });
+        return;
+      case "space.join":
+        currentSnapshot = await shell.execute(command, {
+          space_invite_json: uiState.spaceInviteDraft,
+          max_events: 4096,
+        });
+        uiState.spaceInviteDraft = "";
         return;
       case "peer.import":
         currentSnapshot = await shell.execute(command, {
@@ -640,11 +1288,122 @@ async function runCommand(command, payload) {
         return;
       case "message.send":
         currentSnapshot = await shell.execute(command, {
-          text: uiState.messageDraft,
-          room: null,
+          text: payload?.text ?? uiState.messageDraft,
+          room: payload?.room ?? null,
+          mentions: payload?.mentions ?? [],
+          thread_root_event_id: payload?.thread_root_event_id ?? null,
         });
         uiState.messageDraft = "";
         return;
+      case "channel.select":
+        currentSnapshot = await shell.execute(command, payload);
+        return;
+      case "channel.markRead":
+        currentSnapshot = await shell.execute(command, payload ?? { room_id: null });
+        return;
+      case "channel.rotateKey":
+        currentSnapshot = await shell.execute(command, payload);
+        return;
+      case "channel.create":
+        currentSnapshot = await shell.execute(command, payload ?? {
+          name: uiState.channelNameDraft,
+          topic: uiState.channelTopicDraft,
+          private_members: uiState.channelMembersDraft.split(",").map((value) => value.trim()).filter(Boolean),
+        });
+        uiState.channelNameDraft = "";
+        uiState.channelTopicDraft = "";
+        uiState.channelMembersDraft = "";
+        return;
+      case "message.edit": {
+        const text = payload?.text ?? window.prompt("New message text");
+        if (text === null) return;
+        currentSnapshot = await shell.execute(command, { ...payload, text, mentions: payload?.mentions ?? [] });
+        return;
+      }
+      case "message.redact":
+      case "reaction.add":
+      case "reaction.remove":
+      case "pin.add":
+      case "pin.remove":
+      case "attachment.add":
+        currentSnapshot = await shell.execute(command, payload);
+        return;
+      case "profile.update":
+        currentSnapshot = await shell.execute(command, payload ?? {
+          display_name: uiState.profileNameDraft,
+          about: uiState.profileAboutDraft,
+        });
+        uiState.profileNameDraft = "";
+        uiState.profileAboutDraft = "";
+        return;
+      case "message.search":
+        currentSnapshot = await shell.execute(command, payload ?? {
+          query: uiState.searchDraft,
+          room: null,
+          limit: 50,
+        });
+        return;
+      case "call.join": {
+        if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
+          throw new Error("This WebView does not provide WebRTC media capture");
+        }
+        stopLocalMedia();
+        const capture = await captureCallMedia(navigator.mediaDevices, Boolean(payload?.video));
+        uiState.localMediaStream = capture.stream;
+        uiState.mediaNotice = capture.notice;
+        try {
+          currentSnapshot = await shell.execute(command, {
+            room: currentSnapshot.home?.room.room_id ?? null,
+            video: capture.video,
+          });
+          uiState.lastCallHeartbeatMs = Date.now();
+        } catch (error) {
+          stopLocalMedia();
+          throw error;
+        }
+        return;
+      }
+      case "call.leave":
+        currentSnapshot = await shell.execute(command, {
+          room: currentSnapshot.home?.room.room_id ?? null,
+          call_id: currentSnapshot.home?.call.call_id ?? "",
+        });
+        stopLocalMedia();
+        uiState.mediaNotice = null;
+        uiState.lastCallHeartbeatMs = 0;
+        return;
+      case "call.heartbeat":
+        currentSnapshot = await shell.execute(command, payload);
+        uiState.lastCallHeartbeatMs = Date.now();
+        return;
+      case "call.signal":
+        currentSnapshot = await shell.execute(command, payload);
+        return;
+      case "role.create": {
+        const name = payload?.name ?? window.prompt("Role name");
+        if (!name) return;
+        const permissionsText = payload?.permissions?.join(",") ?? window.prompt("Permissions (comma-separated)", "message:moderate,message:pin") ?? "";
+        currentSnapshot = await shell.execute(command, {
+          name,
+          permissions: payload?.permissions ?? permissionsText.split(",").map((value) => value.trim()).filter(Boolean),
+        });
+        return;
+      }
+      case "role.grant":
+      case "role.revoke": {
+        const peer_id = payload?.peer_id ?? window.prompt("Member peer ID");
+        const role_id = payload?.role_id ?? window.prompt("Role ID");
+        if (!peer_id || !role_id) return;
+        currentSnapshot = await shell.execute(command, { peer_id, role_id });
+        return;
+      }
+      case "member.ban":
+      case "member.unban": {
+        const peer_id = payload?.peer_id ?? window.prompt("Member peer ID");
+        if (!peer_id) return;
+        currentSnapshot = await shell.execute(command, { peer_id, reason: payload?.reason ?? "" });
+        return;
+      }
       case "invite.copy":
         if (shell.mode === "preview") {
           throw new Error(
@@ -652,7 +1411,7 @@ async function runCommand(command, payload) {
           );
         }
         await navigator.clipboard?.writeText(
-          currentSnapshot.home?.invite?.peer_record_json ?? "",
+          currentSnapshot.home?.invite?.space_invite_json ?? "",
         );
         appendActivity(currentSnapshot, "copied invite");
         return;
@@ -662,8 +1421,17 @@ async function runCommand(command, payload) {
           /** @type {import("./shell-contract").SetUiPreferenceRequest} */ (payload),
         );
         return;
+      case "workbench.layout.save":
+        currentSnapshot = await shell.execute(
+          command,
+          /** @type {import("./shell-contract").SetWorkbenchLayoutRequest} */ (payload),
+        );
+        return;
+      case "workbench.layout.reset":
+        currentSnapshot = await shell.execute(command, {});
+        return;
       default:
-        appendActivity(currentSnapshot, `unhandled ${command}`);
+        throw new Error(`No command handler is registered for ${command}`);
     }
   } finally {
     uiState.busyCommand = "";
@@ -750,6 +1518,17 @@ function labeledInput(label, placeholder, value, onInput) {
 function blankToNull(value) {
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+/** @param {File} file */
+async function fileAsBase64(file) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => resolve(String(reader.result)));
+    reader.addEventListener("error", () => reject(reader.error ?? new Error("file read failed")));
+    reader.readAsDataURL(file);
+  });
+  return String(dataUrl).split(",", 2)[1] ?? "";
 }
 
 /**

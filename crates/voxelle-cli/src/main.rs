@@ -5,7 +5,9 @@ use std::fs;
 use std::io::{self, Write};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use voxelle_app::{IdentityFile, VoxelleHome, DEFAULT_ROOM_ID};
+use voxelle_app::{
+    read_identity_vault, write_identity_vault, RecoveryKitV1, VoxelleHome, DEFAULT_ROOM_ID,
+};
 use voxelle_core::{
     accept_event, create_delegation, create_event, PeerIdentity, RoomContext, GOVERNANCE_ROOM_ID,
 };
@@ -45,6 +47,10 @@ enum Command {
         #[arg(long)]
         room: Option<String>,
     },
+    Recovery {
+        #[command(subcommand)]
+        command: RecoveryCommand,
+    },
     Identity {
         #[command(subcommand)]
         command: IdentityCommand,
@@ -64,6 +70,24 @@ enum Command {
     Diagnose {
         #[command(subcommand)]
         command: DiagnoseCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RecoveryCommand {
+    Export {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        out: PathBuf,
+    },
+    Restore {
+        #[arg(long)]
+        home: PathBuf,
+        #[arg(long)]
+        kit: PathBuf,
+        #[arg(long, default_value_t = 4096)]
+        max_events_per_peer: usize,
     },
 }
 
@@ -158,6 +182,21 @@ async fn main() -> Result<()> {
         Command::Init { home, room } => app_init(&home, &room),
         Command::Send { home, text, room } => app_send(&home, &text, room.as_deref()),
         Command::Read { home, room } => app_read(&home, room.as_deref()),
+        Command::Recovery { command } => match command {
+            RecoveryCommand::Export { home, out } => VoxelleHome::new(home).write_recovery_kit(out),
+            RecoveryCommand::Restore {
+                home,
+                kit,
+                max_events_per_peer,
+            } => {
+                let kit: RecoveryKitV1 = read_json(&kit)?;
+                let report = VoxelleHome::new(home)
+                    .recover_from_kit(&kit, max_events_per_peer)
+                    .await?;
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                Ok(())
+            }
+        },
         Command::Identity { command } => match command {
             IdentityCommand::Create { out } => identity_create(&out),
         },
@@ -223,35 +262,33 @@ fn app_read(home: &Path, room: Option<&str>) -> Result<()> {
 
 fn identity_create(out: &Path) -> Result<()> {
     let identity = PeerIdentity::generate()?;
-    let file = IdentityFile::from_identity(&identity);
-    write_json(out, &file)?;
-    println!("{}", identity.peer.id);
+    write_identity_vault(out, &identity)?;
+    println!("{}", identity.peer_id);
     Ok(())
 }
 
 fn room_create(identity_path: &Path, store_path: &Path, room: &str) -> Result<()> {
     let identity = load_identity(identity_path)?;
     let store = Store::open(store_path)?;
-    let context = RoomContext::new(identity.peer.id.clone());
+    let context = RoomContext::new(identity.peer_id.clone());
     let join = member_join(&identity)?;
     let accepted = accept_event(&join, &[], &context, now_ms())
         .map_err(|e| anyhow::anyhow!("join rejected: {e:?}"))?;
     store.insert_accepted_event(accepted, now_ms())?;
     println!("room={room}");
-    println!("authority={}", identity.peer.id);
+    println!("authority={}", identity.peer_id);
     Ok(())
 }
 
 fn event_send(identity_path: &Path, store_path: &Path, room: &str, text: &str) -> Result<()> {
     let identity = load_identity(identity_path)?;
     let store = Store::open(store_path)?;
-    let context = RoomContext::new(identity.peer.id.clone());
+    let context = RoomContext::new(identity.peer_id.clone());
     let governance = store.room_events(GOVERNANCE_ROOM_ID)?;
     let event = create_event(
         &identity,
         create_delegation(
-            &identity.peer,
-            &identity.device,
+            &identity,
             now_ms() - 60_000,
             now_ms() + 30 * 24 * 60 * 60_000,
             vec!["room:post".to_string()],
@@ -356,8 +393,7 @@ fn member_join(identity: &PeerIdentity) -> Result<voxelle_core::EventV1> {
     create_event(
         identity,
         create_delegation(
-            &identity.peer,
-            &identity.device,
+            identity,
             now_ms() - 60_000,
             now_ms() + 30 * 24 * 60 * 60_000,
             vec!["room:join".to_string()],
@@ -367,16 +403,15 @@ fn member_join(identity: &PeerIdentity) -> Result<voxelle_core::EventV1> {
         "MEMBER_JOIN",
         vec![],
         serde_json::json!({
-            "peer_id": identity.peer.id,
+            "peer_id": identity.peer_id,
             "peer_pub": identity.peer.spki_b64,
+            "encryption_pub": identity.encryption_public_b64(),
         }),
     )
 }
 
 fn load_identity(path: &Path) -> Result<PeerIdentity> {
-    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let file: IdentityFile = serde_json::from_str(&raw).context("parse identity file")?;
-    file.to_identity()
+    read_identity_vault(path)
 }
 
 fn load_or_create_certificate(path: &Path) -> Result<QuicCertificate> {
