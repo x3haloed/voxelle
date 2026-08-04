@@ -62,6 +62,8 @@ export type MarkReadRequest = { room_id: string | null, };
 
 export type CreateChannelRequest = { name: string, topic: string, private_members: Array<string>, };
 
+export type RotateChannelKeyRequest = { room_id: string, };
+
 export type MessageTargetRequest = { target_event_id: string, room: string | null, };
 
 export type EditMessageRequest = { target_event_id: string, text: string, room: string | null, mentions: Array<string>, };

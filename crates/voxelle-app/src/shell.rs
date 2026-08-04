@@ -32,6 +32,7 @@ impl ShellState {
             "channel.select" => host.select_channel(parse_request(payload)?),
             "channel.markRead" => host.mark_read(parse_request(payload)?),
             "channel.create" => host.create_channel(parse_request(payload)?).await,
+            "channel.rotateKey" => host.rotate_channel_key(parse_request(payload)?).await,
             "message.edit" => host.edit_message(parse_request(payload)?).await,
             "message.redact" => host.redact_message(parse_request(payload)?).await,
             "reaction.add" => host.set_reaction(parse_request(payload)?, true).await,

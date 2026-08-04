@@ -15,9 +15,9 @@ use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
     accept_event, create_delegation, create_event, create_space, create_space_invite_event,
-    derive_governance_state, topo_sort_deterministic, validate_space_at, validate_space_invite_at,
-    ChannelVisibility, EventV1, IdentityProofV1, PeerIdentity, RecoveryCardV1, RoomContext,
-    SpaceV1,
+    derive_governance_state, topo_sort_deterministic, validate_room_event_semantics,
+    validate_space_at, validate_space_invite_at, ChannelVisibility, EventV1, IdentityProofV1,
+    PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
@@ -25,6 +25,7 @@ use voxelle_net::{
 };
 use voxelle_store::Store;
 use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
 mod shell;
 
@@ -283,6 +284,34 @@ struct ReadStateFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct EncryptedRoomKeysFile {
+    v: u8,
+    nonce_b64: String,
+    ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RoomKeysV1 {
+    v: u8,
+    keys: BTreeMap<String, BTreeMap<u64, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct PrivateEventPlaintext {
+    kind: String,
+    body: serde_json::Value,
+}
+
+impl Default for RoomKeysV1 {
+    fn default() -> Self {
+        Self {
+            v: 1,
+            keys: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecoveryCapsuleV1 {
     pub v: u8,
     pub peer_id: String,
@@ -306,6 +335,7 @@ struct RecoveryPayloadV1 {
     known_peers: Vec<PeerRecord>,
     ui_preferences: UiPreferences,
     read_state: ReadStateFile,
+    room_keys: RoomKeysV1,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -511,6 +541,7 @@ pub fn shell_contract_typescript() -> String {
         SelectChannelRequest::decl(&cfg),
         MarkReadRequest::decl(&cfg),
         CreateChannelRequest::decl(&cfg),
+        RotateChannelKeyRequest::decl(&cfg),
         MessageTargetRequest::decl(&cfg),
         EditMessageRequest::decl(&cfg),
         ReactionRequest::decl(&cfg),
@@ -722,6 +753,11 @@ pub struct CreateChannelRequest {
     pub topic: String,
     #[serde(default)]
     pub private_members: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RotateChannelKeyRequest {
+    pub room_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1361,9 +1397,6 @@ impl VoxelleHome {
     }
 
     pub fn create_channel(&self, request: &CreateChannelRequest) -> Result<EventV1> {
-        if !request.private_members.is_empty() {
-            anyhow::bail!("private channels require an encrypted key epoch");
-        }
         let identity = self.load_identity()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
@@ -1389,6 +1422,32 @@ impl VoxelleHome {
         let suffix =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 6]>());
         let room_id = format!("{}:channel:{slug}-{suffix}", config.space.space_id);
+        let mut private_members: std::collections::BTreeSet<String> =
+            request.private_members.iter().cloned().collect();
+        let private = !private_members.is_empty();
+        let (key_epoch, key_packages, room_key) = if private {
+            private_members.insert(identity.peer_id.clone());
+            let governance = store.room_events(&config.space.governance_room_id)?;
+            let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+            if private_members
+                .iter()
+                .any(|peer_id| !state.members.contains(peer_id))
+            {
+                anyhow::bail!("private channel members must already belong to the space");
+            }
+            let mut room_key = [0_u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut room_key);
+            let packages = create_room_key_packages(
+                &room_id,
+                1,
+                &room_key,
+                &private_members,
+                &state.member_encryption_keys,
+            )?;
+            (1_u64, packages, Some(room_key))
+        } else {
+            (0_u64, Vec::new(), None)
+        };
         let event = create_event(
             &identity,
             create_delegation(
@@ -1402,16 +1461,54 @@ impl VoxelleHome {
             "CHANNEL_CREATE",
             store.room_heads(&config.space.governance_room_id)?,
             serde_json::json!({
-                "room_id": room_id,
+                "room_id": room_id.clone(),
                 "name": request.name,
                 "topic": request.topic,
-                "visibility": "public",
-                "private_members": [],
-                "key_epoch": 0,
+                "visibility": if private { "private" } else { "public" },
+                "private_members": private_members,
+                "key_epoch": key_epoch,
+                "key_packages": key_packages,
             }),
         )?;
         self.accept_local_event(&store, &config, &event)
             .context("create channel")?;
+        if let Some(room_key) = room_key {
+            self.store_room_key(&room_id, key_epoch, &room_key)?;
+        }
+        Ok(event)
+    }
+
+    pub fn rotate_channel_key(&self, request: &RotateChannelKeyRequest) -> Result<EventV1> {
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let channel = state
+            .channels
+            .get(&request.room_id)
+            .ok_or_else(|| anyhow::anyhow!("channel does not exist"))?;
+        if channel.visibility != ChannelVisibility::Private {
+            anyhow::bail!("only private channels have rotatable keys");
+        }
+        let epoch = channel.key_epoch.saturating_add(1);
+        let mut room_key = [0_u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut room_key);
+        let packages = create_room_key_packages(
+            &request.room_id,
+            epoch,
+            &room_key,
+            &channel.private_members,
+            &state.member_encryption_keys,
+        )?;
+        let event = self.create_governance_event(
+            "CHANNEL_KEY_ROTATE",
+            serde_json::json!({
+                "room_id": request.room_id,
+                "key_epoch": epoch,
+                "key_packages": packages,
+            }),
+        )?;
+        self.store_room_key(&request.room_id, epoch, &room_key)?;
         Ok(event)
     }
 
@@ -1469,9 +1566,8 @@ impl VoxelleHome {
 
     pub fn read_messages(&self, room: Option<&str>) -> Result<Vec<MessageView>> {
         let config = self.load_config()?;
-        let store = self.open_store()?;
         let room = room.unwrap_or(&config.default_room);
-        Ok(project_messages(store.room_events(room)?))
+        Ok(project_messages(self.decrypted_room_events(room)?))
     }
 
     pub fn channels(&self, selected_room: Option<&str>) -> Result<Vec<ChannelView>> {
@@ -1487,7 +1583,7 @@ impl VoxelleHome {
                 unread_counts.insert(
                     channel.room_id.clone(),
                     unread_count(
-                        store.room_events(&channel.room_id)?,
+                        self.decrypted_room_events(&channel.room_id)?,
                         read_state.last_read_event_ids.get(&channel.room_id),
                         &identity.peer_id,
                     ),
@@ -1550,10 +1646,9 @@ impl VoxelleHome {
     pub fn notifications(&self) -> Result<Vec<NotificationView>> {
         let identity = self.load_identity()?;
         let read_state = self.read_state()?;
-        let store = self.open_store()?;
         let mut notifications = Vec::new();
         for channel in self.channels(None)? {
-            let mut events = store.room_events(&channel.room_id)?;
+            let mut events = self.decrypted_room_events(&channel.room_id)?;
             events.sort_by(|left, right| {
                 left.created_ms
                     .cmp(&right.created_ms)
@@ -1725,23 +1820,172 @@ impl VoxelleHome {
         let config = self.load_config()?;
         let store = self.open_store()?;
         let room = room.unwrap_or(&config.default_room);
-        let event = create_event(
+        let created_ms = now_ms();
+        let parents = store.room_heads(room)?;
+        let semantic_event = create_event(
             &identity,
             create_delegation(
                 &identity,
-                now_ms() - 60_000,
-                now_ms() + 30 * 24 * 60 * 60_000,
+                created_ms - 60_000,
+                created_ms + 30 * 24 * 60 * 60_000,
                 vec!["room:post".to_string()],
             )?,
             room,
-            now_ms(),
+            created_ms,
             kind,
-            store.room_heads(room)?,
-            body,
+            parents.clone(),
+            body.clone(),
         )?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), created_ms);
+        let channel = state
+            .channels
+            .get(room)
+            .ok_or_else(|| anyhow::anyhow!("room is not a current channel"))?;
+        let event = if channel.visibility == ChannelVisibility::Private {
+            self.import_private_room_keys()?;
+            let mut accepted = governance;
+            accepted.extend(self.decrypted_room_events(room)?);
+            validate_room_event_semantics(
+                &semantic_event,
+                &accepted,
+                &config.room_context(),
+                created_ms,
+            )
+            .map_err(|error| anyhow::anyhow!("private event semantics rejected: {error:?}"))?;
+            let key = self.room_key(room, channel.key_epoch)?;
+            let cipher = XChaCha20Poly1305::new((&key).into());
+            let mut nonce = [0_u8; 24];
+            rand::rngs::OsRng.fill_bytes(&mut nonce);
+            let plaintext = serde_json::to_vec(&PrivateEventPlaintext {
+                kind: kind.to_string(),
+                body,
+            })?;
+            let aad = private_event_aad(room, channel.key_epoch, &identity.peer_id);
+            let ciphertext = cipher
+                .encrypt(
+                    XNonce::from_slice(&nonce),
+                    chacha20poly1305::aead::Payload {
+                        msg: &plaintext,
+                        aad: aad.as_bytes(),
+                    },
+                )
+                .map_err(|_| anyhow::anyhow!("encrypt private room event"))?;
+            create_event(
+                &identity,
+                create_delegation(
+                    &identity,
+                    created_ms - 60_000,
+                    created_ms + 30 * 24 * 60 * 60_000,
+                    vec!["room:post".to_string()],
+                )?,
+                room,
+                created_ms,
+                "ROOM_ENCRYPTED",
+                parents,
+                serde_json::json!({
+                    "key_epoch": channel.key_epoch,
+                    "nonce_b64": base64::engine::general_purpose::STANDARD.encode(nonce),
+                    "ciphertext_b64": base64::engine::general_purpose::STANDARD.encode(ciphertext),
+                }),
+            )?
+        } else {
+            semantic_event
+        };
         self.accept_local_event(&store, &config, &event)
             .with_context(|| format!("accept local {kind}"))?;
         Ok(event)
+    }
+
+    fn decrypted_room_events(&self, room_id: &str) -> Result<Vec<EventV1>> {
+        self.import_private_room_keys()?;
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let private = state
+            .channels
+            .get(room_id)
+            .is_some_and(|channel| channel.visibility == ChannelVisibility::Private);
+        let mut raw_events = store.room_events(room_id)?;
+        raw_events.sort_by(|left, right| {
+            left.created_ms
+                .cmp(&right.created_ms)
+                .then(left.event_id.cmp(&right.event_id))
+        });
+        if !private {
+            return Ok(raw_events);
+        }
+        let mut accepted = governance;
+        let mut decrypted = Vec::new();
+        for raw in raw_events {
+            if raw.kind != "ROOM_ENCRYPTED" {
+                continue;
+            }
+            let Some(epoch) = raw
+                .body
+                .get("key_epoch")
+                .and_then(serde_json::Value::as_u64)
+            else {
+                continue;
+            };
+            let Ok(key) = self.room_key(room_id, epoch) else {
+                continue;
+            };
+            let Some(nonce_b64) = raw
+                .body
+                .get("nonce_b64")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(ciphertext_b64) = raw
+                .body
+                .get("ciphertext_b64")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Ok(nonce) = base64::engine::general_purpose::STANDARD.decode(nonce_b64) else {
+                continue;
+            };
+            let Ok(nonce) = <[u8; 24]>::try_from(nonce) else {
+                continue;
+            };
+            let Ok(ciphertext) = base64::engine::general_purpose::STANDARD.decode(ciphertext_b64)
+            else {
+                continue;
+            };
+            let cipher = XChaCha20Poly1305::new((&key).into());
+            let aad = private_event_aad(room_id, epoch, &raw.author_peer_id);
+            let Ok(plaintext) = cipher.decrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &ciphertext,
+                    aad: aad.as_bytes(),
+                },
+            ) else {
+                continue;
+            };
+            let Ok(inner) = serde_json::from_slice::<PrivateEventPlaintext>(&plaintext) else {
+                continue;
+            };
+            let mut event = raw;
+            event.kind = inner.kind;
+            event.body = inner.body;
+            if validate_room_event_semantics(
+                &event,
+                &accepted,
+                &config.room_context(),
+                event.created_ms,
+            )
+            .is_ok()
+            {
+                accepted.push(event.clone());
+                decrypted.push(event);
+            }
+        }
+        Ok(decrypted)
     }
 
     fn create_governance_event(&self, kind: &str, body: serde_json::Value) -> Result<EventV1> {
@@ -1832,6 +2076,154 @@ impl VoxelleHome {
         Ok(state)
     }
 
+    fn room_keys(&self) -> Result<RoomKeysV1> {
+        let path = self.path("room-keys.json");
+        if !path.exists() {
+            return Ok(RoomKeysV1::default());
+        }
+        let identity = self.load_identity()?;
+        let file: EncryptedRoomKeysFile = read_json(&path)?;
+        if file.v != 1 {
+            anyhow::bail!("unsupported encrypted room keys version {}", file.v);
+        }
+        let nonce: [u8; 24] = base64::engine::general_purpose::STANDARD
+            .decode(&file.nonce_b64)
+            .context("decode room keys nonce")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("room keys nonce must be 24 bytes"))?;
+        let ciphertext = base64::engine::general_purpose::STANDARD
+            .decode(&file.ciphertext_b64)
+            .context("decode room keys ciphertext")?;
+        let key = identity_vault_key(&self.path("identity.json"), false)?;
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        let aad = format!("voxelle/room-keys/v1\n{}", identity.peer_id);
+        let plaintext = cipher
+            .decrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &ciphertext,
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("room keys authentication failed"))?;
+        let keys: RoomKeysV1 =
+            serde_json::from_slice(&plaintext).context("parse decrypted room keys")?;
+        if keys.v != 1 {
+            anyhow::bail!("unsupported room keys version {}", keys.v);
+        }
+        Ok(keys)
+    }
+
+    fn write_room_keys(&self, keys: &RoomKeysV1) -> Result<()> {
+        if keys.v != 1 {
+            anyhow::bail!("unsupported room keys version {}", keys.v);
+        }
+        let identity = self.load_identity()?;
+        let key = identity_vault_key(&self.path("identity.json"), false)?;
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        let mut nonce = [0_u8; 24];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let plaintext = serde_json::to_vec(keys).context("serialize room keys")?;
+        let aad = format!("voxelle/room-keys/v1\n{}", identity.peer_id);
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: &plaintext,
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("encrypt room keys"))?;
+        write_json(
+            &self.path("room-keys.json"),
+            &EncryptedRoomKeysFile {
+                v: 1,
+                nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+                ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+            },
+        )
+    }
+
+    fn store_room_key(&self, room_id: &str, epoch: u64, key: &[u8; 32]) -> Result<()> {
+        let mut keys = self.room_keys()?;
+        keys.keys
+            .entry(room_id.to_string())
+            .or_default()
+            .insert(epoch, base64::engine::general_purpose::STANDARD.encode(key));
+        self.write_room_keys(&keys)
+    }
+
+    fn room_key(&self, room_id: &str, epoch: u64) -> Result<[u8; 32]> {
+        let keys = self.room_keys()?;
+        let encoded = keys
+            .keys
+            .get(room_id)
+            .and_then(|epochs| epochs.get(&epoch))
+            .ok_or_else(|| anyhow::anyhow!("private room key epoch {epoch} is unavailable"))?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .context("decode private room key")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("private room key must be 32 bytes"))
+    }
+
+    fn import_private_room_keys(&self) -> Result<()> {
+        let identity = self.load_identity()?;
+        let config = self.load_config()?;
+        let governance = self
+            .open_store()?
+            .room_events(&config.space.governance_room_id)?;
+        let mut keys = self.room_keys()?;
+        let mut changed = false;
+        for event in governance {
+            if !matches!(event.kind.as_str(), "CHANNEL_CREATE" | "CHANNEL_KEY_ROTATE") {
+                continue;
+            }
+            let Some(room_id) = event
+                .body
+                .get("room_id")
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            let Some(epoch) = event
+                .body
+                .get("key_epoch")
+                .and_then(serde_json::Value::as_u64)
+            else {
+                continue;
+            };
+            if keys
+                .keys
+                .get(room_id)
+                .is_some_and(|epochs| epochs.contains_key(&epoch))
+            {
+                continue;
+            }
+            let package = event
+                .body
+                .get("key_packages")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|packages| {
+                    packages.iter().find(|package| {
+                        package.get("peer_id").and_then(serde_json::Value::as_str)
+                            == Some(identity.peer_id.as_str())
+                    })
+                });
+            let Some(package) = package else { continue };
+            let key = unwrap_room_key_package(&identity, room_id, epoch, package)?;
+            keys.keys
+                .entry(room_id.to_string())
+                .or_default()
+                .insert(epoch, base64::engine::general_purpose::STANDARD.encode(key));
+            changed = true;
+        }
+        if changed {
+            self.write_room_keys(&keys)?;
+        }
+        Ok(())
+    }
+
     pub fn recovery_kit(&self) -> Result<RecoveryKitV1> {
         let identity = self.load_identity()?;
         let card = identity.recovery_card();
@@ -1847,6 +2239,7 @@ impl VoxelleHome {
             known_peers: self.known_peers()?,
             ui_preferences: self.ui_preferences()?,
             read_state: self.read_state()?,
+            room_keys: self.room_keys()?,
         };
         let capsule = encrypt_recovery_capsule(&card, &identity.peer_id, &payload)?;
         Ok(RecoveryKitV1 {
@@ -1910,6 +2303,12 @@ impl VoxelleHome {
                 payload.read_state.v
             );
         }
+        if payload.room_keys.v != 1 {
+            anyhow::bail!(
+                "unsupported recovered room keys version {}",
+                payload.room_keys.v
+            );
+        }
 
         fs::create_dir_all(&self.root)
             .with_context(|| format!("create {}", self.root.display()))?;
@@ -1924,6 +2323,7 @@ impl VoxelleHome {
         )?;
         self.write_ui_preferences(&payload.ui_preferences)?;
         write_json(&self.path("read-state.json"), &payload.read_state)?;
+        self.write_room_keys(&payload.room_keys)?;
         self.load_or_create_certificate()?;
         let store = self.open_store()?;
         self.ensure_space_genesis(&store, &payload.config)?;
@@ -2290,6 +2690,7 @@ impl VoxelleHome {
                 limits,
             )
             .await?;
+        self.import_private_room_keys()?;
         let governance_events = store.room_events(&peer.governance_room_id)?;
         let state = derive_governance_state(&governance_events, &context, now_ms());
         let mut room = SyncStats::default();
@@ -2417,6 +2818,7 @@ impl VoxelleHome {
             serde_json::json!({
                 "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
+                "encryption_pub": identity_encryption_public_b64(identity)?,
                 "invite_id": invite_id,
             }),
         )?;
@@ -2814,6 +3216,15 @@ impl VoxelleCommandHost {
             .get("room_id")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn rotate_channel_key(
+        &mut self,
+        request: RotateChannelKeyRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.rotate_channel_key(&request)?;
         self.sync_known_peers(256).await?;
         self.snapshot()
     }
@@ -3704,6 +4115,13 @@ fn default_commands() -> Vec<UiCommand> {
             true,
         ),
         shell_command(
+            "channel.rotateKey",
+            "Rotate Private Channel Key",
+            "Advance a private channel to a freshly wrapped key epoch",
+            None,
+            false,
+        ),
+        shell_command(
             "channel.create",
             "Create Channel",
             "Create a space channel",
@@ -4397,6 +4815,118 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
     }
 }
 
+fn identity_encryption_secret(identity: &PeerIdentity) -> Result<X25519Secret> {
+    Ok(X25519Secret::from(identity.encryption_secret_bytes()))
+}
+
+fn identity_encryption_public_b64(identity: &PeerIdentity) -> Result<String> {
+    Ok(identity.encryption_public_b64())
+}
+
+fn room_key_wrap_key(shared: &[u8; 32], room_id: &str, epoch: u64, peer_id: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"voxelle/room-key-wrap/v1\0");
+    digest.update(shared);
+    digest.update(room_id.as_bytes());
+    digest.update(epoch.to_le_bytes());
+    digest.update(peer_id.as_bytes());
+    digest.finalize().into()
+}
+
+fn create_room_key_packages(
+    room_id: &str,
+    epoch: u64,
+    room_key: &[u8; 32],
+    members: &std::collections::BTreeSet<String>,
+    encryption_keys: &BTreeMap<String, String>,
+) -> Result<Vec<serde_json::Value>> {
+    let mut packages = Vec::with_capacity(members.len());
+    for peer_id in members {
+        let public_bytes: [u8; 32] = base64::engine::general_purpose::STANDARD
+            .decode(
+                encryption_keys
+                    .get(peer_id)
+                    .ok_or_else(|| anyhow::anyhow!("member {peer_id} has no encryption key"))?,
+            )
+            .context("decode member encryption public key")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("member encryption public key must be 32 bytes"))?;
+        let recipient_public = X25519PublicKey::from(public_bytes);
+        let ephemeral_secret = X25519Secret::random_from_rng(rand::rngs::OsRng);
+        let ephemeral_public = X25519PublicKey::from(&ephemeral_secret);
+        let shared = ephemeral_secret.diffie_hellman(&recipient_public);
+        let wrap_key = room_key_wrap_key(shared.as_bytes(), room_id, epoch, peer_id);
+        let cipher = XChaCha20Poly1305::new((&wrap_key).into());
+        let mut nonce = [0_u8; 24];
+        rand::rngs::OsRng.fill_bytes(&mut nonce);
+        let aad = format!("voxelle/room-key-package/v1\n{room_id}\n{epoch}\n{peer_id}");
+        let ciphertext = cipher
+            .encrypt(
+                XNonce::from_slice(&nonce),
+                chacha20poly1305::aead::Payload {
+                    msg: room_key,
+                    aad: aad.as_bytes(),
+                },
+            )
+            .map_err(|_| anyhow::anyhow!("encrypt room key package"))?;
+        packages.push(serde_json::json!({
+            "peer_id": peer_id,
+            "ephemeral_pub_b64": base64::engine::general_purpose::STANDARD.encode(ephemeral_public.as_bytes()),
+            "nonce_b64": base64::engine::general_purpose::STANDARD.encode(nonce),
+            "ciphertext_b64": base64::engine::general_purpose::STANDARD.encode(ciphertext),
+        }));
+    }
+    Ok(packages)
+}
+
+fn unwrap_room_key_package(
+    identity: &PeerIdentity,
+    room_id: &str,
+    epoch: u64,
+    package: &serde_json::Value,
+) -> Result<[u8; 32]> {
+    let decode = |field: &str| -> Result<Vec<u8>> {
+        base64::engine::general_purpose::STANDARD
+            .decode(
+                package
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("room key package {field} missing"))?,
+            )
+            .with_context(|| format!("decode room key package {field}"))
+    };
+    let ephemeral_public: [u8; 32] = decode("ephemeral_pub_b64")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("ephemeral public key must be 32 bytes"))?;
+    let nonce: [u8; 24] = decode("nonce_b64")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("room key package nonce must be 24 bytes"))?;
+    let ciphertext = decode("ciphertext_b64")?;
+    let secret = identity_encryption_secret(identity)?;
+    let shared = secret.diffie_hellman(&X25519PublicKey::from(ephemeral_public));
+    let wrap_key = room_key_wrap_key(shared.as_bytes(), room_id, epoch, &identity.peer_id);
+    let cipher = XChaCha20Poly1305::new((&wrap_key).into());
+    let aad = format!(
+        "voxelle/room-key-package/v1\n{room_id}\n{epoch}\n{}",
+        identity.peer_id
+    );
+    cipher
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &ciphertext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("room key package authentication failed"))?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("room key must be 32 bytes"))
+}
+
+fn private_event_aad(room_id: &str, epoch: u64, author_peer_id: &str) -> String {
+    format!("voxelle/private-event/v1\n{room_id}\n{epoch}\n{author_peer_id}")
+}
+
 fn recovery_capsule_key(card: &RecoveryCardV1) -> Result<[u8; 32]> {
     if card.v != 1 {
         anyhow::bail!("unsupported recovery card version {}", card.v);
@@ -4955,6 +5485,134 @@ mod tests {
             .iter()
             .any(|message| message.text == "Charlie through Bob"));
         bob_service.stop().expect("bob stop");
+    }
+
+    #[tokio::test]
+    async fn private_room_is_ciphertext_for_members_only_and_survives_recovery() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+        let charlie = VoxelleHome::new(dir.path().join("charlie"));
+        let recovered = VoxelleHome::new(dir.path().join("alice-recovered"));
+        let alice_profile = alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        let alice_service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let alice_record = alice_service
+            .online()
+            .peer_record(Some("Alice".to_string()), None)
+            .expect("alice record");
+
+        let bob_invite = alice
+            .create_space_invite(alice_service.online(), now_ms() + 60_000)
+            .expect("bob invite");
+        let bob_joined = bob
+            .join_space_from_invite(&bob_invite, 4096)
+            .await
+            .expect("bob joins");
+        let bob_peer_id = bob_joined.profile.peer_id;
+        let charlie_invite = alice
+            .create_space_invite(alice_service.online(), now_ms() + 60_000)
+            .expect("charlie invite");
+        charlie
+            .join_space_from_invite(&charlie_invite, 4096)
+            .await
+            .expect("charlie joins");
+
+        let channel_event = alice
+            .create_channel(&CreateChannelRequest {
+                name: "Alice and Bob".to_string(),
+                topic: "Direct conversation".to_string(),
+                private_members: vec![bob_peer_id.clone()],
+            })
+            .expect("private channel");
+        let room_id = channel_event
+            .body
+            .get("room_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("room id")
+            .to_string();
+        let sent = alice
+            .send_message("e2e secret phrase", Some(&room_id))
+            .expect("private send");
+        assert_eq!(sent.kind, "ROOM_ENCRYPTED");
+        assert!(!serde_json::to_string(&sent)
+            .expect("event json")
+            .contains("e2e secret phrase"));
+        let raw_room = alice
+            .open_store()
+            .expect("alice store")
+            .room_events(&room_id)
+            .expect("raw room");
+        assert_eq!(raw_room.len(), 1);
+        assert_eq!(raw_room[0].kind, "ROOM_ENCRYPTED");
+        assert!(!fs::read_to_string(alice.path("room-keys.json"))
+            .expect("encrypted room keys")
+            .contains("keys"));
+
+        bob.sync_peer(&alice_record, 4096).await.expect("bob sync");
+        assert_eq!(
+            bob.read_messages(Some(&room_id)).expect("bob decrypts")[0].text,
+            "e2e secret phrase"
+        );
+        alice
+            .rotate_channel_key(&RotateChannelKeyRequest {
+                room_id: room_id.clone(),
+            })
+            .expect("rotate key epoch");
+        alice
+            .send_message("secret after rotation", Some(&room_id))
+            .expect("send under new epoch");
+        bob.sync_peer(&alice_record, 4096)
+            .await
+            .expect("bob syncs rotation");
+        let bob_messages = bob
+            .read_messages(Some(&room_id))
+            .expect("both epochs decrypt");
+        assert_eq!(bob_messages.len(), 2);
+        assert_eq!(bob_messages[1].text, "secret after rotation");
+        charlie
+            .sync_peer(&alice_record, 4096)
+            .await
+            .expect("charlie governance sync");
+        assert!(charlie
+            .channels(None)
+            .expect("charlie channels")
+            .iter()
+            .all(|channel| channel.room_id != room_id));
+        assert!(charlie
+            .open_store()
+            .expect("charlie store")
+            .room_events(&room_id)
+            .expect("charlie raw room")
+            .is_empty());
+
+        let bob_service = bob
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("bob service");
+        alice
+            .import_peer_record(
+                bob_service
+                    .online()
+                    .peer_record(Some("Bob recovery peer".to_string()), None)
+                    .expect("bob record"),
+            )
+            .expect("save recovery peer");
+        let kit = alice.recovery_kit().expect("kit with current room key");
+        alice_service.stop().expect("alice offline");
+        let report = recovered
+            .recover_from_kit(&kit, 4096)
+            .await
+            .expect("fresh recovery");
+        assert_eq!(report.profile.peer_id, alice_profile.peer_id);
+        assert_eq!(
+            recovered
+                .read_messages(Some(&room_id))
+                .expect("recovered decrypts")[1]
+                .text,
+            "secret after rotation"
+        );
+        bob_service.stop().expect("bob offline");
     }
 
     #[test]

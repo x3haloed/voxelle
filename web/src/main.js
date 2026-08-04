@@ -28,6 +28,7 @@ const uiState = {
   messageDraft: "",
   channelNameDraft: "",
   channelTopicDraft: "",
+  channelMembersDraft: "",
   profileNameDraft: "",
   profileAboutDraft: "",
   searchDraft: "",
@@ -679,7 +680,12 @@ function channelListView(snapshot) {
       element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channel.name}${channel.unread_count > 0 ? ` (${channel.unread_count})` : ""}`),
       element("span", "muted", channel.topic),
     );
-    row.append(body, commandButton("channel.select", { room_id: channel.room_id }));
+    const actions = element("div", "row-actions");
+    actions.append(commandButton("channel.select", { room_id: channel.room_id }));
+    if (channel.visibility === "private") {
+      actions.append(commandButton("channel.rotateKey", { room_id: channel.room_id }));
+    }
+    row.append(body, actions);
     list.append(row);
   }
   const form = element("form", "field-stack");
@@ -690,6 +696,7 @@ function channelListView(snapshot) {
   form.append(
     labeledInput("Name", "new-channel", uiState.channelNameDraft, (value) => { uiState.channelNameDraft = value; }),
     labeledInput("Topic", "What belongs here?", uiState.channelTopicDraft, (value) => { uiState.channelTopicDraft = value; }),
+    labeledInput("Private members", "Peer IDs, comma-separated; blank means public", uiState.channelMembersDraft, (value) => { uiState.channelMembersDraft = value; }),
     submitButton("channel.create"),
   );
   fragment.append(list, form);
@@ -1086,14 +1093,18 @@ async function runCommand(command, payload) {
       case "channel.markRead":
         currentSnapshot = await shell.execute(command, payload ?? { room_id: null });
         return;
+      case "channel.rotateKey":
+        currentSnapshot = await shell.execute(command, payload);
+        return;
       case "channel.create":
         currentSnapshot = await shell.execute(command, payload ?? {
           name: uiState.channelNameDraft,
           topic: uiState.channelTopicDraft,
-          private_members: [],
+          private_members: uiState.channelMembersDraft.split(",").map((value) => value.trim()).filter(Boolean),
         });
         uiState.channelNameDraft = "";
         uiState.channelTopicDraft = "";
+        uiState.channelMembersDraft = "";
         return;
       case "message.edit": {
         const text = payload?.text ?? window.prompt("New message text");

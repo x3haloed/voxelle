@@ -149,6 +149,19 @@ impl PeerIdentity {
         }
     }
 
+    pub fn encryption_secret_bytes(&self) -> [u8; 32] {
+        let mut digest = Sha256::new();
+        digest.update(b"voxelle/member-encryption-key/v1\0");
+        digest.update(self.recovery.signing_key.to_bytes());
+        digest.finalize().into()
+    }
+
+    pub fn encryption_public_b64(&self) -> String {
+        let secret = x25519_dalek::StaticSecret::from(self.encryption_secret_bytes());
+        let public = x25519_dalek::PublicKey::from(&secret);
+        base64::engine::general_purpose::STANDARD.encode(public.as_bytes())
+    }
+
     pub fn recover(
         card: &RecoveryCardV1,
         latest_proof: &IdentityProofV1,
@@ -555,6 +568,7 @@ pub struct GovernanceState {
     pub channels: BTreeMap<String, ChannelDefinition>,
     pub roles: BTreeMap<String, RoleDefinition>,
     pub member_roles: BTreeMap<String, BTreeSet<String>>,
+    pub member_encryption_keys: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1183,6 +1197,13 @@ pub fn derive_governance_state(
                     && !state.banned.contains(&event.author_peer_id)
                 {
                     state.members.insert(event.author_peer_id.clone());
+                    if let Some(encryption_pub) = string_body_field(event, "encryption_pub") {
+                        if valid_encryption_public_key(&encryption_pub) {
+                            state
+                                .member_encryption_keys
+                                .insert(event.author_peer_id.clone(), encryption_pub);
+                        }
+                    }
                 }
             }
             "INVITE_CREATE" => {
@@ -1212,6 +1233,11 @@ pub fn derive_governance_state(
                 if let Some(peer_id) = string_body_field(event, "peer_id") {
                     state.banned.insert(peer_id.clone());
                     state.members.remove(&peer_id);
+                    state.member_roles.remove(&peer_id);
+                    state.member_encryption_keys.remove(&peer_id);
+                    for channel in state.channels.values_mut() {
+                        channel.private_members.remove(&peer_id);
+                    }
                 }
             }
             "MEMBER_UNBAN" => {
@@ -1262,6 +1288,20 @@ pub fn derive_governance_state(
                 if let Some(topic) = string_body_field(event, "topic") {
                     if topic.chars().count() <= 1024 && !topic.chars().any(char::is_control) {
                         channel.topic = topic;
+                    }
+                }
+            }
+            "CHANNEL_KEY_ROTATE" => {
+                if !governance_event_authorized(event, &state, context) {
+                    continue;
+                }
+                if let Some(room_id) = string_body_field(event, "room_id") {
+                    if let Some(channel) = state.channels.get_mut(&room_id) {
+                        if let Some(epoch) = int_body_field(event, "key_epoch") {
+                            if epoch > 0 && epoch as u64 > channel.key_epoch {
+                                channel.key_epoch = epoch as u64;
+                            }
+                        }
                     }
                 }
             }
@@ -1366,7 +1406,9 @@ fn governance_event_authorized(
     let permission = match event.kind.as_str() {
         "INVITE_CREATE" | "INVITE_REVOKE" => PERMISSION_INVITE_CREATE,
         "MEMBER_BAN" | "MEMBER_UNBAN" => PERMISSION_MEMBER_BAN,
-        "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE" => PERMISSION_CHANNEL_MANAGE,
+        "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE" | "CHANNEL_KEY_ROTATE" => {
+            PERMISSION_CHANNEL_MANAGE
+        }
         _ => return event.author_peer_id == context.authority_peer_id,
     };
     peer_has_permission(state, context, &event.author_peer_id, permission)
@@ -1421,6 +1463,51 @@ fn channel_from_create_event(event: &EventV1, context: &RoomContext) -> Option<C
         private_members,
         key_epoch,
     })
+}
+
+fn valid_encryption_public_key(encoded: &str) -> bool {
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .is_ok_and(|bytes| bytes.len() == 32)
+}
+
+fn valid_key_packages(event: &EventV1, members: &BTreeSet<String>) -> bool {
+    let Some(packages) = event
+        .body
+        .get("key_packages")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    if packages.len() != members.len() {
+        return false;
+    }
+    let mut recipients = BTreeSet::new();
+    for package in packages {
+        let Some(peer_id) = package.get("peer_id").and_then(serde_json::Value::as_str) else {
+            return false;
+        };
+        let valid_bytes = |field: &str, expected: usize| {
+            package
+                .get(field)
+                .and_then(serde_json::Value::as_str)
+                .and_then(|encoded| {
+                    base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .ok()
+                })
+                .is_some_and(|bytes| bytes.len() == expected)
+        };
+        if !members.contains(peer_id)
+            || !recipients.insert(peer_id.to_string())
+            || !valid_bytes("ephemeral_pub_b64", 32)
+            || !valid_bytes("nonce_b64", 24)
+            || !valid_bytes("ciphertext_b64", 48)
+        {
+            return false;
+        }
+    }
+    recipients == *members
 }
 
 fn role_from_event(event: &EventV1) -> Option<RoleDefinition> {
@@ -1491,7 +1578,7 @@ fn accept_governance_event<'a>(
             Ok(AcceptedEvent { event })
         }
         "MEMBER_BAN" | "MEMBER_UNBAN" | "INVITE_CREATE" | "INVITE_REVOKE" | "CHANNEL_CREATE"
-        | "CHANNEL_UPDATE" | "CHANNEL_DELETE" => {
+        | "CHANNEL_UPDATE" | "CHANNEL_DELETE" | "CHANNEL_KEY_ROTATE" => {
             if !governance_event_authorized(event, state, context) {
                 return Err(AcceptError::NotAuthorized);
             }
@@ -1558,12 +1645,39 @@ fn validate_governance_event_body(
                     "private channel members must be current space members",
                 ));
             }
+            if channel.visibility == ChannelVisibility::Private
+                && (channel.key_epoch == 0
+                    || channel
+                        .private_members
+                        .iter()
+                        .any(|peer_id| !state.member_encryption_keys.contains_key(peer_id))
+                    || !valid_key_packages(event, &channel.private_members))
+            {
+                return Err(invalid("private channel key packages are incomplete"));
+            }
         }
         "CHANNEL_UPDATE" | "CHANNEL_DELETE" => {
             let room_id =
                 string_body_field(event, "room_id").ok_or_else(|| invalid("room_id missing"))?;
             if !state.channels.contains_key(&room_id) {
                 return Err(invalid("channel does not exist"));
+            }
+        }
+        "CHANNEL_KEY_ROTATE" => {
+            let room_id =
+                string_body_field(event, "room_id").ok_or_else(|| invalid("room_id missing"))?;
+            let channel = state
+                .channels
+                .get(&room_id)
+                .ok_or_else(|| invalid("channel does not exist"))?;
+            let epoch =
+                int_body_field(event, "key_epoch").ok_or_else(|| invalid("key_epoch missing"))?;
+            if channel.visibility != ChannelVisibility::Private
+                || epoch <= 0
+                || epoch as u64 <= channel.key_epoch
+                || !valid_key_packages(event, &channel.private_members)
+            {
+                return Err(invalid("invalid private channel key rotation"));
             }
         }
         "ROLE_CREATE" | "ROLE_UPDATE" => {
@@ -1744,10 +1858,60 @@ fn validate_room_event_body(
             }
         }
         "IDENTITY_UPDATE" => require_post()?,
+        "ROOM_ENCRYPTED" => {
+            require_post()?;
+            let epoch = int_body_field(event, "key_epoch")
+                .ok_or_else(|| AcceptError::Invalid("encrypted key_epoch missing".to_string()))?;
+            let valid_field = |field: &str, minimum: usize, maximum: usize| {
+                event
+                    .body
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|encoded| {
+                        base64::engine::general_purpose::STANDARD
+                            .decode(encoded)
+                            .ok()
+                    })
+                    .is_some_and(|bytes| (minimum..=maximum).contains(&bytes.len()))
+            };
+            if epoch <= 0
+                || !valid_field("nonce_b64", 24, 24)
+                || !valid_field("ciphertext_b64", 17, 384 * 1024)
+            {
+                return Err(AcceptError::Invalid(
+                    "encrypted event envelope is invalid".to_string(),
+                ));
+            }
+        }
         kind if kind.starts_with("CALL_") => require_post()?,
         _ => require_post()?,
     }
     Ok(())
+}
+
+pub fn validate_room_event_semantics(
+    event: &EventV1,
+    accepted_events: &[EventV1],
+    context: &RoomContext,
+    now_ms: i64,
+) -> AcceptResult<()> {
+    let state = derive_governance_state(accepted_events, context, now_ms);
+    if context.require_invite {
+        if state.banned.contains(&event.author_peer_id) {
+            return Err(AcceptError::Banned);
+        }
+        if !state.members.contains(&event.author_peer_id) {
+            return Err(AcceptError::NotMember);
+        }
+        let channel = state
+            .channels
+            .get(&event.room_id)
+            .ok_or(AcceptError::UnknownRoom)?;
+        if !channel_allows_peer(channel, &event.author_peer_id) {
+            return Err(AcceptError::PrivateRoom);
+        }
+    }
+    validate_room_event_body(event, accepted_events, &state, context)
 }
 
 fn validate_mentions(event: &EventV1) -> AcceptResult<()> {
@@ -1779,9 +1943,8 @@ fn required_scope_for_kind(kind: &str) -> &'static str {
         "MEMBER_JOIN" => "room:join",
         "MEMBER_BAN" | "MEMBER_UNBAN" | "DEVICE_REVOKE" | "INVITE_CREATE" | "INVITE_REVOKE"
         | "SPACE_CREATE" | "CHANNEL_CREATE" | "CHANNEL_UPDATE" | "CHANNEL_DELETE"
-        | "ROLE_CREATE" | "ROLE_UPDATE" | "ROLE_DELETE" | "ROLE_GRANT" | "ROLE_REVOKE" => {
-            "room:governance"
-        }
+        | "CHANNEL_KEY_ROTATE" | "ROLE_CREATE" | "ROLE_UPDATE" | "ROLE_DELETE" | "ROLE_GRANT"
+        | "ROLE_REVOKE" => "room:governance",
         k if k.starts_with("CALL_") => "room:call",
         k if k.starts_with("MSG_") || k.starts_with("REACTION_") || k.starts_with("PIN_") => {
             "room:post"
@@ -1795,6 +1958,8 @@ fn member_join_body_matches_author(event: &EventV1) -> bool {
     string_body_field(event, "peer_id").as_deref() == Some(event.author_peer_id.as_str())
         && string_body_field(event, "peer_pub").as_deref()
             == Some(event.delegation.peer_pub.as_str())
+        && string_body_field(event, "encryption_pub")
+            .is_some_and(|key| valid_encryption_public_key(&key))
 }
 
 fn member_join_has_authority(
@@ -2153,6 +2318,10 @@ mod tests {
         create_delegation(identity, 900, 2_000, scopes).expect("delegation")
     }
 
+    fn test_encryption_pub() -> String {
+        base64::engine::general_purpose::STANDARD.encode([7_u8; 32])
+    }
+
     fn member_join(identity: &PeerIdentity) -> EventV1 {
         create_event(
             identity,
@@ -2164,6 +2333,7 @@ mod tests {
             json!({
                 "peer_id": identity.peer_id,
                 "peer_pub": identity.peer.spki_b64,
+                "encryption_pub": test_encryption_pub(),
             }),
         )
         .expect("member join")
@@ -2297,6 +2467,7 @@ mod tests {
             json!({
                 "peer_id": member.peer_id,
                 "peer_pub": member.peer.spki_b64,
+                "encryption_pub": test_encryption_pub(),
             }),
         )
         .expect("join without invite");
@@ -2321,6 +2492,7 @@ mod tests {
             json!({
                 "peer_id": member.peer_id,
                 "peer_pub": member.peer.spki_b64,
+                "encryption_pub": test_encryption_pub(),
                 "invite_id": invite.event_id,
             }),
         )
@@ -2352,6 +2524,7 @@ mod tests {
             json!({
                 "peer_id": member.peer_id,
                 "peer_pub": member.peer.spki_b64,
+                "encryption_pub": test_encryption_pub(),
                 "invite_id": invite.event_id,
             }),
         )
