@@ -23,7 +23,7 @@ use std::{
 use tokio::{net::TcpListener, signal, time};
 use tracing::info;
 use voxelle_app::{
-    resolve_home_root, ShellError, ShellSnapshotView, ShellState, SHELL_COMMAND_IDS,
+    resolve_home_root, shell_command_ids, ShellError, ShellSnapshotView, ShellState,
 };
 
 #[derive(Debug, Parser)]
@@ -138,7 +138,7 @@ impl DiscoveryView {
             pid: std::process::id(),
             started_at_unix_ms: unix_ms(),
             capabilities: CapabilitiesView {
-                commands: SHELL_COMMAND_IDS.iter().map(ToString::to_string).collect(),
+                commands: shell_command_ids(),
                 events: vec!["service.ready".to_string(), "heartbeat".to_string()],
             },
         }

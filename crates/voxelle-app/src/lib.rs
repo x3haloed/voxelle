@@ -20,7 +20,7 @@ use voxelle_sync::{SyncLimits, SyncStats};
 
 mod shell;
 
-pub use shell::{ShellError, ShellResult, ShellState, SHELL_COMMAND_IDS};
+pub use shell::{ShellError, ShellResult, ShellState};
 
 pub const DEFAULT_ROOM_ID: &str = "room:general";
 
@@ -1787,6 +1787,14 @@ fn default_commands() -> Vec<UiCommand> {
             "Persist a UI customization",
         ),
     ]
+}
+
+pub fn shell_command_ids() -> Vec<String> {
+    default_commands()
+        .into_iter()
+        .filter(|command| command.id != "invite.copy")
+        .map(|command| command.id)
+        .collect()
 }
 
 fn default_semantic_tokens() -> Vec<SemanticToken> {

@@ -3,18 +3,6 @@ use std::path::PathBuf;
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
-pub const SHELL_COMMAND_IDS: [&str; 9] = [
-    "shell.refresh",
-    "home.init",
-    "runtime.goOnline",
-    "runtime.goOffline",
-    "message.send",
-    "peer.import",
-    "peer.diagnose",
-    "peer.sync",
-    "ui.preference.set",
-];
-
 #[derive(Debug)]
 pub struct ShellState {
     host: Mutex<VoxelleCommandHost>,
