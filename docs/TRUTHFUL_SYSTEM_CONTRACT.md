@@ -1,0 +1,180 @@
+# Voxelle Truthful System Contract
+
+Status: active implementation contract  
+Scope: implementation through the Discord feature families  
+Governing method: truthful system construction
+
+## Central Truth
+
+A person creates and recovers a durable principal locally; authorized devices
+propose signed facts; room members independently validate, retain, replicate,
+and project those facts without a privileged service.
+
+A fresh native installation can use a signed invite to join a small private
+space, communicate through available ordinary peers, lose its local state,
+recover onto a new device, revoke the lost device, resynchronize retained data,
+and continue through the same authorities used during normal operation.
+
+## Capability And Envelope
+
+The target is a native macOS and Windows application for private groups of 2 to
+50 members. The representative lived tests use two or three real processes and
+the representative live-media test uses two to four participants.
+
+The completed product slice includes:
+
+- immutable principal identity with root rotation, device authorization and
+  revocation, a recovery card, optional guardian recovery policy, encrypted
+  recovery capsules, legacy-home migration, and recovery health;
+- signed space invites with space genesis, permissions, expiry, multiple
+  bootstrap peers, automatic service launch, join, synchronization, and clear
+  disconnected recovery;
+- direct IPv6 QUIC plus ordinary-member routing and bounded store-and-forward;
+- spaces, channels, profiles, roles, permissions, bans, invites, message posts,
+  edits, redaction tombstones, reactions, mentions, threads, pins, unread state,
+  notifications, content-addressed attachments, and local full-text search;
+- end-to-end encrypted DMs and private channels with membership-bound key
+  epochs and recovery of current key material;
+- real small-group voice and video carried peer to peer in a two-to-four member
+  mesh, with explicit unavailable/degraded states;
+- a native Tauri workbench in which every named view surface is dockable, its
+  layout survives restart, and one command registry drives buttons, menus,
+  shortcuts, the command palette, and the automation surface;
+- unsigned but integrity-verifiable artifacts with honest operating-system
+  trust instructions. Paid Apple or Microsoft developer accounts are excluded.
+
+## Accepted Revisions And Exclusions
+
+The feature model is Discord-like; Discord scale and centralized availability
+are not claimed. The scoped system does not claim:
+
+- large public communities, a global directory, global username uniqueness, or
+  public content discovery;
+- universal connectivity, guaranteed online delivery, or guaranteed push
+  notifications when no member is reachable;
+- more than four live-media participants, an SFU, screen sharing, recording,
+  or broadcast streaming;
+- erasure of plaintext or ciphertext already retained by another participant;
+- strict single-use invite counting across a partition;
+- warning-free unsigned launch on every macOS or Windows security policy;
+- browser participation in the P2P protocol;
+- mobile clients or background mobile push.
+
+## Trust And Authority
+
+No Voxelle-operated service is required or authoritative for identity,
+membership, permissions, message validity, recovery, discovery, routing,
+storage, synchronization, encryption keys, or update integrity.
+
+Ordinary peers may be always-on, route traffic, retain encrypted recovery
+capsules, store room history, or forward media. Those roles grant availability,
+not protocol authority. Release hosting and a static invite helper may be
+optional conveniences; signed artifacts and complete invite payloads must be
+mirrorable.
+
+The surviving authorities are:
+
+- identity genesis and its signed identity log for principal/root/device truth;
+- each space governance log for membership, roles, room definitions, bans, and
+  invite revocation;
+- the event acceptance pipeline for facts admitted to durable storage;
+- the local SQLite store for retained accepted facts and reconstructible
+  projections;
+- the frontend workbench for ephemeral layout geometry, using stable Rust-owned
+  view and command identities;
+- the live-media session participants for ephemeral call state.
+
+## Causal Claims
+
+Semantic completion requires the intended domain transition to be accepted by
+the named authority, not merely serialized or displayed.
+
+Operational completion requires proportionate evidence for restart,
+idempotence, retry, disconnection, partition, stale endpoint, invalid
+authorization, revocation, bounded input, migration, loss, and recovery paths.
+
+Lived completion requires the packaged native artifact to accept real keyboard,
+pointer, file, clipboard, camera, and microphone inputs that are in scope and
+to project the returned accepted facts through the real bridge. Standalone
+fixture mutations are not product evidence.
+
+## Topology Preservation
+
+The current Rust authorities for protocol acceptance, SQLite retention, sync,
+QUIC transport, the application command host, semantic command IDs, and
+semantic view IDs remain unless a complete verified collapse replaces them.
+
+New features extend the existing signed-event, accepted-store, sync, snapshot,
+and semantic-command paths. They must not introduce parallel protocol models in
+the frontend, preview fixture, CLI, media layer, or recovery UI.
+
+Compatibility exists only for reading and migrating the current v1 home and
+accepted events. It has one removal condition: an explicit pre-release data
+retirement decision or a verified migration horizon.
+
+## Embodiment Depth
+
+Implementation may replace algorithms, representations, persistence schemas,
+frontend organization, protocol framing, process boundaries, and libraries. It
+may collapse the desktop and optional sidecar when one process can carry the
+same lifecycle truth.
+
+The admissible runtime remains native Rust plus one operating-system WebView and
+SQLite. Separate platform artifacts are allowed. Custom databases, separate
+mandatory daemons, bundled browser runtimes, hosted services, ISA-specific
+code, custom allocators, kernel components, and specialized hardware are
+outside the authorized implementation depth unless measured evidence later
+shows the current substrate cannot meet this contract.
+
+The physically smaller theoretical embodiment is a platform-specific native UI
+and specialized store without a WebView or SQLite. It is not currently
+project-admissible because it would duplicate macOS/Windows UI implementations
+and discard the established customizable workbench path.
+
+## Project Constraints
+
+- Keep the core/runtime in Rust and retain independently testable CLI behavior.
+- Preserve macOS Apple Silicon, macOS Intel compilation, and Windows dependency
+  resolution; run native Windows lived tests when a Windows runner is available.
+- Do not require paid Apple or Microsoft developer accounts.
+- Prefer one native process for ordinary human use; an optional headless peer
+  must reuse the same application authority.
+- Do not silently overwrite user changes in a dirty worktree.
+- Checkpoint coherent, independently understandable slices with commits,
+  provenance snapshots, and pushes to the active branch.
+
+## Evidence Horizon
+
+Locally inspectable evidence includes Rust unit/integration tests, Node UI
+behavior tests, clean builds, generated contracts, SQLite and artifact
+inspection, multiple loopback IPv6 processes, the packaged macOS artifact,
+browser automation against the real Tauri bridge when supported, and local
+camera/microphone devices when permission is available.
+
+Windows runtime policy, real non-loopback networks, diverse firewalls, multiple
+physical cameras, assistive-technology combinations, and operating-system
+unsigned-install policy variants require external runners or machines. Claims
+cover them only after those artifacts or runtimes are actually exercised.
+
+## Construction And Verification Order
+
+1. Carry one identity through migration, loss, recovery, rotation, revocation,
+   remote synchronization, and visible projection.
+2. Carry one signed invite from a fresh packaged launch through automatic join,
+   sync, and a visible accepted message.
+3. Repeat the join with the inviter offline through an ordinary forwarding peer.
+4. Carry existing views and commands through docking, layout restart, palette,
+   shortcuts, and the real application bridge.
+5. Add one complete Discord feature family at a time, remap the authorities,
+   compress the proven path, and rerun preservation evidence.
+6. Run the final multi-participant, restart, partition, invalid-input, recovery,
+   packaged-artifact, UI, accessibility, resource, clean-build, and cross-target
+   gates before making a completion claim.
+
+## Current Risk Frontier
+
+The first and most irreversible risk is identity recovery. The current v1 home
+stores root and device secrets together and binds the principal ID directly to
+the root key. Until a legacy home can migrate and then recover onto a fresh
+device without losing its stable principal or accepted history, feature breadth
+would only create more state with an unproven recovery path.
