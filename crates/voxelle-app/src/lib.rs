@@ -15,9 +15,9 @@ use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
     accept_event, create_delegation, create_event, create_space, create_space_invite_event,
-    derive_governance_state, topo_sort_deterministic, validate_room_event_semantics,
-    validate_space_at, validate_space_invite_at, ChannelVisibility, EventV1, IdentityProofV1,
-    PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
+    derive_governance_state, space_from_genesis, topo_sort_deterministic,
+    validate_room_event_semantics, validate_space_at, validate_space_invite_at, ChannelVisibility,
+    EventV1, IdentityProofV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
@@ -33,7 +33,7 @@ pub use shell::{ShellError, ShellResult, ShellState};
 
 pub const DEFAULT_ROOM_ID: &str = "room:general";
 const CALL_LIVENESS_MS: i64 = 90_000;
-const CONFIG_STATE: &str = "home.config";
+const HOME_SELECTION_STATE: &str = "home.selected_space";
 const KNOWN_PEERS_STATE: &str = "peers.known";
 const READ_STATE: &str = "rooms.read";
 const ROOM_KEYS_STATE: &str = "rooms.keys.encrypted";
@@ -64,21 +64,24 @@ pub struct VoxelleHome {
     root: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HomeConfig {
-    pub v: u8,
     pub space: SpaceV1,
-    pub default_room: String,
-    pub authority_peer_id: String,
 }
 
 impl HomeConfig {
     fn room_context(&self) -> RoomContext {
         RoomContext::for_space(
-            self.authority_peer_id.clone(),
+            self.space.authority_peer_id.clone(),
             self.space.governance_room_id.clone(),
         )
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct HomeSelectionV1 {
+    v: u8,
+    space_genesis_event_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -357,7 +360,7 @@ pub struct RecoveryKitV1 {
 struct RecoveryPayloadV1 {
     v: u8,
     identity_proof: IdentityProofV1,
-    config: HomeConfig,
+    space: SpaceV1,
     governance_events: Vec<EventV1>,
     known_peers: Vec<PeerRecord>,
     ui_preferences: UiPreferences,
@@ -1015,7 +1018,7 @@ impl VoxelleHome {
         self.load_or_create_certificate()?;
 
         let default_room = default_room.into();
-        let config = if self.local_state_exists(CONFIG_STATE)? {
+        let config = if self.local_state_exists(HOME_SELECTION_STATE)? {
             self.load_config()?
         } else {
             let channel_name = default_room
@@ -1024,26 +1027,26 @@ impl VoxelleHome {
                 .filter(|name| !name.is_empty())
                 .unwrap_or("general");
             let space = create_space(&identity, "My Space", channel_name, now_ms())?;
-            let config = HomeConfig {
-                v: 1,
-                default_room: space.default_room_id.clone(),
-                authority_peer_id: identity.peer_id.clone(),
-                space,
-            };
-            self.put_local_state(CONFIG_STATE, &config)?;
-            config
+            HomeConfig { space }
         };
 
         let store = self.open_store()?;
         self.ensure_space_genesis(&store, &config)?;
+        self.put_local_state(
+            HOME_SELECTION_STATE,
+            &HomeSelectionV1 {
+                v: 1,
+                space_genesis_event_id: config.space.genesis.event_id.clone(),
+            },
+        )?;
         self.ensure_member_join(&store, &identity, &config, None)?;
 
         Ok(ProfileSummary {
             home: self.root.clone(),
             peer_id: identity.peer_id,
             device_id: identity.device.id,
-            default_room: config.default_room,
-            authority_peer_id: config.authority_peer_id,
+            default_room: config.space.default_room_id,
+            authority_peer_id: config.space.authority_peer_id,
         })
     }
 
@@ -1054,8 +1057,8 @@ impl VoxelleHome {
             home: self.root.clone(),
             peer_id: identity.peer_id,
             device_id: identity.device.id,
-            default_room: config.default_room,
-            authority_peer_id: config.authority_peer_id,
+            default_room: config.space.default_room_id,
+            authority_peer_id: config.space.authority_peer_id,
         })
     }
 
@@ -1080,7 +1083,7 @@ impl VoxelleHome {
             .iter()
             .find(|channel| channel.selected)
             .map(|channel| channel.room_id.clone())
-            .unwrap_or_else(|| config.default_room.clone());
+            .unwrap_or_else(|| config.space.default_room_id.clone());
         Ok(HomeScreenView {
             profile: self.profile_summary()?,
             runtime,
@@ -1107,12 +1110,12 @@ impl VoxelleHome {
             Ok(config) => NetworkHealthRow::working(
                 "home",
                 "Home",
-                format!("Home is initialized for {}.", config.default_room),
+                format!("Home is initialized for {}.", config.space.default_room_id),
             )
             .detail(format!("root: {}", self.root.display())),
             Err(error)
                 if self
-                    .local_state_exists(CONFIG_STATE)
+                    .local_state_exists(HOME_SELECTION_STATE)
                     .unwrap_or_else(|_| self.path("store.sqlite3").exists()) =>
             {
                 NetworkHealthRow::broken(
@@ -1631,7 +1634,7 @@ impl VoxelleHome {
 
     pub fn read_messages(&self, room: Option<&str>) -> Result<Vec<MessageView>> {
         let config = self.load_config()?;
-        let room = room.unwrap_or(&config.default_room);
+        let room = room.unwrap_or(&config.space.default_room_id);
         Ok(project_messages(self.decrypted_room_events(room)?))
     }
 
@@ -1668,7 +1671,7 @@ impl VoxelleHome {
                     ChannelVisibility::Private => "private",
                 }
                 .to_string(),
-                selected: selected_room.unwrap_or(&config.default_room) == channel.room_id,
+                selected: selected_room.unwrap_or(&config.space.default_room_id) == channel.room_id,
                 unread_count: unread_counts.get(&channel.room_id).copied().unwrap_or(0),
             })
             .collect();
@@ -1682,7 +1685,7 @@ impl VoxelleHome {
 
     pub fn mark_read(&self, room: Option<&str>) -> Result<()> {
         let config = self.load_config()?;
-        let room_id = room.unwrap_or(&config.default_room);
+        let room_id = room.unwrap_or(&config.space.default_room_id);
         if !self
             .channels(Some(room_id))?
             .iter()
@@ -1953,7 +1956,10 @@ impl VoxelleHome {
 
     pub fn join_call(&self, request: &CallJoinRequest) -> Result<EventV1> {
         let config = self.load_config()?;
-        let room_id = request.room.as_deref().unwrap_or(&config.default_room);
+        let room_id = request
+            .room
+            .as_deref()
+            .unwrap_or(&config.space.default_room_id);
         let identity = self.load_identity()?;
         let call = self.call_view(room_id)?;
         if call.participants.contains(&identity.peer_id) {
@@ -2013,7 +2019,7 @@ impl VoxelleHome {
         let identity = self.load_identity()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
-        let room = room.unwrap_or(&config.default_room);
+        let room = room.unwrap_or(&config.space.default_room_id);
         let created_ms = now_ms();
         let parents = store.room_heads(room)?;
         let delegation_scope = if kind.starts_with("CALL_") {
@@ -2425,7 +2431,7 @@ impl VoxelleHome {
         let payload = RecoveryPayloadV1 {
             v: 1,
             identity_proof: identity.proof.clone(),
-            config,
+            space: config.space,
             governance_events,
             known_peers: self.known_peers()?,
             ui_preferences: self.ui_preferences()?,
@@ -2453,7 +2459,7 @@ impl VoxelleHome {
         if kit.v != 1 {
             anyhow::bail!("unsupported recovery kit version {}", kit.v);
         }
-        if self.path("identity.json").exists() || self.local_state_exists(CONFIG_STATE)? {
+        if self.path("identity.json").exists() || self.local_state_exists(HOME_SELECTION_STATE)? {
             anyhow::bail!("recovery requires a fresh Voxelle home");
         }
         if max_events_per_peer == 0 {
@@ -2468,12 +2474,10 @@ impl VoxelleHome {
             anyhow::bail!("recovery capsule identity does not match recovery card");
         }
         let identity = PeerIdentity::recover(&kit.card, &payload.identity_proof, now_ms())?;
-        validate_space_at(&payload.config.space, now_ms())?;
-        if payload.config.default_room != payload.config.space.default_room_id
-            || payload.config.authority_peer_id != payload.config.space.authority_peer_id
-        {
-            anyhow::bail!("recovery config duplicates do not match signed space genesis");
-        }
+        validate_space_at(&payload.space, now_ms())?;
+        let config = HomeConfig {
+            space: payload.space.clone(),
+        };
         for peer in &payload.known_peers {
             peer.validate()?;
         }
@@ -2494,7 +2498,6 @@ impl VoxelleHome {
         fs::create_dir_all(&self.root)
             .with_context(|| format!("create {}", self.root.display()))?;
         write_identity_vault(&self.path("identity.json"), &identity)?;
-        self.put_local_state(CONFIG_STATE, &payload.config)?;
         self.put_local_state(
             KNOWN_PEERS_STATE,
             &KnownPeersFile {
@@ -2507,7 +2510,14 @@ impl VoxelleHome {
         self.write_room_keys(&payload.room_keys)?;
         self.load_or_create_certificate()?;
         let store = self.open_store()?;
-        self.ensure_space_genesis(&store, &payload.config)?;
+        self.ensure_space_genesis(&store, &config)?;
+        self.put_local_state(
+            HOME_SELECTION_STATE,
+            &HomeSelectionV1 {
+                v: 1,
+                space_genesis_event_id: config.space.genesis.event_id.clone(),
+            },
+        )?;
         let event_by_id: BTreeMap<String, EventV1> = payload
             .governance_events
             .iter()
@@ -2522,12 +2532,11 @@ impl VoxelleHome {
             let event = event_by_id
                 .get(&event_id)
                 .ok_or_else(|| anyhow::anyhow!("recovery governance event disappeared"))?;
-            let governance = store.room_events(&payload.config.space.governance_room_id)?;
-            let accepted =
-                accept_event(event, &governance, &payload.config.room_context(), now_ms())
-                    .map_err(|error| {
-                        anyhow::anyhow!("recovery governance event rejected: {error:?}")
-                    })?;
+            let governance = store.room_events(&config.space.governance_room_id)?;
+            let accepted = accept_event(event, &governance, &config.room_context(), now_ms())
+                .map_err(|error| {
+                    anyhow::anyhow!("recovery governance event rejected: {error:?}")
+                })?;
             store.insert_accepted_event(accepted, now_ms())?;
             events_recovered += 1;
         }
@@ -2548,8 +2557,8 @@ impl VoxelleHome {
             }
         }
 
-        self.ensure_member_join(&store, &identity, &payload.config, None)?;
-        self.ensure_identity_announcement(&store, &identity, &payload.config)?;
+        self.ensure_member_join(&store, &identity, &config, None)?;
+        self.ensure_identity_announcement(&store, &identity, &config)?;
         for peer in &payload.known_peers {
             match self.sync_peer(peer, max_events_per_peer).await {
                 Ok(report) => {
@@ -2590,7 +2599,7 @@ impl VoxelleHome {
         let identity = self.load_identity()?;
         let config = self.load_config()?;
         if online.space_id != config.space.space_id
-            || online.authority_peer_id != config.authority_peer_id
+            || online.authority_peer_id != config.space.authority_peer_id
         {
             anyhow::bail!("online endpoint does not describe the configured space");
         }
@@ -2654,7 +2663,7 @@ impl VoxelleHome {
         if invite.v != 1 {
             anyhow::bail!("unsupported space invite file version {}", invite.v);
         }
-        if self.path("identity.json").exists() || self.local_state_exists(CONFIG_STATE)? {
+        if self.path("identity.json").exists() || self.local_state_exists(HOME_SELECTION_STATE)? {
             anyhow::bail!("joining a space requires a fresh Voxelle home");
         }
         if max_events_per_peer == 0 {
@@ -2669,12 +2678,8 @@ impl VoxelleHome {
         write_identity_vault(&self.path("identity.json"), &identity)?;
         self.load_or_create_certificate()?;
         let config = HomeConfig {
-            v: 1,
             space: invite.space.clone(),
-            default_room: invite.space.default_room_id.clone(),
-            authority_peer_id: invite.space.authority_peer_id.clone(),
         };
-        self.put_local_state(CONFIG_STATE, &config)?;
         self.put_local_state(
             KNOWN_PEERS_STATE,
             &KnownPeersFile {
@@ -2684,6 +2689,13 @@ impl VoxelleHome {
         )?;
         let store = self.open_store()?;
         self.ensure_space_genesis(&store, &config)?;
+        self.put_local_state(
+            HOME_SELECTION_STATE,
+            &HomeSelectionV1 {
+                v: 1,
+                space_genesis_event_id: config.space.genesis.event_id.clone(),
+            },
+        )?;
         let governance = store.room_events(&config.space.governance_room_id)?;
         let accepted_invite = accept_event(
             &invite.invite_event,
@@ -2889,19 +2901,19 @@ impl VoxelleHome {
     }
 
     fn load_config(&self) -> Result<HomeConfig> {
-        let config: HomeConfig = self
-            .local_state(CONFIG_STATE)?
-            .ok_or_else(|| anyhow::anyhow!("home config is unavailable"))?;
-        if config.v != 1 {
-            anyhow::bail!("unsupported home config version {}", config.v);
+        let selection: HomeSelectionV1 = self
+            .local_state(HOME_SELECTION_STATE)?
+            .ok_or_else(|| anyhow::anyhow!("home space selection is unavailable"))?;
+        if selection.v != 1 {
+            anyhow::bail!("unsupported home selection version {}", selection.v);
         }
-        validate_space_at(&config.space, now_ms()).context("validate configured space")?;
-        if config.default_room != config.space.default_room_id
-            || config.authority_peer_id != config.space.authority_peer_id
-        {
-            anyhow::bail!("home config duplicates do not match signed space genesis");
-        }
-        Ok(config)
+        let genesis = self
+            .open_store()?
+            .get_event(&selection.space_genesis_event_id)?
+            .ok_or_else(|| anyhow::anyhow!("selected space genesis is unavailable"))?;
+        Ok(HomeConfig {
+            space: space_from_genesis(&genesis, now_ms()).context("reconstruct selected space")?,
+        })
     }
 
     fn open_store(&self) -> Result<Store> {
@@ -3010,7 +3022,7 @@ impl VoxelleHome {
         config: &HomeConfig,
     ) -> Result<()> {
         let existing = store
-            .room_events(&config.default_room)?
+            .room_events(&config.space.default_room_id)?
             .into_iter()
             .any(|event| {
                 event.kind == "IDENTITY_UPDATE"
@@ -3029,10 +3041,10 @@ impl VoxelleHome {
                 now_ms() + 30 * 24 * 60 * 60_000,
                 vec!["room:post".to_string()],
             )?,
-            &config.default_room,
+            &config.space.default_room_id,
             now_ms(),
             "IDENTITY_UPDATE",
-            store.room_heads(&config.default_room)?,
+            store.room_heads(&config.space.default_room_id)?,
             serde_json::json!({
                 "peer_id": identity.peer_id,
                 "device_id": identity.device.id,
@@ -3538,7 +3550,7 @@ impl VoxelleCommandHost {
     }
 
     pub async fn refresh_and_sync(&mut self) -> Result<ShellSnapshotView> {
-        if self.service.is_some() && self.home.local_state_exists(CONFIG_STATE)? {
+        if self.service.is_some() && self.home.local_state_exists(HOME_SELECTION_STATE)? {
             self.sync_known_peers(256).await?;
         }
         self.snapshot()
@@ -3976,8 +3988,8 @@ impl PeerServer {
             online: OnlineHome {
                 endpoint,
                 local_report,
-                default_room: config.default_room,
-                authority_peer_id: config.authority_peer_id,
+                default_room: config.space.default_room_id,
+                authority_peer_id: config.space.authority_peer_id,
                 space_id: config.space.space_id,
                 governance_room_id: config.space.governance_room_id,
             },
@@ -5536,6 +5548,20 @@ mod tests {
         assert!(home.path("identity.json").exists());
         assert!(home.path("quic-cert.json").exists());
         assert!(home.path("store.sqlite3").exists());
+        let selection: HomeSelectionV1 = home
+            .local_state(HOME_SELECTION_STATE)
+            .expect("load home selection")
+            .expect("home selection");
+        assert!(home
+            .open_store()
+            .expect("store")
+            .get_event(&selection.space_genesis_event_id)
+            .expect("load selected genesis")
+            .is_some());
+        assert!(home
+            .local_state::<serde_json::Value>("home.config")
+            .expect("old config state")
+            .is_none());
 
         let reopened = VoxelleHome::new(home.root.clone());
         assert_eq!(
@@ -5581,7 +5607,7 @@ mod tests {
         }
 
         let payload = decrypt_recovery_capsule(&kit.card, &kit.capsule).expect("decrypt");
-        assert_eq!(payload.config.authority_peer_id, kit.capsule.peer_id);
+        assert_eq!(payload.space.authority_peer_id, kit.capsule.peer_id);
 
         let mut tampered = kit.clone();
         tampered.capsule.ciphertext_b64.push('A');

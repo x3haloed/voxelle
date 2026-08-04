@@ -262,9 +262,12 @@ plaintext, admitted peers decrypt successive epochs, and a fresh recovered
 home restores the epoch keys and history from an ordinary peer.
 
 The local durability topology now uses one SQLite database for accepted events,
-monotonic identity heads, home configuration, peer records, read cursors, UI
-preferences, and authenticated ciphertext room-key envelopes. The previous
-parallel JSON files and the unconsumed rolling recovery-capsule cache are gone.
+monotonic identity heads, the selected accepted space-genesis ID, peer records,
+read cursors, UI preferences, and authenticated ciphertext room-key envelopes.
+Space identity, authority, and default-room meaning are reconstructed from that
+admitted signed genesis fact rather than copied into a home-config authority.
+The previous parallel JSON files and the unconsumed rolling recovery-capsule
+cache are gone.
 Recovery export derives a fresh authenticated capsule from those authoritative
 rows on demand; identity secrets remain in the independently unlocked encrypted
 vault and QUIC credentials remain a separate transport capability. A fresh

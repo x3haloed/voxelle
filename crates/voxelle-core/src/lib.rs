@@ -385,6 +385,29 @@ pub fn validate_space_at(space: &SpaceV1, now_ms: i64) -> Result<()> {
     Ok(())
 }
 
+pub fn space_from_genesis(genesis: &EventV1, now_ms: i64) -> Result<SpaceV1> {
+    let field = |name: &str| {
+        genesis
+            .body
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .with_context(|| format!("space genesis {name} missing"))
+    };
+    let space = SpaceV1 {
+        v: 1,
+        space_id: field("space_id")?,
+        name: field("name")?,
+        authority_peer_id: field("authority_peer_id")?,
+        governance_room_id: field("governance_room_id")?,
+        default_room_id: field("default_room_id")?,
+        nonce: field("nonce")?,
+        genesis: genesis.clone(),
+    };
+    validate_space_at(&space, now_ms)?;
+    Ok(space)
+}
+
 pub fn create_space_invite_event(
     identity: &PeerIdentity,
     space: &SpaceV1,
@@ -2651,6 +2674,20 @@ mod tests {
             1_000,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn signed_space_is_reconstructed_from_its_genesis_fact() {
+        let authority = PeerIdentity::generate_at(900).expect("authority");
+        let space = create_space(&authority, "Friends", "general", 1_000).expect("space");
+        assert_eq!(
+            space_from_genesis(&space.genesis, 1_100).expect("reconstruct space"),
+            space
+        );
+
+        let mut tampered = space.genesis.clone();
+        tampered.body["default_room_id"] = json!("room:attacker");
+        assert!(space_from_genesis(&tampered, 1_100).is_err());
     }
 
     #[test]
