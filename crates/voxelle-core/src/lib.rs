@@ -1803,6 +1803,16 @@ fn validate_room_event_body(
             if original.kind != "MSG_POST" || original.author_peer_id != event.author_peer_id {
                 return Err(AcceptError::NotAuthorized);
             }
+            if accepted_events.iter().any(|candidate| {
+                candidate.room_id == event.room_id
+                    && candidate.kind == "MSG_REDACT"
+                    && string_body_field(candidate, "target_event_id")
+                        == Some(original.event_id.clone())
+            }) {
+                return Err(AcceptError::Invalid(
+                    "a redacted message cannot be edited".to_string(),
+                ));
+            }
             let text = string_body_field(event, "text")
                 .ok_or_else(|| AcceptError::Invalid("MSG_EDIT text missing".to_string()))?;
             if !valid_message_text(&text) {
@@ -3026,6 +3036,49 @@ mod tests {
         let event = message(&member, 1_100, vec!["e:missing".to_string()]);
 
         accept_event(&event, &[join], &context, 1_100).expect("missing ancestor tolerated");
+    }
+
+    #[test]
+    fn message_redaction_is_terminal_for_later_edits() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let context = RoomContext::new(authority.peer_id.clone());
+        let join = member_join(&authority);
+        let post = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:post".to_string()]),
+            "room:general",
+            1_000,
+            "MSG_POST",
+            vec![],
+            json!({"text":"original","mentions":[]}),
+        )
+        .expect("post");
+        accept_event(&post, std::slice::from_ref(&join), &context, 1_000).expect("post accepted");
+        let redact = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:post".to_string()]),
+            "room:general",
+            1_010,
+            "MSG_REDACT",
+            vec![post.event_id.clone()],
+            json!({"target_event_id":post.event_id}),
+        )
+        .expect("redact");
+        accept_event(&redact, &[join.clone(), post.clone()], &context, 1_010)
+            .expect("redaction accepted");
+        let edit = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:post".to_string()]),
+            "room:general",
+            1_020,
+            "MSG_EDIT",
+            vec![redact.event_id.clone()],
+            json!({"target_event_id":post.event_id,"text":"restored","mentions":[]}),
+        )
+        .expect("edit");
+        let error = accept_event(&edit, &[join, post, redact], &context, 1_020)
+            .expect_err("redacted message cannot be restored");
+        assert!(matches!(error, AcceptError::Invalid(message) if message.contains("redacted")));
     }
 
     #[test]

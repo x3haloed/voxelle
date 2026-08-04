@@ -32,3 +32,26 @@ export function isCameraUnavailable(error) {
     || name === "OverconstrainedError"
     || /invalid constraint/i.test(message);
 }
+
+export async function leaveCall(executeLeave, stopMedia) {
+  try {
+    return await executeLeave();
+  } finally {
+    stopMedia();
+  }
+}
+
+export async function consumeRetainedSignal(signal, seenEventIds, apply) {
+  if (seenEventIds.has(signal.event_id)) return false;
+  try {
+    await apply(signal);
+  } finally {
+    seenEventIds.add(signal.event_id);
+  }
+  return true;
+}
+
+export function disconnectedParticipantIds(activeParticipantIds, connectedPeerIds) {
+  const active = new Set(activeParticipantIds);
+  return [...connectedPeerIds].filter((peerId) => !active.has(peerId));
+}

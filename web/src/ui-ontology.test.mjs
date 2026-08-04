@@ -3,6 +3,7 @@ import test from "node:test";
 import { defaultUiOntology } from "./ui-ontology.fixture.mjs";
 import {
   messageTimestamp,
+  safeDateTime,
   ontologyPresentation,
   visibleActivity,
 } from "./ui-ontology.mjs";
@@ -45,6 +46,11 @@ test("saved appearance values become concrete rendered values", () => {
     "--avatar-size": "32px",
     "--activity-max-items": "30",
   });
+});
+
+test("invalid retained timestamps do not throw during rendering", () => {
+  assert.equal(safeDateTime(Number.MIN_SAFE_INTEGER), null);
+  assert.equal(safeDateTime(Date.UTC(2026, 0, 1)), "2026-01-01T00:00:00.000Z");
 });
 
 test("timestamp preferences change what a person sees", () => {

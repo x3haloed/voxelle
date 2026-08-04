@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { captureCallMedia, isCameraUnavailable } from "./call-media.mjs";
+import {
+  captureCallMedia,
+  consumeRetainedSignal,
+  disconnectedParticipantIds,
+  isCameraUnavailable,
+  leaveCall,
+} from "./call-media.mjs";
 
 test("camera capture requests audio and video together", async () => {
   const stream = { id: "camera" };
@@ -51,4 +57,31 @@ test("permission denial is not mislabeled as missing hardware", async () => {
     denied,
   );
   assert.equal(isCameraUnavailable(denied), false);
+});
+
+test("local media stops even when durable leave fails", async () => {
+  let stopped = false;
+  await assert.rejects(
+    leaveCall(async () => { throw new Error("store unavailable"); }, () => { stopped = true; }),
+    /store unavailable/,
+  );
+  assert.equal(stopped, true);
+});
+
+test("a malformed retained signal is consumed exactly once", async () => {
+  const seen = new Set();
+  const signal = { event_id: "bad-signal" };
+  await assert.rejects(
+    consumeRetainedSignal(signal, seen, async () => { throw new SyntaxError("bad JSON"); }),
+    /bad JSON/,
+  );
+  assert.deepEqual([...seen], ["bad-signal"]);
+  assert.equal(await consumeRetainedSignal(signal, seen, async () => {}), false);
+});
+
+test("connections for expired participants are selected for closure", () => {
+  assert.deepEqual(
+    disconnectedParticipantIds(["alice", "bob"], ["bob", "carol"]),
+    ["carol"],
+  );
 });

@@ -3098,6 +3098,11 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
             .then(left.event_id.cmp(&right.event_id))
     });
     let mut messages: BTreeMap<String, MessageView> = BTreeMap::new();
+    let redacted_targets = events
+        .iter()
+        .filter(|event| event.kind == "MSG_REDACT")
+        .map(|event| string_event_body(event, "target_event_id"))
+        .collect::<std::collections::BTreeSet<_>>();
     let mut order = Vec::new();
     let mut reactions: BTreeMap<String, BTreeMap<String, std::collections::BTreeSet<String>>> =
         BTreeMap::new();
@@ -3105,6 +3110,7 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
         match event.kind.as_str() {
             "MSG_POST" => {
                 let event_id = event.event_id.clone();
+                let redacted = redacted_targets.contains(&event_id);
                 order.push(event_id.clone());
                 messages.insert(
                     event_id,
@@ -3112,14 +3118,18 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                         event_id: event.event_id.clone(),
                         created_ms: event.created_ms,
                         author_peer_id: event.author_peer_id.clone(),
-                        text: event
-                            .body
-                            .get("text")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or("")
-                            .to_string(),
+                        text: if redacted {
+                            "Message removed".to_string()
+                        } else {
+                            event
+                                .body
+                                .get("text")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("")
+                                .to_string()
+                        },
                         edited_ms: None,
-                        redacted: false,
+                        redacted,
                         mentions: event
                             .body
                             .get("mentions")
@@ -3169,18 +3179,21 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                 );
             }
             "MSG_EDIT" => {
-                if let Some(message) = event_target_message(&mut messages, event) {
-                    message.text = string_event_body(event, "text");
-                    message.edited_ms = Some(event.created_ms);
-                    message.mentions = event
-                        .body
-                        .get("mentions")
-                        .and_then(serde_json::Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .collect();
+                let target = string_event_body(event, "target_event_id");
+                if !redacted_targets.contains(&target) {
+                    if let Some(message) = event_target_message(&mut messages, event) {
+                        message.text = string_event_body(event, "text");
+                        message.edited_ms = Some(event.created_ms);
+                        message.mentions = event
+                            .body
+                            .get("mentions")
+                            .and_then(serde_json::Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect();
+                    }
                 }
             }
             "MSG_REDACT" => {
@@ -5629,6 +5642,37 @@ mod tests {
         let messages = home.read_messages(None).expect("read");
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].text, "hello from app layer");
+    }
+
+    #[test]
+    fn redaction_projects_even_when_the_target_has_a_later_wall_clock_time() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let post = create_event(
+            &identity,
+            create_delegation(&identity, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("delegation"),
+            "room:test",
+            8_640_000_000_000_000,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"future","mentions":[]}),
+        )
+        .expect("post");
+        let redact = create_event(
+            &identity,
+            create_delegation(&identity, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("delegation"),
+            "room:test",
+            1_000,
+            "MSG_REDACT",
+            vec![post.event_id.clone()],
+            serde_json::json!({"target_event_id":post.event_id}),
+        )
+        .expect("redact");
+        let projected = project_messages(vec![post, redact]);
+        assert_eq!(projected.len(), 1);
+        assert!(projected[0].redacted);
+        assert_eq!(projected[0].text, "Message removed");
     }
 
     #[test]

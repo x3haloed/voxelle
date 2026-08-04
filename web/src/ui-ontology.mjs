@@ -69,6 +69,11 @@ export function messageTimestamp(message, ontology, nowMs = Date.now(), locale) 
   return new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(value, unit);
 }
 
+export function safeDateTime(timestampMs) {
+  const date = new Date(timestampMs);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 /**
  * @param {Array<import("./shell-contract").ServiceActivityItem>} items
  * @param {import("./shell-contract").UiOntologyView} ontology

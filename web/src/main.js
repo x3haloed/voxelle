@@ -1,10 +1,16 @@
 import { createShellClient } from "./shell-client.js";
-import { captureCallMedia } from "./call-media.mjs";
+import {
+  captureCallMedia,
+  consumeRetainedSignal,
+  disconnectedParticipantIds,
+  leaveCall,
+} from "./call-media.mjs";
 import { reconcileChildren } from "./dom-reconcile.mjs";
 import {
   applyOntology,
   messageTimestamp,
   ontologyPresentation,
+  safeDateTime,
   visibleActivity,
 } from "./ui-ontology.mjs";
 import {
@@ -139,6 +145,12 @@ function render() {
   ) {
     stopLocalMedia();
     uiState.mediaNotice = "Call session ended or the four-peer mesh was full.";
+  }
+  for (const peerId of disconnectedParticipantIds(
+    currentSnapshot.home?.call.participants ?? [],
+    uiState.peerConnections.keys(),
+  )) {
+    closePeerConnection(peerId);
   }
   const presentation = applyOntology(
     document.documentElement,
@@ -876,7 +888,7 @@ function roomTimelineView(snapshot) {
     const timestamp = messageTimestamp(message, snapshot.ui_ontology);
     if (timestamp !== null) {
       const time = element("time", "message-time", timestamp);
-      time.dateTime = new Date(message.created_ms).toISOString();
+      time.dateTime = safeDateTime(message.created_ms) ?? "";
       row.append(time);
     }
     row.append(element("p", message.redacted ? "muted" : "", message.text));
@@ -1016,38 +1028,44 @@ async function processCallSignals() {
     const localPeerId = currentSnapshot.home.profile.peer_id;
     const call = currentSnapshot.home.call;
     for (const signal of call.signals) {
-      if (uiState.seenCallSignals.has(signal.event_id)) continue;
-      if (signal.kind === "CALL_JOIN" && signal.author_peer_id !== localPeerId) {
-        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
-        if (localPeerId.localeCompare(signal.author_peer_id) < 0 && pc.signalingState === "stable") {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          await sendCallSignal("offer", signal.author_peer_id, JSON.stringify(offer), null);
-        }
-      } else if (signal.kind === "CALL_LEAVE" && signal.author_peer_id !== localPeerId) {
-        closePeerConnection(signal.author_peer_id);
-      } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_OFFER" && signal.sdp) {
-        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
-        await pc.setRemoteDescription(JSON.parse(signal.sdp));
-        await flushPendingIce(signal.author_peer_id, pc);
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        await sendCallSignal("answer", signal.author_peer_id, JSON.stringify(answer), null);
-      } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_ANSWER" && signal.sdp) {
-        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
-        await pc.setRemoteDescription(JSON.parse(signal.sdp));
-        await flushPendingIce(signal.author_peer_id, pc);
-      } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_ICE" && signal.candidate) {
-        const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
-        const candidate = JSON.parse(signal.candidate);
-        if (pc.remoteDescription) await pc.addIceCandidate(candidate);
-        else {
-          const pending = uiState.pendingIce.get(signal.author_peer_id) ?? [];
-          pending.push(candidate);
-          uiState.pendingIce.set(signal.author_peer_id, pending);
-        }
+      try {
+        await consumeRetainedSignal(signal, uiState.seenCallSignals, async () => {
+          if (signal.kind === "CALL_JOIN" && signal.author_peer_id !== localPeerId) {
+            const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+            if (localPeerId.localeCompare(signal.author_peer_id) < 0 && pc.signalingState === "stable") {
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              await sendCallSignal("offer", signal.author_peer_id, JSON.stringify(offer), null);
+            }
+          } else if (signal.kind === "CALL_LEAVE" && signal.author_peer_id !== localPeerId) {
+            closePeerConnection(signal.author_peer_id);
+          } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_OFFER" && signal.sdp) {
+            const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+            await pc.setRemoteDescription(JSON.parse(signal.sdp));
+            await flushPendingIce(signal.author_peer_id, pc);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            await sendCallSignal("answer", signal.author_peer_id, JSON.stringify(answer), null);
+          } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_ANSWER" && signal.sdp) {
+            const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+            await pc.setRemoteDescription(JSON.parse(signal.sdp));
+            await flushPendingIce(signal.author_peer_id, pc);
+          } else if (signal.target_peer_id === localPeerId && signal.kind === "CALL_ICE" && signal.candidate) {
+            const pc = ensurePeerConnection(signal.author_peer_id, call.call_id);
+            const candidate = JSON.parse(signal.candidate);
+            if (pc.remoteDescription) await pc.addIceCandidate(candidate);
+            else {
+              const pending = uiState.pendingIce.get(signal.author_peer_id) ?? [];
+              pending.push(candidate);
+              uiState.pendingIce.set(signal.author_peer_id, pending);
+            }
+          }
+        });
+      } catch (error) {
+        const detail = errorMessage(error);
+        uiState.mediaNotice = `Ignored invalid call signal from ${shortId(signal.author_peer_id)}.`;
+        appendActivity(currentSnapshot, `invalid call signal ${signal.event_id}: ${detail}`);
       }
-      uiState.seenCallSignals.add(signal.event_id);
     }
   } finally {
     uiState.processingCallSignals = false;
@@ -1399,13 +1417,17 @@ async function runCommand(command, payload) {
         return;
       }
       case "call.leave":
-        currentSnapshot = await shell.execute(command, {
-          room: currentSnapshot.home?.room.room_id ?? null,
-          call_id: currentSnapshot.home?.call.call_id ?? "",
-        });
-        stopLocalMedia();
-        uiState.mediaNotice = null;
-        uiState.lastCallHeartbeatMs = 0;
+        currentSnapshot = await leaveCall(
+          () => shell.execute(command, {
+            room: currentSnapshot.home?.room.room_id ?? null,
+            call_id: currentSnapshot.home?.call.call_id ?? "",
+          }),
+          () => {
+            stopLocalMedia();
+            uiState.mediaNotice = null;
+            uiState.lastCallHeartbeatMs = 0;
+          },
+        );
         return;
       case "call.heartbeat":
         currentSnapshot = await shell.execute(command, payload);
