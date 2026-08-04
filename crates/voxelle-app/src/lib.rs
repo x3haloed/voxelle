@@ -21,7 +21,7 @@ use voxelle_core::{
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
-    QuicNode, ServedPeerRequest,
+    QuicNode, RoomSync, ServedPeerRequest,
 };
 use voxelle_store::Store;
 use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
@@ -2871,13 +2871,13 @@ impl VoxelleHome {
         let governance = node
             .sync_room_once(
                 &mut store,
-                endpoint.addr,
-                endpoint.certificate_der()?,
-                &endpoint.device_id,
-                &peer.governance_room_id,
-                &context,
-                now_ms(),
-                limits,
+                RoomSync {
+                    remote: endpoint,
+                    room_id: &peer.governance_room_id,
+                    context: &context,
+                    now_ms: now_ms(),
+                    limits,
+                },
             )
             .await?;
         self.import_private_room_keys()?;
@@ -2899,13 +2899,13 @@ impl VoxelleHome {
             let next = node
                 .sync_room_once(
                     &mut store,
-                    endpoint.addr,
-                    endpoint.certificate_der()?,
-                    &endpoint.device_id,
-                    &room_id,
-                    &context,
-                    now_ms(),
-                    limits,
+                    RoomSync {
+                        remote: endpoint,
+                        room_id: &room_id,
+                        context: &context,
+                        now_ms: now_ms(),
+                        limits,
+                    },
                 )
                 .await?;
             merge_stats(&mut room, next);

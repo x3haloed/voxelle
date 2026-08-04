@@ -1,5 +1,8 @@
 use anyhow::{Context, Result};
-use voxelle_core::{accept_event, EventV1, RoomContext, GOVERNANCE_ROOM_ID};
+use std::collections::{BTreeMap, BTreeSet};
+use voxelle_core::{
+    accept_event, topo_sort_deterministic, EventV1, RoomContext, GOVERNANCE_ROOM_ID,
+};
 use voxelle_store::Store;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,17 +39,9 @@ pub fn sync_room_once(
     now_ms: i64,
     limits: SyncLimits,
 ) -> Result<SyncStats> {
-    let mut offered = source
-        .room_events(room_id)
-        .with_context(|| format!("load source room events for {room_id}"))?;
-    offered.sort_by(|a, b| {
-        a.created_ms
-            .cmp(&b.created_ms)
-            .then_with(|| a.event_id.cmp(&b.event_id))
-    });
-
-    let truncated = offered.len() > limits.max_events_per_batch;
-    offered.truncate(limits.max_events_per_batch);
+    let known_heads = dest.room_heads(room_id)?;
+    let (offered, truncated) =
+        missing_events_for_heads(source, room_id, &known_heads, limits)?;
 
     let mut stats = SyncStats {
         offered: offered.len(),
@@ -67,6 +62,48 @@ pub fn sync_room_once(
     }
 
     Ok(stats)
+}
+
+/// Selects the oldest causally ordered events that are not ancestors of any
+/// head the other store reported. Unknown heads are safe: they simply provide
+/// no pruning until a shared event arrives in a later bounded exchange.
+pub fn missing_events_for_heads(
+    source: &Store,
+    room_id: &str,
+    known_heads: &[String],
+    limits: SyncLimits,
+) -> Result<(Vec<EventV1>, bool)> {
+    if limits.max_events_per_batch == 0 {
+        anyhow::bail!("max_events_per_batch must be positive");
+    }
+
+    let events = source
+        .room_events(room_id)
+        .with_context(|| format!("load source room events for {room_id}"))?;
+    let by_id: BTreeMap<_, _> = events
+        .iter()
+        .map(|event| (event.event_id.as_str(), event))
+        .collect();
+    let mut known = BTreeSet::new();
+    let mut pending: Vec<_> = known_heads.iter().map(String::as_str).collect();
+    while let Some(event_id) = pending.pop() {
+        let Some(event) = by_id.get(event_id) else {
+            continue;
+        };
+        if !known.insert(event_id) {
+            continue;
+        }
+        pending.extend(event.parents.iter().map(String::as_str));
+    }
+
+    let mut missing: Vec<_> = topo_sort_deterministic(&events)
+        .into_iter()
+        .filter(|event_id| !known.contains(event_id.as_str()))
+        .filter_map(|event_id| by_id.get(event_id.as_str()).copied().cloned())
+        .collect();
+    let truncated = missing.len() > limits.max_events_per_batch;
+    missing.truncate(limits.max_events_per_batch);
+    Ok((missing, truncated))
 }
 
 pub fn accept_offered_events_once(
@@ -240,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_events_are_ignored() {
+    fn shared_heads_avoid_offering_duplicate_events() {
         let authority = PeerIdentity::generate().expect("authority");
         let alice = PeerIdentity::generate().expect("alice");
         let context = RoomContext::new(authority.peer_id);
@@ -259,7 +296,8 @@ mod tests {
             SyncLimits::default(),
         )
         .expect("sync");
-        assert_eq!(stats.already_present, 1);
+        assert_eq!(stats.offered, 0);
+        assert_eq!(stats.already_present, 0);
         assert_eq!(stats.accepted, 0);
     }
 
@@ -329,6 +367,35 @@ mod tests {
         assert_eq!(stats.accepted, 2);
         assert!(stats.truncated);
         assert_eq!(b.room_event_count("room:general").expect("count"), 2);
+
+        let second = sync_room_once(
+            &a,
+            &b,
+            "room:general",
+            &context,
+            1_300,
+            SyncLimits {
+                max_events_per_batch: 2,
+            },
+        )
+        .expect("second sync room");
+        assert_eq!(second.accepted, 1);
+        assert!(!second.truncated);
+        assert_eq!(b.room_event_count("room:general").expect("count"), 3);
+
+        let settled = sync_room_once(
+            &a,
+            &b,
+            "room:general",
+            &context,
+            1_400,
+            SyncLimits {
+                max_events_per_batch: 2,
+            },
+        )
+        .expect("settled sync room");
+        assert_eq!(settled.offered, 0);
+        assert!(!settled.truncated);
     }
 
     #[test]
