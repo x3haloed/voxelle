@@ -49,6 +49,7 @@ const viewRenderers = {
   "member.profiles": memberProfilesView,
   "role.list": roleListView,
   "message.search": messageSearchView,
+  "notification.center": notificationCenterView,
   "room.timeline": roomTimelineView,
   "message.composer": messageComposerView,
   "service.activity": activityView,
@@ -675,7 +676,7 @@ function channelListView(snapshot) {
     const row = element("li", channel.selected ? "peer-row selected" : "peer-row");
     const body = element("div", "peer-body");
     body.append(
-      element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channel.name}`),
+      element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channel.name}${channel.unread_count > 0 ? ` (${channel.unread_count})` : ""}`),
       element("span", "muted", channel.topic),
     );
     row.append(body, commandButton("channel.select", { room_id: channel.room_id }));
@@ -764,6 +765,25 @@ function messageSearchView(snapshot) {
     results.append(row);
   }
   fragment.append(form, results);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function notificationCenterView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const controls = element("div", "control-row");
+  controls.append(commandButton("channel.markRead"));
+  const list = element("ol", "activity-list");
+  for (const notification of snapshot.home?.notifications ?? []) {
+    const row = element("li", "");
+    row.append(
+      element("strong", "", `@ ${shortId(notification.author_peer_id)}`),
+      element("span", "mono", notification.room_id),
+      element("span", "", notification.summary),
+    );
+    list.append(row);
+  }
+  fragment.append(controls, list);
   return fragment;
 }
 
@@ -1062,6 +1082,9 @@ async function runCommand(command, payload) {
         return;
       case "channel.select":
         currentSnapshot = await shell.execute(command, payload);
+        return;
+      case "channel.markRead":
+        currentSnapshot = await shell.execute(command, payload ?? { room_id: null });
         return;
       case "channel.create":
         currentSnapshot = await shell.execute(command, payload ?? {

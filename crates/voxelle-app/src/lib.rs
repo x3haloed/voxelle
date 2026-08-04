@@ -224,6 +224,7 @@ pub struct ChannelView {
     pub topic: String,
     pub visibility: String,
     pub selected: bool,
+    pub unread_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -248,6 +249,17 @@ pub struct SearchResultView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct NotificationView {
+    pub event_id: String,
+    pub room_id: String,
+    pub author_peer_id: String,
+    pub summary: String,
+    pub kind: String,
+    #[ts(type = "number")]
+    pub created_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct PeerRecord {
     pub v: u8,
     pub label: Option<String>,
@@ -262,6 +274,12 @@ pub struct PeerRecord {
 struct KnownPeersFile {
     v: u8,
     peers: Vec<PeerRecord>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ReadStateFile {
+    v: u8,
+    last_read_event_ids: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -287,6 +305,7 @@ struct RecoveryPayloadV1 {
     governance_events: Vec<EventV1>,
     known_peers: Vec<PeerRecord>,
     ui_preferences: UiPreferences,
+    read_state: ReadStateFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -470,6 +489,7 @@ pub fn shell_contract_typescript() -> String {
         RoleView::decl(&cfg),
         ProfileView::decl(&cfg),
         SearchResultView::decl(&cfg),
+        NotificationView::decl(&cfg),
         PeerRecord::decl(&cfg),
         UiOntologyView::decl(&cfg),
         UiPlace::decl(&cfg),
@@ -489,6 +509,7 @@ pub fn shell_contract_typescript() -> String {
         StartServiceRequest::decl(&cfg),
         SendMessageRequest::decl(&cfg),
         SelectChannelRequest::decl(&cfg),
+        MarkReadRequest::decl(&cfg),
         CreateChannelRequest::decl(&cfg),
         MessageTargetRequest::decl(&cfg),
         EditMessageRequest::decl(&cfg),
@@ -690,6 +711,11 @@ pub struct SelectChannelRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MarkReadRequest {
+    pub room_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct CreateChannelRequest {
     pub name: String,
     #[serde(default)]
@@ -808,6 +834,7 @@ pub struct HomeScreenView {
     pub channels: Vec<ChannelView>,
     pub roles: Vec<RoleView>,
     pub profiles: Vec<ProfileView>,
+    pub notifications: Vec<NotificationView>,
     pub room: RoomTimelineView,
 }
 
@@ -972,6 +999,7 @@ impl VoxelleHome {
             channels,
             roles: self.roles()?,
             profiles: self.profiles()?,
+            notifications: self.notifications()?,
             room: RoomTimelineView {
                 room_id: selected_room.clone(),
                 messages: self.read_messages(Some(&selected_room))?,
@@ -1452,6 +1480,20 @@ impl VoxelleHome {
         let store = self.open_store()?;
         let governance = store.room_events(&config.space.governance_room_id)?;
         let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let read_state = self.read_state()?;
+        let mut unread_counts = BTreeMap::new();
+        for channel in state.channels.values() {
+            if voxelle_core::channel_allows_peer(channel, &identity.peer_id) {
+                unread_counts.insert(
+                    channel.room_id.clone(),
+                    unread_count(
+                        store.room_events(&channel.room_id)?,
+                        read_state.last_read_event_ids.get(&channel.room_id),
+                        &identity.peer_id,
+                    ),
+                );
+            }
+        }
         let mut channels: Vec<ChannelView> = state
             .channels
             .values()
@@ -1466,6 +1508,7 @@ impl VoxelleHome {
                 }
                 .to_string(),
                 selected: selected_room.unwrap_or(&config.default_room) == channel.room_id,
+                unread_count: unread_counts.get(&channel.room_id).copied().unwrap_or(0),
             })
             .collect();
         channels.sort_by(|left, right| {
@@ -1474,6 +1517,84 @@ impl VoxelleHome {
                 .then(left.room_id.cmp(&right.room_id))
         });
         Ok(channels)
+    }
+
+    pub fn mark_read(&self, room: Option<&str>) -> Result<()> {
+        let config = self.load_config()?;
+        let room_id = room.unwrap_or(&config.default_room);
+        if !self
+            .channels(Some(room_id))?
+            .iter()
+            .any(|channel| channel.room_id == room_id)
+        {
+            anyhow::bail!("channel is unknown or inaccessible");
+        }
+        let mut read_state = self.read_state()?;
+        let mut events = self.open_store()?.room_events(room_id)?;
+        events.sort_by(|left, right| {
+            left.created_ms
+                .cmp(&right.created_ms)
+                .then(left.event_id.cmp(&right.event_id))
+        });
+        if let Some(event) = events.last() {
+            read_state
+                .last_read_event_ids
+                .insert(room_id.to_string(), event.event_id.clone());
+        } else {
+            read_state.last_read_event_ids.remove(room_id);
+        }
+        write_json(&self.path("read-state.json"), &read_state)?;
+        self.refresh_recovery_capsule()
+    }
+
+    pub fn notifications(&self) -> Result<Vec<NotificationView>> {
+        let identity = self.load_identity()?;
+        let read_state = self.read_state()?;
+        let store = self.open_store()?;
+        let mut notifications = Vec::new();
+        for channel in self.channels(None)? {
+            let mut events = store.room_events(&channel.room_id)?;
+            events.sort_by(|left, right| {
+                left.created_ms
+                    .cmp(&right.created_ms)
+                    .then(left.event_id.cmp(&right.event_id))
+            });
+            let start = unread_start(
+                &events,
+                read_state.last_read_event_ids.get(&channel.room_id),
+            );
+            for event in events.into_iter().skip(start) {
+                if event.author_peer_id == identity.peer_id || event.kind != "MSG_POST" {
+                    continue;
+                }
+                let mentioned = event
+                    .body
+                    .get("mentions")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|mentions| {
+                        mentions
+                            .iter()
+                            .any(|mention| mention.as_str() == Some(&identity.peer_id))
+                    });
+                if mentioned {
+                    notifications.push(NotificationView {
+                        event_id: event.event_id,
+                        room_id: event.room_id,
+                        author_peer_id: event.author_peer_id,
+                        summary: event
+                            .body
+                            .get("text")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("Mentioned you")
+                            .to_string(),
+                        kind: "mention".to_string(),
+                        created_ms: event.created_ms,
+                    });
+                }
+            }
+        }
+        notifications.sort_by(|left, right| right.created_ms.cmp(&left.created_ms));
+        Ok(notifications)
     }
 
     pub fn roles(&self) -> Result<Vec<RoleView>> {
@@ -1697,6 +1818,20 @@ impl VoxelleHome {
         Ok(file.peers)
     }
 
+    fn read_state(&self) -> Result<ReadStateFile> {
+        if !self.path("read-state.json").exists() {
+            return Ok(ReadStateFile {
+                v: 1,
+                last_read_event_ids: BTreeMap::new(),
+            });
+        }
+        let state: ReadStateFile = read_json(&self.path("read-state.json"))?;
+        if state.v != 1 {
+            anyhow::bail!("unsupported read state version {}", state.v);
+        }
+        Ok(state)
+    }
+
     pub fn recovery_kit(&self) -> Result<RecoveryKitV1> {
         let identity = self.load_identity()?;
         let card = identity.recovery_card();
@@ -1711,6 +1846,7 @@ impl VoxelleHome {
             governance_events,
             known_peers: self.known_peers()?,
             ui_preferences: self.ui_preferences()?,
+            read_state: self.read_state()?,
         };
         let capsule = encrypt_recovery_capsule(&card, &identity.peer_id, &payload)?;
         Ok(RecoveryKitV1 {
@@ -1768,6 +1904,12 @@ impl VoxelleHome {
             peer.validate()?;
         }
         validate_ui_preferences(&payload.ui_preferences)?;
+        if payload.read_state.v != 1 {
+            anyhow::bail!(
+                "unsupported recovered read state version {}",
+                payload.read_state.v
+            );
+        }
 
         fs::create_dir_all(&self.root)
             .with_context(|| format!("create {}", self.root.display()))?;
@@ -1781,6 +1923,7 @@ impl VoxelleHome {
             },
         )?;
         self.write_ui_preferences(&payload.ui_preferences)?;
+        write_json(&self.path("read-state.json"), &payload.read_state)?;
         self.load_or_create_certificate()?;
         let store = self.open_store()?;
         self.ensure_space_genesis(&store, &payload.config)?;
@@ -2325,6 +2468,33 @@ impl VoxelleHome {
     }
 }
 
+fn unread_start(events: &[EventV1], last_read_event_id: Option<&String>) -> usize {
+    last_read_event_id
+        .and_then(|event_id| events.iter().position(|event| &event.event_id == event_id))
+        .map_or(0, |index| index + 1)
+}
+
+fn unread_count(
+    mut events: Vec<EventV1>,
+    last_read_event_id: Option<&String>,
+    local_peer_id: &str,
+) -> usize {
+    events.sort_by(|left, right| {
+        left.created_ms
+            .cmp(&right.created_ms)
+            .then(left.event_id.cmp(&right.event_id))
+    });
+    let start = unread_start(&events, last_read_event_id);
+    events
+        .into_iter()
+        .skip(start)
+        .filter(|event| {
+            event.author_peer_id != local_peer_id
+                && matches!(event.kind.as_str(), "MSG_POST" | "ATTACHMENT_ADD")
+        })
+        .count()
+}
+
 fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
     events.sort_by(|left, right| {
         left.created_ms
@@ -2620,7 +2790,17 @@ impl VoxelleCommandHost {
         {
             anyhow::bail!("channel is unknown or inaccessible");
         }
+        self.home.mark_read(Some(&request.room_id))?;
         self.selected_room_id = Some(request.room_id);
+        self.snapshot()
+    }
+
+    pub fn mark_read(&mut self, request: MarkReadRequest) -> Result<ShellSnapshotView> {
+        let room = request
+            .room_id
+            .as_deref()
+            .or(self.selected_room_id.as_deref());
+        self.home.mark_read(room)?;
         self.snapshot()
     }
 
@@ -3428,6 +3608,13 @@ fn default_views() -> Vec<UiView> {
             "Local full-text message and attachment search",
         ),
         ui_view(
+            "notification.center",
+            "Notifications",
+            "activity",
+            1,
+            "Unread mentions from replicated channels",
+        ),
+        ui_view(
             "room.timeline",
             "Room Timeline",
             "main",
@@ -3508,6 +3695,13 @@ fn default_commands() -> Vec<UiCommand> {
             "Open an accessible channel",
             None,
             false,
+        ),
+        shell_command(
+            "channel.markRead",
+            "Mark Channel Read",
+            "Advance the local read cursor for the selected channel",
+            Some("Shift+Escape"),
+            true,
         ),
         shell_command(
             "channel.create",
@@ -4593,6 +4787,8 @@ mod tests {
         alice
             .import_peer_record(bob_router)
             .expect("save recovery peer");
+        alice.mark_read(None).expect("persist read cursor");
+        let lost_read_state = alice.read_state().expect("lost read state");
         let kit = alice.recovery_kit().expect("recovery kit");
         let old_device_id = alice_profile.device_id;
 
@@ -4608,6 +4804,10 @@ mod tests {
         assert_eq!(
             recovered.read_messages(None).expect("recovered messages")[0].text,
             "before loss"
+        );
+        assert_eq!(
+            recovered.read_state().expect("recovered read state"),
+            lost_read_state
         );
         bob_service.stop().expect("bob service stop");
 

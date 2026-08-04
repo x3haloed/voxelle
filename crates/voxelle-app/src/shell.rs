@@ -30,6 +30,7 @@ impl ShellState {
             "space.join" => host.join_space(parse_request(payload)?).await,
             "message.send" => host.send_message(parse_request(payload)?).await,
             "channel.select" => host.select_channel(parse_request(payload)?),
+            "channel.markRead" => host.mark_read(parse_request(payload)?),
             "channel.create" => host.create_channel(parse_request(payload)?).await,
             "message.edit" => host.edit_message(parse_request(payload)?).await,
             "message.redact" => host.redact_message(parse_request(payload)?).await,
@@ -319,9 +320,38 @@ mod tests {
             .execute_serialized_command("shell.refresh", serde_json::json!({}))
             .await
             .expect("bob pulls post");
+        let bob_received_home = bob_received.home.expect("home");
         assert_eq!(
-            bob_received.home.expect("home").room.messages[0].mentions,
+            bob_received_home.room.messages[0].mentions,
             vec![bob_peer_id.clone()]
+        );
+        assert_eq!(
+            bob_received_home
+                .channels
+                .iter()
+                .find(|channel| channel.room_id == channel_id)
+                .expect("engineering channel")
+                .unread_count,
+            1
+        );
+        assert_eq!(bob_received_home.notifications.len(), 1);
+        let marked_read = bob
+            .execute_serialized_command(
+                "channel.markRead",
+                serde_json::json!({ "room_id": channel_id }),
+            )
+            .await
+            .expect("mark read");
+        assert_eq!(
+            marked_read
+                .home
+                .expect("home")
+                .channels
+                .iter()
+                .find(|channel| channel.room_id == channel_id)
+                .expect("engineering channel")
+                .unread_count,
+            0
         );
 
         bob.execute_serialized_command(
