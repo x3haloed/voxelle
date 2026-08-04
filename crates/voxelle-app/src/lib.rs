@@ -504,8 +504,12 @@ impl VoxelleServiceEvent {
             VoxelleServiceEvent::Served(ServedPeerRequest::RoomSync(sync)) => {
                 let truncated = if sync.truncated { ", truncated" } else { "" };
                 format!(
-                    "served sync: room {}, offered {} event(s){}",
-                    sync.room_id, sync.offered, truncated
+                    "served sync: room {}, offered {}, accepted {}, rejected {} event(s){}",
+                    sync.room_id,
+                    sync.offered,
+                    sync.accepted_from_remote,
+                    sync.rejected_from_remote,
+                    truncated
                 )
             }
             VoxelleServiceEvent::Failed(error) => format!("service error: {error}"),
@@ -1798,7 +1802,7 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
-    pub fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
+    pub async fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
         let event = self
             .home
             .send_message(&request.text, request.room.as_deref())?;
@@ -1806,6 +1810,14 @@ impl VoxelleCommandHost {
             ServiceActivityLevel::Info,
             format!("sent message {}", event.event_id),
         );
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn refresh_and_sync(&mut self) -> Result<ShellSnapshotView> {
+        if self.service.is_some() && self.home.path("config.json").exists() {
+            self.sync_known_peers(256).await?;
+        }
         self.snapshot()
     }
 
@@ -1879,6 +1891,48 @@ impl VoxelleCommandHost {
             ),
         );
         self.snapshot()
+    }
+
+    async fn sync_known_peers(&mut self, max_events: usize) -> Result<()> {
+        let peers = self.home.known_peers()?;
+        let mut tasks = tokio::task::JoinSet::new();
+        for peer in peers {
+            let home = self.home.clone();
+            tasks.spawn(async move {
+                let result = home
+                    .sync_peer(&peer, max_events)
+                    .await
+                    .map_err(|error| format!("{error:#}"));
+                (peer, result)
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            let (peer, sync) = result.context("automatic peer sync task failed")?;
+            let label = peer
+                .label
+                .as_deref()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
+            match sync {
+                Ok(report) => {
+                    let received = report.governance.accepted + report.room.accepted;
+                    let pushed = report.governance.remote_accepted + report.room.remote_accepted;
+                    if received > 0 || pushed > 0 {
+                        self.push_activity(
+                            ServiceActivityLevel::Info,
+                            format!(
+                                "automatic sync with {label}: received {received}, pushed {pushed}"
+                            ),
+                        );
+                    }
+                }
+                Err(error) => self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!("automatic sync could not reach {label}: {error}"),
+                ),
+            }
+        }
+        Ok(())
     }
 
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
@@ -3586,6 +3640,7 @@ mod tests {
                 text: "from command host".to_string(),
                 room: None,
             })
+            .await
             .expect("send");
 
         let alice_online = alice

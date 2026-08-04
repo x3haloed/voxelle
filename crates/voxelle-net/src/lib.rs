@@ -21,6 +21,7 @@ pub const VOXELLE_ALPN: &[u8] = b"voxelle-ipv6/0";
 const MAX_HANDSHAKE_BYTES: usize = 16 * 1024;
 const MAX_SYNC_BYTES: usize = 512 * 1024;
 const DIAGNOSTIC_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const SYNC_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 static RUSTLS_PROVIDER: Once = Once::new();
 
 #[derive(Debug)]
@@ -386,9 +387,12 @@ impl QuicNode {
         now_ms: i64,
         limits: SyncLimits,
     ) -> Result<SyncStats> {
-        let authenticated = self
-            .connect(remote_addr, remote_cert_der, expected_remote_device_id)
-            .await?;
+        let authenticated = tokio::time::timeout(
+            SYNC_CONNECT_TIMEOUT,
+            self.connect(remote_addr, remote_cert_der, expected_remote_device_id),
+        )
+        .await
+        .context("room sync connect timed out")??;
         let mut local_events = dest
             .room_events(room_id)
             .with_context(|| format!("load known room events for {room_id}"))?;

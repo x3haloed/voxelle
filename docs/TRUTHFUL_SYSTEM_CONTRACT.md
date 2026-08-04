@@ -190,7 +190,26 @@ rotate the identity, so the UI must tell the person to keep it offline. Its
 capsule is independently authenticated and encrypted, and can later be retained
 separately by ordinary peers or guardian shares.
 
-The next irreversible risk is admission: replace endpoint JSON exchange with a
-signed, expiring space capability and prove a fresh packaged launch can import
-it, start service, join, synchronize, and visibly communicate without manual
-diagnose/sync choreography.
+Admission and ordinary-peer forwarding have crossed their first operational
+gate. Space genesis and expiring invitations are signed governance events;
+bootstrap endpoints are covered by the invitation signature; endpoint JSON by
+itself grants no membership. A fresh home imports one invite, creates its local
+identity, joins, starts service, pushes membership, and pulls history. A
+three-home test takes the inviter offline and carries the same join and later
+messages through an ordinary member before the authority catches up. Online
+shell refresh and message send run bounded concurrent anti-entropy, so ordinary
+use does not require manual diagnose/sync choreography. Retained events are
+validated at their signed creation time so delegation expiry cannot erase
+history; events more than five minutes in the future are rejected. Invite
+expiry therefore depends on signed participant clocks and is not claimed as a
+partition-proof lease.
+
+The unsigned install path has also crossed a native artifact gate: Tauri emits
+an ad-hoc-signed universal macOS DMG (arm64 plus x86_64) and is configured for a
+Windows NSIS artifact, with SHA-256 manifests and narrow per-app Gatekeeper and
+SmartScreen instructions. A native Windows build and first launch still require
+the external Windows runner named in the evidence horizon.
+
+The next irreversible risk is the workbench: carry every existing semantic view
+through real docking, persisted layout, keyboard shortcuts, and a single command
+palette authority before adding more horizontal feature surfaces.

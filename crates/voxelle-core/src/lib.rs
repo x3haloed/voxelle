@@ -12,6 +12,7 @@ use std::io::{self, Write};
 
 const OID_ED25519: spki::ObjectIdentifier = spki::ObjectIdentifier::new_unwrap("1.3.101.112");
 pub const GOVERNANCE_ROOM_ID: &str = "governance";
+pub const MAX_EVENT_FUTURE_SKEW_MS: i64 = 5 * 60_000;
 
 #[derive(Debug, Clone)]
 pub struct Keypair {
@@ -1016,8 +1017,16 @@ pub fn accept_event<'a>(
     context: &RoomContext,
     now_ms: i64,
 ) -> AcceptResult<AcceptedEvent<'a>> {
+    if event.created_ms > now_ms.saturating_add(MAX_EVENT_FUTURE_SKEW_MS) {
+        return Err(AcceptError::Invalid(
+            "event timestamp is too far in the future".to_string(),
+        ));
+    }
     let required_scope = required_scope_for_kind(&event.kind);
-    validate_event_at(event, required_scope, now_ms)
+    // Durable history is valid at its signed creation time. Evaluating an old
+    // event against the receipt time would make delegation expiry erase it and
+    // cause peers that were offline to derive a different room.
+    validate_event_at(event, required_scope, event.created_ms)
         .map_err(|e| AcceptError::Invalid(e.to_string()))?;
 
     if let Some(known_proof) = accepted_room_events
@@ -1045,7 +1054,7 @@ pub fn accept_event<'a>(
         .filter(|e| e.room_id == context.governance_room_id)
         .cloned()
         .collect();
-    let state = derive_governance_state(&governance_events, context, now_ms);
+    let state = derive_governance_state(&governance_events, context, event.created_ms);
 
     if state
         .revoked_devices
@@ -1082,8 +1091,11 @@ pub fn derive_governance_state(
         let Some(event) = by_id.get(&id).copied() else {
             continue;
         };
+        if event.created_ms > now_ms {
+            continue;
+        }
         let required_scope = required_scope_for_kind(&event.kind);
-        if validate_event_at(event, required_scope, now_ms).is_err() {
+        if validate_event_at(event, required_scope, event.created_ms).is_err() {
             continue;
         }
         if event.room_id != context.governance_room_id {
@@ -1093,7 +1105,7 @@ pub fn derive_governance_state(
         match event.kind.as_str() {
             "MEMBER_JOIN" => {
                 if member_join_body_matches_author(event)
-                    && member_join_has_authority(event, &state, context, now_ms)
+                    && member_join_has_authority(event, &state, context, event.created_ms)
                     && !state.banned.contains(&event.author_peer_id)
                 {
                     state.members.insert(event.author_peer_id.clone());
@@ -1158,7 +1170,7 @@ fn accept_governance_event<'a>(
     event: &'a EventV1,
     state: &GovernanceState,
     context: &RoomContext,
-    now_ms: i64,
+    _now_ms: i64,
 ) -> AcceptResult<AcceptedEvent<'a>> {
     match event.kind.as_str() {
         "MEMBER_JOIN" => {
@@ -1170,7 +1182,7 @@ fn accept_governance_event<'a>(
                     "MEMBER_JOIN body must match author peer".to_string(),
                 ));
             }
-            if !member_join_has_authority(event, state, context, now_ms) {
+            if !member_join_has_authority(event, state, context, event.created_ms) {
                 return Err(AcceptError::NotAuthorized);
             }
             Ok(AcceptedEvent { event })
@@ -1746,11 +1758,50 @@ mod tests {
         .expect("invite admits member");
 
         assert!(validate_space_invite_at(&space, &invite, 1_501).is_err());
+        accept_event(
+            &with_invite,
+            &[space.genesis.clone(), invite.clone()],
+            &context,
+            1_501,
+        )
+        .expect("historical join remains valid after invite expiry");
+
+        let late_join = create_event(
+            &member,
+            delegation_for(&member, vec!["room:join".to_string()]),
+            &space.governance_room_id,
+            1_501,
+            "MEMBER_JOIN",
+            vec![invite.event_id.clone()],
+            json!({
+                "peer_id": member.peer_id,
+                "peer_pub": member.peer.spki_b64,
+                "invite_id": invite.event_id,
+            }),
+        )
+        .expect("late join");
         assert_eq!(
-            accept_event(&with_invite, &[space.genesis, invite], &context, 1_501,)
-                .expect_err("expired invite rejected"),
+            accept_event(&late_join, &[space.genesis, invite], &context, 1_501)
+                .expect_err("join signed after expiry is rejected"),
             AcceptError::NotAuthorized
         );
+    }
+
+    #[test]
+    fn retained_event_survives_delegation_expiry_and_future_events_are_bounded() {
+        let authority = PeerIdentity::generate_at(900).expect("authority");
+        let context = RoomContext::new(authority.peer_id.clone());
+        let join = member_join(&authority);
+        let retained = message(&authority, 1_100, vec![]);
+
+        accept_event(&retained, std::slice::from_ref(&join), &context, 50_000)
+            .expect("historical event remains valid after delegation expiry");
+
+        let future = message(&authority, 500_000, vec![]);
+        assert!(matches!(
+            accept_event(&future, &[join], &context, 1_100),
+            Err(AcceptError::Invalid(reason)) if reason.contains("future")
+        ));
     }
 
     #[test]

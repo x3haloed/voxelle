@@ -31,6 +31,7 @@ impl Store {
                 r#"
                 PRAGMA foreign_keys = ON;
                 PRAGMA journal_mode = WAL;
+                PRAGMA busy_timeout = 5000;
 
                 CREATE TABLE IF NOT EXISTS accepted_events (
                     event_id TEXT PRIMARY KEY NOT NULL,

@@ -47,6 +47,19 @@ if (
 }
 render();
 
+window.setInterval(async () => {
+  if (uiState.busyCommand || currentSnapshot.home?.runtime.state !== "online") {
+    return;
+  }
+  try {
+    await refresh();
+    render();
+  } catch (error) {
+    uiState.error = error instanceof Error ? error.message : String(error);
+    render();
+  }
+}, 5_000);
+
 async function refresh() {
   currentSnapshot = await shell.execute("shell.refresh");
   return currentSnapshot;

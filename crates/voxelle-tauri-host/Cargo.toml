@@ -9,11 +9,11 @@ path = "src/main.rs"
 
 [dependencies]
 serde_json = "1"
-tauri = "2.11.3"
+tauri = { version = "2.11.3", features = [] }
 voxelle-app = { path = "../voxelle-app" }
 
 [build-dependencies]
-tauri-build = "2.6.3"
+tauri-build = { version = "2.6.3", features = [] }
 
 [dev-dependencies]
 tempfile = "3"

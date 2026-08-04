@@ -22,13 +22,13 @@ impl ShellState {
     ) -> ShellResult<ShellSnapshotView> {
         let mut host = self.host.lock().await;
         let result = match command_id {
-            "shell.refresh" => host.snapshot(),
+            "shell.refresh" => host.refresh_and_sync().await,
             "home.init" => host.init_home(parse_request(payload)?),
             "runtime.goOnline" => host.start_service(parse_request(payload)?),
             "runtime.goOffline" => host.stop_service(),
             "space.invite.create" => host.create_space_invite(parse_request(payload)?),
             "space.join" => host.join_space(parse_request(payload)?).await,
-            "message.send" => host.send_message(parse_request(payload)?),
+            "message.send" => host.send_message(parse_request(payload)?).await,
             "peer.import" => host.import_peer_record(parse_request(payload)?),
             "peer.diagnose" => host.diagnose_peer(parse_request(payload)?).await,
             "peer.sync" => host.sync_peer(parse_request(payload)?).await,
@@ -160,6 +160,43 @@ mod tests {
             bob_joined.home.expect("home").room.messages[0].text,
             "hello through shell"
         );
+
+        alice
+            .execute_serialized_command(
+                "message.send",
+                serde_json::json!({ "text": "arrives without manual sync", "room": null }),
+            )
+            .await
+            .expect("alice sends again");
+        let bob_refreshed = bob
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("online refresh performs anti-entropy");
+        assert!(bob_refreshed
+            .home
+            .expect("bob home")
+            .room
+            .messages
+            .iter()
+            .any(|message| message.text == "arrives without manual sync"));
+
+        bob.execute_serialized_command(
+            "message.send",
+            serde_json::json!({ "text": "pushes automatically", "room": null }),
+        )
+        .await
+        .expect("bob sends and pushes");
+        let alice_refreshed = alice
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("alice refresh");
+        assert!(alice_refreshed
+            .home
+            .expect("alice home")
+            .room
+            .messages
+            .iter()
+            .any(|message| message.text == "pushes automatically"));
 
         let alice_after_serving = alice
             .execute_serialized_command("shell.refresh", serde_json::json!({}))
