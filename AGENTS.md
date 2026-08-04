@@ -7,10 +7,7 @@ Before taking meaningful actions, attach to the repo’s provenance system:
 5) Append a `snapshot` (or `resume`) ledger record stating your current understanding and next decision.
 Then proceed; acknowledge every new directive with `ack_directive`.
 
-## Local skills
-This repo includes local skills under `skills/`. If a user asks to execute a skill, read its `SKILL.md` and follow its “MUST do” requirements.
-
-## Defended system invariants and compressible variants (required)
+## Defended system invariants (required)
 
 ### Interpretation and document precedence
 
@@ -153,77 +150,6 @@ The app is not deployed. Existing development homes and accepted events are
 disposable under the contract. Do not add migration readers, legacy writers,
 compatibility authorities, or dual workflows unless deployment status or an
 explicit user instruction changes this rule.
-
-### Compressible variants
-
-Subject to the negotiated embodiment depth, these are candidates, not sacred
-architecture:
-
-- crate, module, binary, and process boundaries;
-- Tauri, Quinn, Axum, rusqlite, serde, ts-rs, and other library choices;
-- file names and the current split among SQLite and JSON home-state files;
-- frontend organization, the full-snapshot bridge, polling loops, heartbeat
-  intervals, and scheduler placement;
-- command dispatch switches, DTO adapters, generated TypeScript, fixtures, CLI
-  adapters, HTTP routes, and button wiring;
-- the precise DAG exchange algorithm, known-event representation, batching,
-  proof repetition, serialization width, and framing;
-- attachment embedding, local indexing, and reconstructible projection layout;
-- the current private-event inner/outer envelope and key-package representation;
-- the optional inhabitant sidecar and low-level protocol CLI commands when no
-  external consumer requires their boundary;
-- release container details such as DMG/NSIS and checksum tooling, provided the
-  install and integrity invariant remains true;
-- specific tests and probes, provided equal or stronger preservation evidence
-  replaces them.
-
-Normative cryptographic primitives, IDs, signed encodings, and wire contracts in
-the P2P RFC are variants only through an explicit protocol revision with
-equivalent security, convergence, interoperability, and recovery evidence. Do
-not change them as an incidental refactor.
-
-### High-value compression candidates
-
-Prefer coherent collapses that remove complete authorities, representations,
-boundaries, schedulers, or categories of machine work. Current high-value
-candidates are:
-
-1. Move call heartbeat, offer, answer, and ICE traffic out of the durable room
-   log into an authenticated ephemeral room-signaling path while preserving
-   membership checks, private-room confidentiality, bounded mesh selection, and
-   crash expiry.
-2. Replace frontend polling, per-command automatic synchronization, call
-   heartbeat scheduling, and service lifecycle timers with one explicit
-   app-owned scheduler and publication path.
-3. Consolidate fragmented local home state into one transactional durable-state
-   authority while keeping OS-keystore capabilities separate and recovery
-   export derived and inspectable.
-4. Collapse acceptance/sync/storage glue into one transactional
-   validate-and-admit boundary while retaining a pure, independently testable
-   semantic validator.
-5. Generate shell dispatch, payload contracts, frontend adapters, CLI/HTTP
-   adapters, and automation metadata from one typed semantic command
-   definition.
-6. Remove an unused sidecar or embed an actually required surface as an optional
-   mode; route product CLI behavior through the application command authority;
-   and keep repository provenance tooling outside the product runtime/build
-   graph where practical. Preserve inhabitant-surface obligations if that
-   documented external boundary is still required.
-7. Replace O(history) known-event exchange with bounded DAG-frontier/want
-   negotiation; transmit reusable identity/delegation proofs once by content
-   address; and fetch content-addressed blobs independently from signed message
-   metadata.
-8. Explore one signed encrypted event representation rather than a redundant
-   signed outer and signed inner event, provided excluded peers can forward it
-   and admitted peers still authenticate and semantically validate it.
-9. Use disposable incremental projections and replay checkpoints rather than
-   replaying complete histories for every snapshot, without allowing a cache or
-   index to become a second truth.
-
-Rank these after measurement and topology mapping. A long file or high line
-count alone is not a compression target. Moving code without retiring an
-authority, representation, boundary, coordination edge, or physical category
-of work is not compression.
 
 ### Boundaries that must not be collapsed accidentally
 
