@@ -145,8 +145,12 @@ The v0 bootstrap file is:
 {home_root}/.voxelle-inhabitantd.json
 ```
 
-It contains the sidecar `base_url`, `pid`, `started_at_unix_ms`, and endpoint
-URLs. Once connected, `GET /inhabitant/v0/discovery` is authoritative.
+It is an owner-readable capability file containing the sidecar `base_url`,
+`pid`, `started_at_unix_ms`, endpoint URLs, and the per-launch bearer
+authorization value. Clients send that value in the `Authorization` header.
+The service accepts loopback binds only, rejects browser-origin requests, and
+requires authentication for discovery, snapshots, commands, and events. Once
+authenticated, `GET /inhabitant/v0/discovery` is authoritative.
 
 ### 3.2 Snapshot
 
