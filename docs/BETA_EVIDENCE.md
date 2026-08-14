@@ -4,8 +4,9 @@ Status: required external-evidence procedure for the full beta gate.
 
 The signed release manifest proves artifact identity and update authority. It
 does not prove that Windows displayed the application, that three physical
-machines communicated off loopback, or that signing secrets were moved into
-offline custody. Those facts are recorded in one bounded
+machines communicated off loopback, that the human paths worked with actual
+assistive technology and physical media devices, or that signing secrets were
+moved into offline custody. Those facts are recorded in one bounded
 `voxelle-beta-evidence/v1` document and checked against the authenticated
 manifest and reviewed trust roots.
 
@@ -76,7 +77,42 @@ The verifier rejects IPv4, loopback, multicast, and documentation-only
 `[::]:PORT`, but an advertised address must identify an actual usable interface
 and cannot be unspecified.
 
-## 4. Establish signing-secret custody
+## 4. Record human causal-path evidence
+
+Use an actual supported desktop and name the assistive technology in the
+`human.assistive_technology` object (for example, VoiceOver, Narrator, or NVDA).
+With that technology active and without using a pointer, complete and record:
+
+- fresh setup and signed-invite join;
+- reading and sending conversation content;
+- recovery and lost-device revocation;
+- dock placement or visibility customization that survives restart;
+- understanding and acting on a degraded connection state; and
+- entering, operating, and leaving the direct-media surface.
+
+Do not enter `none`, `unknown`, or a generic claim. Accessibility-tree tests,
+keyboard automation, and deterministic media mocks are valuable development
+evidence, but they do not satisfy this actual assistive-technology gate.
+
+Then use two or three distinct physical participants drawn from the three
+machine roles in the field receipt. In `human.media`, record the participating roles
+and confirm all of the following with real microphones and cameras:
+
+- microphone and camera capture both work;
+- denying a device permission produces an explicit state and the user can
+  recover after granting permission;
+- every participant observes direct audio and video from the intended peers;
+- each participant can perceive the direct connection state;
+- leaving stops local capture; and
+- a missing or crashed peer remains an explicit state rather than appearing as
+  a healthy participant.
+
+Retain screenshots, assistive-technology notes, device/OS details, and failure
+observations with the other supporting evidence. The receipt contains only the
+bounded operator attestation and must not contain recordings or private
+conversation content.
+
+## 5. Establish signing-secret custody
 
 The ordinary release key and recovery-only key carry different capabilities and
 must be stored on separately protected offline media. For each restored copy,
@@ -105,7 +141,7 @@ development-copy removal, restore-test completion, timestamp, and operator in
 the `custody` object. Never put paths containing credentials, passwords,
 recovery material, or secret bytes in the evidence document.
 
-## 5. Verify the complete gate
+## 6. Verify the complete gate
 
 ```sh
 cargo run -q -p voxelle-release -- verify-beta-evidence \

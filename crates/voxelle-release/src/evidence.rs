@@ -15,6 +15,7 @@ pub struct BetaEvidenceV1 {
     pub distribution: DistributionEvidenceV1,
     pub windows: WindowsEvidenceV1,
     pub field: FieldEvidenceV1,
+    pub human: HumanEvidenceV1,
     pub custody: CustodyEvidenceV1,
 }
 
@@ -85,6 +86,41 @@ pub struct MessageReceiptV1 {
     pub author_role: String,
     pub message_marker: String,
     pub visible_on_roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HumanEvidenceV1 {
+    pub executed_utc: String,
+    pub operator: String,
+    pub assistive_technology: AssistiveTechnologyEvidenceV1,
+    pub media: MediaEvidenceV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistiveTechnologyEvidenceV1 {
+    pub platform: String,
+    pub technology: String,
+    pub keyboard_only: bool,
+    pub fresh_setup: bool,
+    pub invite_join: bool,
+    pub conversation: bool,
+    pub recovery: bool,
+    pub customization: bool,
+    pub degraded_connection: bool,
+    pub media_controls: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaEvidenceV1 {
+    pub participant_roles: Vec<String>,
+    pub physical_microphone_capture: bool,
+    pub physical_camera_capture: bool,
+    pub permission_denial_recovery: bool,
+    pub direct_audio_observed_by_all: bool,
+    pub direct_video_observed_by_all: bool,
+    pub direct_connection_state_visible: bool,
+    pub leave_stopped_capture: bool,
+    pub missing_peer_state_visible: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +222,33 @@ pub fn template(
                 })
                 .collect(),
         },
+        human: HumanEvidenceV1 {
+            executed_utc: String::new(),
+            operator: String::new(),
+            assistive_technology: AssistiveTechnologyEvidenceV1 {
+                platform: String::new(),
+                technology: String::new(),
+                keyboard_only: false,
+                fresh_setup: false,
+                invite_join: false,
+                conversation: false,
+                recovery: false,
+                customization: false,
+                degraded_connection: false,
+                media_controls: false,
+            },
+            media: MediaEvidenceV1 {
+                participant_roles: Vec::new(),
+                physical_microphone_capture: false,
+                physical_camera_capture: false,
+                permission_denial_recovery: false,
+                direct_audio_observed_by_all: false,
+                direct_video_observed_by_all: false,
+                direct_connection_state_visible: false,
+                leave_stopped_capture: false,
+                missing_peer_state_visible: false,
+            },
+        },
         custody: CustodyEvidenceV1 {
             release_key_id: release_key.key_id.clone(),
             recovery_key_id: recovery_key.key_id.clone(),
@@ -226,6 +289,7 @@ pub fn validate(
     validate_distribution(&evidence.distribution, manifest)?;
     validate_windows(&evidence.windows, manifest)?;
     validate_field(&evidence.field)?;
+    validate_human(&evidence.human, &evidence.field)?;
     validate_custody(&evidence.custody, manifest, roots)?;
     Ok(())
 }
@@ -280,8 +344,14 @@ fn validate_windows(windows: &WindowsEvidenceV1, manifest: &ReleaseManifestV1) -
     )?;
     require_text("Windows first-launch timestamp", &windows.first_launch_utc)?;
     require_text("Windows operator", &windows.operator)?;
-    if !windows.os_product_name.to_ascii_lowercase().contains("windows") {
-        return Err(anyhow!("Windows smoke receipt must identify a Windows OS product"));
+    if !windows
+        .os_product_name
+        .to_ascii_lowercase()
+        .contains("windows")
+    {
+        return Err(anyhow!(
+            "Windows smoke receipt must identify a Windows OS product"
+        ));
     }
     if windows.architecture != "X64" {
         return Err(anyhow!(
@@ -292,7 +362,9 @@ fn validate_windows(windows: &WindowsEvidenceV1, manifest: &ReleaseManifestV1) -
         .installed_executable_name
         .eq_ignore_ascii_case("voxelle-tauri-host.exe")
     {
-        return Err(anyhow!("Windows smoke receipt does not identify the Voxelle executable"));
+        return Err(anyhow!(
+            "Windows smoke receipt does not identify the Voxelle executable"
+        ));
     }
     if !windows.process_started || !windows.main_window_visible {
         return Err(anyhow!(
@@ -375,6 +447,66 @@ fn validate_field(field: &FieldEvidenceV1) -> Result<()> {
                 "every field-test message must be visible on A, B, and C"
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_human(human: &HumanEvidenceV1, field: &FieldEvidenceV1) -> Result<()> {
+    require_text("human-test timestamp", &human.executed_utc)?;
+    require_text("human-test operator", &human.operator)?;
+
+    let assistive = &human.assistive_technology;
+    if assistive.platform != "macOS" && assistive.platform != "Windows" {
+        return Err(anyhow!(
+            "assistive-technology evidence must identify macOS or Windows"
+        ));
+    }
+    require_specific_text("assistive technology", &assistive.technology)?;
+    if !(assistive.keyboard_only
+        && assistive.fresh_setup
+        && assistive.invite_join
+        && assistive.conversation
+        && assistive.recovery
+        && assistive.customization
+        && assistive.degraded_connection
+        && assistive.media_controls)
+    {
+        return Err(anyhow!(
+            "keyboard-only assistive-technology evidence must complete setup, join, conversation, recovery, customization, degraded-connection, and media-control paths"
+        ));
+    }
+
+    let media = &human.media;
+    if !(2..=field.machines.len()).contains(&media.participant_roles.len()) {
+        return Err(anyhow!(
+            "physical media evidence requires at least two field-test machines"
+        ));
+    }
+    let field_roles: BTreeSet<&str> = field
+        .machines
+        .iter()
+        .map(|machine| machine.role.as_str())
+        .collect();
+    let media_roles: BTreeSet<&str> = media.participant_roles.iter().map(String::as_str).collect();
+    if media_roles.len() != media.participant_roles.len()
+        || !media_roles.iter().all(|role| field_roles.contains(role))
+    {
+        return Err(anyhow!(
+            "media participant roles must be distinct machines from the field receipt"
+        ));
+    }
+    if !(media.physical_microphone_capture
+        && media.physical_camera_capture
+        && media.permission_denial_recovery
+        && media.direct_audio_observed_by_all
+        && media.direct_video_observed_by_all
+        && media.direct_connection_state_visible
+        && media.leave_stopped_capture
+        && media.missing_peer_state_visible)
+    {
+        return Err(anyhow!(
+            "physical media evidence must cover capture, permission recovery, direct audio/video, connection state, leave cleanup, and missing-peer state"
+        ));
     }
     Ok(())
 }
@@ -464,6 +596,17 @@ fn key_for_id_and_role<'a>(
 fn require_text(label: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() || value.len() > 512 {
         return Err(anyhow!("{label} must be present and bounded"));
+    }
+    Ok(())
+}
+
+fn require_specific_text(label: &str, value: &str) -> Result<()> {
+    require_text(label, value)?;
+    if matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "none" | "n/a" | "na" | "unknown"
+    ) {
+        return Err(anyhow!("{label} must identify the tool actually used"));
     }
     Ok(())
 }
@@ -585,6 +728,33 @@ mod tests {
                     })
                     .collect(),
             },
+            human: HumanEvidenceV1 {
+                executed_utc: "2026-08-14T21:30:00Z".to_string(),
+                operator: "operator".to_string(),
+                assistive_technology: AssistiveTechnologyEvidenceV1 {
+                    platform: "macOS".to_string(),
+                    technology: "VoiceOver".to_string(),
+                    keyboard_only: true,
+                    fresh_setup: true,
+                    invite_join: true,
+                    conversation: true,
+                    recovery: true,
+                    customization: true,
+                    degraded_connection: true,
+                    media_controls: true,
+                },
+                media: MediaEvidenceV1 {
+                    participant_roles: vec!["A".to_string(), "B".to_string()],
+                    physical_microphone_capture: true,
+                    physical_camera_capture: true,
+                    permission_denial_recovery: true,
+                    direct_audio_observed_by_all: true,
+                    direct_video_observed_by_all: true,
+                    direct_connection_state_visible: true,
+                    leave_stopped_capture: true,
+                    missing_peer_state_visible: true,
+                },
+            },
             custody: CustodyEvidenceV1 {
                 release_key_id: "release".to_string(),
                 recovery_key_id: "recovery".to_string(),
@@ -645,6 +815,56 @@ mod tests {
 
         let mut evidence = valid();
         evidence.windows.main_window_visible = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.assistive_technology.recovery = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.assistive_technology.technology = "none".to_string();
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.media.physical_camera_capture = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.media.participant_roles = vec!["A".to_string(), "A".to_string()];
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.media.participant_roles = vec!["A".to_string(), "D".to_string()];
         assert!(validate(
             &evidence,
             &manifest(),

@@ -428,5 +428,8 @@ collapses. Workspace-wide formatting and lint are not claimed as green because
 the separate provenance-board crates have existing rustfmt drift and two new
 `manual_contains` warnings under Rust 1.96; the changed Voxelle authority crates
 are formatted and strict-lint clean. Windows first launch, non-loopback field
-reachability, and physical media devices remain the external gates already
-named in the evidence horizon, not locally completed claims.
+reachability, actual assistive-technology operation, and physical media devices
+remain the external gates already named in the evidence horizon, not locally
+completed claims. The release-bound beta receipt now requires those human
+external gates explicitly, so local mocks and semantic tests cannot silently
+stand in for lived evidence.
