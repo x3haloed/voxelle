@@ -13,8 +13,11 @@ It should answer:
 - Does each machine advertise a usable IPv6 address?
 - Does another peer reach the advertised address?
 - Does the firewall failure mode show up clearly?
-- Can invite JSON be copied, imported, diagnosed, and synced from the GUI?
+- Can a signed space invite onboard a fresh installation, after which ordinary
+  peer records drive diagnosis and sync from the GUI?
 - Does a third peer converge after syncing through either earlier peer?
+- Can a fresh peer join through an ordinary retaining peer while the original
+  inviter is offline?
 - Does the Field Test panel make the next action obvious enough?
 
 Loopback success is already covered by tests. The valuable signal here is what
@@ -22,13 +25,17 @@ happens off loopback.
 
 ## Before You Start
 
-On every machine:
+For a source field build on every machine:
 
 ```sh
-git checkout ipv6
+git checkout main
 git pull
 cargo build -p voxelle-tauri-host
 ```
+
+For a release field test, install the platform artifact only after verifying
+its `VOXELLE-RELEASE.json` as described in `docs/INSTALL_UNSIGNED.md`. Do not
+mix homes created by different test roles.
 
 Use isolated homes unless you intentionally want to use the default local home.
 
@@ -45,96 +52,105 @@ The important thing is that each running host has its own home root.
 
 Use these panels in the workbench:
 
-- `Home`: confirms the current home root, peer ID, device ID, runtime state,
-  listen address, advertised address, known peer count, and message count.
+- `Profile Summary`: confirms the current home, peer, device, and space
+  identity.
+- `Runtime Status`: shows online state plus listen and advertised addresses.
 - `Network Health`: shows lower-level setup and reachability rows.
-- `Peer Exchange`: copy local invite JSON and import another peer's invite JSON.
+- `Invite Exchange`: creates and copies a signed membership invite and imports
+  ordinary peer availability records after membership exists.
+- `Peer List`: shows imported availability records and exposes diagnosis/sync.
 - `Field Test`: shows the operator checklist for the current peer.
-- `Network Log`: shows diagnostic, sync, service, and error events.
-- `Room`: send and read test messages.
+- `Service Activity`: shows diagnostic, sync, service, update, and error events.
+- `Room Timeline` and `Message Composer`: read and send test messages.
 
-The thing to copy is the full JSON in `Peer Exchange` after the peer is online.
+Do not conflate the two signed JSON objects. A `.voxinvite` grants membership;
+a peer record only advertises replaceable endpoint availability and grants no
+membership or protocol authority.
 
 ## Two-Peer Base Test
 
 ### Peer A
 
 1. Launch the host with an isolated home.
-2. In `Field Test`, run `Initialize Home` if needed.
+2. Run `Create My Space` if needed.
 3. Run `Go Online`.
-4. In `Home`, confirm:
+4. In `Runtime Status`, confirm:
    - `Runtime` is `online`.
    - `Advertise` is not a loopback address unless this is a same-machine test.
-5. In `Peer Exchange`, copy the local invite JSON.
-6. Send A's invite JSON to Peer B out-of-band.
+5. In `Invite Exchange`, create a signed, expiring space invite and copy its
+   complete JSON.
+6. Send A's signed space invite to Peer B out-of-band.
 
 ### Peer B
 
-1. Launch the host with an isolated home.
-2. Run `Initialize Home`.
-3. Paste A's invite JSON into `Peer Exchange`.
-4. Run `Import`.
-5. In `Field Test`, run `Diagnose Peer`.
-6. If diagnose works, run `Sync Peer`.
-7. In `Room`, send a message like:
+1. Launch the host with a fresh isolated home; do not initialize a separate
+   space first.
+2. Paste A's signed invite JSON into `Or join a space` and run `Join Space`.
+3. Confirm the join creates B's durable principal, admits it to A's space,
+   synchronizes retained history, and goes online without manual topology
+   steps on the ordinary success path.
+4. In `Peer List`, diagnose A and run an explicit sync as a re-entrant check.
+5. In `Message Composer`, send a message like:
 
 ```text
 hello from peer b
 ```
 
-8. Run `Go Online`.
-9. Copy B's invite JSON and send it to Peer A.
+6. Copy B's ordinary peer record and send it to Peer A if A did not learn B's
+   current endpoint during onboarding.
 
 ### Peer A Again
 
-1. Import B's invite JSON.
-2. Run `Diagnose Peer`.
-3. Run `Sync Peer`.
-4. Confirm B's message appears in `Room`.
-5. Send a reply from A.
-6. Have B sync A again and confirm A's reply appears.
+1. Import B's peer record if needed; this must not change membership.
+2. Run `Diagnose Peer` and `Sync Peer`.
+3. Confirm B's message appears in `Room Timeline`.
+4. Send a reply from A.
+5. Have B sync A again and confirm A's reply appears.
 
 ## Third-Peer Test
 
 Peer C should prove that the system is not only pairwise happy-path glue.
 
-1. Launch Peer C with its own home.
-2. Initialize Peer C.
-3. Import either A's invite or B's invite.
-4. Diagnose the imported peer.
-5. Sync the imported peer.
-6. Confirm C sees the current room messages.
-7. Send:
+1. While A is online, create a signed membership invite for C and ensure an
+   ordinary retaining peer B has synchronized the current governance/history.
+2. Make B's reachable endpoint available as an invite bootstrap hint or other
+   ordinary peer hint; the hint must not grant membership.
+3. Take A, the invite signer, offline.
+4. Launch C with a fresh isolated home and join with A's still-valid signed
+   invite through B.
+5. Confirm C sees current room messages even though A is offline.
+6. Send:
 
 ```text
 hello from peer c
 ```
 
-8. Have A or B import C's invite.
-9. Diagnose C and sync C.
-10. Have the remaining peer sync against either peer that has C's message.
-11. Confirm all three peers can eventually see A, B, and C messages.
+7. Have B import C's ordinary peer record if needed, diagnose C, and sync C.
+8. Bring A back online and sync it against either B or C.
+9. Confirm all three peers can eventually see A, B, and C messages.
 
 ## What To Record
 
 For each peer, write down:
 
 - Machine name or role: A, B, C.
-- Home root from `Home`.
-- Advertised address from `Home`.
+- Home root and IDs from `Profile Summary`.
+- Listen and advertised addresses from `Runtime Status`.
 - Whether advertised address is loopback, local/private, temporary, or public.
-- Which peer invite was imported.
-- Diagnostic result from `Network Log`.
-- Sync result from `Network Log`.
+- Which signed membership invite was used and which ordinary peer supplied it
+  while the inviter was online or offline.
+- Which peer availability record was imported separately.
+- Diagnostic result from `Service Activity`.
+- Sync result from `Service Activity`.
 - Whether new messages appeared after sync.
 - Any exact error text.
 
 If possible, capture screenshots of:
 
-- `Home`
+- `Profile Summary` and `Runtime Status`
 - `Field Test`
 - failed `Network Health` rows
-- failed `Network Log` entries
+- failed `Service Activity` entries
 
 ## Interpreting Failures
 
@@ -154,7 +170,7 @@ This usually means one of:
 - the peer went offline,
 - the invite contains stale endpoint material.
 
-Record the exact `Network Log` entry and the advertised address.
+Record the exact `Service Activity` entry and the advertised address.
 
 ### Sync Fails After Diagnose Works
 
@@ -183,7 +199,8 @@ anti-entropy, or operator flow.
 Stop and patch before continuing if:
 
 - the app panics or exits,
-- the UI cannot copy/import invite JSON reliably,
+- the UI cannot distinguish or reliably copy/paste membership invites and peer
+  availability records,
 - the Field Test panel gives a misleading next action,
 - failures appear only in terminal output and not in the workbench,
 - a peer can diagnose but never sync and the log gives no actionable reason.
@@ -193,7 +210,8 @@ Stop and patch before continuing if:
 Minimum useful success:
 
 - A and B can diagnose and sync over non-loopback IPv6.
-- C can import either A or B and receive room history.
+- C can use A's signed invite to join and receive history through ordinary peer
+  B while A is offline.
 - A, B, and C can eventually see a message from each peer.
 - The operator can explain what happened using only the workbench panels.
 

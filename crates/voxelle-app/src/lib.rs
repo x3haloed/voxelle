@@ -3699,13 +3699,30 @@ impl VoxelleCommandHost {
             .unwrap_or(24 * 60)
             .clamp(1, 30 * 24 * 60);
         let expires_ms = now_ms().saturating_add((minutes as i64).saturating_mul(60_000));
-        let invite = self.home.create_space_invite(online, expires_ms)?;
+        let additional_bootstraps = self
+            .home
+            .known_peers()?
+            .into_iter()
+            .filter(|peer| {
+                peer.space_id == online.space_id
+                    && peer.governance_room_id == online.governance_room_id
+                    && peer.default_room == online.default_room
+                    && peer.authority_peer_id == online.authority_peer_id
+            })
+            .take(7)
+            .collect::<Vec<_>>();
+        let invite = self.home.create_space_invite_with_bootstraps(
+            online,
+            &additional_bootstraps,
+            expires_ms,
+        )?;
+        let bootstrap_count = invite.bootstrap_peers()?.len();
         self.last_space_invite_json = Some(serde_json::to_string_pretty(&invite)? + "\n");
         self.push_activity(
             ServiceActivityLevel::Info,
             format!(
-                "created signed space invite {}",
-                invite.invite_event.event_id
+                "created signed space invite {} with {} bootstrap peer(s)",
+                invite.invite_event.event_id, bootstrap_count
             ),
         );
         self.snapshot()

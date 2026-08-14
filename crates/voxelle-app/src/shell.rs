@@ -583,6 +583,120 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shell_invite_uses_an_ordinary_peer_while_inviter_is_offline() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let alice = ShellState::new(dir.path().join("alice-inviter"));
+        let bob = ShellState::new(dir.path().join("bob-ordinary-peer"));
+        let charlie = ShellState::new(dir.path().join("charlie-fresh"));
+
+        alice
+            .execute_serialized_command(
+                "home.init",
+                serde_json::json!({ "default_room": DEFAULT_ROOM_ID }),
+            )
+            .await
+            .expect("alice init");
+        alice
+            .execute_serialized_command(
+                "message.send",
+                serde_json::json!({ "text": "history retained by Bob", "room": null }),
+            )
+            .await
+            .expect("alice history");
+        alice
+            .execute_serialized_command(
+                "runtime.goOnline",
+                serde_json::json!({ "bind": null, "advertise": null }),
+            )
+            .await
+            .expect("alice online");
+
+        let bob_invite = alice
+            .execute_serialized_command(
+                "space.invite.create",
+                serde_json::json!({ "expires_minutes": 60 }),
+            )
+            .await
+            .expect("invite Bob")
+            .home
+            .expect("alice home")
+            .invite
+            .expect("alice invite")
+            .space_invite_json
+            .expect("signed Bob invite");
+        let bob_joined = bob
+            .execute_serialized_command(
+                "space.join",
+                serde_json::json!({
+                    "space_invite_json": bob_invite,
+                    "max_events": 64
+                }),
+            )
+            .await
+            .expect("Bob joins");
+        let bob_record_json = bob_joined
+            .home
+            .expect("bob home")
+            .invite
+            .expect("bob online invite exchange")
+            .peer_record_json;
+        alice
+            .execute_serialized_command(
+                "peer.import",
+                serde_json::json!({ "peer_record_json": bob_record_json }),
+            )
+            .await
+            .expect("Alice imports Bob availability");
+
+        let charlie_invite = alice
+            .execute_serialized_command(
+                "space.invite.create",
+                serde_json::json!({ "expires_minutes": 60 }),
+            )
+            .await
+            .expect("invite Charlie with ordinary fallback")
+            .home
+            .expect("alice home")
+            .invite
+            .expect("alice invite")
+            .space_invite_json
+            .expect("signed Charlie invite");
+        let parsed: crate::SpaceInviteFileV1 =
+            serde_json::from_str(&charlie_invite).expect("parse Charlie invite");
+        assert_eq!(parsed.bootstrap_peers().expect("bootstrap peers").len(), 2);
+
+        alice
+            .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
+            .await
+            .expect("inviter offline");
+        let charlie_joined = charlie
+            .execute_serialized_command(
+                "space.join",
+                serde_json::json!({
+                    "space_invite_json": charlie_invite,
+                    "max_events": 64
+                }),
+            )
+            .await
+            .expect("Charlie joins through Bob");
+        assert!(charlie_joined
+            .home
+            .expect("charlie home")
+            .room
+            .messages
+            .iter()
+            .any(|message| message.text == "history retained by Bob"));
+
+        bob.execute_serialized_command("runtime.goOffline", serde_json::json!({}))
+            .await
+            .expect("Bob offline");
+        charlie
+            .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
+            .await
+            .expect("Charlie offline");
+    }
+
+    #[tokio::test]
     async fn discord_public_families_converge_through_serialized_shell_commands() {
         let dir = tempfile::tempdir().expect("tempdir");
         let alice = ShellState::new(dir.path().join("alice"));
