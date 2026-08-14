@@ -170,8 +170,8 @@ impl From<anyhow::Error> for ShellError {
 mod tests {
     use super::*;
     use crate::{
-        default_ui_ontology, shell_contract_typescript, NetworkHealthStatus, ProductGenerationV1,
-        UiPreferences, DEFAULT_ROOM_ID,
+        builtin_product_generation, default_ui_ontology, shell_contract_typescript,
+        NetworkHealthStatus, ProductGenerationV1, UiPreferences, DEFAULT_ROOM_ID,
     };
     use voxelle_core::Keypair;
     use voxelle_update::{
@@ -187,8 +187,16 @@ mod tests {
             .find(|command| command.id == "shell.refresh")
             .expect("refresh command")
             .label = refresh_label.to_string();
-        let payload = serde_json::to_value(ProductGenerationV1 { v: 1, ontology })
-            .expect("generation payload");
+        let mut component = builtin_product_generation().component;
+        component
+            .source
+            .push_str(&format!("\n// signed generation: {refresh_label}\n"));
+        let payload = serde_json::to_value(ProductGenerationV1 {
+            v: 1,
+            ontology,
+            component,
+        })
+        .expect("generation payload");
         let mut package = UpdatePackageV1 {
             format: UPDATE_FORMAT_V1.to_string(),
             release_id: format!("beta-{sequence}"),
@@ -293,6 +301,7 @@ mod tests {
             .await
             .expect("activate first generation");
         assert_eq!(first.product_generation.active_sequence, 1);
+        assert!(first.product_component.source.contains("signed generation: Refresh Live"));
         assert_eq!(
             first
                 .ui_ontology
@@ -322,6 +331,7 @@ mod tests {
             .await
             .expect("reload persisted generation");
         assert_eq!(persisted.product_generation.active_sequence, 1);
+        assert!(persisted.product_component.source.contains("signed generation: Refresh Live"));
         assert_eq!(
             persisted
                 .ui_ontology
@@ -347,6 +357,7 @@ mod tests {
             .await
             .expect("rollback generation");
         assert_eq!(rolled_back.product_generation.active_sequence, 1);
+        assert!(rolled_back.product_component.source.contains("signed generation: Refresh Live"));
         assert_eq!(
             rolled_back
                 .ui_ontology

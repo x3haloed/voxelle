@@ -53,7 +53,8 @@ slices named by `AGENTS.md`.
   built, signed, verified, and published with explicit local commands. This is
   a project-operation decision, not a protocol or product authority.
 - Product generations may be activated without restarting the native process.
-  The initial replaceable generation is the Rust-owned UI/product ontology.
+  The replaceable generation now contains the UI/product ontology, executable
+  WebView product component, and its complete stylesheet.
   Later slices may widen this boundary only after recording and verifying the
   newly preserved authority and resource handoff.
 
@@ -87,10 +88,13 @@ Before this change:
 - **Coordination edges:** Rust snapshot to WebView rendering; package scripts to
   release artifacts; user checksum comparison to installation.
 
-The first compression removes the compiled ontology as the only product
-generation representation and removes GitHub/checksum adjacency as update
-authenticity. The surviving authorities are the kernel verifier, the stable
-command/view identity inventory, and one atomically selected signed generation.
+The first compression removed the compiled ontology as the only product
+generation representation and removed GitHub/checksum adjacency as update
+authenticity. The executable-component compression additionally removes the
+bundled WebView entrypoint and stylesheet as parallel product implementations.
+The surviving WebView host is a small loader plus capability adapter; the
+surviving native authorities are the kernel verifier, stable command/view
+identity inventory, command host, and one atomically selected signed generation.
 
 ## Generation transaction
 
@@ -148,10 +152,14 @@ GitHub may carry `.voxtrust` bytes but cannot authorize or order them. Applying
 a transition is an explicit native command. The transition log is local update
 authority state, distinct from product generations and user data.
 
-## Initial generation boundary
+## Executable generation boundary
 
 Version 1 carries the complete UI ontology presentation for existing stable
-places, views, commands, semantic tokens, metrics, behaviors, and renderers.
+places, views, commands, semantic tokens, metrics, behaviors, and renderers,
+plus the executable product component and stylesheet that render and operate
+the workbench. The stable WebView host supplies a bounded capability adapter;
+the component can request only kernel-known semantic commands through the same
+serialized Rust command host used by the CLI, palette, shortcuts, and buttons.
 Activation validation requires:
 
 - every kernel-known place, view, and command ID appears exactly once;
@@ -160,11 +168,22 @@ Activation validation requires:
 - every view resolves to a known place;
 - user-persisted layout and appearance preferences are re-applied by stable ID;
 - bounded strings, collection sizes, numeric metrics, and reference IDs;
+- component API version 1 and bounded, nonempty JavaScript and CSS source;
 - the generated snapshot remains serializable through the existing shell
   contract.
 
-This generation changes presentation and discoverability, not protocol
-admission or command execution.
+Activation compiles the next component before disposing the running component.
+It then disposes timers, snapshot subscriptions, media, peer connections, DOM,
+and styles owned by the old component before mounting the new one. Syntax
+failure leaves the running component untouched; mount failure remounts the
+previous component and requests kernel-owned package rollback. Component code
+may change presentation, interaction, local drafts, media coordination, and
+which stable commands it requests. It cannot add a shell command, bypass typed
+payload decoding, admit an event, mutate SQLite, select an update, or acquire a
+native/protocol authority.
+
+The current boundary and majority accounting are maintained in
+`HOT_SWAPPABLE_BOUNDARY.md`.
 
 ## Embodiment-depth contract
 

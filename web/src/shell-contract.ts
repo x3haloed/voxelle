@@ -28,7 +28,11 @@ export type PeerRecord = { v: number, label: string | null, space_id: string, go
 
 export type UiOntologyView = { places: Array<UiPlace>, views: Array<UiView>, commands: Array<UiCommand>, semantic_tokens: Array<SemanticToken>, metrics: Array<UiMetric>, behaviors: Array<UiBehavior>, renderers: Array<UiRenderer>, };
 
-export type ProductGenerationV1 = { v: number, ontology: UiOntologyView, };
+export type ProductGenerationV1 = { v: number, ontology: UiOntologyView, component: ProductComponentV1, };
+
+export type ProductComponentV1 = { api_version: number, source: string, styles: string, };
+
+export type ProductComponentView = { api_version: number, digest: string, source: string, styles: string, };
 
 export type ProductGenerationStatusView = { kernel_version: string, active_release_id: string, active_sequence: bigint, source: string, previous_available: boolean, update_authentication_available: boolean, trusted_update_key_count: number, trust_sequence: bigint, available_release_id: string | null, available_sequence: bigint | null, staged_release_id: string | null, staged_sequence: bigint | null, phase: string, notice: string | null, };
 
@@ -52,7 +56,7 @@ export type UiRenderer = { id: string, label: string, renders: string, default_r
 
 export type UiBehaviorValue = { "type": "bool", "value": boolean } | { "type": "text", "value": string };
 
-export type ShellSnapshotView = { home_root: string, home: HomeScreenView | null, home_error: string | null, network_health: NetworkHealthView, ui_ontology: UiOntologyView, product_generation: ProductGenerationStatusView, service_activity: Array<ServiceActivityItem>, search_results: Array<SearchResultView>, };
+export type ShellSnapshotView = { home_root: string, home: HomeScreenView | null, home_error: string | null, network_health: NetworkHealthView, ui_ontology: UiOntologyView, product_generation: ProductGenerationStatusView, product_component: ProductComponentView, service_activity: Array<ServiceActivityItem>, search_results: Array<SearchResultView>, };
 
 export type ServiceActivityItem = { id: number, level: ServiceActivityLevel, summary: string, };
 

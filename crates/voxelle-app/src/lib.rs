@@ -420,6 +420,22 @@ pub struct UiOntologyView {
 pub struct ProductGenerationV1 {
     pub v: u8,
     pub ontology: UiOntologyView,
+    pub component: ProductComponentV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ProductComponentV1 {
+    pub api_version: u8,
+    pub source: String,
+    pub styles: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ProductComponentView {
+    pub api_version: u8,
+    pub digest: String,
+    pub source: String,
+    pub styles: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -588,6 +604,8 @@ pub fn shell_contract_typescript() -> String {
         PeerRecord::decl(&cfg),
         UiOntologyView::decl(&cfg),
         ProductGenerationV1::decl(&cfg),
+        ProductComponentV1::decl(&cfg),
+        ProductComponentView::decl(&cfg),
         ProductGenerationStatusView::decl(&cfg),
         UiPlace::decl(&cfg),
         UiView::decl(&cfg),
@@ -668,7 +686,28 @@ pub fn builtin_product_generation() -> ProductGenerationV1 {
     ProductGenerationV1 {
         v: 1,
         ontology: default_ui_ontology(UiPreferences::default()),
+        component: ProductComponentV1 {
+            api_version: 1,
+            source: builtin_product_component_source(),
+            styles: include_str!("../../../web/src/styles.css").to_string(),
+        },
     }
+}
+
+fn builtin_product_component_source() -> String {
+    const MODULES: [&str; 4] = [
+        include_str!("../../../web/src/call-media.mjs"),
+        include_str!("../../../web/src/dom-reconcile.mjs"),
+        include_str!("../../../web/src/ui-ontology.mjs"),
+        include_str!("../../../web/src/workbench.mjs"),
+    ];
+    let mut source = String::from("// Signed Voxelle product component modules.\n");
+    for module in MODULES {
+        source.push_str(&module.replace("export ", ""));
+        source.push('\n');
+    }
+    source.push_str(include_str!("../../../web/src/product-component.js"));
+    source
 }
 
 pub fn write_ui_ontology_fixture(path: impl AsRef<Path>) -> Result<()> {
@@ -786,6 +825,7 @@ pub struct ShellSnapshotView {
     pub network_health: NetworkHealthView,
     pub ui_ontology: UiOntologyView,
     pub product_generation: ProductGenerationStatusView,
+    pub product_component: ProductComponentView,
     pub service_activity: Vec<ServiceActivityItem>,
     pub search_results: Vec<SearchResultView>,
 }
@@ -4103,6 +4143,22 @@ impl VoxelleCommandHost {
             Some(active) => apply_ui_preferences(active.generation.ontology.clone(), preferences),
             None => default_ui_ontology(preferences),
         };
+        let component = self
+            .product_generation
+            .as_ref()
+            .map(|active| active.generation.component.clone())
+            .unwrap_or_else(|| builtin_product_generation().component);
+        let mut component_digest = Sha256::new();
+        component_digest.update(b"voxelle-product-component/v1\0");
+        component_digest.update(component.source.as_bytes());
+        component_digest.update(b"\0styles\0");
+        component_digest.update(component.styles.as_bytes());
+        let product_component = ProductComponentView {
+            api_version: component.api_version,
+            digest: format!("{:x}", component_digest.finalize()),
+            source: component.source,
+            styles: component.styles,
+        };
         let product_generation = self.product_generation_status()?;
         Ok(ShellSnapshotView {
             home_root: self.home.root.clone(),
@@ -4111,6 +4167,7 @@ impl VoxelleCommandHost {
             network_health: self.home.network_health_view(online)?,
             ui_ontology,
             product_generation,
+            product_component,
             service_activity: self.activity.clone(),
             search_results: self.search_results.clone(),
         })
@@ -4686,6 +4743,21 @@ fn parse_product_generation(package: &VerifiedPackage) -> Result<ProductGenerati
 fn validate_product_generation(generation: &ProductGenerationV1) -> Result<()> {
     if generation.v != 1 {
         anyhow::bail!("unsupported product generation version {}", generation.v);
+    }
+    if generation.component.api_version != 1 {
+        anyhow::bail!(
+            "unsupported product component API {}",
+            generation.component.api_version
+        );
+    }
+    if generation.component.source.is_empty()
+        || generation.component.source.len() > 256 * 1024
+        || generation.component.styles.is_empty()
+        || generation.component.styles.len() > 256 * 1024
+        || generation.component.source.chars().any(|character| character == '\0')
+        || generation.component.styles.chars().any(|character| character == '\0')
+    {
+        anyhow::bail!("product component source is empty, oversized, or contains NUL");
     }
     let expected = default_ui_ontology(UiPreferences::default());
     validate_exact_ids(

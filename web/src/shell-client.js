@@ -1,4 +1,4 @@
-import { fixtureSnapshot } from "./fixture.js";
+import { fixtureSnapshot } from "./fixture.js?v=component1";
 
 /**
  * @typedef {import("./shell-contract").ShellSnapshotView} ShellSnapshotView

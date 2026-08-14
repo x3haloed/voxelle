@@ -47,6 +47,11 @@ export const fixtureSnapshot = {
         default_room: "room:general",
       },
     ],
+    channels: [{ room_id: "room:general", name: "general", topic: "", visibility: "public", selected: true, unread_count: 0 }],
+    roles: [],
+    profiles: [],
+    notifications: [],
+    call: { call_id: "", participants: [], signals: [] },
     room: {
       room_id: "room:general",
       messages: [
@@ -55,6 +60,14 @@ export const fixtureSnapshot = {
           created_ms: 1760000000000,
           author_peer_id: "ed25519:alice000000000000000000000000000000000000000000000000",
           text: "Network shell scaffold online.",
+          edited_ms: null,
+          redacted: false,
+          mentions: [],
+          thread_root_event_id: null,
+          reply_count: 0,
+          pinned: false,
+          reactions: [],
+          attachments: [],
         },
       ],
     },
@@ -147,4 +160,5 @@ export const fixtureSnapshot = {
     { id: 1, level: "info", summary: "service started at [::1]:49152" },
     { id: 2, level: "info", summary: "served diagnostic: Peer 5b2a91c840e2 reached this home" },
   ],
+  search_results: [],
 };
