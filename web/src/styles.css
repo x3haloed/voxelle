@@ -713,6 +713,19 @@ h3 {
   white-space: nowrap;
 }
 
+.message-delete-confirmation {
+  display: grid;
+  gap: 7px;
+  margin-top: 6px;
+  padding: 10px;
+  border: 1px solid var(--activity-error, #b42318);
+  border-radius: 6px;
+}
+
+.message-delete-confirmation .row-actions {
+  margin: 0;
+}
+
 .attachment-link {
   width: max-content;
   max-width: 100%;

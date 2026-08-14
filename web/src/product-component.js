@@ -27,6 +27,7 @@ const uiState = {
   replyPreview: null,
   editingMessageId: "",
   messageEditDraft: "",
+  deletingMessageId: "",
   channelNameDraft: "",
   channelTopicDraft: "",
   channelPrivateDraft: false,
@@ -1584,8 +1585,10 @@ function roomTimelineView(snapshot) {
     if (annotations.children.length > 0) content.append(annotations);
     const reactions = element("div", "message-reactions");
     for (const reaction of message.reactions ?? []) {
-      const button = commandButton("reaction.add", { target_event_id: message.event_id, emoji: reaction.emoji, room: snapshot.home?.room.room_id ?? null });
+      const ownReaction = reaction.peer_ids.includes(snapshot.home?.profile.peer_id ?? "");
+      const button = commandButton(ownReaction ? "reaction.remove" : "reaction.add", { target_event_id: message.event_id, emoji: reaction.emoji, room: snapshot.home?.room.room_id ?? null });
       button.textContent = `${reaction.emoji} ${reaction.peer_ids.length}`;
+      button.setAttribute("aria-label", `${ownReaction ? "Remove" : "Add"} ${reaction.emoji} reaction`);
       reactions.append(button);
     }
     if (reactions.children.length > 0) content.append(reactions);
@@ -1598,24 +1601,70 @@ function roomTimelineView(snapshot) {
     const actionDetails = element("details", "message-actions");
     actionDetails.append(element("summary", "", "Message actions"));
     const actions = element("div", "row-actions");
+    const ownThumb = message.reactions
+      .find((reaction) => reaction.emoji === "👍")
+      ?.peer_ids.includes(snapshot.home?.profile.peer_id ?? "") ?? false;
+    const thumb = commandButton(ownThumb ? "reaction.remove" : "reaction.add", {
+      target_event_id: message.event_id,
+      emoji: "👍",
+      room: snapshot.home?.room.room_id ?? null,
+    });
+    thumb.textContent = ownThumb ? "Remove 👍" : "React 👍";
+    const pin = commandButton(message.pinned ? "pin.remove" : "pin.add", {
+      target_event_id: message.event_id,
+      room: snapshot.home?.room.room_id ?? null,
+    });
     actions.append(
       actionButton("Reply", () => beginReply(message, author.display_name)),
-      commandButton("reaction.add", { target_event_id: message.event_id, emoji: "👍", room: snapshot.home?.room.room_id ?? null }),
-      commandButton("pin.add", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
+      thumb,
+      pin,
     );
     if (own && !message.redacted) {
       actions.append(
         actionButton("Edit", () => beginMessageEdit(message)),
-        commandButton("message.redact", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
+        actionButton("Delete…", () => beginMessageDelete(message.event_id)),
       );
     }
     actionDetails.append(actions);
     content.append(actionDetails);
+    if (uiState.deletingMessageId === message.event_id) {
+      content.append(messageDeleteConfirmation(message, snapshot));
+    }
     row.append(avatar, content);
     list.append(row);
   }
   fragment.append(context, list);
   return fragment;
+}
+
+function messageDeleteConfirmation(message, snapshot) {
+  const confirmation = element("section", "message-delete-confirmation");
+  confirmation.setAttribute("role", "alertdialog");
+  confirmation.setAttribute("aria-label", "Delete message confirmation");
+  confirmation.append(
+    element("strong", "", "Delete this message?"),
+    element("p", "summary", "Its text will be replaced by a signed tombstone. The deletion remains part of retained history."),
+  );
+  const controls = element("div", "row-actions");
+  const remove = commandButton("message.redact", {
+    target_event_id: message.event_id,
+    room: snapshot.home?.room.room_id ?? null,
+  });
+  remove.textContent = "Delete message";
+  controls.append(remove, actionButton("Cancel deletion", cancelMessageDelete));
+  confirmation.append(controls);
+  return confirmation;
+}
+
+function beginMessageDelete(eventId) {
+  uiState.deletingMessageId = eventId;
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".message-delete-confirmation .command-button")?.focus());
+}
+
+function cancelMessageDelete() {
+  uiState.deletingMessageId = "";
+  render();
 }
 
 function messageEditForm(message, snapshot) {
@@ -2236,6 +2285,9 @@ async function runCommand(command, payload) {
         return;
       }
       case "message.redact":
+        currentSnapshot = await shell.execute(command, payload);
+        uiState.deletingMessageId = "";
+        return;
       case "reaction.add":
       case "reaction.remove":
       case "pin.add":

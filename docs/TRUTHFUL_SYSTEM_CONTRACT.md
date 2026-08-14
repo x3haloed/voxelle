@@ -349,6 +349,13 @@ thread reply survived a full restart of the exact same artifact. Existing
 serialized two-home evidence continues to prove convergence through those same
 commands; this lived run is local packaged-debug evidence.
 
+The same packaged surface now derives reaction and pin actions from projected
+accepted state: a native run added and removed the local reaction and pinned
+and unpinned the message through their distinct semantic commands. Deletion no
+longer shares that one-click toggle shape; it focuses an explicit confirmation
+that explains the retained signed tombstone, with a separately exercised cancel
+path.
+
 Private channels have crossed their first confidentiality and recovery gate.
 Each member publishes a signed X25519 encryption key, private channel creation
 wraps a random epoch key independently to each admitted member, and every

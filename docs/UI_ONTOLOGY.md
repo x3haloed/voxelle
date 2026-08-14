@@ -220,6 +220,11 @@ its Enter/save or Escape/cancel keyboard paths invoke `message.edit` only when
 the person commits. Draft context is disposable presentation state; it never
 becomes a parallel message or thread authority.
 
+Projected reaction and pin state determines whether the visible action invokes
+the add or remove command; the frontend does not guess a toggle result. Message
+deletion is a separate confirmed step that states the retained signed-tombstone
+effect before invoking `message.redact`.
+
 ### 3.4 Semantic Tokens
 
 A semantic token is a named visual meaning, not a raw color.
