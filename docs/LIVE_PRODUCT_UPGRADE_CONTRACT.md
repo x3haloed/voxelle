@@ -216,23 +216,26 @@ platform artifact has not been executed.
 
 ## Current release evidence
 
-The macOS preview slice was published on 2026-08-14 as
-[`v0.1.0-beta.1`](https://github.com/x3haloed/voxelle/releases/tag/v0.1.0-beta.1),
+The current macOS preview slice was published on 2026-08-14 as
+[`v0.1.0-beta.2`](https://github.com/x3haloed/voxelle/releases/tag/v0.1.0-beta.2),
 an ordinary latest release whose signed manifest declares the `beta` channel.
-The tag resolves to commit `58f198a6d52c472967701ff42db77300c3568fa1`.
+The tag resolves to commit `5b4e38c90464f6612a302ca3dca08d755da8689d`.
 
 - GitHub readback through `/releases/latest/download` returned the 772-byte
-  signed manifest, 15,131,305-byte universal DMG, and 32,708-byte product
+  signed manifest, 15,134,373-byte universal DMG, and 32,708-byte product
   generation. Clean-directory verification authenticated the manifest and
   both listed artifacts.
 - The read-back DMG passed `hdiutil verify`; its executable is a universal
   `x86_64 arm64` Mach-O, and `codesign --verify --deep --strict` accepted its
   ad-hoc hardened-runtime signature.
-- The packaged native app discovered sequence 1 from the public fixed path,
+- The packaged native app discovered sequence 2 from the public fixed path,
   staged it without activation, activated it in-process as a signed source,
-  then rolled back to `builtin-recovery`. The resulting store had neither an
-  active nor staged pointer and retained the verified signed generation as the
-  previous rollback target.
+  then rolled back to the retained signed sequence 1. This proves the
+  multi-generation upgrade and rollback chain rather than only the built-in
+  recovery fallback.
+- The native semantic-command test creates A, joins B, imports B's ordinary
+  endpoint record, signs a C invite containing A and B as bounded bootstrap
+  hints, takes A offline, and joins C through B with retained history visible.
 
 This is a bounded macOS preview claim, not the complete cross-platform beta
 gate. A Windows installer built and exercised on Windows, the existing
