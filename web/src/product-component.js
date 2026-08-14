@@ -18,12 +18,16 @@ const uiState = {
   channelMembersDraft: "",
   profileNameDraft: "",
   profileAboutDraft: "",
+  profileDraftInitialized: false,
   searchDraft: "",
   bindDraft: "",
   advertiseDraft: "",
   productUpdateDraft: "",
   trustTransitionDraft: "",
   draggedViewId: "",
+  layoutEditing: false,
+  connectionOpen: false,
+  utilityOpen: "",
   paletteOpen: false,
   paletteQuery: "",
   localMediaStream: null,
@@ -38,6 +42,7 @@ const uiState = {
 
 const viewRenderers = {
   "profile.summary": profileSummaryView,
+  "identity.recovery": identityRecoveryView,
   "runtime.status": runtimeStatusView,
   "network.health": networkHealthView,
   "field.test": fieldTestView,
@@ -119,6 +124,7 @@ async function refresh() {
 }
 
 function render() {
+  assertSnapshotContract(currentSnapshot);
   const localPeerId = currentSnapshot.home?.profile.peer_id;
   if (
     uiState.localMediaStream
@@ -141,7 +147,19 @@ function render() {
   const desired = document.createElement("div");
   desired.append(
     header(currentSnapshot),
-    workbenchShell(currentSnapshot),
+    globalErrorBanner(),
+    ...(currentSnapshot.home && !currentSnapshot.home.recovery.kit_exported
+      ? [recoverySetupPrompt()]
+      : []),
+    ...(uiState.connectionOpen && currentSnapshot.home
+      ? [connectionCenter(currentSnapshot)]
+      : []),
+    ...(uiState.utilityOpen && currentSnapshot.home
+      ? [utilityCenter(currentSnapshot, uiState.utilityOpen)]
+      : []),
+    currentSnapshot.home
+      ? workbenchShell(currentSnapshot)
+      : onboardingExperience(currentSnapshot),
     ...(uiState.paletteOpen ? [commandPalette(currentSnapshot)] : []),
   );
   reconcileChildren(app, desired);
@@ -160,10 +178,41 @@ function render() {
   processCallSignals().catch(reportError);
 }
 
+function assertSnapshotContract(snapshot) {
+  if (snapshot.home && !snapshot.home.recovery) {
+    throw new Error(
+      "Voxelle shell snapshot is missing home.recovery; rebuild the native kernel and product component together.",
+    );
+  }
+}
+
+function recoverySetupPrompt() {
+  const prompt = element("section", "recovery-setup-prompt");
+  prompt.setAttribute("aria-label", "Recovery setup required");
+  const copy = element("div", "");
+  copy.append(
+    element("strong", "", "Protect this identity before relying on this device"),
+    element(
+      "p",
+      "summary",
+      "Save an offline recovery kit. It is the only supported path back to the same principal after local loss.",
+    ),
+  );
+  prompt.append(copy, commandButton("identity.recovery.export"));
+  return prompt;
+}
+
 function handleKeydown(event) {
   if (event.key === "Escape" && uiState.paletteOpen) {
     event.preventDefault();
     uiState.paletteOpen = false;
+    render();
+    return;
+  }
+  if (event.key === "Escape" && (uiState.connectionOpen || uiState.utilityOpen)) {
+    event.preventDefault();
+    uiState.connectionOpen = false;
+    uiState.utilityOpen = "";
     render();
     return;
   }
@@ -181,19 +230,257 @@ function header(snapshot) {
   const headerEl = element("header", "app-header");
   const titleGroup = element("div", "title-group");
   titleGroup.append(element("h1", "", "Voxelle"));
-  titleGroup.append(element("p", "path", snapshot.home_root));
+  const selectedChannel = snapshot.home?.channels.find((channel) => channel.selected);
+  titleGroup.append(element(
+    "p",
+    "header-context",
+    selectedChannel
+      ? `${selectedChannel.visibility === "private" ? "Private · " : "# "}${selectedChannel.name}`
+      : "Private communication, owned by its members",
+  ));
 
   const actions = element("div", "header-actions");
-  actions.append(
-    customizationEditor(snapshot),
-    shellMode(),
-    runtimeState(snapshot),
-    commandButton("workbench.commandPalette.open"),
-    commandButton("shell.refresh"),
-  );
+  if (snapshot.home) {
+    actions.append(
+      connectionCenterButton(snapshot),
+      utilityButton("people", `People · ${snapshot.home.profiles.length}`),
+      utilityButton(
+        "notifications",
+        snapshot.home.notifications.length > 0
+          ? `Notifications · ${snapshot.home.notifications.length}`
+          : "Notifications",
+      ),
+      utilityButton("search", "Search"),
+    );
+  }
+  if ((shell.mode ?? "unknown") !== "tauri") actions.append(shellMode());
+  actions.append(headerMore(snapshot));
 
   headerEl.append(titleGroup, actions);
   return headerEl;
+}
+
+function connectionCenterButton(snapshot) {
+  const attentionCount = snapshot.network_health.rows.filter((row) =>
+    row.status === "needs_attention" || row.status === "broken"
+  ).length;
+  const online = snapshot.home?.runtime.state === "online";
+  const label = attentionCount > 0
+    ? `${online ? "Online" : "Offline"} · ${attentionCount} issue${attentionCount === 1 ? "" : "s"}`
+    : online ? "Online" : "Offline";
+  const button = actionButton(label, () => {
+    uiState.utilityOpen = "";
+    uiState.connectionOpen = !uiState.connectionOpen;
+    render();
+  }, attentionCount > 0
+    ? `${attentionCount} connection item${attentionCount === 1 ? "" : "s"} need attention`
+    : "Review connection and synchronization health");
+  button.classList.add("connection-button");
+  button.dataset.status = attentionCount > 0 ? "attention" : "working";
+  button.setAttribute("aria-expanded", String(uiState.connectionOpen));
+  button.setAttribute("aria-controls", "connection-center");
+  return button;
+}
+
+function headerMore(snapshot) {
+  const details = element("details", "header-more");
+  details.append(element("summary", "command-button", "More"));
+  const menu = element("div", "header-more-menu");
+  if (snapshot.home) {
+    menu.append(customizationEditor(snapshot), layoutEditorButton());
+  }
+  menu.append(
+    commandButton("workbench.commandPalette.open"),
+    commandButton("shell.refresh"),
+  );
+  details.append(menu);
+  return details;
+}
+
+function utilityButton(kind, label) {
+  const button = actionButton(label, () => {
+    uiState.connectionOpen = false;
+    uiState.utilityOpen = uiState.utilityOpen === kind ? "" : kind;
+    render();
+  });
+  button.setAttribute("aria-expanded", String(uiState.utilityOpen === kind));
+  button.setAttribute("aria-controls", "utility-center");
+  return button;
+}
+
+function utilityCenter(snapshot, kind) {
+  const definitions = {
+    people: {
+      title: "People",
+      summary: "Your profile, members, and invitations for this space.",
+      render: () => {
+        const content = element("div", "utility-sections");
+        content.append(
+          utilitySection("You", profileSummaryView(snapshot)),
+          utilitySection("Members", memberProfilesView(snapshot)),
+          utilitySection("Invite people", inviteExchangeView(snapshot)),
+        );
+        return content;
+      },
+    },
+    notifications: {
+      title: "Notifications",
+      summary: "Unread mentions retained from your replicated channels.",
+      render: () => notificationCenterView(snapshot),
+    },
+    search: {
+      title: "Search messages",
+      summary: "Search retained messages and attachment names on this device.",
+      render: () => messageSearchView(snapshot),
+    },
+  };
+  const definition = definitions[kind] ?? definitions.people;
+  const aside = element("aside", "connection-center utility-center");
+  aside.id = "utility-center";
+  aside.setAttribute("role", "dialog");
+  aside.setAttribute("aria-modal", "false");
+  aside.setAttribute("aria-labelledby", "utility-center-title");
+  const heading = element("div", "connection-center-heading");
+  const copy = element("div", "panel-title");
+  const title = element("h2", "", definition.title);
+  title.id = "utility-center-title";
+  copy.append(title, element("p", "summary", definition.summary));
+  heading.append(copy, actionButton("Close", () => {
+    uiState.utilityOpen = "";
+    render();
+  }));
+  const body = element("div", "connection-center-body");
+  body.append(definition.render());
+  aside.append(heading, body);
+  return aside;
+}
+
+function utilitySection(title, content) {
+  const section = element("section", "utility-section");
+  section.append(element("h3", "", title), content);
+  return section;
+}
+
+function connectionCenter(snapshot) {
+  const aside = element("aside", "connection-center");
+  aside.id = "connection-center";
+  aside.setAttribute("role", "dialog");
+  aside.setAttribute("aria-modal", "false");
+  aside.setAttribute("aria-labelledby", "connection-center-title");
+  const heading = element("div", "connection-center-heading");
+  const copy = element("div", "panel-title");
+  const title = element("h2", "", "Connection & sync");
+  title.id = "connection-center-title";
+  copy.append(
+    title,
+    element(
+      "p",
+      "summary",
+      "Voxelle tries ordinary peers automatically. Details appear here when availability needs attention.",
+    ),
+  );
+  heading.append(
+    copy,
+    actionButton("Close", () => {
+      uiState.connectionOpen = false;
+      render();
+    }),
+  );
+  const body = element("div", "connection-center-body");
+  body.append(networkHealthView(snapshot));
+  aside.append(heading, body);
+  return aside;
+}
+
+function onboardingExperience(snapshot) {
+  const section = element("section", "onboarding");
+  section.setAttribute("aria-labelledby", "onboarding-title");
+  const intro = element("div", "onboarding-intro");
+  intro.append(
+    element("p", "eyebrow", "Private communication, owned by its members"),
+    element("h2", "", "How would you like to begin?"),
+    element(
+      "p",
+      "summary",
+      "Voxelle creates identity and space authority on your devices. No Voxelle service owns your account, membership, messages, or recovery.",
+    ),
+  );
+  intro.querySelector("h2").id = "onboarding-title";
+
+  const choices = element("div", "onboarding-choices");
+  const create = onboardingChoice(
+    "Create a new space",
+    "Start a new identity and private space on this device. You can invite people after Voxelle brings your peer online.",
+  );
+  create.append(commandButton("home.init"));
+
+  const join = onboardingChoice(
+    "Join with an invite",
+    "A signed invite grants membership and includes several ordinary peers Voxelle can try automatically—even when the inviter is offline.",
+  );
+  const joinForm = element("form", "field-stack");
+  joinForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("space.join").catch(reportError);
+  });
+  const inviteFile = document.createElement("input");
+  inviteFile.type = "file";
+  inviteFile.accept = ".voxinvite,application/json";
+  inviteFile.setAttribute("aria-label", "Choose a signed Voxelle invite");
+  inviteFile.addEventListener("change", async () => {
+    const file = inviteFile.files?.[0];
+    if (!file) return;
+    uiState.spaceInviteDraft = await file.text();
+    inviteText.value = uiState.spaceInviteDraft;
+  });
+  const inviteText = element("textarea", "invite-input");
+  inviteText.rows = 5;
+  inviteText.placeholder = "Paste signed .voxinvite JSON";
+  inviteText.setAttribute("aria-label", "Signed Voxelle invite");
+  inviteText.value = uiState.spaceInviteDraft;
+  inviteText.addEventListener("input", () => {
+    uiState.spaceInviteDraft = inviteText.value;
+  });
+  joinForm.append(inviteFile, inviteText, submitButton("space.join"));
+  join.append(joinForm);
+
+  const recover = onboardingChoice(
+    "Recover my identity",
+    "Use an offline recovery kit after losing a device or local state. Recovery preserves your principal, rotates authority to this device, and resynchronizes retained history.",
+  );
+  recover.append(
+    element(
+      "p",
+      "recovery-note",
+      "Your .voxrecover file is a bearer capability. Voxelle reads it locally and never uploads it.",
+    ),
+    commandButton("identity.recovery.restore"),
+  );
+
+  choices.append(create, join, recover);
+  section.append(intro, choices);
+  return section;
+}
+
+function onboardingChoice(title, description) {
+  const article = element("article", "onboarding-choice");
+  article.append(
+    element("h3", "", title),
+    element("p", "summary", description),
+  );
+  return article;
+}
+
+function layoutEditorButton() {
+  const button = actionButton(
+    uiState.layoutEditing ? "Finish layout" : "Edit layout",
+    () => {
+      uiState.layoutEditing = !uiState.layoutEditing;
+      render();
+    },
+  );
+  button.setAttribute("aria-pressed", String(uiState.layoutEditing));
+  return button;
 }
 
 function shellMode() {
@@ -203,12 +490,6 @@ function shellMode() {
     `shell-mode ${mode}`,
     mode === "tauri" ? "Tauri" : "Preview only · no peer service",
   );
-}
-
-/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
-function runtimeState(snapshot) {
-  const runtime = snapshot.home?.runtime.state ?? "offline";
-  return element("div", `runtime-state ${runtime}`, runtime);
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -309,7 +590,7 @@ function preferenceForm(preference, input, request) {
 function workbenchShell(snapshot) {
   const container = element("section", "workbench-container");
   const hidden = snapshot.ui_ontology.views.filter((view) => !view.visible);
-  if (hidden.length > 0) {
+  if (uiState.layoutEditing && hidden.length > 0) {
     const shelf = element("nav", "hidden-view-shelf");
     shelf.dataset.renderKey = "hidden-view-shelf";
     shelf.setAttribute("aria-label", "Hidden workbench views");
@@ -325,7 +606,12 @@ function workbenchShell(snapshot) {
 
   const shellEl = element("section", "workbench");
   shellEl.dataset.renderKey = "workbench";
+  const occupiedPlaces = new Set(snapshot.ui_ontology.views
+    .filter((view) => view.visible)
+    .map((view) => view.place_id));
+  if (!occupiedPlaces.has("inspector")) shellEl.classList.add("without-inspector");
   for (const place of snapshot.ui_ontology.places) {
+    if (!uiState.layoutEditing && !occupiedPlaces.has(place.id)) continue;
     shellEl.append(dockZone(place, snapshot));
   }
   container.append(shellEl);
@@ -337,32 +623,36 @@ function dockZone(place, snapshot) {
   zone.dataset.renderKey = `dock:${place.id}`;
   zone.dataset.placeId = place.id;
   zone.setAttribute("aria-label", `${place.label} dock`);
-  const heading = element("div", "dock-zone-header");
-  heading.append(
-    element("span", "dock-zone-label", place.label),
-    element("span", "view-id", place.id),
-  );
-  zone.append(heading);
-  zone.addEventListener("dragover", (event) => {
-    event.preventDefault();
-    zone.dataset.dragOver = "true";
-  });
-  zone.addEventListener("dragleave", () => delete zone.dataset.dragOver);
-  zone.addEventListener("drop", (event) => {
-    event.preventDefault();
-    delete zone.dataset.dragOver;
-    const viewId = event.dataTransfer?.getData("text/x-voxelle-view")
-      || uiState.draggedViewId;
-    if (viewId) {
-      saveLayout(moveView(currentSnapshot.ui_ontology.views, viewId, place.id)).catch(reportError);
-    }
-  });
+  if (uiState.layoutEditing) {
+    const heading = element("div", "dock-zone-header");
+    heading.append(
+      element("span", "dock-zone-label", place.label),
+      element("span", "view-id", place.id),
+    );
+    zone.append(heading);
+    zone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      zone.dataset.dragOver = "true";
+    });
+    zone.addEventListener("dragleave", () => delete zone.dataset.dragOver);
+    zone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      delete zone.dataset.dragOver;
+      const viewId = event.dataTransfer?.getData("text/x-voxelle-view")
+        || uiState.draggedViewId;
+      if (viewId) {
+        saveLayout(moveView(currentSnapshot.ui_ontology.views, viewId, place.id)).catch(reportError);
+      }
+    });
+  }
 
   const views = snapshot.ui_ontology.views
     .filter((view) => view.visible && view.place_id === place.id)
     .sort((left, right) => left.order - right.order || left.id.localeCompare(right.id));
   if (views.length === 0) {
-    zone.append(element("p", "dock-empty", "Drop a view here"));
+    if (uiState.layoutEditing) {
+      zone.append(element("p", "dock-empty", "Drop a view here"));
+    }
   } else {
     for (const view of views) {
       zone.append(workbenchPanel(view, snapshot));
@@ -392,6 +682,13 @@ function workbenchPanel(viewDefinition, snapshot) {
 
 function panelHeader(viewDefinition, snapshot) {
   const headerEl = element("div", "panel-header");
+  const titleGroup = element("div", "panel-title");
+  titleGroup.append(element("h2", "", viewDefinition.label));
+  if (!uiState.layoutEditing) {
+    headerEl.append(titleGroup);
+    return headerEl;
+  }
+
   headerEl.draggable = true;
   headerEl.addEventListener("dragstart", (event) => {
     uiState.draggedViewId = viewDefinition.id;
@@ -401,8 +698,6 @@ function panelHeader(viewDefinition, snapshot) {
   headerEl.addEventListener("dragend", () => {
     uiState.draggedViewId = "";
   });
-  const titleGroup = element("div", "panel-title");
-  titleGroup.append(element("h2", "", viewDefinition.label));
   titleGroup.append(element("span", "view-id", viewDefinition.id));
   const controls = element("div", "panel-controls");
   const placeSelect = element("select", "dock-select");
@@ -438,8 +733,6 @@ function panelHeader(viewDefinition, snapshot) {
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function profileSummaryView(snapshot) {
   const fragment = document.createDocumentFragment();
-  fragment.append(errorBanner());
-
   if (!snapshot.home) {
     const empty = element("div", "empty-state");
     empty.append(
@@ -470,18 +763,117 @@ function profileSummaryView(snapshot) {
   }
 
   const profile = snapshot.home.profile;
-  const rows = [
-    ["Home root", snapshot.home_root],
-    ["Peer", profile.peer_id],
-    ["Device", profile.device_id],
-    ["Default room", profile.default_room],
-    ["Authority", profile.authority_peer_id],
-    ["Known peers", String(snapshot.home.peers.length)],
-    ["Messages", String(snapshot.home.room.messages.length)],
-  ];
+  const projected = snapshot.home.profiles.find((candidate) =>
+    candidate.peer_id === profile.peer_id
+  ) ?? {
+    peer_id: profile.peer_id,
+    display_name: `Peer ${shortId(profile.peer_id)}`,
+    about: "",
+  };
+  if (!uiState.profileDraftInitialized) {
+    uiState.profileNameDraft = projected.display_name;
+    uiState.profileAboutDraft = projected.about;
+    uiState.profileDraftInitialized = true;
+  }
+  const identity = element("div", "identity-card");
+  identity.append(
+    element("div", "profile-avatar", profileInitials(projected.display_name)),
+    element("div", "identity-copy"),
+  );
+  identity.lastElementChild.append(
+    element("strong", "profile-name", projected.display_name),
+    element(
+      "p",
+      "summary",
+      projected.about || "Add a name and a short note so members recognize you.",
+    ),
+    element(
+      "p",
+      "identity-stats",
+      `${snapshot.home.channels.length} channel${snapshot.home.channels.length === 1 ? "" : "s"} · ${snapshot.home.peers.length} connection${snapshot.home.peers.length === 1 ? "" : "s"}`,
+    ),
+  );
 
-  fragment.append(definitionGrid(rows));
+  const edit = element("details", "advanced-details profile-edit");
+  edit.append(element("summary", "", "Edit your profile"));
+  const form = element("form", "field-stack");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("profile.update").catch(reportError);
+  });
+  form.append(
+    labeledInput(
+      "Display name",
+      "Your name",
+      uiState.profileNameDraft,
+      (value) => { uiState.profileNameDraft = value; },
+    ),
+    labeledInput(
+      "About",
+      "A short profile",
+      uiState.profileAboutDraft,
+      (value) => { uiState.profileAboutDraft = value; },
+    ),
+    submitButton("profile.update"),
+  );
+  edit.append(form);
 
+  const advanced = element("details", "advanced-details");
+  advanced.append(
+    element("summary", "", "Identity details"),
+    definitionGrid([
+      ["Principal", profile.peer_id],
+      ["This device", profile.device_id],
+      ["Authority", profile.authority_peer_id],
+      ["Home", snapshot.home_root],
+      ["Default room", profile.default_room],
+    ]),
+  );
+
+  fragment.append(identity, edit, advanced);
+
+  return fragment;
+}
+
+function identityRecoveryView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  if (snapshot.home) {
+    const warning = element("div", "recovery-warning");
+    warning.append(
+      element(
+        "h3",
+        "",
+        snapshot.home.recovery.kit_exported
+          ? "Recovery kit saved"
+          : "Keep this capability offline",
+      ),
+      element(
+        "p",
+        "summary",
+        snapshot.home.recovery.kit_exported
+          ? "Voxelle recorded that a recovery kit was saved. Keep it protected and offline; save a fresh copy whenever your recovery plan changes."
+          : "Anyone holding this file can rotate your identity authority away from every current device. Save it to protected offline storage; do not send it as a message or keep it beside this computer.",
+      ),
+    );
+    fragment.append(warning, commandButton("identity.recovery.export"));
+  } else {
+    const copy = element("div", "empty-state");
+    copy.append(
+      element("h3", "", "Recover the same identity"),
+      element(
+        "p",
+        "summary",
+        "Choose your offline .voxrecover file. Voxelle will rotate authority to this device, revoke the lost devices, recover private-channel keys, and resynchronize from ordinary retaining peers when they are available.",
+      ),
+      element(
+        "p",
+        "summary",
+        "Recovery only works in a fresh Voxelle home and never sends the recovery file to a service.",
+      ),
+      commandButton("identity.recovery.restore"),
+    );
+    fragment.append(copy);
+  }
   return fragment;
 }
 
@@ -503,7 +895,7 @@ function runtimeStatusView(snapshot) {
     commandButton("runtime.goOnline"),
     commandButton("runtime.goOffline"),
   );
-  fragment.append(errorBanner(), definitionGrid(rows), serviceOptions(), controls);
+  fragment.append(definitionGrid(rows), serviceOptions(), controls);
   return fragment;
 }
 
@@ -516,7 +908,7 @@ function networkHealthView(snapshot) {
     commandButton("runtime.goOnline"),
     commandButton("runtime.goOffline"),
   );
-  fragment.append(errorBanner(), controls);
+  fragment.append(controls);
 
   const rows = element("ol", "health-list");
   for (const row of snapshot.network_health.rows) {
@@ -530,7 +922,7 @@ function networkHealthView(snapshot) {
 function productUpdateView(snapshot) {
   const generation = snapshot.product_generation;
   const fragment = document.createDocumentFragment();
-  fragment.append(errorBanner(), definitionGrid([
+  fragment.append(definitionGrid([
     ["Kernel", generation.kernel_version],
     ["Generation", generation.active_release_id],
     ["Sequence", String(generation.active_sequence)],
@@ -663,8 +1055,6 @@ function healthRow(row) {
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function activityView(snapshot) {
   const fragment = document.createDocumentFragment();
-  fragment.append(errorBanner());
-
   const actions = element("div", "control-row");
   actions.append(commandButton("shell.refresh"));
   fragment.append(actions);
@@ -691,15 +1081,42 @@ function activityView(snapshot) {
 function inviteExchangeView(snapshot) {
   const fragment = document.createDocumentFragment();
   const invite = snapshot.home?.invite?.space_invite_json ?? "";
-  const inviteGroup = element("div", "field-stack");
-  inviteGroup.append(element("h3", "", "Signed Space Invite"));
-  inviteGroup.append(element("p", "summary", "Create an expiring invite after going online. It grants membership; bootstrap addresses inside it are signed availability hints."));
-  inviteGroup.append(element("pre", "invite-json", invite));
-  inviteGroup.append(
-    commandButton("space.invite.create"),
-    commandButton("invite.copy"),
-  );
+  const inviteGroup = element("div", "invite-flow");
+  if (invite) {
+    inviteGroup.append(
+      element("p", "success-label", "Invite ready"),
+      element(
+        "p",
+        "summary",
+        "Send this signed membership invite to one person. It is valid for 24 hours and includes ordinary peers Voxelle can try automatically.",
+      ),
+      commandButton("invite.copy"),
+      commandButton("space.invite.create"),
+    );
+    const details = element("details", "advanced-details");
+    details.append(
+      element("summary", "", "Signed invite details"),
+      element("pre", "invite-json", invite),
+    );
+    inviteGroup.append(details);
+  } else {
+    inviteGroup.append(
+      element("h3", "", "Invite someone to this space"),
+      element(
+        "p",
+        "summary",
+        snapshot.home?.runtime.state === "online"
+          ? "Create a signed invite, then copy it into a private message. Voxelle includes multiple known peers when available so joining does not depend on you staying online."
+          : "Go online first so the invite can include reachable ordinary peers.",
+      ),
+      snapshot.home?.runtime.state === "online"
+        ? commandButton("space.invite.create")
+        : commandButton("runtime.goOnline"),
+    );
+  }
 
+  const manual = element("details", "advanced-details");
+  manual.append(element("summary", "", "Manual peer setup"));
   const importGroup = element("form", "field-stack");
   importGroup.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -712,12 +1129,17 @@ function inviteExchangeView(snapshot) {
     uiState.peerRecordDraft = textarea.value;
   });
   importGroup.append(
-    element("h3", "", commandLabel("peer.import")),
+    element(
+      "p",
+      "summary",
+      "Peer records provide availability only; they never grant membership. Use this when diagnostics require a peer address outside an invite.",
+    ),
     textarea,
     submitButton("peer.import"),
   );
+  manual.append(importGroup);
 
-  fragment.append(inviteGroup, importGroup);
+  fragment.append(inviteGroup, manual);
   return fragment;
 }
 
@@ -801,16 +1223,26 @@ function peerListView(snapshot) {
     const row = element("li", "peer-row");
     row.dataset.renderKey = `peer:${peer.peer_id}:${peer.device_id}`;
     const body = element("div", "peer-body");
-    body.append(element("strong", "", peer.label));
-    body.append(element("span", "mono", peer.addr));
-    body.append(element("span", "muted", shortId(peer.peer_id)));
-
+    body.append(
+      element("strong", "", peer.label),
+      element("span", "muted", "Available for direct connection and retained-history sync"),
+    );
+    const details = element("details", "advanced-details peer-details");
     const actions = element("div", "row-actions");
     actions.append(
       commandButton("peer.diagnose", peerRequest(peer)),
       commandButton("peer.sync", peerRequest(peer)),
     );
-    row.append(body, actions);
+    details.append(
+      element("summary", "", "Connection details"),
+      definitionGrid([
+        ["Address", peer.addr],
+        ["Principal", peer.peer_id],
+        ["Device", peer.device_id],
+      ]),
+      actions,
+    );
+    row.append(body, details);
     list.append(row);
   }
   return list;
@@ -829,13 +1261,18 @@ function channelListView(snapshot) {
       element("span", "muted", channel.topic),
     );
     const actions = element("div", "row-actions");
-    actions.append(commandButton("channel.select", { room_id: channel.room_id }));
+    if (!channel.selected) {
+      actions.append(commandButton("channel.select", { room_id: channel.room_id }));
+    }
     if (channel.visibility === "private") {
       actions.append(commandButton("channel.rotateKey", { room_id: channel.room_id }));
     }
-    row.append(body, actions);
+    row.append(body);
+    if (actions.children.length > 0) row.append(actions);
     list.append(row);
   }
+  const create = element("details", "channel-create advanced-details");
+  create.append(element("summary", "", "Create a channel"));
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -844,10 +1281,16 @@ function channelListView(snapshot) {
   form.append(
     labeledInput("Name", "new-channel", uiState.channelNameDraft, (value) => { uiState.channelNameDraft = value; }),
     labeledInput("Topic", "What belongs here?", uiState.channelTopicDraft, (value) => { uiState.channelTopicDraft = value; }),
-    labeledInput("Private members", "Peer IDs, comma-separated; blank means public", uiState.channelMembersDraft, (value) => { uiState.channelMembersDraft = value; }),
-    submitButton("channel.create"),
   );
-  fragment.append(list, form);
+  const privacy = element("details", "advanced-details");
+  privacy.append(
+    element("summary", "", "Make this a private channel"),
+    element("p", "summary", "Add member principal IDs. Blank creates a public channel."),
+    labeledInput("Private members", "Principal IDs, comma-separated", uiState.channelMembersDraft, (value) => { uiState.channelMembersDraft = value; }),
+  );
+  form.append(privacy, submitButton("channel.create"));
+  create.append(form);
+  fragment.append(list, create);
   return fragment;
 }
 
@@ -858,26 +1301,21 @@ function memberProfilesView(snapshot) {
   for (const profile of snapshot.home?.profiles ?? []) {
     const row = element("li", "peer-row");
     row.dataset.renderKey = `profile:${profile.peer_id}`;
-    const body = element("div", "peer-body");
-    body.append(
-      element("strong", "", profile.display_name),
+    const body = element("div", "member-card");
+    const isOwn = profile.peer_id === snapshot.home?.profile.peer_id;
+    const copy = element("div", "member-copy");
+    copy.append(
+      element("strong", "", `${profile.display_name}${isOwn ? " · you" : ""}`),
       element("span", "muted", profile.about),
-      element("span", "mono", shortId(profile.peer_id)),
+    );
+    body.append(
+      element("div", "profile-avatar small", profileInitials(profile.display_name)),
+      copy,
     );
     row.append(body);
     list.append(row);
   }
-  const form = element("form", "field-stack");
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    runCommand("profile.update").catch(reportError);
-  });
-  form.append(
-    labeledInput("Display name", "Your name", uiState.profileNameDraft, (value) => { uiState.profileNameDraft = value; }),
-    labeledInput("About", "A short profile", uiState.profileAboutDraft, (value) => { uiState.profileAboutDraft = value; }),
-    submitButton("profile.update"),
-  );
-  fragment.append(list, form);
+  fragment.append(list);
   return fragment;
 }
 
@@ -915,9 +1353,10 @@ function messageSearchView(snapshot) {
   for (const result of snapshot.search_results ?? []) {
     const row = element("li", "message remote");
     row.dataset.renderKey = `search:${result.message.event_id}`;
+    const author = profileForPeer(snapshot, result.message.author_peer_id);
     row.append(
-      element("span", "mono", result.room_id),
-      element("span", "muted", shortId(result.message.author_peer_id)),
+      element("strong", "", author.display_name),
+      element("span", "muted", channelName(snapshot, result.room_id)),
       element("p", "", result.message.text),
     );
     results.append(row);
@@ -936,8 +1375,8 @@ function notificationCenterView(snapshot) {
     const row = element("li", "");
     row.dataset.renderKey = `notification:${notification.event_id}`;
     row.append(
-      element("strong", "", `@ ${shortId(notification.author_peer_id)}`),
-      element("span", "mono", notification.room_id),
+      element("strong", "", profileForPeer(snapshot, notification.author_peer_id).display_name),
+      element("span", "muted", channelName(snapshot, notification.room_id)),
       element("span", "", notification.summary),
     );
     list.append(row);
@@ -948,32 +1387,61 @@ function notificationCenterView(snapshot) {
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function roomTimelineView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const channel = snapshot.home?.channels.find((candidate) => candidate.selected);
+  const context = element("div", "conversation-context");
+  context.append(
+    element("h3", "", channel
+      ? `${channel.visibility === "private" ? "🔒 " : "# "}${channel.name}`
+      : "Conversation"),
+    element("p", "summary", channel?.topic || "Messages retained and synchronized by space members."),
+  );
   const messages = snapshot.home?.room.messages ?? [];
   const list = element("ol", "message-list");
+  if (messages.length === 0) {
+    const empty = element("li", "conversation-empty");
+    empty.append(
+      element("strong", "", `Start ${channel ? `#${channel.name}` : "the conversation"}`),
+      element("p", "summary", "The first accepted message will appear here and synchronize through ordinary retaining peers."),
+    );
+    list.append(empty);
+  }
   for (const message of messages) {
     const own = message.author_peer_id === snapshot.home?.profile.peer_id;
     const row = element("li", own ? "message own" : "message remote");
     row.dataset.renderKey = `message:${message.event_id}`;
-    row.append(element("span", "muted", shortId(message.author_peer_id)));
+    const author = profileForPeer(snapshot, message.author_peer_id);
+    const avatar = element("div", "profile-avatar small", profileInitials(author.display_name));
+    const content = element("div", "message-content");
+    const meta = element("div", "message-meta");
+    meta.append(element("strong", "", own ? `${author.display_name} · you` : author.display_name));
     const timestamp = messageTimestamp(message, snapshot.ui_ontology);
     if (timestamp !== null) {
       const time = element("time", "message-time", timestamp);
       time.dateTime = safeDateTime(message.created_ms) ?? "";
-      row.append(time);
+      meta.append(time);
     }
-    row.append(element("p", message.redacted ? "muted" : "", message.text));
-    if (message.edited_ms !== null) row.append(element("small", "muted", "edited"));
-    if (message.pinned) row.append(element("small", "muted", "pinned"));
-    if (message.reply_count > 0) row.append(element("small", "muted", `${message.reply_count} repl${message.reply_count === 1 ? "y" : "ies"}`));
+    content.append(meta, element("p", message.redacted ? "muted" : "message-text", message.text));
+    const annotations = element("div", "message-annotations");
+    if (message.edited_ms !== null) annotations.append(element("small", "muted", "edited"));
+    if (message.pinned) annotations.append(element("small", "muted", "pinned"));
+    if (message.reply_count > 0) annotations.append(element("small", "muted", `${message.reply_count} repl${message.reply_count === 1 ? "y" : "ies"}`));
+    if (annotations.children.length > 0) content.append(annotations);
+    const reactions = element("div", "message-reactions");
     for (const reaction of message.reactions ?? []) {
-      row.append(commandButton("reaction.add", { target_event_id: message.event_id, emoji: reaction.emoji, room: snapshot.home?.room.room_id ?? null }));
+      const button = commandButton("reaction.add", { target_event_id: message.event_id, emoji: reaction.emoji, room: snapshot.home?.room.room_id ?? null });
+      button.textContent = `${reaction.emoji} ${reaction.peer_ids.length}`;
+      reactions.append(button);
     }
+    if (reactions.children.length > 0) content.append(reactions);
     for (const attachment of message.attachments ?? []) {
-      const link = element("a", "mono", `${attachment.filename} · ${attachment.sha256}`);
+      const link = element("a", "attachment-link", attachment.filename);
       link.href = `data:${attachment.mime};base64,${attachment.data_b64}`;
       link.download = attachment.filename;
-      row.append(link);
+      content.append(link);
     }
+    const actionDetails = element("details", "message-actions");
+    actionDetails.append(element("summary", "", "Message actions"));
     const actions = element("div", "row-actions");
     actions.append(
       commandButton("reaction.add", { target_event_id: message.event_id, emoji: "👍", room: snapshot.home?.room.room_id ?? null }),
@@ -985,27 +1453,41 @@ function roomTimelineView(snapshot) {
         commandButton("message.redact", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
       );
     }
-    row.append(actions);
+    actionDetails.append(actions);
+    content.append(actionDetails);
+    row.append(avatar, content);
     list.append(row);
   }
-
-  return list;
+  fragment.append(context, list);
+  return fragment;
 }
 
-function messageComposerView() {
+function messageComposerView(snapshot) {
   const form = element("form", "message-form");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     runCommand("message.send").catch(reportError);
   });
-  const input = element("input", "message-input");
-  input.placeholder = "Message";
+  const channel = snapshot.home?.channels.find((candidate) => candidate.selected);
+  const input = element("textarea", "message-input");
+  input.rows = 2;
+  input.placeholder = `Message ${channel ? `#${channel.name}` : "this room"}`;
+  input.setAttribute("aria-label", input.placeholder);
   input.value = uiState.messageDraft;
+  const count = element("span", "composer-count", `${uiState.messageDraft.length}`);
   input.addEventListener("input", () => {
     uiState.messageDraft = input.value;
+    count.textContent = String(input.value.length);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      if (input.value.trim()) form.requestSubmit();
+    }
   });
   const fileInput = element("input", "");
   fileInput.type = "file";
+  fileInput.className = "visually-hidden";
   fileInput.setAttribute("aria-label", "Attach file");
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files?.[0];
@@ -1022,7 +1504,14 @@ function messageComposerView() {
       room: null,
     });
   });
-  form.append(input, submitButton("message.send"), fileInput);
+  const controls = element("div", "composer-controls");
+  controls.append(
+    actionButton("Attach", () => fileInput.click()),
+    element("span", "composer-hint", "Enter to send · Shift+Enter for a new line"),
+    count,
+    submitButton("message.send"),
+  );
+  form.append(input, fileInput, controls);
 
   return form;
 }
@@ -1062,7 +1551,7 @@ function callMeshView(snapshot) {
       video.autoplay = true;
       video.playsInline = true;
       video.dataset.peerId = peerId;
-      videos.append(callTile(shortId(peerId), video));
+      videos.append(callTile(profileForPeer(snapshot, peerId).display_name, video));
     }
   }
   fragment.append(status);
@@ -1362,6 +1851,7 @@ async function runCommand(command, payload) {
   try {
     switch (command) {
       case "workbench.commandPalette.open":
+        uiState.connectionOpen = false;
         uiState.paletteOpen = true;
         uiState.paletteQuery = "";
         return;
@@ -1396,6 +1886,27 @@ async function runCommand(command, payload) {
         });
         uiState.spaceInviteDraft = "";
         return;
+      case "identity.recovery.export": {
+        if (!currentSnapshot.home) {
+          throw new Error("Create or join a space before saving a recovery kit.");
+        }
+        const path = payload?.path ?? await shell.chooseRecoveryKitPath?.("save");
+        if (!path) return;
+        currentSnapshot = await shell.execute(command, { path });
+        return;
+      }
+      case "identity.recovery.restore": {
+        if (currentSnapshot.home) {
+          throw new Error("Identity recovery requires a fresh Voxelle home.");
+        }
+        const path = payload?.path ?? await shell.chooseRecoveryKitPath?.("open");
+        if (!path) return;
+        currentSnapshot = await shell.execute(command, {
+          path,
+          max_events_per_peer: payload?.max_events_per_peer ?? 4096,
+        });
+        return;
+      }
       case "peer.import":
         currentSnapshot = await shell.execute(command, {
           peer_record_json: uiState.peerRecordDraft,
@@ -1463,6 +1974,7 @@ async function runCommand(command, payload) {
         });
         uiState.profileNameDraft = "";
         uiState.profileAboutDraft = "";
+        uiState.profileDraftInitialized = false;
         return;
       case "message.search":
         currentSnapshot = await shell.execute(command, payload ?? {
@@ -1542,6 +2054,9 @@ async function runCommand(command, payload) {
             "Preview only; launch the desktop app to copy a usable invite.",
           );
         }
+        if (!currentSnapshot.home?.invite?.space_invite_json) {
+          throw new Error("Create a signed invite before copying it.");
+        }
         await navigator.clipboard?.writeText(
           currentSnapshot.home?.invite?.space_invite_json ?? "",
         );
@@ -1610,11 +2125,20 @@ function errorMessage(error) {
   return String(error);
 }
 
-function errorBanner() {
+function globalErrorBanner() {
   if (!uiState.error) {
     return document.createDocumentFragment();
   }
-  return element("p", "error-banner", uiState.error);
+  const banner = element("section", "error-banner");
+  banner.setAttribute("role", "alert");
+  banner.append(
+    element("span", "", uiState.error),
+    actionButton("Dismiss", () => {
+      uiState.error = "";
+      render();
+    }),
+  );
+  return banner;
 }
 
 function firstPeerRequest() {
@@ -1704,6 +2228,25 @@ function appendActivity(snapshot, summary) {
 function shortId(text) {
   const value = text.startsWith("ed25519:") ? text.slice(8) : text;
   return value.length > 12 ? `${value.slice(0, 12)}` : value;
+}
+
+function profileForPeer(snapshot, peerId) {
+  return snapshot.home?.profiles.find((profile) => profile.peer_id === peerId) ?? {
+    peer_id: peerId,
+    display_name: `Member ${shortId(peerId)}`,
+    about: "",
+  };
+}
+
+function channelName(snapshot, roomId) {
+  const channel = snapshot.home?.channels.find((candidate) => candidate.room_id === roomId);
+  return channel ? `# ${channel.name}` : roomId;
+}
+
+function profileInitials(displayName) {
+  const parts = displayName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  return parts.slice(0, 2).map((part) => part[0].toUpperCase()).join("");
 }
 
 /**

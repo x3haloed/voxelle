@@ -4,7 +4,7 @@ import { ProductComponentHost } from "./product-component-host.mjs";
 const app = document.querySelector("#app");
 if (!(app instanceof HTMLElement)) throw new Error("missing #app");
 
-const shell = createShellClient();
+const shell = await createShellClient();
 const componentApi = Object.freeze({
   shell,
   app,

@@ -106,6 +106,10 @@ export type CreateSpaceInviteRequest = { expires_minutes: number | null, };
 
 export type JoinSpaceRequest = { space_invite_json: string, max_events: number | null, };
 
+export type ExportRecoveryKitRequest = { path: string, };
+
+export type RestoreRecoveryKitRequest = { path: string, max_events_per_peer: number | null, };
+
 export type PeerCommandRequest = { peer_id: string, device_id: string, max_events: number | null, };
 
 export type SetUiPreferenceRequest = { "kind": "semantic_token", id: string, value: string, } | { "kind": "metric", id: string, value: number, } | { "kind": "behavior", id: string, value: UiBehaviorValue, };
@@ -114,7 +118,9 @@ export type SetWorkbenchLayoutRequest = { placements: Array<UiViewPlacement>, };
 
 export type InstallProductUpdateRequest = { package_json: string, };
 
-export type HomeScreenView = { profile: ProfileSummary, runtime: RuntimeStatusView, invite: InviteExchangeView | null, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, call: CallView, room: RoomTimelineView, };
+export type RecoveryHealthView = { kit_exported: boolean, last_exported_ms: bigint | null, };
+
+export type HomeScreenView = { profile: ProfileSummary, recovery: RecoveryHealthView, runtime: RuntimeStatusView, invite: InviteExchangeView | null, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, call: CallView, room: RoomTimelineView, };
 
 export type NetworkHealthView = { rows: Array<NetworkHealthRow>, };
 

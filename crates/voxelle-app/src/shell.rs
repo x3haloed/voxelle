@@ -99,6 +99,8 @@ impl ShellState {
             "runtime.goOffline" => host.stop_service(),
             "space.invite.create" => host.create_space_invite(parse_request(payload)?),
             "space.join" => host.join_space(parse_request(payload)?).await,
+            "identity.recovery.export" => host.export_recovery_kit(parse_request(payload)?),
+            "identity.recovery.restore" => host.restore_recovery_kit(parse_request(payload)?).await,
             "message.send" => host.send_message(parse_request(payload)?).await,
             "channel.select" => host.select_channel(parse_request(payload)?),
             "channel.markRead" => host.mark_read(parse_request(payload)?),
@@ -263,6 +265,55 @@ mod tests {
             .views
             .iter()
             .any(|view| view.id == "network.health"));
+    }
+
+    #[tokio::test]
+    async fn serialized_recovery_commands_preserve_principal_and_rotate_device() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let original = ShellState::new(dir.path().join("original"));
+        let initialized = original
+            .execute_serialized_command("home.init", serde_json::json!({"default_room": null}))
+            .await
+            .expect("initialize original home");
+        let original_profile = initialized.home.expect("original home").profile;
+        let kit_path = dir.path().join("offline.voxrecover");
+
+        let exported = original
+            .execute_serialized_command(
+                "identity.recovery.export",
+                serde_json::json!({"path": kit_path}),
+            )
+            .await
+            .expect("export recovery kit");
+        let exported_health = exported.home.expect("exported home").recovery;
+        assert!(exported_health.kit_exported);
+        assert!(exported_health.last_exported_ms.is_some());
+
+        let reopened = ShellState::new(dir.path().join("original"))
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("reopen recovery health");
+        assert!(reopened.home.expect("reopened home").recovery.kit_exported);
+
+        let recovered = ShellState::new(dir.path().join("recovered"))
+            .execute_serialized_command(
+                "identity.recovery.restore",
+                serde_json::json!({
+                    "path": kit_path,
+                    "max_events_per_peer": 64,
+                }),
+            )
+            .await
+            .expect("recover through serialized shell command");
+        let recovered_home = recovered.home.expect("recovered home");
+        assert_eq!(recovered_home.profile.peer_id, original_profile.peer_id);
+        assert_ne!(recovered_home.profile.device_id, original_profile.device_id);
+        assert_eq!(recovered_home.runtime.state, crate::RuntimeState::Online);
+        assert!(!recovered_home.recovery.kit_exported);
+        assert!(recovered
+            .service_activity
+            .iter()
+            .any(|item| item.summary.contains("recovered identity onto device")));
     }
 
     #[tokio::test]

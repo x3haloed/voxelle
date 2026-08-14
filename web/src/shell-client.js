@@ -1,15 +1,21 @@
-import { fixtureSnapshot } from "./fixture.js?v=component1";
-
 /**
  * @typedef {import("./shell-contract").ShellSnapshotView} ShellSnapshotView
  */
 
-export function createShellClient() {
+export async function createShellClient() {
   const invoke = tauriInvoke();
   if (invoke) {
     return new TauriShellClient(invoke, "tauri");
   }
-  return new PreviewShellClient(structuredClone(fixtureSnapshot), "preview");
+  const fixtureUrl = new URL("./fixture.js", import.meta.url);
+  fixtureUrl.searchParams.set("preview", String(Date.now()));
+  const { fixtureSnapshot } = await import(fixtureUrl.href);
+  const snapshot = structuredClone(fixtureSnapshot);
+  if (new URLSearchParams(window.location?.search ?? "").get("preview") === "fresh") {
+    snapshot.home = null;
+    snapshot.home_error = "This device does not have a Voxelle identity yet.";
+  }
+  return new PreviewShellClient(snapshot, "preview");
 }
 
 class TauriShellClient {
@@ -36,6 +42,10 @@ class TauriShellClient {
     return /** @type {ShellSnapshotView} */ (
       await this.invoke("execute_shell_command", { commandId: command, payload })
     );
+  }
+
+  async chooseRecoveryKitPath(mode) {
+    return await this.invoke("choose_recovery_kit_path", { mode });
   }
 }
 
@@ -64,6 +74,10 @@ class PreviewShellClient {
 
   async onSnapshotInvalidated() {
     return () => {};
+  }
+
+  async chooseRecoveryKitPath() {
+    return null;
   }
 }
 

@@ -17,9 +17,38 @@ fn main() {
             ));
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![execute_shell_command])
+        .invoke_handler(tauri::generate_handler![
+            execute_shell_command,
+            choose_recovery_kit_path
+        ])
         .run(tauri::generate_context!())
         .expect("run Voxelle Tauri host");
+}
+
+#[tauri::command]
+async fn choose_recovery_kit_path(mode: String) -> Result<Option<String>, ShellError> {
+    let dialog = rfd::AsyncFileDialog::new()
+        .add_filter("Voxelle recovery kit", &["voxrecover"])
+        .set_title(if mode == "save" {
+            "Save Voxelle Recovery Kit"
+        } else {
+            "Choose Voxelle Recovery Kit"
+        });
+    let selection = match mode.as_str() {
+        "save" => {
+            dialog
+                .set_file_name("voxelle-identity.voxrecover")
+                .save_file()
+                .await
+        }
+        "open" => dialog.pick_file().await,
+        _ => {
+            return Err(ShellError {
+                message: format!("unknown recovery file dialog mode {mode}"),
+            })
+        }
+    };
+    Ok(selection.map(|file| file.path().to_string_lossy().into_owned()))
 }
 
 #[tauri::command]

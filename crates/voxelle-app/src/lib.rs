@@ -43,6 +43,7 @@ const KNOWN_PEERS_STATE: &str = "peers.known";
 const READ_STATE: &str = "rooms.read";
 const ROOM_KEYS_STATE: &str = "rooms.keys.encrypted";
 const UI_PREFERENCES_STATE: &str = "ui.preferences";
+const RECOVERY_HEALTH_STATE: &str = "identity.recovery_health";
 const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
 const MAX_KNOWN_PEERS: usize = 128;
 const MAX_PROJECTED_MESSAGES: usize = 500;
@@ -642,10 +643,13 @@ pub fn shell_contract_typescript() -> String {
         ImportPeerRecordRequest::decl(&cfg),
         CreateSpaceInviteRequest::decl(&cfg),
         JoinSpaceRequest::decl(&cfg),
+        ExportRecoveryKitRequest::decl(&cfg),
+        RestoreRecoveryKitRequest::decl(&cfg),
         PeerCommandRequest::decl(&cfg),
         SetUiPreferenceRequest::decl(&cfg),
         SetWorkbenchLayoutRequest::decl(&cfg),
         InstallProductUpdateRequest::decl(&cfg),
+        RecoveryHealthView::decl(&cfg),
         HomeScreenView::decl(&cfg),
         NetworkHealthView::decl(&cfg),
         NetworkHealthRow::decl(&cfg),
@@ -999,6 +1003,19 @@ pub struct JoinSpaceRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ExportRecoveryKitRequest {
+    #[ts(type = "string")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RestoreRecoveryKitRequest {
+    #[ts(type = "string")]
+    pub path: PathBuf,
+    pub max_events_per_peer: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct PeerCommandRequest {
     pub peer_id: String,
     pub device_id: String,
@@ -1031,6 +1048,7 @@ pub struct InstallTrustTransitionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct HomeScreenView {
     pub profile: ProfileSummary,
+    pub recovery: RecoveryHealthView,
     pub runtime: RuntimeStatusView,
     pub invite: Option<InviteExchangeView>,
     pub peers: Vec<PeerListItemView>,
@@ -1040,6 +1058,18 @@ pub struct HomeScreenView {
     pub notifications: Vec<NotificationView>,
     pub call: CallView,
     pub room: RoomTimelineView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RecoveryHealthView {
+    pub kit_exported: bool,
+    pub last_exported_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RecoveryHealthV1 {
+    v: u8,
+    last_exported_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1193,6 +1223,7 @@ impl VoxelleHome {
         retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
         Ok(HomeScreenView {
             profile: self.profile_summary()?,
+            recovery: self.recovery_health()?,
             runtime,
             invite,
             peers: self
@@ -1209,6 +1240,23 @@ impl VoxelleHome {
                 room_id: selected_room.clone(),
                 messages: projected_messages,
             },
+        })
+    }
+
+    pub fn recovery_health(&self) -> Result<RecoveryHealthView> {
+        let persisted = self.local_state::<RecoveryHealthV1>(RECOVERY_HEALTH_STATE)?;
+        if let Some(health) = persisted {
+            if health.v != 1 {
+                anyhow::bail!("unsupported recovery health version {}", health.v);
+            }
+            return Ok(RecoveryHealthView {
+                kit_exported: true,
+                last_exported_ms: Some(health.last_exported_ms),
+            });
+        }
+        Ok(RecoveryHealthView {
+            kit_exported: false,
+            last_exported_ms: None,
         })
     }
 
@@ -3793,6 +3841,63 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
+    pub fn export_recovery_kit(
+        &mut self,
+        request: ExportRecoveryKitRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.write_recovery_kit(&request.path)?;
+        self.home.put_local_state(
+            RECOVERY_HEALTH_STATE,
+            &RecoveryHealthV1 {
+                v: 1,
+                last_exported_ms: now_ms(),
+            },
+        )?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            "exported an offline identity recovery kit",
+        );
+        self.snapshot()
+    }
+
+    pub async fn restore_recovery_kit(
+        &mut self,
+        request: RestoreRecoveryKitRequest,
+    ) -> Result<ShellSnapshotView> {
+        if self.service.is_some() {
+            anyhow::bail!("recovery requires the local service to be offline");
+        }
+        let kit: RecoveryKitV1 = read_json(&request.path)?;
+        let report = self
+            .home
+            .recover_from_kit(&kit, request.max_events_per_peer.unwrap_or(4096))
+            .await?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "recovered identity onto device {}; reached {}/{} retaining peer(s), recovered {} and pushed {} event(s)",
+                short_peer_label(&report.profile.device_id),
+                report.peers_reached,
+                report.peers_attempted,
+                report.events_recovered,
+                report.events_pushed,
+            ),
+        );
+        for error in report.peer_errors {
+            self.push_activity(
+                ServiceActivityLevel::Error,
+                format!("recovery peer unavailable: {error}"),
+            );
+        }
+        self.service = Some(self.home.start_service_with_notifier(
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
+            None,
+            self.snapshot_invalidated.clone(),
+        )?);
+        self.push_activity(ServiceActivityLevel::Info, "service started after recovery");
+        self.snapshot()
+    }
+
     pub async fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
         let room = request.room.as_deref().or(self.selected_room_id.as_deref());
         let event = self.home.send_message_with_metadata(
@@ -4922,84 +5027,91 @@ fn default_places() -> Vec<UiPlace> {
 
 fn default_views() -> Vec<UiView> {
     vec![
-        ui_view(
+        hidden_ui_view(
             "profile.summary",
-            "Profile Summary",
+            "You",
             "sidebar",
             0,
             "Local peer and device identity",
         ),
-        ui_view(
+        hidden_ui_view(
+            "identity.recovery",
+            "Identity Recovery",
+            "sidebar",
+            1,
+            "Offline recovery kit export and fresh-device identity restoration",
+        ),
+        hidden_ui_view(
             "runtime.status",
             "Runtime Status",
             "status",
             0,
             "Online/offline and reachability state",
         ),
-        ui_view(
+        hidden_ui_view(
             "network.health",
             "Network Health",
             "status",
             1,
             "Re-entrant checklist for setup, reachability, and repair",
         ),
-        ui_view(
+        hidden_ui_view(
             "field.test",
             "Field Test",
             "status",
             2,
             "Re-entrant end-to-end workflow checks",
         ),
-        ui_view(
+        hidden_ui_view(
             "product.update",
             "Product Update",
             "status",
             3,
             "Signed live product generation status, activation, and rollback",
         ),
-        ui_view(
+        hidden_ui_view(
             "invite.exchange",
-            "Invite Exchange",
-            "sidebar",
-            1,
-            "Copyable peer record and peer import",
-        ),
-        ui_view(
-            "peer.list",
-            "Peer List",
+            "Invite People",
             "sidebar",
             2,
-            "Known peers and peer actions",
+            "Signed membership invitations with optional manual peer setup",
+        ),
+        hidden_ui_view(
+            "peer.list",
+            "Connections",
+            "sidebar",
+            3,
+            "Known ordinary peers with diagnostics and synchronization controls",
         ),
         ui_view(
             "channel.list",
             "Channels",
             "sidebar",
-            3,
+            4,
             "Public and private conversation channels",
         ),
-        ui_view(
+        hidden_ui_view(
             "member.profiles",
             "Members",
             "inspector",
             0,
             "Member profiles and presence identity",
         ),
-        ui_view(
+        hidden_ui_view(
             "role.list",
             "Roles",
             "inspector",
             1,
             "Roles, permissions, and assignments",
         ),
-        ui_view(
+        hidden_ui_view(
             "message.search",
             "Message Search",
             "inspector",
             2,
             "Local full-text message and attachment search",
         ),
-        ui_view(
+        hidden_ui_view(
             "notification.center",
             "Notifications",
             "activity",
@@ -5008,7 +5120,7 @@ fn default_views() -> Vec<UiView> {
         ),
         ui_view(
             "room.timeline",
-            "Room Timeline",
+            "Conversation",
             "main",
             0,
             "Messages in the selected room",
@@ -5027,7 +5139,7 @@ fn default_views() -> Vec<UiView> {
             2,
             "Direct WebRTC mesh for two to four room members",
         ),
-        ui_view(
+        hidden_ui_view(
             "service.activity",
             "Service Activity",
             "activity",
@@ -5078,6 +5190,20 @@ fn default_commands() -> Vec<UiCommand> {
             "space.join",
             "Join Space",
             "Join from a signed invite and synchronize automatically",
+            None,
+            true,
+        ),
+        shell_command(
+            "identity.recovery.export",
+            "Save Recovery Kit",
+            "Create a new offline bearer recovery kit without changing identity authority",
+            None,
+            true,
+        ),
+        shell_command(
+            "identity.recovery.restore",
+            "Recover My Identity",
+            "Restore the same principal on a fresh device, revoke old devices, and resynchronize",
             None,
             true,
         ),
@@ -5567,13 +5693,34 @@ fn ui_place(id: &str, label: &str, description: &str) -> UiPlace {
 }
 
 fn ui_view(id: &str, label: &str, place_id: &str, order: usize, description: &str) -> UiView {
+    ui_view_with_visibility(id, label, place_id, order, description, true)
+}
+
+fn hidden_ui_view(
+    id: &str,
+    label: &str,
+    place_id: &str,
+    order: usize,
+    description: &str,
+) -> UiView {
+    ui_view_with_visibility(id, label, place_id, order, description, false)
+}
+
+fn ui_view_with_visibility(
+    id: &str,
+    label: &str,
+    place_id: &str,
+    order: usize,
+    description: &str,
+    visible: bool,
+) -> UiView {
     UiView {
         id: id.to_string(),
         label: label.to_string(),
         default_place_id: place_id.to_string(),
         place_id: place_id.to_string(),
         order,
-        visible: true,
+        visible,
         description: description.to_string(),
         editable: true,
         editing_surface: "layout/place editor".to_string(),
@@ -6916,6 +7063,40 @@ mod tests {
 
         assert!(ontology.places.iter().any(|place| place.id == "sidebar"));
         assert!(ontology.views.iter().any(|view| view.id == "room.timeline"));
+        for view_id in ["room.timeline", "message.composer", "channel.list"] {
+            assert!(
+                ontology
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+                    .expect("ordinary view")
+                    .visible
+            );
+        }
+        for view_id in [
+            "profile.summary",
+            "identity.recovery",
+            "runtime.status",
+            "network.health",
+            "field.test",
+            "product.update",
+            "invite.exchange",
+            "peer.list",
+            "member.profiles",
+            "role.list",
+            "message.search",
+            "notification.center",
+            "service.activity",
+        ] {
+            assert!(
+                !ontology
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+                    .expect("progressively disclosed view")
+                    .visible
+            );
+        }
         assert!(ontology
             .commands
             .iter()

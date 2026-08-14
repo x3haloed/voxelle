@@ -94,6 +94,21 @@ should automate those mechanisms through the Rust-owned command path, then
 surface topology, degraded states, diagnostics, and manual control when they are
 needed. Convenience must not make a provider authoritative or irreplaceable.
 
+The same progression applies to identity and invitations. Ordinary profile,
+member, invite, and connection views lead with human names, goals, and outcomes.
+Raw principal and device identifiers, signed invite payloads, peer records,
+addresses, and manual synchronization remain reachable through explicit
+advanced details for diagnosis and intervention. Those disclosures project the
+same Rust-owned state and invoke the same semantic commands; they are not a
+parallel authority path.
+
+The initialized default is a conversation workspace rather than a dashboard of
+all registered views. Channels, the selected conversation, its composer, and
+direct media remain in the workbench. Focused header surfaces expose people and
+invitations, notifications, local search, and connection health. Their
+underlying named views remain registered, dockable, and restorable through Edit
+layout so the focused presentation does not narrow the ontology.
+
 ## 3. Primitive Categories
 
 ### 3.1 Places
@@ -127,6 +142,7 @@ A view is a concrete surface that occupies a place.
 Current registered views:
 
 - `profile.summary`
+- `identity.recovery`
 - `runtime.status`
 - `network.health`
 - `invite.exchange`
@@ -142,6 +158,19 @@ Current registered views:
 - `call.mesh`
 - `service.activity`
 
+The default workbench keeps conversation, people, invitation, and attention
+surfaces visible. Recovery, runtime, network-health, field-test, product-update,
+role-management, and service-activity views start hidden but remain dockable
+and are reachable through Edit layout. A compact Connection surface projects the
+same Rust-owned network-health rows when topology or synchronization needs
+attention; it does not create a second health model in the frontend.
+
+Until a recovery-kit export succeeds, the ordinary shell shows a compact
+recovery setup prompt. The durable health marker records only completion time,
+never recovery bytes or their filesystem location. After export, the prompt
+recedes and the Identity Recovery view remains available through Edit layout
+for intentionally creating a fresh offline copy.
+
 Views should be bound to app-layer ViewModels or commands. They should not
 assemble protocol, store, sync, or network concepts directly.
 
@@ -154,6 +183,7 @@ Current command families:
 - shell/home/runtime: `shell.refresh`, `home.init`, `runtime.goOnline`,
   `runtime.goOffline`;
 - admission: `space.invite.create`, `space.join`, `invite.copy`;
+- identity recovery: `identity.recovery.export`, `identity.recovery.restore`;
 - channels and attention: `channel.create`, `channel.select`,
   `channel.markRead`, `channel.rotateKey`;
 - messages: `message.send`, `message.edit`, `message.redact`,

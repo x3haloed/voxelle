@@ -84,6 +84,35 @@ test("activity limit controls the visible newest entries", () => {
   assert.deepEqual(visibleActivity(activities, ontology).map((item) => item.id), [3, 2]);
 });
 
+test("default workbench prioritizes conversation while advanced views stay registered", () => {
+  const visibility = Object.fromEntries(
+    defaultUiOntology.views.map((view) => [view.id, view.visible]),
+  );
+  assert.equal(visibility["room.timeline"], true);
+  assert.equal(visibility["message.composer"], true);
+  assert.equal(visibility["channel.list"], true);
+  assert.equal(visibility["profile.summary"], false);
+  assert.equal(visibility["invite.exchange"], false);
+  assert.equal(visibility["peer.list"], false);
+  assert.equal(visibility["member.profiles"], false);
+  assert.equal(visibility["message.search"], false);
+  assert.equal(visibility["notification.center"], false);
+  assert.equal(visibility["network.health"], false);
+  assert.equal(visibility["field.test"], false);
+  assert.equal(visibility["product.update"], false);
+  assert.equal(visibility["service.activity"], false);
+});
+
+test("identity and invitation views use human-facing labels without changing stable ids", () => {
+  const labels = Object.fromEntries(
+    defaultUiOntology.views.map((view) => [view.id, view.label]),
+  );
+  assert.equal(labels["profile.summary"], "You");
+  assert.equal(labels["invite.exchange"], "Invite People");
+  assert.equal(labels["peer.list"], "Connections");
+  assert.equal(labels["room.timeline"], "Conversation");
+});
+
 test("live update lifecycle remains one semantic command vocabulary", () => {
   const commands = new Set(defaultUiOntology.commands.map((command) => command.id));
   assert.deepEqual(

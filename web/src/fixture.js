@@ -12,6 +12,10 @@ export const fixtureSnapshot = {
       default_room: "room:general",
       authority_peer_id: "ed25519:alice000000000000000000000000000000000000000000000000",
     },
+    recovery: {
+      kit_exported: false,
+      last_exported_ms: null,
+    },
     runtime: {
       state: "online",
       listen_addr: "[::1]:49152",
@@ -49,8 +53,26 @@ export const fixtureSnapshot = {
     ],
     channels: [{ room_id: "room:general", name: "general", topic: "", visibility: "public", selected: true, unread_count: 0 }],
     roles: [],
-    profiles: [],
-    notifications: [],
+    profiles: [
+      {
+        peer_id: "ed25519:alice000000000000000000000000000000000000000000000000",
+        display_name: "Alice",
+        about: "Building a private place for friends.",
+      },
+      {
+        peer_id: "ed25519:peer5b2a91c840e200000000000000000000000000000000000000",
+        display_name: "Bob",
+        about: "Here for the weekend plans.",
+      },
+    ],
+    notifications: [
+      {
+        event_id: "evt_02",
+        room_id: "room:general",
+        author_peer_id: "ed25519:peer5b2a91c840e200000000000000000000000000000000000000",
+        summary: "Bob mentioned you: Does Saturday afternoon work?",
+      },
+    ],
     call: { call_id: "", participants: [], signals: [] },
     room: {
       room_id: "room:general",
@@ -67,6 +89,23 @@ export const fixtureSnapshot = {
           reply_count: 0,
           pinned: false,
           reactions: [],
+          attachments: [],
+        },
+        {
+          event_id: "evt_02",
+          created_ms: 1760000180000,
+          author_peer_id: "ed25519:peer5b2a91c840e200000000000000000000000000000000000000",
+          text: "@Alice Does Saturday afternoon work?",
+          edited_ms: null,
+          redacted: false,
+          mentions: ["ed25519:alice000000000000000000000000000000000000000000000000"],
+          thread_root_event_id: null,
+          reply_count: 0,
+          pinned: false,
+          reactions: [{
+            emoji: "👍",
+            peer_ids: ["ed25519:alice000000000000000000000000000000000000000000000000"],
+          }],
           attachments: [],
         },
       ],
