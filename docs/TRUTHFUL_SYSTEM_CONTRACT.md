@@ -253,6 +253,13 @@ history; events more than five minutes in the future are rejected. Invite
 expiry therefore depends on signed participant clocks and is not claimed as a
 partition-proof lease.
 
+An exported invite is a self-contained causal entry point: its governance
+event descends directly from the signed space genesis carried in the invite.
+It must not claim an unexported local governance head as a parent, because that
+would let head-based anti-entropy mistake missing membership history for known
+ancestry. A fresh-home regression now requires the joined projection to contain
+both the authority member and the new member.
+
 Room anti-entropy now exchanges the bounded DAG heads of the requested room
 instead of serializing every known event ID or offering an arbitrary prefix of
 local history. Each authenticated QUIC exchange computes the causally missing
@@ -289,8 +296,14 @@ accepted it. The People surface updated a profile and created a signed invite,
 and the native composer carried a keyboard-authored message through Rust
 admission and cleared only after success. Terminating and relaunching the exact
 same bundle preserved and projected that message and automatically restored the
-online service. This is local packaged-debug evidence, not the external
-three-machine, Windows, assistive-technology, or release-artifact gate.
+online service. A second fresh native home restored through the macOS file
+chooser, returned online under the recovered principal on a new device, required
+a new mode-`0600` recovery kit, and preserved that completed setup across a full
+restart. A separate-bundle native joiner then accepted a locally transferred
+signed invite, projected both members, posted from its new principal, and the
+inviter received and projected the accepted message. This is local
+packaged-debug evidence, not the external three-machine, Windows,
+assistive-technology, or release-artifact gate.
 
 The public Discord families have crossed their operational gate. Space
 governance now carries channel definitions, profiles, roles, permissions,

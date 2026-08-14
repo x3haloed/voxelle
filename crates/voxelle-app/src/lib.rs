@@ -2805,7 +2805,7 @@ impl VoxelleHome {
                 .collect::<serde_json::Result<Vec<_>>>()?,
             expires_ms,
             now_ms(),
-            store.room_heads(&config.space.governance_room_id)?,
+            vec![config.space.genesis.event_id.clone()],
         )?;
         let governance = store.room_events(&config.space.governance_room_id)?;
         let accepted = accept_event(&event, &governance, &config.room_context(), now_ms())
@@ -6825,6 +6825,7 @@ mod tests {
         assert_eq!(joined.profile.authority_peer_id, alice_profile.peer_id);
         assert_eq!(joined.peers_reached, 1);
         assert!(joined.events_pushed >= 1, "{joined:?}");
+        assert_eq!(bob.profiles().expect("bob profiles").len(), 2);
         assert!(bob
             .read_messages(None)
             .expect("bob history")
