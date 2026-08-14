@@ -119,7 +119,7 @@ Reviews should treat the following as repository-wide invariants:
 - Public rooms are not E2EE. Private-room E2EE does not imply that recipients cannot copy content. The current static member encryption capability and retained epoch packages should not be assumed to provide Signal-style forward secrecy or post-compromise security unless a separate reviewed protocol establishes it.
 - Strict single-use invite counting, centralized admission arbitration, guaranteed push notifications, delivery while every member is offline, large public communities, large calls, browser protocol participation, mobile clients, and remote erasure are out of scope.
 - The repository is not deployed and existing development homes are disposable. Compatibility and migration paths are not part of the current attack surface unless that status changes.
-- Developer-only preview fixtures, tests, `.isnad`, and the work-board are not product protocol authorities. They matter to supply-chain integrity but cannot establish runtime security claims.
+- Developer-only preview fixtures and tests are not product protocol authorities. They matter to supply-chain integrity but cannot establish runtime security claims.
 
 ## Attack Surface, Mitigations, and Attacker Stories
 

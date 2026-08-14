@@ -14,9 +14,7 @@ It is intentionally more operational than the specification:
 - The spec defines what the system is.
 - The salvage notes explain what we kept or rejected from the old implementation.
 - This roadmap defines the staged path, gates, task names, and deletion points.
-- `.isnad` tracks live work, snapshots, tests, and steering.
-
-Chat can stay lightweight. Durable project memory should land here or in `.isnad`.
+Chat can stay lightweight. Durable project decisions should land in this roadmap or the relevant contract and evidence documents.
 
 ## 2. Operating Principles
 
@@ -306,7 +304,6 @@ Delete candidates:
 
 Keep candidates:
 
-- `.isnad`
 - `docs/IPV6_NATIVE_P2P_SPEC.md`
 - `docs/IPV6_SALVAGE_NOTES.md`
 - `docs/IPV6_ROADMAP.md`
@@ -367,7 +364,6 @@ The agent should lead by default:
 - choose the next task from this roadmap
 - implement until a gate or decision point is reached
 - run focused tests
-- record snapshots in `.isnad`
 - report concise check-ins in chat
 
 Ask for user input when:
@@ -376,4 +372,3 @@ Ask for user input when:
 - a dependency/runtime choice becomes sticky
 - deletion would remove potentially useful reference material before its gate
 - implementation evidence contradicts this roadmap
-
