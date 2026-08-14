@@ -21,7 +21,16 @@ if gh release view "$tag" >/dev/null 2>&1; then
 else
   gh release create "$tag" "$@" \
     --title "$title" \
+    --latest \
     --notes "Manually built beta release. Verify VOXELLE-RELEASE.json before installing or activating any package."
 fi
 
-gh release view "$tag" --json tagName,url,assets
+latest_tag=$(gh release view --json tagName --jq .tagName)
+is_prerelease=$(gh release view "$tag" --json isPrerelease --jq .isPrerelease)
+if [ "$latest_tag" != "$tag" ] || [ "$is_prerelease" != false ]; then
+  printf '%s\n' \
+    'release must be latest and must not use the GitHub pre-release flag; the signed manifest carries the beta channel' >&2
+  exit 1
+fi
+
+gh release view "$tag" --json tagName,url,isPrerelease,assets

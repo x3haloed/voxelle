@@ -73,6 +73,8 @@ to weaken system-wide security.
   `cargo run -p voxelle-release -- verify-trust-transition --trust-roots EMBEDDED_ROOTS --transition ROTATION.voxtrust --state-dir TRUST_STATE`
 - GitHub Release publication:
   `scripts/publish-github-release.sh TAG TITLE ASSET...`
+- Clean readback of the latest published release:
+  `scripts/verify-github-release.sh NEW_DOWNLOAD_DIR`
 
 The macOS script emits a universal build when both Apple targets are installed;
 otherwise it emits a native build. The scripts never request or synthesize a
@@ -80,6 +82,14 @@ vendor signing identity. There is intentionally no formal release CI/CD for the
 beta path: a release operator runs the tests, builds both platform artifacts,
 signs one manifest over the collected bytes, verifies it from a clean
 directory, publishes with `gh`, and reads the published assets back.
+
+Do not enable GitHub's **Set as a pre-release** option for these beta builds.
+The signed manifest—not GitHub—declares the `beta` channel, while installed
+kernels intentionally discover only the repository's
+`/releases/latest/download/VOXELLE-RELEASE.json` location. The publication
+script marks a newly created release as latest, and the readback script proves
+that exact public path plus every signed artifact before the release is treated
+as available.
 
 The release signing secret defaults to
 `~/.config/voxelle-release/signing-key.json`, must remain mode `0600` on Unix,

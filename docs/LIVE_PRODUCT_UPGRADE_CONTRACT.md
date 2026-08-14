@@ -189,6 +189,11 @@ specialized hardware without a later accepted revision.
 - No paid vendor-signing account or formal CI/CD is required.
 - GitHub Releases is the initial publication surface; `gh`-driven publication
   is manual and packages remain independently verifiable after mirroring.
+- The signed manifest carries the `beta` channel. A beta GitHub Release must
+  nevertheless be published as the repository's latest ordinary release, not
+  with GitHub's **pre-release** flag, because GitHub excludes pre-releases from
+  the fixed `/releases/latest/download/...` transport path used by installed
+  kernels.
 - The private release signing key is never committed, printed, logged, included
   in an artifact, or made available to product runtime code.
 

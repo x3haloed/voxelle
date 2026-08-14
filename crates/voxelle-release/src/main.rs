@@ -95,6 +95,12 @@ enum Command {
         #[arg(long)]
         artifact_dir: PathBuf,
     },
+    ListReleaseArtifacts {
+        #[arg(long)]
+        trust_roots: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
+    },
     VerifyTrustTransition {
         #[arg(long)]
         trust_roots: PathBuf,
@@ -184,6 +190,10 @@ fn main() -> Result<()> {
             manifest,
             artifact_dir,
         } => verify_release(&trust_roots, &manifest, &artifact_dir),
+        Command::ListReleaseArtifacts {
+            trust_roots,
+            manifest,
+        } => list_release_artifacts(&trust_roots, &manifest),
         Command::VerifyTrustTransition {
             trust_roots,
             transition,
@@ -352,6 +362,17 @@ fn verify_release(trust_roots: &Path, manifest_path: &Path, artifact_dir: &Path)
         manifest.sequence,
         manifest.artifacts.len()
     );
+    Ok(())
+}
+
+fn list_release_artifacts(trust_roots: &Path, manifest_path: &Path) -> Result<()> {
+    let roots = read_trust_roots(trust_roots)?;
+    let manager = UpdateManager::new(".", "0.1.0", roots)?;
+    let manifest_bytes = fs::read(manifest_path).context("read release manifest")?;
+    let manifest = manager.verify_release_manifest_bytes(&manifest_bytes)?;
+    for artifact in manifest.artifacts {
+        println!("{}", artifact.name);
+    }
     Ok(())
 }
 
