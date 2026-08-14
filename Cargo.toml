@@ -10,5 +10,7 @@ members = [
   "crates/voxelle-net",
   "crates/voxelle-store",
   "crates/voxelle-sync",
+  "crates/voxelle-update",
+  "crates/voxelle-release",
 ]
 resolver = "2"

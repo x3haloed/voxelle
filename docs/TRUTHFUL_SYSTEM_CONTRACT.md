@@ -46,6 +46,10 @@ The completed product slice includes:
   shortcuts, the command palette, and the automation surface;
 - unsigned but integrity-verifiable artifacts with honest operating-system
   trust instructions. Paid Apple or Microsoft developer accounts are excluded.
+- signed, mirrorable product generations and release manifests rooted in the
+  installed native kernel, with observable live activation and rollback;
+  GitHub Releases is the initial distribution location but is not update
+  authority. See `LIVE_PRODUCT_UPGRADE_CONTRACT.md`.
 
 ## Accepted Revisions And Exclusions
 
@@ -75,6 +79,12 @@ capsules, store room history, or forward media. Those roles grant availability,
 not protocol authority. Release hosting and a static invite helper may be
 optional conveniences; signed artifacts and complete invite payloads must be
 mirrorable.
+
+The live-product update authority is the Ed25519 release-root set embedded in
+the installed kernel plus the kernel's monotonic package verifier. GitHub
+Releases, mirrors, ordinary peers, adjacent checksum files, and update payloads
+themselves cannot select or authorize a generation. Release-root rotation and
+recovery must remain explicit, signed, and independent of distribution.
 
 Optional providers may improve discovery, reachability, retention, recovery
 availability, notifications, or distribution only when they remain untrusted,
@@ -126,6 +136,13 @@ semantic view IDs remain unless a complete verified collapse replaces them.
 The encrypted identity vault and persistent QUIC credential remain separate
 from SQLite because they carry distinct unlock and transport capabilities.
 
+The native kernel also remains the sole authority for update verification,
+active-generation selection, rollback, protocol admission, and stable semantic
+command/view identities. A replaceable product generation may change only the
+surface explicitly admitted by `LIVE_PRODUCT_UPGRADE_CONTRACT.md`; it cannot
+create a parallel event validator, command executor, durable store, transport,
+or update selector.
+
 New features extend the existing signed-event, accepted-store, sync, snapshot,
 and semantic-command paths. They must not introduce parallel protocol models in
 the frontend, preview fixture, CLI, media layer, or recovery UI.
@@ -161,6 +178,8 @@ and discard the established customizable workbench path.
 - Do not require paid Apple or Microsoft developer accounts.
 - Prefer one native process for ordinary human use; an optional headless peer
   must reuse the same application authority.
+- Publish beta artifacts manually through GitHub Releases with signed packages
+  and signed release manifests; do not require formal CI/CD at this stage.
 - Do not silently overwrite user changes in a dirty worktree.
 - Checkpoint coherent, independently understandable slices with commits,
   provenance snapshots, and pushes to the active branch.

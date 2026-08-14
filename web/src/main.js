@@ -42,6 +42,7 @@ const uiState = {
   searchDraft: "",
   bindDraft: "",
   advertiseDraft: "",
+  productUpdateDraft: "",
   draggedViewId: "",
   paletteOpen: false,
   paletteQuery: "",
@@ -60,6 +61,7 @@ const viewRenderers = {
   "runtime.status": runtimeStatusView,
   "network.health": networkHealthView,
   "field.test": fieldTestView,
+  "product.update": productUpdateView,
   "invite.exchange": inviteExchangeView,
   "peer.list": peerListView,
   "channel.list": channelListView,
@@ -540,6 +542,57 @@ function networkHealthView(snapshot) {
     rows.append(healthRow(row));
   }
   fragment.append(rows);
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function productUpdateView(snapshot) {
+  const generation = snapshot.product_generation;
+  const fragment = document.createDocumentFragment();
+  fragment.append(errorBanner(), definitionGrid([
+    ["Kernel", generation.kernel_version],
+    ["Generation", generation.active_release_id],
+    ["Sequence", String(generation.active_sequence)],
+    ["Source", generation.source],
+    ["Signed updates", generation.update_authentication_available ? "available" : "no trusted release root embedded"],
+  ]));
+  if (generation.notice) {
+    fragment.append(element("p", "notice", generation.notice));
+  }
+
+  const form = element("form", "field-stack");
+  const packageInput = element("textarea", "mono-input");
+  packageInput.rows = 7;
+  packageInput.placeholder = "Paste a signed .voxupdate package";
+  packageInput.value = uiState.productUpdateDraft;
+  packageInput.setAttribute("aria-label", "Signed product update package");
+  packageInput.addEventListener("input", () => {
+    uiState.productUpdateDraft = packageInput.value;
+  });
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.accept = ".voxupdate,application/json";
+  fileInput.setAttribute("aria-label", "Choose a signed product update package");
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    uiState.productUpdateDraft = await file.text();
+    packageInput.value = uiState.productUpdateDraft;
+  });
+  form.append(
+    fileInput,
+    packageInput,
+    element("p", "summary", "The native kernel verifies the embedded release signature before staging or activation. GitHub and mirrors are transport only."),
+    submitButton("product.update.install"),
+  );
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("product.update.install").catch(reportError);
+  });
+  fragment.append(form);
+  if (generation.previous_available) {
+    fragment.append(commandButton("product.update.rollback"));
+  }
   return fragment;
 }
 
@@ -1490,6 +1543,15 @@ async function runCommand(command, payload) {
         );
         return;
       case "workbench.layout.reset":
+        currentSnapshot = await shell.execute(command, {});
+        return;
+      case "product.update.install":
+        currentSnapshot = await shell.execute(command, {
+          package_json: uiState.productUpdateDraft,
+        });
+        uiState.productUpdateDraft = "";
+        return;
+      case "product.update.rollback":
         currentSnapshot = await shell.execute(command, {});
         return;
       default:

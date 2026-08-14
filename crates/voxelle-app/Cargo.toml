@@ -19,6 +19,7 @@ voxelle-core = { path = "../voxelle-core" }
 voxelle-net = { path = "../voxelle-net" }
 voxelle-store = { path = "../voxelle-store" }
 voxelle-sync = { path = "../voxelle-sync" }
+voxelle-update = { path = "../voxelle-update" }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

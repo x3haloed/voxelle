@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use ts_rs::TS;
+use voxelle_update::TrustedReleaseKey;
 
 pub struct ShellState {
     host: Mutex<VoxelleCommandHost>,
@@ -23,6 +24,19 @@ impl ShellState {
             host: Mutex::new(VoxelleCommandHost::new_with_notifier(
                 home_root,
                 snapshot_invalidated,
+            )),
+        }
+    }
+
+    pub fn new_with_update_keys(
+        home_root: impl Into<PathBuf>,
+        trusted_update_keys: Vec<TrustedReleaseKey>,
+    ) -> Self {
+        Self {
+            host: Mutex::new(VoxelleCommandHost::new_with_notifier_and_update_keys(
+                home_root,
+                Arc::new(|| {}),
+                trusted_update_keys,
             )),
         }
     }
@@ -69,6 +83,8 @@ impl ShellState {
             "ui.preference.set" => host.set_ui_preference(parse_request(payload)?),
             "workbench.layout.save" => host.set_workbench_layout(parse_request(payload)?),
             "workbench.layout.reset" => host.reset_workbench_layout(),
+            "product.update.install" => host.install_product_update(parse_request(payload)?),
+            "product.update.rollback" => host.rollback_product_update(),
             _ => {
                 return Err(ShellError {
                     message: format!("unknown command {command_id}"),
@@ -103,7 +119,45 @@ impl From<anyhow::Error> for ShellError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{shell_contract_typescript, NetworkHealthStatus, DEFAULT_ROOM_ID};
+    use crate::{
+        default_ui_ontology, shell_contract_typescript, NetworkHealthStatus, ProductGenerationV1,
+        UiPreferences, DEFAULT_ROOM_ID,
+    };
+    use voxelle_core::Keypair;
+    use voxelle_update::{
+        package_signing_bytes, TrustedReleaseKey, UpdatePackageV1, UPDATE_FORMAT_V1,
+    };
+
+    fn signed_generation_package(key: &Keypair, sequence: u64, refresh_label: &str) -> String {
+        let mut ontology = default_ui_ontology(UiPreferences::default());
+        ontology
+            .commands
+            .iter_mut()
+            .find(|command| command.id == "shell.refresh")
+            .expect("refresh command")
+            .label = refresh_label.to_string();
+        let payload = serde_json::to_value(ProductGenerationV1 { v: 1, ontology })
+            .expect("generation payload");
+        let mut package = UpdatePackageV1 {
+            format: UPDATE_FORMAT_V1.to_string(),
+            release_id: format!("beta-{sequence}"),
+            sequence,
+            channel: "beta".to_string(),
+            min_kernel_version: "0.1.0".to_string(),
+            payload,
+            signer_key_id: key.id.clone(),
+            signature_b64: String::new(),
+        };
+        package.signature_b64 = key.sign(&package_signing_bytes(&package).expect("signing bytes"));
+        serde_json::to_string_pretty(&package).expect("package JSON")
+    }
+
+    fn trusted_key(key: &Keypair) -> TrustedReleaseKey {
+        TrustedReleaseKey {
+            key_id: key.id.clone(),
+            spki_b64: key.spki_b64.clone(),
+        }
+    }
 
     #[tokio::test]
     async fn shell_state_returns_pre_init_snapshot_for_web_shell() {
@@ -126,6 +180,108 @@ mod tests {
             .views
             .iter()
             .any(|view| view.id == "network.health"));
+    }
+
+    #[tokio::test]
+    async fn signed_product_generation_activates_live_persists_and_rolls_back() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let key = Keypair::generate().expect("release key");
+        let shell = ShellState::new_with_update_keys(&home, vec![trusted_key(&key)]);
+
+        shell
+            .execute_serialized_command("home.init", serde_json::json!({"default_room": null}))
+            .await
+            .expect("initialize home");
+        shell
+            .execute_serialized_command(
+                "message.send",
+                serde_json::json!({"text": "survives live generation", "room": null}),
+            )
+            .await
+            .expect("send message");
+        shell
+            .execute_serialized_command(
+                "runtime.goOnline",
+                serde_json::json!({"bind": "[::1]:0", "advertise": null}),
+            )
+            .await
+            .expect("start service");
+
+        let first = shell
+            .execute_serialized_command(
+                "product.update.install",
+                serde_json::json!({
+                    "package_json": signed_generation_package(&key, 1, "Refresh Live")
+                }),
+            )
+            .await
+            .expect("activate first generation");
+        assert_eq!(first.product_generation.active_sequence, 1);
+        assert_eq!(
+            first
+                .ui_ontology
+                .commands
+                .iter()
+                .find(|command| command.id == "shell.refresh")
+                .expect("refresh command")
+                .label,
+            "Refresh Live"
+        );
+        let home_view = first.home.expect("initialized home");
+        assert_eq!(home_view.runtime.state, crate::RuntimeState::Online);
+        assert!(home_view
+            .room
+            .messages
+            .iter()
+            .any(|message| message.text == "survives live generation"));
+        shell
+            .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
+            .await
+            .expect("stop service");
+        drop(shell);
+
+        let restarted = ShellState::new_with_update_keys(&home, vec![trusted_key(&key)]);
+        let persisted = restarted
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("reload persisted generation");
+        assert_eq!(persisted.product_generation.active_sequence, 1);
+        assert_eq!(
+            persisted
+                .ui_ontology
+                .commands
+                .iter()
+                .find(|command| command.id == "shell.refresh")
+                .expect("refresh command")
+                .label,
+            "Refresh Live"
+        );
+
+        restarted
+            .execute_serialized_command(
+                "product.update.install",
+                serde_json::json!({
+                    "package_json": signed_generation_package(&key, 2, "Refresh Beta Two")
+                }),
+            )
+            .await
+            .expect("activate second generation");
+        let rolled_back = restarted
+            .execute_serialized_command("product.update.rollback", serde_json::json!({}))
+            .await
+            .expect("rollback generation");
+        assert_eq!(rolled_back.product_generation.active_sequence, 1);
+        assert_eq!(
+            rolled_back
+                .ui_ontology
+                .commands
+                .iter()
+                .find(|command| command.id == "shell.refresh")
+                .expect("refresh command")
+                .label,
+            "Refresh Live"
+        );
     }
 
     #[tokio::test]

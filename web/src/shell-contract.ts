@@ -28,6 +28,10 @@ export type PeerRecord = { v: number, label: string | null, space_id: string, go
 
 export type UiOntologyView = { places: Array<UiPlace>, views: Array<UiView>, commands: Array<UiCommand>, semantic_tokens: Array<SemanticToken>, metrics: Array<UiMetric>, behaviors: Array<UiBehavior>, renderers: Array<UiRenderer>, };
 
+export type ProductGenerationV1 = { v: number, ontology: UiOntologyView, };
+
+export type ProductGenerationStatusView = { kernel_version: string, active_release_id: string, active_sequence: bigint, source: string, previous_available: boolean, update_authentication_available: boolean, notice: string | null, };
+
 export type UiPlace = { id: string, label: string, description: string, editable: boolean, editing_surface: string, };
 
 export type UiView = { id: string, label: string, default_place_id: string, place_id: string, order: number, visible: boolean, description: string, editable: boolean, editing_surface: string, };
@@ -48,7 +52,7 @@ export type UiRenderer = { id: string, label: string, renders: string, default_r
 
 export type UiBehaviorValue = { "type": "bool", "value": boolean } | { "type": "text", "value": string };
 
-export type ShellSnapshotView = { home_root: string, home: HomeScreenView | null, home_error: string | null, network_health: NetworkHealthView, ui_ontology: UiOntologyView, service_activity: Array<ServiceActivityItem>, search_results: Array<SearchResultView>, };
+export type ShellSnapshotView = { home_root: string, home: HomeScreenView | null, home_error: string | null, network_health: NetworkHealthView, ui_ontology: UiOntologyView, product_generation: ProductGenerationStatusView, service_activity: Array<ServiceActivityItem>, search_results: Array<SearchResultView>, };
 
 export type ServiceActivityItem = { id: number, level: ServiceActivityLevel, summary: string, };
 
@@ -103,6 +107,8 @@ export type PeerCommandRequest = { peer_id: string, device_id: string, max_event
 export type SetUiPreferenceRequest = { "kind": "semantic_token", id: string, value: string, } | { "kind": "metric", id: string, value: number, } | { "kind": "behavior", id: string, value: UiBehaviorValue, };
 
 export type SetWorkbenchLayoutRequest = { placements: Array<UiViewPlacement>, };
+
+export type InstallProductUpdateRequest = { package_json: string, };
 
 export type HomeScreenView = { profile: ProfileSummary, runtime: RuntimeStatusView, invite: InviteExchangeView | null, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, call: CallView, room: RoomTimelineView, };
 

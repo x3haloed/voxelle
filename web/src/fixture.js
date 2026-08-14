@@ -127,6 +127,15 @@ export const fixtureSnapshot = {
     ],
   },
   ui_ontology: defaultUiOntology,
+  product_generation: {
+    kernel_version: "0.1.0",
+    active_release_id: "builtin-recovery",
+    active_sequence: 0,
+    source: "builtin",
+    previous_available: false,
+    update_authentication_available: false,
+    notice: "Preview data cannot install product updates.",
+  },
   service_activity: [
     { id: 1, level: "info", summary: "service started at [::1]:49152" },
     { id: 2, level: "info", summary: "served diagnostic: Peer 5b2a91c840e2 reached this home" },

@@ -5,7 +5,7 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, UdpSocket};
@@ -26,6 +26,10 @@ use voxelle_net::{
 };
 use voxelle_store::Store;
 use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
+use voxelle_update::{
+    ActiveSource, GenerationPointerV1, TrustedReleaseKey, TrustedReleaseKeysV1, UpdateManager,
+    VerifiedPackage,
+};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
 mod shell;
@@ -412,6 +416,23 @@ pub struct UiOntologyView {
     pub renderers: Vec<UiRenderer>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
+pub struct ProductGenerationV1 {
+    pub v: u8,
+    pub ontology: UiOntologyView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ProductGenerationStatusView {
+    pub kernel_version: String,
+    pub active_release_id: String,
+    pub active_sequence: u64,
+    pub source: String,
+    pub previous_available: bool,
+    pub update_authentication_available: bool,
+    pub notice: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct UiPlace {
     pub id: String,
@@ -559,6 +580,8 @@ pub fn shell_contract_typescript() -> String {
         CallView::decl(&cfg),
         PeerRecord::decl(&cfg),
         UiOntologyView::decl(&cfg),
+        ProductGenerationV1::decl(&cfg),
+        ProductGenerationStatusView::decl(&cfg),
         UiPlace::decl(&cfg),
         UiView::decl(&cfg),
         UiCommand::decl(&cfg),
@@ -597,6 +620,7 @@ pub fn shell_contract_typescript() -> String {
         PeerCommandRequest::decl(&cfg),
         SetUiPreferenceRequest::decl(&cfg),
         SetWorkbenchLayoutRequest::decl(&cfg),
+        InstallProductUpdateRequest::decl(&cfg),
         HomeScreenView::decl(&cfg),
         NetworkHealthView::decl(&cfg),
         NetworkHealthRow::decl(&cfg),
@@ -626,11 +650,18 @@ pub fn write_shell_contract(path: impl AsRef<Path>) -> Result<()> {
 }
 
 pub fn ui_ontology_fixture_javascript() -> Result<String> {
-    let ontology = default_ui_ontology(UiPreferences::default());
+    let ontology = builtin_product_generation().ontology;
     Ok(format!(
         "// This file is generated from the Rust UI ontology. Do not edit by hand.\n\nexport const defaultUiOntology = {};\n",
         serde_json::to_string(&ontology)?
     ))
+}
+
+pub fn builtin_product_generation() -> ProductGenerationV1 {
+    ProductGenerationV1 {
+        v: 1,
+        ontology: default_ui_ontology(UiPreferences::default()),
+    }
 }
 
 pub fn write_ui_ontology_fixture(path: impl AsRef<Path>) -> Result<()> {
@@ -666,6 +697,17 @@ pub struct VoxelleCommandHost {
     selected_room_id: Option<String>,
     search_results: Vec<SearchResultView>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
+    update_manager: UpdateManager,
+    product_generation: Option<ActiveProductGeneration>,
+    product_generation_notice: Option<String>,
+    trusted_update_key_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ActiveProductGeneration {
+    pointer: GenerationPointerV1,
+    generation: ProductGenerationV1,
+    source: ActiveSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -735,6 +777,7 @@ pub struct ShellSnapshotView {
     pub home_error: Option<String>,
     pub network_health: NetworkHealthView,
     pub ui_ontology: UiOntologyView,
+    pub product_generation: ProductGenerationStatusView,
     pub service_activity: Vec<ServiceActivityItem>,
     pub search_results: Vec<SearchResultView>,
 }
@@ -925,6 +968,11 @@ pub enum SetUiPreferenceRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct SetWorkbenchLayoutRequest {
     pub placements: Vec<UiViewPlacement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct InstallProductUpdateRequest {
+    pub package_json: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -3313,6 +3361,28 @@ impl VoxelleCommandHost {
         root: impl Into<PathBuf>,
         snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
+        Self::new_with_notifier_and_update_keys(
+            root,
+            snapshot_invalidated,
+            embedded_trusted_update_keys().expect("valid embedded update trust roots"),
+        )
+    }
+
+    pub fn new_with_notifier_and_update_keys(
+        root: impl Into<PathBuf>,
+        snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
+        trusted_update_keys: Vec<TrustedReleaseKey>,
+    ) -> Self {
+        let root = root.into();
+        let trusted_update_key_count = trusted_update_keys.len();
+        let update_manager = UpdateManager::new(
+            root.join("product-updates"),
+            env!("CARGO_PKG_VERSION"),
+            trusted_update_keys,
+        )
+        .expect("valid product update manager configuration");
+        let (product_generation, product_generation_notice) =
+            load_product_generation(&update_manager);
         Self {
             home: VoxelleHome::new(root),
             service: None,
@@ -3322,7 +3392,83 @@ impl VoxelleCommandHost {
             selected_room_id: None,
             search_results: Vec::new(),
             snapshot_invalidated,
+            update_manager,
+            product_generation,
+            product_generation_notice,
+            trusted_update_key_count,
         }
+    }
+
+    pub fn install_product_update(
+        &mut self,
+        request: InstallProductUpdateRequest,
+    ) -> Result<ShellSnapshotView> {
+        let verified = self
+            .update_manager
+            .verify_bytes(request.package_json.as_bytes())?;
+        let generation = parse_product_generation(&verified)?;
+        validate_product_generation(&generation)?;
+        let pointer = self.update_manager.activate(&verified)?;
+        self.product_generation = Some(ActiveProductGeneration {
+            pointer: pointer.clone(),
+            generation,
+            source: ActiveSource::Current,
+        });
+        self.product_generation_notice = None;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "activated signed product generation {} (sequence {})",
+                pointer.release_id, pointer.sequence
+            ),
+        );
+        (self.snapshot_invalidated)();
+        self.snapshot()
+    }
+
+    pub fn rollback_product_update(&mut self) -> Result<ShellSnapshotView> {
+        if self.update_manager.previous_pointer()?.is_none() {
+            let previous = self
+                .update_manager
+                .deactivate_to_builtin()?
+                .ok_or_else(|| anyhow::anyhow!("no signed product generation is active"))?;
+            self.product_generation = None;
+            self.product_generation_notice = Some(format!(
+                "Rolled back signed generation {} to the built-in recovery generation.",
+                previous.release_id
+            ));
+            self.push_activity(
+                ServiceActivityLevel::Info,
+                format!(
+                    "rolled back product generation {} to builtin recovery",
+                    previous.release_id
+                ),
+            );
+            (self.snapshot_invalidated)();
+            return self.snapshot();
+        }
+        let pointer = self.update_manager.rollback()?;
+        let loaded = self
+            .update_manager
+            .load_active()?
+            .ok_or_else(|| anyhow::anyhow!("rolled-back product generation is unavailable"))?;
+        let generation = parse_product_generation(&loaded.package)?;
+        validate_product_generation(&generation)?;
+        self.product_generation = Some(ActiveProductGeneration {
+            pointer: pointer.clone(),
+            generation,
+            source: ActiveSource::Current,
+        });
+        self.product_generation_notice = Some(format!(
+            "Rolled back to signed generation {}.",
+            pointer.release_id
+        ));
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("rolled back product generation to {}", pointer.release_id),
+        );
+        (self.snapshot_invalidated)();
+        self.snapshot()
     }
 
     pub fn snapshot(&mut self) -> Result<ShellSnapshotView> {
@@ -3766,14 +3912,46 @@ impl VoxelleCommandHost {
             }
             Err(error) => (None, Some(format!("{error:#}"))),
         };
+        let preferences = self.home.ui_preferences()?;
+        let ui_ontology = match &self.product_generation {
+            Some(active) => apply_ui_preferences(active.generation.ontology.clone(), preferences),
+            None => default_ui_ontology(preferences),
+        };
+        let product_generation = self.product_generation_status()?;
         Ok(ShellSnapshotView {
             home_root: self.home.root.clone(),
             home,
             home_error,
             network_health: self.home.network_health_view(online)?,
-            ui_ontology: self.home.ui_ontology()?,
+            ui_ontology,
+            product_generation,
             service_activity: self.activity.clone(),
             search_results: self.search_results.clone(),
+        })
+    }
+
+    fn product_generation_status(&self) -> Result<ProductGenerationStatusView> {
+        let previous_available =
+            self.product_generation.is_some() || self.update_manager.previous_pointer()?.is_some();
+        let (active_release_id, active_sequence, source) = match &self.product_generation {
+            Some(active) => (
+                active.pointer.release_id.clone(),
+                active.pointer.sequence,
+                match active.source {
+                    ActiveSource::Current => "signed".to_string(),
+                    ActiveSource::PreviousRecovery => "recovered_previous".to_string(),
+                },
+            ),
+            None => ("builtin-recovery".to_string(), 0, "builtin".to_string()),
+        };
+        Ok(ProductGenerationStatusView {
+            kernel_version: env!("CARGO_PKG_VERSION").to_string(),
+            active_release_id,
+            active_sequence,
+            source,
+            previous_available,
+            update_authentication_available: self.trusted_update_key_count > 0,
+            notice: self.product_generation_notice.clone(),
         })
     }
 
@@ -4191,29 +4369,47 @@ async fn run_service_loop(
 }
 
 fn default_ui_ontology(preferences: UiPreferences) -> UiOntologyView {
-    let mut semantic_tokens = default_semantic_tokens();
-    for token in &mut semantic_tokens {
+    apply_ui_preferences(
+        UiOntologyView {
+            places: default_places(),
+            views: default_views(),
+            commands: default_commands(),
+            semantic_tokens: default_semantic_tokens(),
+            metrics: default_metrics(),
+            behaviors: default_behaviors(),
+            renderers: default_renderers(),
+        },
+        preferences,
+    )
+}
+
+fn apply_ui_preferences(
+    mut ontology: UiOntologyView,
+    preferences: UiPreferences,
+) -> UiOntologyView {
+    let semantic_tokens = &mut ontology.semantic_tokens;
+    for token in semantic_tokens {
         if let Some(value) = preferences.semantic_tokens.get(&token.id) {
             token.current_value = value.clone();
         }
     }
 
-    let mut metrics = default_metrics();
-    for metric in &mut metrics {
+    let metrics = &mut ontology.metrics;
+    for metric in metrics {
         if let Some(value) = preferences.metrics.get(&metric.id) {
             metric.current_value = *value;
         }
     }
 
-    let mut behaviors = default_behaviors();
-    for behavior in &mut behaviors {
+    let behaviors = &mut ontology.behaviors;
+    for behavior in behaviors {
         if let Some(value) = preferences.behaviors.get(&behavior.id) {
             behavior.current_value = value.clone();
         }
     }
 
-    let mut views = default_views();
-    for view in &mut views {
+    let views = &mut ontology.views;
+    for view in views {
         if let Some(placement) = preferences.view_placements.get(&view.id) {
             view.place_id = placement.place_id.clone();
             view.order = placement.order;
@@ -4221,15 +4417,213 @@ fn default_ui_ontology(preferences: UiPreferences) -> UiOntologyView {
         }
     }
 
-    UiOntologyView {
-        places: default_places(),
-        views,
-        commands: default_commands(),
-        semantic_tokens,
-        metrics,
-        behaviors,
-        renderers: default_renderers(),
+    ontology
+}
+
+fn embedded_trusted_update_keys() -> Result<Vec<TrustedReleaseKey>> {
+    let roots: TrustedReleaseKeysV1 =
+        serde_json::from_str(include_str!("../../../release/trusted-update-keys.json"))
+            .context("parse embedded update trust roots")?;
+    if roots.v != 1 {
+        anyhow::bail!(
+            "unsupported embedded update trust roots version {}",
+            roots.v
+        );
     }
+    Ok(roots.keys)
+}
+
+fn load_product_generation(
+    manager: &UpdateManager,
+) -> (Option<ActiveProductGeneration>, Option<String>) {
+    let loaded = match manager.load_active() {
+        Ok(Some(loaded)) => loaded,
+        Ok(None) => return (None, None),
+        Err(error) => {
+            return (
+                None,
+                Some(format!(
+                    "Signed product generation could not be recovered; using the built-in recovery generation: {error:#}"
+                )),
+            )
+        }
+    };
+    let generation = match parse_product_generation(&loaded.package).and_then(|generation| {
+        validate_product_generation(&generation)?;
+        Ok(generation)
+    }) {
+        Ok(generation) => generation,
+        Err(error) => {
+            return (
+                None,
+                Some(format!(
+                    "Active product generation is invalid; using the built-in recovery generation: {error:#}"
+                )),
+            )
+        }
+    };
+    let notice = (loaded.source == ActiveSource::PreviousRecovery).then(|| {
+        format!(
+            "Recovered signed product generation {} after the active package failed verification.",
+            loaded.package.package().release_id
+        )
+    });
+    (
+        Some(ActiveProductGeneration {
+            pointer: loaded.package.pointer(),
+            generation,
+            source: loaded.source,
+        }),
+        notice,
+    )
+}
+
+fn parse_product_generation(package: &VerifiedPackage) -> Result<ProductGenerationV1> {
+    serde_json::from_value(package.package().payload.clone())
+        .context("parse product generation payload")
+}
+
+fn validate_product_generation(generation: &ProductGenerationV1) -> Result<()> {
+    if generation.v != 1 {
+        anyhow::bail!("unsupported product generation version {}", generation.v);
+    }
+    let expected = default_ui_ontology(UiPreferences::default());
+    validate_exact_ids(
+        "place",
+        &generation.ontology.places,
+        &expected.places,
+        |item| &item.id,
+    )?;
+    validate_exact_ids(
+        "view",
+        &generation.ontology.views,
+        &expected.views,
+        |item| &item.id,
+    )?;
+    validate_exact_ids(
+        "command",
+        &generation.ontology.commands,
+        &expected.commands,
+        |item| &item.id,
+    )?;
+    validate_exact_ids(
+        "semantic token",
+        &generation.ontology.semantic_tokens,
+        &expected.semantic_tokens,
+        |item| &item.id,
+    )?;
+    validate_exact_ids(
+        "metric",
+        &generation.ontology.metrics,
+        &expected.metrics,
+        |item| &item.id,
+    )?;
+    validate_exact_ids(
+        "behavior",
+        &generation.ontology.behaviors,
+        &expected.behaviors,
+        |item| &item.id,
+    )?;
+    validate_exact_ids(
+        "renderer",
+        &generation.ontology.renderers,
+        &expected.renderers,
+        |item| &item.id,
+    )?;
+
+    let known_places: BTreeSet<&str> = generation
+        .ontology
+        .places
+        .iter()
+        .map(|item| item.id.as_str())
+        .collect();
+    for view in &generation.ontology.views {
+        if !known_places.contains(view.default_place_id.as_str())
+            || !known_places.contains(view.place_id.as_str())
+        {
+            anyhow::bail!("view {} references an unknown place", view.id);
+        }
+    }
+    let expected_scopes: BTreeMap<_, _> = expected
+        .commands
+        .iter()
+        .map(|command| (command.id.as_str(), command.scope))
+        .collect();
+    for command in &generation.ontology.commands {
+        if expected_scopes.get(command.id.as_str()) != Some(&command.scope) {
+            anyhow::bail!(
+                "command {} changes its kernel-owned authority class",
+                command.id
+            );
+        }
+    }
+    for metric in &generation.ontology.metrics {
+        if !metric.default_value.is_finite()
+            || !metric.current_value.is_finite()
+            || metric.default_value.abs() > 1_000_000.0
+            || metric.current_value.abs() > 1_000_000.0
+        {
+            anyhow::bail!(
+                "metric {} is non-finite or outside product bounds",
+                metric.id
+            );
+        }
+    }
+    if serde_json::to_vec(&generation.ontology)?.len() > 512 * 1024 {
+        anyhow::bail!("product generation ontology is too large");
+    }
+    for value in ontology_strings(&generation.ontology) {
+        if value.len() > 4096 || value.chars().any(|character| character == '\0') {
+            anyhow::bail!("product generation contains an invalid or oversized string");
+        }
+    }
+    Ok(())
+}
+
+fn validate_exact_ids<T, F>(label: &str, actual: &[T], expected: &[T], id: F) -> Result<()>
+where
+    F: Fn(&T) -> &String,
+{
+    let actual_ids: BTreeSet<&str> = actual.iter().map(|item| id(item).as_str()).collect();
+    if actual_ids.len() != actual.len() {
+        anyhow::bail!("product generation contains duplicate {label} ids");
+    }
+    let expected_ids: BTreeSet<&str> = expected.iter().map(|item| id(item).as_str()).collect();
+    if actual_ids != expected_ids {
+        anyhow::bail!("product generation {label} ids do not match the stable kernel inventory");
+    }
+    Ok(())
+}
+
+fn ontology_strings(ontology: &UiOntologyView) -> Vec<&str> {
+    let mut values = Vec::new();
+    for item in &ontology.places {
+        values.extend([
+            item.id.as_str(),
+            item.label.as_str(),
+            item.description.as_str(),
+        ]);
+    }
+    for item in &ontology.views {
+        values.extend([
+            item.id.as_str(),
+            item.label.as_str(),
+            item.default_place_id.as_str(),
+            item.place_id.as_str(),
+            item.description.as_str(),
+        ]);
+    }
+    for item in &ontology.commands {
+        values.extend([
+            item.id.as_str(),
+            item.label.as_str(),
+            item.description.as_str(),
+        ]);
+        if let Some(shortcut) = &item.shortcut {
+            values.push(shortcut);
+        }
+    }
+    values
 }
 
 fn default_places() -> Vec<UiPlace> {
@@ -4283,6 +4677,13 @@ fn default_views() -> Vec<UiView> {
             "status",
             2,
             "Re-entrant end-to-end workflow checks",
+        ),
+        ui_view(
+            "product.update",
+            "Product Update",
+            "status",
+            3,
+            "Signed live product generation status, activation, and rollback",
         ),
         ui_view(
             "invite.exchange",
@@ -4622,6 +5023,20 @@ fn default_commands() -> Vec<UiCommand> {
             "workbench.layout.reset",
             "Reset Workbench Layout",
             "Restore every view to its default dock",
+            None,
+            true,
+        ),
+        shell_command(
+            "product.update.install",
+            "Install Signed Product Update",
+            "Verify, stage, and activate a signed product generation",
+            None,
+            true,
+        ),
+        shell_command(
+            "product.update.rollback",
+            "Roll Back Product Update",
+            "Reactivate the previous verified product generation",
             None,
             true,
         ),

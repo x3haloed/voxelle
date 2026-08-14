@@ -4959,6 +4959,7 @@ dependencies = [
  "voxelle-net",
  "voxelle-store",
  "voxelle-sync",
+ "voxelle-update",
  "x25519-dalek",
 ]
 
@@ -5053,6 +5054,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "voxelle-release"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "voxelle-app",
+ "voxelle-core",
+ "voxelle-update",
+]
+
+[[package]]
 name = "voxelle-store"
 version = "0.1.0"
 dependencies = [
@@ -5083,6 +5097,20 @@ dependencies = [
  "tauri-build",
  "tempfile",
  "voxelle-app",
+]
+
+[[package]]
+name = "voxelle-update"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "voxelle-core",
 ]
 
 [[package]]
