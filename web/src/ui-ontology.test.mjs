@@ -92,6 +92,7 @@ test("live update lifecycle remains one semantic command vocabulary", () => {
       "product.update.stageAvailable",
       "product.update.activateStaged",
       "product.update.discardStaged",
+      "product.update.rotateTrust",
       "product.update.rollback",
     ].filter((command) => !commands.has(command)),
     [],

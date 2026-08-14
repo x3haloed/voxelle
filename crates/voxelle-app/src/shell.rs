@@ -129,6 +129,9 @@ impl ShellState {
             "workbench.layout.save" => host.set_workbench_layout(parse_request(payload)?),
             "workbench.layout.reset" => host.reset_workbench_layout(),
             "product.update.install" => host.install_product_update(parse_request(payload)?),
+            "product.update.rotateTrust" => {
+                host.install_release_trust_transition(parse_request(payload)?)
+            }
             "product.update.activateStaged" => host.activate_staged_product_update(),
             "product.update.discardStaged" => host.discard_staged_product_update(),
             "product.update.rollback" => host.rollback_product_update(),
@@ -172,7 +175,8 @@ mod tests {
     };
     use voxelle_core::Keypair;
     use voxelle_update::{
-        package_signing_bytes, TrustedReleaseKey, UpdatePackageV1, UPDATE_FORMAT_V1,
+        package_signing_bytes, trust_transition_signing_bytes, ReleaseKeyRole, TrustTransitionV1,
+        TrustedReleaseKey, UpdatePackageV1, TRUST_TRANSITION_FORMAT_V1, UPDATE_FORMAT_V1,
     };
 
     fn signed_generation_package(key: &Keypair, sequence: u64, refresh_label: &str) -> String {
@@ -203,7 +207,31 @@ mod tests {
         TrustedReleaseKey {
             key_id: key.id.clone(),
             spki_b64: key.spki_b64.clone(),
+            role: ReleaseKeyRole::Release,
         }
+    }
+
+    fn trusted_recovery_key(key: &Keypair) -> TrustedReleaseKey {
+        TrustedReleaseKey {
+            key_id: key.id.clone(),
+            spki_b64: key.spki_b64.clone(),
+            role: ReleaseKeyRole::Recovery,
+        }
+    }
+
+    fn signed_trust_rotation(old: &Keypair, new: &Keypair) -> String {
+        let mut transition = TrustTransitionV1 {
+            format: TRUST_TRANSITION_FORMAT_V1.to_string(),
+            sequence: 1,
+            add: vec![trusted_key(new)],
+            remove_key_ids: vec![old.id.clone()],
+            signer_key_id: old.id.clone(),
+            signature_b64: String::new(),
+        };
+        transition.signature_b64 = old.sign(
+            &trust_transition_signing_bytes(&transition).expect("trust transition signing bytes"),
+        );
+        serde_json::to_string_pretty(&transition).expect("trust transition JSON")
     }
 
     #[tokio::test]
@@ -329,6 +357,109 @@ mod tests {
                 .label,
             "Refresh Live"
         );
+    }
+
+    #[tokio::test]
+    async fn signed_release_trust_rotation_persists_and_changes_update_authority() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let old = Keypair::generate().expect("old release key");
+        let new = Keypair::generate().expect("new release key");
+        let recovery = Keypair::generate().expect("recovery key");
+        let roots = vec![trusted_key(&old), trusted_recovery_key(&recovery)];
+        let shell = ShellState::new_with_update_keys(&home, roots.clone());
+        let rotated = shell
+            .execute_serialized_command(
+                "product.update.rotateTrust",
+                serde_json::json!({"transition_json": signed_trust_rotation(&old, &new)}),
+            )
+            .await
+            .expect("rotate release trust");
+        assert_eq!(rotated.product_generation.trust_sequence, 1);
+        assert_eq!(rotated.product_generation.trusted_update_key_count, 2);
+        drop(shell);
+
+        let restarted = ShellState::new_with_update_keys(&home, roots);
+        let rejected = restarted
+            .execute_serialized_command(
+                "product.update.install",
+                serde_json::json!({
+                    "package_json": signed_generation_package(&old, 1, "Old signer")
+                }),
+            )
+            .await
+            .expect_err("retired signer rejected");
+        assert!(rejected.message.contains("not trusted"));
+        let accepted = restarted
+            .execute_serialized_command(
+                "product.update.install",
+                serde_json::json!({
+                    "package_json": signed_generation_package(&new, 1, "New signer")
+                }),
+            )
+            .await
+            .expect("new signer accepted");
+        assert_eq!(accepted.product_generation.active_sequence, 1);
+        assert_eq!(accepted.product_generation.trust_sequence, 1);
+    }
+
+    #[tokio::test]
+    async fn generation_activation_serializes_with_an_in_flight_product_command() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let key = Keypair::generate().expect("release key");
+        let shell = Arc::new(ShellState::new_with_update_keys(
+            &home,
+            vec![trusted_key(&key)],
+        ));
+        shell
+            .execute_serialized_command("home.init", serde_json::json!({"default_room": null}))
+            .await
+            .expect("initialize home");
+
+        let sending = {
+            let shell = Arc::clone(&shell);
+            async move {
+                shell
+                    .execute_serialized_command(
+                        "message.send",
+                        serde_json::json!({"text": "concurrent fact", "room": null}),
+                    )
+                    .await
+            }
+        };
+        let activating = {
+            let shell = Arc::clone(&shell);
+            async move {
+                shell
+                    .execute_serialized_command(
+                        "product.update.install",
+                        serde_json::json!({
+                            "package_json": signed_generation_package(
+                                &key,
+                                1,
+                                "Concurrent Generation",
+                            )
+                        }),
+                    )
+                    .await
+            }
+        };
+        let (sent, activated) = tokio::join!(sending, activating);
+        sent.expect("message command");
+        activated.expect("activation command");
+        let final_snapshot = shell
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("final snapshot");
+        assert_eq!(final_snapshot.product_generation.active_sequence, 1);
+        assert!(final_snapshot
+            .home
+            .expect("home")
+            .room
+            .messages
+            .iter()
+            .any(|message| message.text == "concurrent fact"));
     }
 
     #[tokio::test]

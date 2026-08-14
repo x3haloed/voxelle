@@ -3,7 +3,13 @@
   "keys": [
     {
       "key_id": "ed25519:sT3IfAZVI-Vm_Qoa7I2GOqK2yFBI6AdoNAUceYy8lrw",
-      "spki_b64": "MCowBQYDK2VwAyEAskfqaQh+0TFEp72y/YRWazDskYFgIvyU1K1+93bfjnI="
+      "spki_b64": "MCowBQYDK2VwAyEAskfqaQh+0TFEp72y/YRWazDskYFgIvyU1K1+93bfjnI=",
+      "role": "release"
+    },
+    {
+      "key_id": "ed25519:QvSrO6Hi-LY0SfASyXL3SpDd-cLMih8q3SqETZMCXO8",
+      "spki_b64": "MCowBQYDK2VwAyEAM9Qwe42mNriGVmj++8COskFOO0RT5kfaoRo6fyO1zZI=",
+      "role": "recovery"
     }
   ]
 }

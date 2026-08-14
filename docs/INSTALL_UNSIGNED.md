@@ -67,6 +67,10 @@ to weaken system-wide security.
   `scripts/prepare-product-update.sh RELEASE_ID SEQUENCE OUTPUT_DIR`
 - Signed release manifest:
   `scripts/sign-release.sh RELEASE_ID SEQUENCE VOXELLE-RELEASE.json ARTIFACT...`
+- Signed release-root transition:
+  `cargo run -p voxelle-release -- sign-trust-transition --secret OLD_KEY --output ROTATION.voxtrust --sequence N --add-trust-roots NEW_PUBLIC_ROOTS --remove-key-id OLD_KEY_ID`
+- Trust-transition verification:
+  `cargo run -p voxelle-release -- verify-trust-transition --trust-roots EMBEDDED_ROOTS --transition ROTATION.voxtrust --state-dir TRUST_STATE`
 - GitHub Release publication:
   `scripts/publish-github-release.sh TAG TITLE ASSET...`
 
@@ -80,10 +84,20 @@ directory, publishes with `gh`, and reads the published assets back.
 The release signing secret defaults to
 `~/.config/voxelle-release/signing-key.json`, must remain mode `0600` on Unix,
 must never enter the repository or release assets, and needs a separately
-protected offline backup. Losing it prevents future releases from
-authenticating to installed beta kernels; disclosing it permits malicious
-updates until an explicit trust-root rotation ships through an already trusted
-path.
+protected offline backup. Rotate proactively by generating the successor,
+signing a `.voxtrust` transition with the current key, independently verifying
+it, applying it on a test installation, and only then retiring the old secret.
+Losing the only currently trusted secret before signing a successor transition
+prevents future releases from authenticating to installed beta kernels.
+Disclosing it permits malicious updates until a legitimate already-trusted key
+signs a transition that retires it.
+
+The separately generated recovery secret at
+`~/.config/voxelle-release/recovery-signing-key.json` is not an ordinary release
+key: the kernel rejects it for manifests and product packages and accepts it
+only for emergency trust transitions. Move both signing secrets to separately
+protected offline storage before publishing a beta; their default paths are
+development locations, not an offline-backup claim.
 
 Inside the app, **Check GitHub Releases** downloads only the bounded latest
 manifest. Voxelle shows an update as available only after authenticating that

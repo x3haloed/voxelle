@@ -43,6 +43,7 @@ const uiState = {
   bindDraft: "",
   advertiseDraft: "",
   productUpdateDraft: "",
+  trustTransitionDraft: "",
   draggedViewId: "",
   paletteOpen: false,
   paletteQuery: "",
@@ -562,6 +563,8 @@ function productUpdateView(snapshot) {
       ? `${generation.staged_release_id} · sequence ${generation.staged_sequence}`
       : "none"],
     ["Signed updates", generation.update_authentication_available ? "available" : "no trusted release root embedded"],
+    ["Trusted release keys", String(generation.trusted_update_key_count)],
+    ["Trust sequence", String(generation.trust_sequence)],
   ]));
   if (generation.notice) {
     fragment.append(element("p", "notice", generation.notice));
@@ -605,6 +608,25 @@ function productUpdateView(snapshot) {
     runCommand("product.update.install").catch(reportError);
   });
   fragment.append(form);
+  const trustForm = element("form", "field-stack");
+  const trustInput = element("textarea", "mono-input");
+  trustInput.rows = 4;
+  trustInput.placeholder = "Paste a signed .voxtrust transition";
+  trustInput.value = uiState.trustTransitionDraft;
+  trustInput.setAttribute("aria-label", "Signed release trust transition");
+  trustInput.addEventListener("input", () => {
+    uiState.trustTransitionDraft = trustInput.value;
+  });
+  trustForm.append(
+    trustInput,
+    element("p", "summary", "Trust transitions are ordered, signed by a currently trusted release key, and can add or retire release keys without trusting GitHub."),
+    submitButton("product.update.rotateTrust"),
+  );
+  trustForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("product.update.rotateTrust").catch(reportError);
+  });
+  fragment.append(trustForm);
   if (generation.previous_available) {
     fragment.append(commandButton("product.update.rollback"));
   }
@@ -1565,6 +1587,12 @@ async function runCommand(command, payload) {
           package_json: uiState.productUpdateDraft,
         });
         uiState.productUpdateDraft = "";
+        return;
+      case "product.update.rotateTrust":
+        currentSnapshot = await shell.execute(command, {
+          transition_json: uiState.trustTransitionDraft,
+        });
+        uiState.trustTransitionDraft = "";
         return;
       case "product.update.check":
       case "product.update.stageAvailable":

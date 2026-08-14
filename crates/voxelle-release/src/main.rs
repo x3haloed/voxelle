@@ -7,9 +7,10 @@ use std::path::{Path, PathBuf};
 use voxelle_app::builtin_product_generation;
 use voxelle_core::Keypair;
 use voxelle_update::{
-    hex_sha256, package_signing_bytes, release_manifest_signing_bytes, ReleaseArtifactV1,
-    ReleaseManifestV1, TrustedReleaseKey, TrustedReleaseKeysV1, UpdateManager, UpdatePackageV1,
-    RELEASE_MANIFEST_FORMAT_V1, UPDATE_FORMAT_V1,
+    hex_sha256, package_signing_bytes, release_manifest_signing_bytes,
+    trust_transition_signing_bytes, ReleaseArtifactV1, ReleaseKeyRole, ReleaseManifestV1,
+    TrustTransitionV1, TrustedReleaseKey, TrustedReleaseKeysV1, UpdateManager, UpdatePackageV1,
+    RELEASE_MANIFEST_FORMAT_V1, TRUST_TRANSITION_FORMAT_V1, UPDATE_FORMAT_V1,
 };
 
 #[derive(Debug, Parser)]
@@ -29,6 +30,8 @@ enum Command {
         secret: PathBuf,
         #[arg(long)]
         trust_roots: PathBuf,
+        #[arg(long, default_value = "release")]
+        role: String,
     },
     GenerationTemplate {
         #[arg(long)]
@@ -64,6 +67,18 @@ enum Command {
         #[arg(long = "artifact", required = true)]
         artifacts: Vec<PathBuf>,
     },
+    SignTrustTransition {
+        #[arg(long)]
+        secret: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        sequence: u64,
+        #[arg(long)]
+        add_trust_roots: Option<PathBuf>,
+        #[arg(long = "remove-key-id")]
+        remove_key_ids: Vec<String>,
+    },
     VerifyPackage {
         #[arg(long)]
         trust_roots: PathBuf,
@@ -80,6 +95,14 @@ enum Command {
         #[arg(long)]
         artifact_dir: PathBuf,
     },
+    VerifyTrustTransition {
+        #[arg(long)]
+        trust_roots: PathBuf,
+        #[arg(long)]
+        transition: PathBuf,
+        #[arg(long)]
+        state_dir: PathBuf,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,7 +117,8 @@ fn main() -> Result<()> {
         Command::Keygen {
             secret,
             trust_roots,
-        } => keygen(&secret, &trust_roots),
+            role,
+        } => keygen(&secret, &trust_roots, &role),
         Command::GenerationTemplate { output } => {
             write_new_json(&output, &builtin_product_generation())?;
             println!("wrote {}", output.display());
@@ -125,6 +149,19 @@ fn main() -> Result<()> {
             channel,
             artifacts,
         } => sign_manifest(&secret, &output, release_id, sequence, channel, &artifacts),
+        Command::SignTrustTransition {
+            secret,
+            output,
+            sequence,
+            add_trust_roots,
+            remove_key_ids,
+        } => sign_trust_transition(
+            &secret,
+            &output,
+            sequence,
+            add_trust_roots.as_deref(),
+            remove_key_ids,
+        ),
         Command::VerifyPackage {
             trust_roots,
             package,
@@ -147,10 +184,51 @@ fn main() -> Result<()> {
             manifest,
             artifact_dir,
         } => verify_release(&trust_roots, &manifest, &artifact_dir),
+        Command::VerifyTrustTransition {
+            trust_roots,
+            transition,
+            state_dir,
+        } => {
+            let roots = read_trust_roots(&trust_roots)?;
+            let manager = UpdateManager::new(state_dir, "0.1.0", roots)?;
+            let raw = fs::read(&transition).context("read trust transition")?;
+            let verified = manager.verify_trust_transition_bytes(&raw)?;
+            println!(
+                "verified trust transition {} signed by {}",
+                verified.sequence, verified.signer_key_id
+            );
+            Ok(())
+        }
     }
 }
 
-fn keygen(secret_path: &Path, trust_roots_path: &Path) -> Result<()> {
+fn sign_trust_transition(
+    secret_path: &Path,
+    output: &Path,
+    sequence: u64,
+    add_trust_roots: Option<&Path>,
+    remove_key_ids: Vec<String>,
+) -> Result<()> {
+    let key = read_signing_key(secret_path)?;
+    let add = match add_trust_roots {
+        Some(path) => read_trust_roots(path)?,
+        None => Vec::new(),
+    };
+    let mut transition = TrustTransitionV1 {
+        format: TRUST_TRANSITION_FORMAT_V1.to_string(),
+        sequence,
+        add,
+        remove_key_ids,
+        signer_key_id: key.id.clone(),
+        signature_b64: String::new(),
+    };
+    transition.signature_b64 = key.sign(&trust_transition_signing_bytes(&transition)?);
+    write_new_json(output, &transition)?;
+    println!("wrote signed trust transition {}", output.display());
+    Ok(())
+}
+
+fn keygen(secret_path: &Path, trust_roots_path: &Path, role: &str) -> Result<()> {
     if trust_roots_path.exists() {
         return Err(anyhow!(
             "refusing to overwrite trust roots {}",
@@ -158,6 +236,11 @@ fn keygen(secret_path: &Path, trust_roots_path: &Path) -> Result<()> {
         ));
     }
     let key = Keypair::generate().context("generate Ed25519 release key")?;
+    let role = match role {
+        "release" => ReleaseKeyRole::Release,
+        "recovery" => ReleaseKeyRole::Recovery,
+        value => return Err(anyhow!("unsupported release key role {value}")),
+    };
     let secret = ReleaseSigningSecretV1 {
         v: 1,
         key_id: key.id.clone(),
@@ -169,6 +252,7 @@ fn keygen(secret_path: &Path, trust_roots_path: &Path) -> Result<()> {
         keys: vec![TrustedReleaseKey {
             key_id: key.id.clone(),
             spki_b64: key.spki_b64,
+            role,
         }],
     };
     write_new_json(trust_roots_path, &roots)?;
@@ -347,7 +431,9 @@ fn artifact_kind(name: &str) -> &'static str {
 }
 
 fn artifact_target(name: &str) -> &'static str {
-    if name.ends_with(".dmg") {
+    if name.ends_with(".voxupdate") {
+        "any"
+    } else if name.ends_with(".dmg") {
         "macos-universal"
     } else if name.ends_with(".exe") {
         "windows-x86_64"

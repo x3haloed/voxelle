@@ -15,6 +15,8 @@ pub const UPDATE_FORMAT_V1: &str = "voxelle-product-update/v1";
 pub const UPDATE_SIGNATURE_DOMAIN_V1: &[u8] = b"voxelle/product-update/v1\0";
 pub const RELEASE_MANIFEST_FORMAT_V1: &str = "voxelle-release-manifest/v1";
 pub const RELEASE_MANIFEST_SIGNATURE_DOMAIN_V1: &[u8] = b"voxelle/release-manifest/v1\0";
+pub const TRUST_TRANSITION_FORMAT_V1: &str = "voxelle-release-trust-transition/v1";
+pub const TRUST_TRANSITION_SIGNATURE_DOMAIN_V1: &[u8] = b"voxelle/release-trust-transition/v1\0";
 pub const MAX_UPDATE_PACKAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_RELEASE_ID_BYTES: usize = 128;
 pub const MAX_CHANNEL_BYTES: usize = 32;
@@ -38,12 +40,37 @@ pub struct UpdatePackageV1 {
 pub struct TrustedReleaseKey {
     pub key_id: String,
     pub spki_b64: String,
+    #[serde(default)]
+    pub role: ReleaseKeyRole,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseKeyRole {
+    Release,
+    Recovery,
+}
+
+impl Default for ReleaseKeyRole {
+    fn default() -> Self {
+        Self::Release
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TrustedReleaseKeysV1 {
     pub v: u8,
     pub keys: Vec<TrustedReleaseKey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TrustTransitionV1 {
+    pub format: String,
+    pub sequence: u64,
+    pub add: Vec<TrustedReleaseKey>,
+    pub remove_key_ids: Vec<String>,
+    pub signer_key_id: String,
+    pub signature_b64: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -132,7 +159,8 @@ pub struct LoadedPackage {
 pub struct UpdateManager {
     root: PathBuf,
     kernel_version: Version,
-    trusted_keys: BTreeMap<String, String>,
+    trusted_keys: BTreeMap<String, TrustedReleaseKey>,
+    trust_sequence: u64,
 }
 
 impl UpdateManager {
@@ -145,19 +173,72 @@ impl UpdateManager {
         let mut keys = BTreeMap::new();
         for key in trusted_keys {
             validate_bounded("release key id", &key.key_id, MAX_RELEASE_ID_BYTES)?;
-            if keys.insert(key.key_id.clone(), key.spki_b64).is_some() {
+            if keys.insert(key.key_id.clone(), key.clone()).is_some() {
                 return Err(anyhow!("duplicate trusted release key {}", key.key_id));
             }
         }
-        Ok(Self {
+        let mut manager = Self {
             root: root.into(),
             kernel_version,
             trusted_keys: keys,
-        })
+            trust_sequence: 0,
+        };
+        manager.replay_trust_transitions()?;
+        Ok(manager)
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn trust_sequence(&self) -> u64 {
+        self.trust_sequence
+    }
+
+    pub fn trusted_key_count(&self) -> usize {
+        self.trusted_keys.len()
+    }
+
+    pub fn apply_trust_transition_bytes(&mut self, raw: &[u8]) -> Result<TrustTransitionV1> {
+        let transition = self.verify_trust_transition_bytes(raw)?;
+        let directory = self.root.join("trust-transitions");
+        fs::create_dir_all(&directory).context("create trust transition directory")?;
+        let path = directory.join(format!("{:020}.json", transition.sequence));
+        if path.exists() {
+            return Err(anyhow!("trust transition sequence already exists"));
+        }
+        atomic_write(&path, raw).context("persist trust transition")?;
+        self.apply_verified_trust_transition(&transition)?;
+        Ok(transition)
+    }
+
+    pub fn verify_trust_transition_bytes(&self, raw: &[u8]) -> Result<TrustTransitionV1> {
+        if raw.is_empty() || raw.len() > 64 * 1024 {
+            return Err(anyhow!("trust transition is empty or too large"));
+        }
+        let transition: TrustTransitionV1 =
+            serde_json::from_slice(raw).context("parse trust transition")?;
+        validate_trust_transition_shape(&transition)?;
+        if transition.sequence != self.trust_sequence + 1 {
+            return Err(anyhow!(
+                "trust transition sequence {} does not follow {}",
+                transition.sequence,
+                self.trust_sequence
+            ));
+        }
+        let signer = self
+            .trusted_keys
+            .get(&transition.signer_key_id)
+            .ok_or_else(|| anyhow!("trust transition signer is not currently trusted"))?;
+        verify_signature_from_spki_b64(
+            &signer.spki_b64,
+            &trust_transition_signing_bytes(&transition)?,
+            &transition.signature_b64,
+        )
+        .context("verify trust transition signature")?;
+        let mut projected = self.trusted_keys.clone();
+        apply_trust_operations(&mut projected, &transition)?;
+        Ok(transition)
     }
 
     pub fn verify_bytes(&self, raw: &[u8]) -> Result<VerifiedPackage> {
@@ -181,8 +262,11 @@ impl UpdateManager {
             .trusted_keys
             .get(&package.signer_key_id)
             .ok_or_else(|| anyhow!("update signer {} is not trusted", package.signer_key_id))?;
+        if signer.role != ReleaseKeyRole::Release {
+            return Err(anyhow!("recovery keys cannot sign product updates"));
+        }
         let message = package_signing_bytes(&package)?;
-        verify_signature_from_spki_b64(signer, &message, &package.signature_b64)
+        verify_signature_from_spki_b64(&signer.spki_b64, &message, &package.signature_b64)
             .context("verify product update signature")?;
         let sha256 = hex_sha256(raw);
         Ok(VerifiedPackage {
@@ -203,8 +287,11 @@ impl UpdateManager {
             .trusted_keys
             .get(&manifest.signer_key_id)
             .ok_or_else(|| anyhow!("release signer {} is not trusted", manifest.signer_key_id))?;
+        if signer.role != ReleaseKeyRole::Release {
+            return Err(anyhow!("recovery keys cannot sign release manifests"));
+        }
         verify_signature_from_spki_b64(
-            signer,
+            &signer.spki_b64,
             &release_manifest_signing_bytes(&manifest)?,
             &manifest.signature_b64,
         )
@@ -373,7 +460,11 @@ impl UpdateManager {
     }
 
     pub fn load_active(&self) -> Result<Option<LoadedPackage>> {
-        if let Some(active) = self.read_pointer("active.json")? {
+        let active = match self.read_pointer("active.json") {
+            Ok(active) => active,
+            Err(active_error) => return self.recover_previous(active_error),
+        };
+        if let Some(active) = active {
             match self.load_pointer(&active) {
                 Ok(package) => {
                     return Ok(Some(LoadedPackage {
@@ -381,25 +472,27 @@ impl UpdateManager {
                         source: ActiveSource::Current,
                     }))
                 }
-                Err(active_error) => {
-                    if let Some(previous) = self.read_pointer("previous.json")? {
-                        let package = self.load_pointer(&previous).with_context(|| {
-                            format!(
-                                "active generation failed verification ({active_error:#}); previous generation also failed"
-                            )
-                        })?;
-                        write_json_atomic(&self.root.join("active.json"), &package.pointer())
-                            .context("repair active pointer from previous generation")?;
-                        return Ok(Some(LoadedPackage {
-                            package,
-                            source: ActiveSource::PreviousRecovery,
-                        }));
-                    }
-                    return Err(active_error).context("load active product generation");
-                }
+                Err(active_error) => return self.recover_previous(active_error),
             }
         }
         Ok(None)
+    }
+
+    fn recover_previous(&self, active_error: anyhow::Error) -> Result<Option<LoadedPackage>> {
+        if let Some(previous) = self.read_pointer("previous.json")? {
+            let package = self.load_pointer(&previous).with_context(|| {
+                format!(
+                    "active generation failed verification ({active_error:#}); previous generation also failed"
+                )
+            })?;
+            write_json_atomic(&self.root.join("active.json"), &package.pointer())
+                .context("repair active pointer from previous generation")?;
+            return Ok(Some(LoadedPackage {
+                package,
+                source: ActiveSource::PreviousRecovery,
+            }));
+        }
+        Err(active_error).context("load active product generation")
     }
 
     pub fn active_pointer(&self) -> Result<Option<GenerationPointerV1>> {
@@ -481,6 +574,37 @@ impl UpdateManager {
         }
         Ok(package)
     }
+
+    fn replay_trust_transitions(&mut self) -> Result<()> {
+        let directory = self.root.join("trust-transitions");
+        if !directory.exists() {
+            return Ok(());
+        }
+        let mut paths = fs::read_dir(&directory)
+            .context("read trust transition directory")?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        paths.retain(|path| path.extension().and_then(|value| value.to_str()) == Some("json"));
+        paths.sort();
+        if paths.len() > 32 {
+            return Err(anyhow!("too many persisted trust transitions"));
+        }
+        for path in paths {
+            let raw = fs::read(&path)
+                .with_context(|| format!("read trust transition {}", path.display()))?;
+            let transition = self
+                .verify_trust_transition_bytes(&raw)
+                .with_context(|| format!("verify trust transition {}", path.display()))?;
+            self.apply_verified_trust_transition(&transition)?;
+        }
+        Ok(())
+    }
+
+    fn apply_verified_trust_transition(&mut self, transition: &TrustTransitionV1) -> Result<()> {
+        apply_trust_operations(&mut self.trusted_keys, transition)?;
+        self.trust_sequence = transition.sequence;
+        Ok(())
+    }
 }
 
 async fn fetch_bounded(url: &str, max_bytes: usize) -> Result<Vec<u8>> {
@@ -543,6 +667,17 @@ pub fn release_manifest_signing_bytes(manifest: &ReleaseManifestV1) -> Result<Ve
     let mut message =
         Vec::with_capacity(RELEASE_MANIFEST_SIGNATURE_DOMAIN_V1.len() + canonical.len());
     message.extend_from_slice(RELEASE_MANIFEST_SIGNATURE_DOMAIN_V1);
+    message.extend_from_slice(&canonical);
+    Ok(message)
+}
+
+pub fn trust_transition_signing_bytes(transition: &TrustTransitionV1) -> Result<Vec<u8>> {
+    let mut unsigned = transition.clone();
+    unsigned.signature_b64.clear();
+    let canonical = jcs_bytes(&unsigned).context("canonicalize trust transition")?;
+    let mut message =
+        Vec::with_capacity(TRUST_TRANSITION_SIGNATURE_DOMAIN_V1.len() + canonical.len());
+    message.extend_from_slice(TRUST_TRANSITION_SIGNATURE_DOMAIN_V1);
     message.extend_from_slice(&canonical);
     Ok(message)
 }
@@ -612,6 +747,86 @@ fn validate_release_manifest_shape(manifest: &ReleaseManifestV1) -> Result<()> {
         if !names.insert(&artifact.name) {
             return Err(anyhow!("duplicate release artifact {}", artifact.name));
         }
+    }
+    Ok(())
+}
+
+fn validate_trust_transition_shape(transition: &TrustTransitionV1) -> Result<()> {
+    if transition.format != TRUST_TRANSITION_FORMAT_V1 {
+        return Err(anyhow!(
+            "unsupported trust transition format {}",
+            transition.format
+        ));
+    }
+    if transition.sequence == 0
+        || transition.add.len() > 8
+        || transition.remove_key_ids.len() > 8
+        || (transition.add.is_empty() && transition.remove_key_ids.is_empty())
+    {
+        return Err(anyhow!("trust transition operation count is invalid"));
+    }
+    validate_bounded(
+        "trust transition signer",
+        &transition.signer_key_id,
+        MAX_RELEASE_ID_BYTES,
+    )?;
+    if transition.signature_b64.len() > 256 {
+        return Err(anyhow!("trust transition signature is too large"));
+    }
+    let mut add_ids = std::collections::BTreeSet::new();
+    for key in &transition.add {
+        validate_bounded("release key id", &key.key_id, MAX_RELEASE_ID_BYTES)?;
+        validate_bounded("release public key", &key.spki_b64, 256)?;
+        if !add_ids.insert(&key.key_id) {
+            return Err(anyhow!("duplicate added release key {}", key.key_id));
+        }
+    }
+    let mut remove_ids = std::collections::BTreeSet::new();
+    for key_id in &transition.remove_key_ids {
+        validate_bounded("removed release key id", key_id, MAX_RELEASE_ID_BYTES)?;
+        if !remove_ids.insert(key_id) || add_ids.contains(key_id) {
+            return Err(anyhow!("ambiguous trust transition key {key_id}"));
+        }
+    }
+    Ok(())
+}
+
+fn apply_trust_operations(
+    keys: &mut BTreeMap<String, TrustedReleaseKey>,
+    transition: &TrustTransitionV1,
+) -> Result<()> {
+    for key in &transition.add {
+        if keys.contains_key(&key.key_id) {
+            return Err(anyhow!("release key {} is already trusted", key.key_id));
+        }
+        if key.role != ReleaseKeyRole::Release {
+            return Err(anyhow!(
+                "embedded recovery keys can only change in a native kernel release"
+            ));
+        }
+        keys.insert(key.key_id.clone(), key.clone());
+    }
+    for key_id in &transition.remove_key_ids {
+        let Some(key) = keys.get(key_id) else {
+            return Err(anyhow!("release key {key_id} is not currently trusted"));
+        };
+        if key.role == ReleaseKeyRole::Recovery {
+            return Err(anyhow!(
+                "embedded recovery keys can only change in a native kernel release"
+            ));
+        }
+        keys.remove(key_id);
+    }
+    if keys.is_empty() {
+        return Err(anyhow!("trust transition cannot remove every release key"));
+    }
+    if !keys
+        .values()
+        .any(|key| key.role == ReleaseKeyRole::Recovery)
+    {
+        return Err(anyhow!(
+            "trust transition must preserve an embedded recovery key"
+        ));
     }
     Ok(())
 }
@@ -692,14 +907,43 @@ mod tests {
         serde_json::to_vec_pretty(&manifest).expect("manifest JSON")
     }
 
+    fn signed_trust_transition(
+        signer: &Keypair,
+        sequence: u64,
+        add: Vec<TrustedReleaseKey>,
+        remove_key_ids: Vec<String>,
+    ) -> Vec<u8> {
+        let mut transition = TrustTransitionV1 {
+            format: TRUST_TRANSITION_FORMAT_V1.to_string(),
+            sequence,
+            add,
+            remove_key_ids,
+            signer_key_id: signer.id.clone(),
+            signature_b64: String::new(),
+        };
+        transition.signature_b64 = signer.sign(
+            &trust_transition_signing_bytes(&transition).expect("trust transition signing bytes"),
+        );
+        serde_json::to_vec_pretty(&transition).expect("trust transition JSON")
+    }
+
     fn manager(root: &Path, key: &Keypair) -> UpdateManager {
+        let recovery = Keypair::generate().expect("recovery key");
         UpdateManager::new(
             root,
             "0.1.0",
-            [TrustedReleaseKey {
-                key_id: key.id.clone(),
-                spki_b64: key.spki_b64.clone(),
-            }],
+            [
+                TrustedReleaseKey {
+                    key_id: key.id.clone(),
+                    spki_b64: key.spki_b64.clone(),
+                    role: ReleaseKeyRole::Release,
+                },
+                TrustedReleaseKey {
+                    key_id: recovery.id,
+                    spki_b64: recovery.spki_b64,
+                    role: ReleaseKeyRole::Recovery,
+                },
+            ],
         )
         .expect("manager")
     }
@@ -874,6 +1118,107 @@ mod tests {
     }
 
     #[test]
+    fn signed_trust_transition_rotates_release_authority_and_replays_after_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let old = Keypair::generate().expect("old key");
+        let new = Keypair::generate().expect("new key");
+        let mut rotating = manager(dir.path(), &old);
+        let transition = signed_trust_transition(
+            &old,
+            1,
+            vec![TrustedReleaseKey {
+                key_id: new.id.clone(),
+                spki_b64: new.spki_b64.clone(),
+                role: ReleaseKeyRole::Release,
+            }],
+            vec![old.id.clone()],
+        );
+        rotating
+            .apply_trust_transition_bytes(&transition)
+            .expect("apply transition");
+        assert_eq!(rotating.trust_sequence(), 1);
+        assert_eq!(rotating.trusted_key_count(), 2);
+        assert!(rotating
+            .verify_bytes(&signed_package(&old, 1, Value::Null))
+            .expect_err("old key removed")
+            .to_string()
+            .contains("not trusted"));
+        rotating
+            .verify_bytes(&signed_package(&new, 1, Value::Null))
+            .expect("new key trusted");
+
+        let reopened = manager(dir.path(), &old);
+        assert_eq!(reopened.trust_sequence(), 1);
+        reopened
+            .verify_bytes(&signed_package(&new, 2, Value::Null))
+            .expect("rotation replayed");
+        assert!(reopened
+            .verify_bytes(&signed_package(&old, 2, Value::Null))
+            .is_err());
+    }
+
+    #[test]
+    fn trust_transition_rejects_tamper_replay_unknown_signer_and_preserves_recovery() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let old = Keypair::generate().expect("old key");
+        let new = Keypair::generate().expect("new key");
+        let attacker = Keypair::generate().expect("attacker key");
+        let mut manager = manager(dir.path(), &old);
+        let raw = signed_trust_transition(
+            &old,
+            1,
+            vec![TrustedReleaseKey {
+                key_id: new.id.clone(),
+                spki_b64: new.spki_b64.clone(),
+                role: ReleaseKeyRole::Release,
+            }],
+            vec![],
+        );
+        let mut tampered: Value = serde_json::from_slice(&raw).expect("JSON");
+        tampered["remove_key_ids"] = serde_json::json!([old.id.clone()]);
+        assert!(manager
+            .verify_trust_transition_bytes(&serde_json::to_vec(&tampered).expect("JSON"))
+            .expect_err("tamper")
+            .to_string()
+            .contains("signature"));
+        let unknown = signed_trust_transition(
+            &attacker,
+            1,
+            vec![TrustedReleaseKey {
+                key_id: new.id.clone(),
+                spki_b64: new.spki_b64.clone(),
+                role: ReleaseKeyRole::Release,
+            }],
+            vec![],
+        );
+        assert!(manager
+            .verify_trust_transition_bytes(&unknown)
+            .expect_err("unknown signer")
+            .to_string()
+            .contains("not currently trusted"));
+        manager
+            .apply_trust_transition_bytes(&raw)
+            .expect("apply one");
+        assert!(manager
+            .apply_trust_transition_bytes(&raw)
+            .expect_err("replay")
+            .to_string()
+            .contains("does not follow"));
+
+        let retire_all_release_keys =
+            signed_trust_transition(&old, 2, vec![], vec![old.id.clone(), new.id.clone()]);
+        manager
+            .apply_trust_transition_bytes(&retire_all_release_keys)
+            .expect("recovery authority remains");
+        assert_eq!(manager.trusted_key_count(), 1);
+        assert!(manager
+            .verify_bytes(&signed_package(&new, 1, Value::Null))
+            .expect_err("all release keys retired")
+            .to_string()
+            .contains("not trusted"));
+    }
+
+    #[test]
     fn tamper_unknown_signer_downgrade_and_new_kernel_are_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let key = Keypair::generate().expect("key");
@@ -938,6 +1283,31 @@ mod tests {
             .join("packages")
             .join(format!("{}.voxupdate", two.sha256()));
         fs::write(active_path, b"corrupt").expect("corrupt active");
+
+        let recovered = manager.load_active().expect("recover").expect("active");
+        assert_eq!(recovered.source, ActiveSource::PreviousRecovery);
+        assert_eq!(recovered.package.package().sequence, 1);
+        assert_eq!(
+            manager.active_pointer().expect("pointer").unwrap().sequence,
+            1
+        );
+    }
+
+    #[test]
+    fn interrupted_active_pointer_write_recovers_previous_generation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = Keypair::generate().expect("key");
+        let manager = manager(dir.path(), &key);
+        let one = manager
+            .verify_bytes(&signed_package(&key, 1, serde_json::json!({"name": "one"})))
+            .expect("verify one");
+        manager.activate(&one).expect("activate one");
+        let two = manager
+            .verify_bytes(&signed_package(&key, 2, serde_json::json!({"name": "two"})))
+            .expect("verify two");
+        manager.activate(&two).expect("activate two");
+        fs::write(manager.root().join("active.json"), b"{\"v\":1")
+            .expect("simulate interrupted non-atomic writer");
 
         let recovered = manager.load_active().expect("recover").expect("active");
         assert_eq!(recovered.source, ActiveSource::PreviousRecovery);

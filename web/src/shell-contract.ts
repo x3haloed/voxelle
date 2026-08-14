@@ -30,7 +30,7 @@ export type UiOntologyView = { places: Array<UiPlace>, views: Array<UiView>, com
 
 export type ProductGenerationV1 = { v: number, ontology: UiOntologyView, };
 
-export type ProductGenerationStatusView = { kernel_version: string, active_release_id: string, active_sequence: bigint, source: string, previous_available: boolean, update_authentication_available: boolean, available_release_id: string | null, available_sequence: bigint | null, staged_release_id: string | null, staged_sequence: bigint | null, phase: string, notice: string | null, };
+export type ProductGenerationStatusView = { kernel_version: string, active_release_id: string, active_sequence: bigint, source: string, previous_available: boolean, update_authentication_available: boolean, trusted_update_key_count: number, trust_sequence: bigint, available_release_id: string | null, available_sequence: bigint | null, staged_release_id: string | null, staged_sequence: bigint | null, phase: string, notice: string | null, };
 
 export type UiPlace = { id: string, label: string, description: string, editable: boolean, editing_surface: string, };
 

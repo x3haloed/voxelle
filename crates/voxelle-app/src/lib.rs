@@ -430,6 +430,8 @@ pub struct ProductGenerationStatusView {
     pub source: String,
     pub previous_available: bool,
     pub update_authentication_available: bool,
+    pub trusted_update_key_count: usize,
+    pub trust_sequence: u64,
     pub available_release_id: Option<String>,
     pub available_sequence: Option<u64>,
     pub staged_release_id: Option<String>,
@@ -705,7 +707,6 @@ pub struct VoxelleCommandHost {
     update_manager: UpdateManager,
     product_generation: Option<ActiveProductGeneration>,
     product_generation_notice: Option<String>,
-    trusted_update_key_count: usize,
     available_product_update: Option<AvailableProductUpdate>,
     update_phase: String,
 }
@@ -980,6 +981,11 @@ pub struct SetWorkbenchLayoutRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct InstallProductUpdateRequest {
     pub package_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct InstallTrustTransitionRequest {
+    pub transition_json: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -3381,7 +3387,6 @@ impl VoxelleCommandHost {
         trusted_update_keys: Vec<TrustedReleaseKey>,
     ) -> Self {
         let root = root.into();
-        let trusted_update_key_count = trusted_update_keys.len();
         let update_manager = UpdateManager::new(
             root.join("product-updates"),
             env!("CARGO_PKG_VERSION"),
@@ -3422,7 +3427,6 @@ impl VoxelleCommandHost {
             update_manager,
             product_generation,
             product_generation_notice,
-            trusted_update_key_count,
             available_product_update: None,
             update_phase,
         }
@@ -3541,6 +3545,26 @@ impl VoxelleCommandHost {
             format!("product update failed: {message}"),
         );
         (self.snapshot_invalidated)();
+    }
+
+    pub fn install_release_trust_transition(
+        &mut self,
+        request: InstallTrustTransitionRequest,
+    ) -> Result<ShellSnapshotView> {
+        let transition = self
+            .update_manager
+            .apply_trust_transition_bytes(request.transition_json.as_bytes())?;
+        self.product_generation_notice = Some(format!(
+            "Applied signed release trust transition {}. {} release key(s) are now trusted.",
+            transition.sequence,
+            self.update_manager.trusted_key_count()
+        ));
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("applied release trust transition {}", transition.sequence),
+        );
+        (self.snapshot_invalidated)();
+        self.snapshot()
     }
 
     pub fn install_product_update(
@@ -4096,7 +4120,9 @@ impl VoxelleCommandHost {
             active_sequence,
             source,
             previous_available,
-            update_authentication_available: self.trusted_update_key_count > 0,
+            update_authentication_available: self.update_manager.trusted_key_count() > 0,
+            trusted_update_key_count: self.update_manager.trusted_key_count(),
+            trust_sequence: self.update_manager.trust_sequence(),
             available_release_id: self
                 .available_product_update
                 .as_ref()
@@ -5215,6 +5241,13 @@ fn default_commands() -> Vec<UiCommand> {
             "product.update.install",
             "Install Signed Product Update",
             "Verify, stage, and activate a signed product generation",
+            None,
+            true,
+        ),
+        shell_command(
+            "product.update.rotateTrust",
+            "Apply Signed Trust Transition",
+            "Rotate release-signing authority through a transition signed by a currently trusted key",
             None,
             true,
         ),

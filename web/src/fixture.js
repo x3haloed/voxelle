@@ -134,6 +134,8 @@ export const fixtureSnapshot = {
     source: "builtin",
     previous_available: false,
     update_authentication_available: false,
+    trusted_update_key_count: 0,
+    trust_sequence: 0,
     available_release_id: null,
     available_sequence: null,
     staged_release_id: null,

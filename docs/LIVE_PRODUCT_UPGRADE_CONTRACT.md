@@ -122,6 +122,32 @@ active, previous, and staged pointers; unreferenced content-addressed packages
 are removed. Discovery, download, staging, activation, failure, discard, and
 rollback are distinct observable states.
 
+## Release-root transition
+
+Release authority changes use a separate `voxelle-release-trust-transition/v1`
+document, never a product-generation field. Each transition:
+
+- has the next exact monotonic trust sequence;
+- is signed under a domain separate from packages and release manifests by a
+  key trusted before the transition;
+- may add bounded public Ed25519 roots and retire bounded existing roots;
+- cannot add and remove the same ID, replay a sequence, remove an unknown key,
+  or leave the kernel with no release root;
+- is retained as exact signed bytes in an append-only transition chain and
+  replayed from embedded roots on restart.
+
+The embedded set separates ordinary **release** keys from an offline
+**recovery** key. Release keys may sign manifests, generations, and trust
+transitions. The recovery key may sign trust transitions only. Live transitions
+may add or retire release keys but cannot add or retire embedded recovery keys;
+changing that recovery root requires a newly installed native kernel. Thus loss
+of local transition state falls back to a capability that can recover release
+authority without also becoming ordinary package-signing authority.
+
+GitHub may carry `.voxtrust` bytes but cannot authorize or order them. Applying
+a transition is an explicit native command. The transition log is local update
+authority state, distinct from product generations and user data.
+
 ## Initial generation boundary
 
 Version 1 carries the complete UI ontology presentation for existing stable
