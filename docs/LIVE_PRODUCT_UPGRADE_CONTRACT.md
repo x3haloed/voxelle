@@ -237,11 +237,25 @@ The tag resolves to commit `5b4e38c90464f6612a302ca3dca08d755da8689d`.
   endpoint record, signs a C invite containing A and B as bounded bootstrap
   hints, takes A offline, and joins C through B with retained history visible.
 
-This is a bounded macOS preview claim, not the complete cross-platform beta
-gate. An x86-64 NSIS installer has subsequently been cross-compiled from macOS;
-its PE headers identify a Windows GUI application and the installer is suitable
-for inclusion in a signed multi-platform release. This is structural packaging
-evidence, not native Windows execution evidence. Installation and first launch
-on Windows, the existing multi-machine field test, and protected offline
-relocation of both signing secrets remain required before this contract may
-claim full beta readiness.
+The next multi-platform preview was published on 2026-08-14 as
+[`v0.1.0-beta.3`](https://github.com/x3haloed/voxelle/releases/tag/v0.1.0-beta.3).
+Its tag resolves to commit `3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f`.
+
+- The 1,005-byte signed manifest authenticates three functional artifacts: a
+  16,937,118-byte universal macOS DMG, a 5,367,367-byte Windows x86-64 NSIS
+  installer, and a 32,708-byte sequence-3 product generation. Clean public
+  readback reproduced SHA-256 values `982f89df`, `637521b7`, and `cec890ce`.
+- The DMG passed `hdiutil verify`; its mounted executable is an ad-hoc-signed
+  universal `x86_64 arm64` Mach-O. The Windows application is a COFF x86-64 GUI
+  PE with dynamic-base, high-entropy-VA, and NX compatibility flags; the
+  enclosing executable is recognized as an NSIS installer.
+- The packaged app discovered and staged public sequence 3, activated it
+  in-process through the shared semantic command palette, rolled back to signed
+  sequence 2, and reactivated sequence 3 without restarting the process.
+
+This remains a bounded multi-platform packaging preview, not the complete beta
+gate. Cross-build inspection is structural evidence, not native Windows
+execution evidence. Installation and first launch on Windows, the existing
+multi-machine non-loopback field test, and protected offline relocation of both
+signing secrets remain required before this contract may claim full beta
+readiness.
