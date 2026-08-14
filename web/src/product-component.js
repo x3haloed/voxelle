@@ -279,7 +279,14 @@ function headerMore(snapshot) {
   details.append(element("summary", "command-button", "More"));
   const menu = element("div", "header-more-menu");
   if (snapshot.home) {
-    menu.append(customizationEditor(snapshot), layoutEditorButton());
+    menu.append(
+      actionButton("Customize", () => {
+        uiState.connectionOpen = false;
+        uiState.utilityOpen = "settings";
+        render();
+      }),
+      layoutEditorButton(),
+    );
   }
   menu.append(
     commandButton("workbench.commandPalette.open"),
@@ -324,6 +331,11 @@ function utilityCenter(snapshot, kind) {
       title: "Search messages",
       summary: "Search retained messages and attachment names on this device.",
       render: () => messageSearchView(snapshot),
+    },
+    settings: {
+      title: "Customize Voxelle",
+      summary: "Choose everyday behavior first. Advanced appearance and spacing remain available when you want them.",
+      render: () => customizationEditor(snapshot),
     },
   };
   const definition = definitions[kind] ?? definitions.people;
@@ -486,20 +498,20 @@ function shellMode() {
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function customizationEditor(snapshot) {
-  const details = element("details", "customization");
-  details.append(element("summary", "command-button", "Customize"));
+  const fragment = document.createDocumentFragment();
+  fragment.append(
+    preferenceGroup("Everyday behavior", snapshot.ui_ontology.behaviors, behaviorEditor),
+  );
+  const advanced = element("details", "settings-advanced");
+  advanced.append(element("summary", "command-button", "Advanced appearance and spacing"));
   const editor = element("div", "customization-editor");
   editor.append(
-    preferenceGroup(
-      "Appearance",
-      snapshot.ui_ontology.semantic_tokens,
-      semanticTokenEditor,
-    ),
-    preferenceGroup("Layout", snapshot.ui_ontology.metrics, metricEditor),
-    preferenceGroup("Behavior", snapshot.ui_ontology.behaviors, behaviorEditor),
+    preferenceGroup("Appearance", snapshot.ui_ontology.semantic_tokens, semanticTokenEditor),
+    preferenceGroup("Spacing and size", snapshot.ui_ontology.metrics, metricEditor),
   );
-  details.append(editor);
-  return details;
+  advanced.append(editor);
+  fragment.append(advanced, commandButton("ui.preferences.reset"));
+  return fragment;
 }
 
 function preferenceGroup(title, preferences, renderer) {
@@ -518,7 +530,7 @@ function semanticTokenEditor(token) {
     kind: "semantic_token",
     id: token.id,
     value: input.value,
-  }));
+  }), true);
 }
 
 /** @param {import("./shell-contract").UiMetric} metric */
@@ -530,17 +542,19 @@ function metricEditor(metric) {
     kind: "metric",
     id: metric.id,
     value: input.valueAsNumber,
-  }));
+  }), true);
 }
 
 /** @param {import("./shell-contract").UiBehavior} behavior */
 function behaviorEditor(behavior) {
   const value = behavior.current_value;
-  const input = preferenceInput(
-    behavior,
-    value.type === "bool" ? "checkbox" : "text",
-    value.type === "text" ? value.value : "",
-  );
+  const input = behavior.id === "timestamps.style"
+    ? timestampStyleInput(value.type === "text" ? value.value : "relative")
+    : preferenceInput(
+      behavior,
+      value.type === "bool" ? "checkbox" : "text",
+      value.type === "text" ? value.value : "",
+    );
   if (value.type === "bool") {
     input.checked = value.value;
   }
@@ -550,7 +564,18 @@ function behaviorEditor(behavior) {
     value: value.type === "bool"
       ? { type: "bool", value: input.checked }
       : { type: "text", value: input.value },
-  }));
+  }), false);
+}
+
+function timestampStyleInput(value) {
+  const select = element("select", "preference-input");
+  for (const [optionValue, label] of [["relative", "Relative time"], ["absolute", "Date and time"]]) {
+    const option = element("option", "", label);
+    option.value = optionValue;
+    option.selected = optionValue === value;
+    select.append(option);
+  }
+  return select;
 }
 
 function preferenceInput(preference, type, value) {
@@ -561,7 +586,7 @@ function preferenceInput(preference, type, value) {
   return input;
 }
 
-function preferenceForm(preference, input, request) {
+function preferenceForm(preference, input, request, showId) {
   const form = element("form", "preference-form");
   form.dataset.preferenceId = preference.id;
   form.addEventListener("submit", (event) => {
@@ -569,12 +594,12 @@ function preferenceForm(preference, input, request) {
     runCommand("ui.preference.set", request()).catch(reportError);
   });
   const label = element("label", "preference-label");
-  label.append(
-    element("span", "", preference.label),
-    element("small", "view-id", preference.id),
-    input,
-  );
-  form.append(label, submitButton("ui.preference.set"));
+  label.append(element("span", "", preference.label));
+  if (showId) label.append(element("small", "view-id", preference.id));
+  label.append(input);
+  const save = submitButton("ui.preference.set");
+  save.setAttribute("aria-label", `Save ${preference.label}`);
+  form.append(label, save);
   return form;
 }
 
@@ -1797,6 +1822,7 @@ function commandButton(command, payload) {
   const button = element("button", "command-button", commandLabel(command));
   button.type = "button";
   button.dataset.command = command;
+  button.dataset.actionKey = `command:${command}:${JSON.stringify(payload ?? null)}`;
   const definition = currentSnapshot.ui_ontology.commands.find((item) => item.id === command);
   if (definition?.shortcut) {
     button.title = `${definition.description} (${definition.shortcut})`;
@@ -1815,6 +1841,7 @@ function actionButton(label, action, title = label) {
   const button = element("button", "command-button", label);
   button.type = "button";
   button.title = title;
+  button.dataset.actionKey = `action:${label}`;
   button.disabled = uiState.busyCommand !== "";
   button.addEventListener("pointerdown", (event) => event.stopPropagation());
   button.addEventListener("click", action);
@@ -2060,6 +2087,9 @@ async function runCommand(command, payload) {
           command,
           /** @type {import("./shell-contract").SetUiPreferenceRequest} */ (payload),
         );
+        return;
+      case "ui.preferences.reset":
+        currentSnapshot = await shell.execute(command, {});
         return;
       case "workbench.layout.save":
         currentSnapshot = await shell.execute(

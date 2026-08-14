@@ -5,6 +5,13 @@ function renderKey(node) {
     : null;
 }
 
+/** @param {Node | null | undefined} node */
+function actionKey(node) {
+  return node?.nodeType === 1
+    ? /** @type {Element} */ (node).getAttribute("data-action-key")
+    : null;
+}
+
 /** @param {Node | undefined} current @param {Node} desired */
 function compatible(current, desired) {
   if (!current || current.nodeType !== desired.nodeType) return false;
@@ -14,7 +21,10 @@ function compatible(current, desired) {
   ) return false;
   const currentKey = renderKey(current);
   const desiredKey = renderKey(desired);
-  return currentKey || desiredKey ? currentKey === desiredKey : true;
+  if (currentKey || desiredKey) return currentKey === desiredKey;
+  const currentAction = actionKey(current);
+  const desiredAction = actionKey(desired);
+  return currentAction || desiredAction ? currentAction === desiredAction : true;
 }
 
 /** @param {Element} current @param {Element} desired */

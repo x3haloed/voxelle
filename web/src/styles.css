@@ -252,11 +252,6 @@ h3 {
   text-align: left;
 }
 
-.header-more-menu .customization-editor {
-  top: 0;
-  right: calc(100% + var(--panel-gap));
-}
-
 .recovery-setup-prompt {
   display: flex;
   align-items: center;
@@ -930,29 +925,18 @@ textarea {
   padding-block: 2px;
 }
 
-.customization {
-  position: relative;
-}
-
-.customization > summary {
-  cursor: pointer;
-  list-style: none;
-}
-
 .customization-editor {
-  position: absolute;
-  z-index: 10;
-  top: calc(100% + var(--panel-gap));
-  right: 0;
-  width: min(620px, calc(100vw - 2 * var(--panel-padding)));
-  max-height: 75vh;
-  overflow: auto;
   display: grid;
   gap: var(--panel-gap);
+  margin-top: var(--panel-gap);
   padding: var(--panel-padding);
   border: 1px solid var(--panel-border);
   background: var(--panel-background);
-  box-shadow: 0 12px 30px rgb(0 0 0 / 20%);
+}
+
+.settings-advanced > summary {
+  cursor: pointer;
+  list-style: none;
 }
 
 .preference-group {

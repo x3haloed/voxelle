@@ -193,7 +193,7 @@ Current command families:
   `role.revoke`, `member.ban`, `member.unban`;
 - calls: `call.join`, `call.signal`, `call.heartbeat`, `call.leave`;
 - peers: `peer.import`, `peer.diagnose`, `peer.sync`;
-- workbench/preferences: `ui.preference.set`, `workbench.layout.save`,
+- workbench/preferences: `ui.preference.set`, `ui.preferences.reset`, `workbench.layout.save`,
   `workbench.layout.reset`, `workbench.commandPalette.open`.
 
 Commands should be reachable from more than one surface over time:
@@ -303,10 +303,14 @@ Initial editing surfaces:
 - behavior settings
 - peer/display settings
 
-The command palette and layout editor now exist. Token, metric, and behavior
-values are persisted through the Rust preference authority and are reachable
-through the workbench's Customize surface. Renderer replacement remains a
-named future editing surface rather than a claimed implementation.
+The command palette and layout editor now exist. The workbench's focused
+Customize surface presents everyday behavior first, with bounded choices for
+values such as timestamp style. Advanced appearance and spacing remain
+discoverable in the same surface with their stable semantic IDs. Token, metric,
+and behavior values are persisted through the Rust preference authority, and
+`ui.preferences.reset` restores the complete customization and workbench layout
+defaults through that same authority. Renderer replacement remains a named
+future editing surface rather than a claimed implementation.
 
 ## 4. Primitive Record Shape
 

@@ -4141,6 +4141,12 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
+    pub fn reset_all_ui_preferences(&mut self) -> Result<ShellSnapshotView> {
+        self.home.reset_all_ui_preferences()?;
+        self.push_activity(ServiceActivityLevel::Info, "reset all UI customization");
+        self.snapshot()
+    }
+
     pub fn set_workbench_layout(
         &mut self,
         request: SetWorkbenchLayoutRequest,
@@ -5424,6 +5430,13 @@ fn default_commands() -> Vec<UiCommand> {
             false,
         ),
         shell_command(
+            "ui.preferences.reset",
+            "Reset All Customization",
+            "Restore appearance, spacing, behavior, and workbench layout defaults",
+            None,
+            true,
+        ),
+        shell_command(
             "workbench.layout.save",
             "Save Workbench Layout",
             "Persist view docking, order, and visibility",
@@ -5869,6 +5882,11 @@ fn validate_ui_preferences(preferences: &UiPreferences) -> Result<()> {
             .with_context(|| format!("unknown UI behavior {id}"))?;
         if !same_behavior_value_kind(&default.default_value, value) {
             anyhow::bail!("UI behavior {id} value has the wrong kind");
+        }
+        if id == "timestamps.style"
+            && !matches!(value, UiBehaviorValue::Text(style) if style == "relative" || style == "absolute")
+        {
+            anyhow::bail!("timestamps.style must be relative or absolute");
         }
     }
     if !preferences.view_placements.is_empty() {
@@ -7284,6 +7302,12 @@ mod tests {
             .set_ui_preference(SetUiPreferenceRequest::Behavior {
                 id: "timestamps.visible".to_string(),
                 value: UiBehaviorValue::Text("yes".to_string()),
+            })
+            .is_err());
+        assert!(home
+            .set_ui_preference(SetUiPreferenceRequest::Behavior {
+                id: "timestamps.style".to_string(),
+                value: UiBehaviorValue::Text("sometimes".to_string()),
             })
             .is_err());
     }

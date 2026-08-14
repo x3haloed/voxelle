@@ -311,6 +311,19 @@ inviter received and projected the accepted message. This is local
 packaged-debug evidence, not the external three-machine, Windows,
 assistive-technology, or release-artifact gate.
 
+Customization has crossed a focused native macOS gate. The packaged workbench
+opens one human settings surface from More, presents everyday behavior before
+advanced semantic-token and metric controls, and exposes contextual accessible
+names for each save action. A timestamp-style change traversed the Rust-owned
+preference command, survived a full restart, and projected back as the selected
+value. `ui.preferences.reset` then restored the complete preference and layout
+defaults through the same authority, survived another restart, and left the
+full advanced ontology reachable. A reconciler regression test also proves
+that changing a control's semantic action replaces the node carrying its old
+listener instead of pairing a new label with stale behavior. This remains
+packaged-debug macOS evidence, not an external assistive-technology or release
+artifact gate.
+
 The public Discord families have crossed their operational gate. Space
 governance now carries channel definitions, profiles, roles, permissions,
 bans, and invites. Signed room events carry posts, edits, redaction tombstones,

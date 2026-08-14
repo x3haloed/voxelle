@@ -128,6 +128,7 @@ impl ShellState {
             "peer.diagnose" => host.diagnose_peer(parse_request(payload)?).await,
             "peer.sync" => host.sync_peer(parse_request(payload)?).await,
             "ui.preference.set" => host.set_ui_preference(parse_request(payload)?),
+            "ui.preferences.reset" => host.reset_all_ui_preferences(),
             "workbench.layout.save" => host.set_workbench_layout(parse_request(payload)?),
             "workbench.layout.reset" => host.reset_workbench_layout(),
             "product.update.install" => host.install_product_update(parse_request(payload)?),
@@ -1212,6 +1213,11 @@ mod tests {
             .await
             .expect("set preference");
         assert_eq!(metric_value(&updated, "sidebar.width"), 444.0);
+        let reset = shell
+            .execute_serialized_command("ui.preferences.reset", serde_json::json!({}))
+            .await
+            .expect("reset customization");
+        assert_eq!(metric_value(&reset, "sidebar.width"), 360.0);
 
         let reopened = ShellState::new(dir.path().join("home"));
         assert_eq!(
@@ -1222,7 +1228,7 @@ mod tests {
                     .expect("reopened snapshot"),
                 "sidebar.width"
             ),
-            444.0
+            360.0
         );
         assert_eq!(
             shell

@@ -153,3 +153,21 @@ test("a controlled focused input can accept an authoritative cleared value", () 
   assert.equal(input.value, "");
   assert.equal(document.activeElement, input);
 });
+
+test("a control with a new semantic action replaces the node carrying the old listener", () => {
+  const document = { activeElement: null };
+  const root = element(document, "main", "root");
+  const oldButton = element(document, "button", null, text(document, "Customize"));
+  oldButton.setAttribute("data-action-key", "action:Show Command Palette");
+  root.append(oldButton);
+
+  const desired = element(document, "main", "desired-root");
+  const customizeButton = element(document, "button", null, text(document, "Customize"));
+  customizeButton.setAttribute("data-action-key", "action:Customize");
+  desired.append(customizeButton);
+
+  reconcileChildren(root, desired);
+
+  assert.equal(root.childNodes[0], customizeButton);
+  assert.notEqual(root.childNodes[0], oldButton);
+});
