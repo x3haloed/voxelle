@@ -238,6 +238,10 @@ The tag resolves to commit `5b4e38c90464f6612a302ca3dca08d755da8689d`.
   hints, takes A offline, and joins C through B with retained history visible.
 
 This is a bounded macOS preview claim, not the complete cross-platform beta
-gate. A Windows installer built and exercised on Windows, the existing
-multi-machine field test, and protected offline relocation of both signing
-secrets remain required before this contract may claim full beta readiness.
+gate. An x86-64 NSIS installer has subsequently been cross-compiled from macOS;
+its PE headers identify a Windows GUI application and the installer is suitable
+for inclusion in a signed multi-platform release. This is structural packaging
+evidence, not native Windows execution evidence. Installation and first launch
+on Windows, the existing multi-machine field test, and protected offline
+relocation of both signing secrets remain required before this contract may
+claim full beta readiness.

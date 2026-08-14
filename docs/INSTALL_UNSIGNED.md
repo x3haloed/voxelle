@@ -63,6 +63,11 @@ to weaken system-wide security.
 
 - macOS: `./scripts/package-macos.sh`
 - Windows PowerShell: `.\scripts\package-windows.ps1`
+- Windows NSIS cross-build from macOS/Linux (experimental; native Windows
+  execution remains required): `scripts/package-windows-cross.sh`
+- Complete beta artifact assembly (requires both native installers and creates
+  one signed manifest):
+  `scripts/assemble-beta-release.sh RELEASE_ID SEQUENCE OUTPUT_DIR MACOS_DMG WINDOWS_EXE`
 - Product generation:
   `scripts/prepare-product-update.sh RELEASE_ID SEQUENCE OUTPUT_DIR`
 - Signed release manifest:

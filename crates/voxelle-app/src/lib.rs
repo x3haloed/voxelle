@@ -6179,6 +6179,7 @@ fn ensure_private_dir(path: &Path) -> Result<()> {
 }
 
 fn ensure_real_dir(path: &Path) -> Result<()> {
+    #[cfg(unix)]
     let existed = path.exists();
     fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
     let metadata =
