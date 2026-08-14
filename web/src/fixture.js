@@ -134,6 +134,11 @@ export const fixtureSnapshot = {
     source: "builtin",
     previous_available: false,
     update_authentication_available: false,
+    available_release_id: null,
+    available_sequence: null,
+    staged_release_id: null,
+    staged_sequence: null,
+    phase: "unavailable",
     notice: "Preview data cannot install product updates.",
   },
   service_activity: [

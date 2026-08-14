@@ -46,6 +46,51 @@ impl ShellState {
         command_id: &str,
         payload: serde_json::Value,
     ) -> ShellResult<ShellSnapshotView> {
+        if command_id == "product.update.check" {
+            let manager = {
+                let host = self.host.lock().await;
+                host.update_transport_context().0
+            };
+            return match manager.discover_github_release().await {
+                Ok(available) => self
+                    .host
+                    .lock()
+                    .await
+                    .record_available_product_update(available)
+                    .map_err(ShellError::from),
+                Err(error) => {
+                    self.host
+                        .lock()
+                        .await
+                        .record_product_update_failure(&format!("{error:#}"));
+                    Err(ShellError::from(error))
+                }
+            };
+        }
+        if command_id == "product.update.stageAvailable" {
+            let (manager, available) = {
+                let host = self.host.lock().await;
+                (
+                    host.update_transport_context().0,
+                    host.available_product_update().map_err(ShellError::from)?,
+                )
+            };
+            return match manager.download_github_update(available).await {
+                Ok(downloaded) => self
+                    .host
+                    .lock()
+                    .await
+                    .stage_downloaded_product_update(downloaded)
+                    .map_err(ShellError::from),
+                Err(error) => {
+                    self.host
+                        .lock()
+                        .await
+                        .record_product_update_failure(&format!("{error:#}"));
+                    Err(ShellError::from(error))
+                }
+            };
+        }
         let mut host = self.host.lock().await;
         let result = match command_id {
             "shell.refresh" => host.refresh_and_sync().await,
@@ -84,6 +129,8 @@ impl ShellState {
             "workbench.layout.save" => host.set_workbench_layout(parse_request(payload)?),
             "workbench.layout.reset" => host.reset_workbench_layout(),
             "product.update.install" => host.install_product_update(parse_request(payload)?),
+            "product.update.activateStaged" => host.activate_staged_product_update(),
+            "product.update.discardStaged" => host.discard_staged_product_update(),
             "product.update.rollback" => host.rollback_product_update(),
             _ => {
                 return Err(ShellError {

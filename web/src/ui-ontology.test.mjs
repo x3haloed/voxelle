@@ -83,3 +83,17 @@ test("activity limit controls the visible newest entries", () => {
 
   assert.deepEqual(visibleActivity(activities, ontology).map((item) => item.id), [3, 2]);
 });
+
+test("live update lifecycle remains one semantic command vocabulary", () => {
+  const commands = new Set(defaultUiOntology.commands.map((command) => command.id));
+  assert.deepEqual(
+    [
+      "product.update.check",
+      "product.update.stageAvailable",
+      "product.update.activateStaged",
+      "product.update.discardStaged",
+      "product.update.rollback",
+    ].filter((command) => !commands.has(command)),
+    [],
+  );
+});

@@ -84,3 +84,11 @@ protected offline backup. Losing it prevents future releases from
 authenticating to installed beta kernels; disclosing it permits malicious
 updates until an explicit trust-root rotation ships through an already trusted
 path.
+
+Inside the app, **Check GitHub Releases** downloads only the bounded latest
+manifest. Voxelle shows an update as available only after authenticating that
+manifest. **Download and Stage Update** then verifies the exact signed artifact
+without changing the running product. **Activate Staged Update** is a separate
+explicit action; **Discard Staged Update** removes it without changing the
+active generation. Network, HTTP, redirect, checksum, signer, compatibility,
+and semantic-validation failures remain visible in the Product Update view.

@@ -27,8 +27,8 @@ use voxelle_net::{
 use voxelle_store::Store;
 use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
 use voxelle_update::{
-    ActiveSource, GenerationPointerV1, TrustedReleaseKey, TrustedReleaseKeysV1, UpdateManager,
-    VerifiedPackage,
+    ActiveSource, AvailableProductUpdate, DownloadedProductUpdate, GenerationPointerV1,
+    TrustedReleaseKey, TrustedReleaseKeysV1, UpdateManager, VerifiedPackage,
 };
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
@@ -430,6 +430,11 @@ pub struct ProductGenerationStatusView {
     pub source: String,
     pub previous_available: bool,
     pub update_authentication_available: bool,
+    pub available_release_id: Option<String>,
+    pub available_sequence: Option<u64>,
+    pub staged_release_id: Option<String>,
+    pub staged_sequence: Option<u64>,
+    pub phase: String,
     pub notice: Option<String>,
 }
 
@@ -701,6 +706,8 @@ pub struct VoxelleCommandHost {
     product_generation: Option<ActiveProductGeneration>,
     product_generation_notice: Option<String>,
     trusted_update_key_count: usize,
+    available_product_update: Option<AvailableProductUpdate>,
+    update_phase: String,
 }
 
 #[derive(Debug, Clone)]
@@ -3381,8 +3388,28 @@ impl VoxelleCommandHost {
             trusted_update_keys,
         )
         .expect("valid product update manager configuration");
-        let (product_generation, product_generation_notice) =
+        let (product_generation, mut product_generation_notice) =
             load_product_generation(&update_manager);
+        let update_phase = match update_manager.load_staged() {
+            Ok(Some(staged)) => match parse_product_generation(&staged)
+                .and_then(|generation| validate_product_generation(&generation))
+            {
+                Ok(()) => "staged".to_string(),
+                Err(error) => {
+                    product_generation_notice = Some(format!(
+                        "Staged product generation failed validation: {error:#}. Discard it before continuing."
+                    ));
+                    "failed".to_string()
+                }
+            },
+            Ok(None) => "idle".to_string(),
+            Err(error) => {
+                product_generation_notice = Some(format!(
+                    "Staged product generation could not be verified: {error:#}. Discard it before continuing."
+                ));
+                "failed".to_string()
+            }
+        };
         Self {
             home: VoxelleHome::new(root),
             service: None,
@@ -3396,7 +3423,124 @@ impl VoxelleCommandHost {
             product_generation,
             product_generation_notice,
             trusted_update_key_count,
+            available_product_update: None,
+            update_phase,
         }
+    }
+
+    pub fn update_transport_context(&self) -> (UpdateManager, u64) {
+        (
+            self.update_manager.clone(),
+            self.product_generation
+                .as_ref()
+                .map_or(0, |generation| generation.pointer.sequence),
+        )
+    }
+
+    pub fn available_product_update(&self) -> Result<AvailableProductUpdate> {
+        self.available_product_update
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("check GitHub Releases before staging an update"))
+    }
+
+    pub fn record_available_product_update(
+        &mut self,
+        available: AvailableProductUpdate,
+    ) -> Result<ShellSnapshotView> {
+        let active_sequence = self
+            .product_generation
+            .as_ref()
+            .map_or(0, |generation| generation.pointer.sequence);
+        if available.manifest.channel != "beta" {
+            return Err(anyhow::anyhow!(
+                "latest signed release is on unsupported channel {}",
+                available.manifest.channel
+            ));
+        }
+        if available.manifest.sequence <= active_sequence {
+            self.available_product_update = None;
+            self.update_phase = "current".to_string();
+            self.product_generation_notice = Some(format!(
+                "This installation is current at sequence {active_sequence}."
+            ));
+        } else {
+            self.update_phase = "available".to_string();
+            self.product_generation_notice = Some(format!(
+                "Signed generation {} (sequence {}) is available from GitHub Releases.",
+                available.manifest.release_id, available.manifest.sequence
+            ));
+            self.available_product_update = Some(available);
+        }
+        (self.snapshot_invalidated)();
+        self.snapshot()
+    }
+
+    pub fn stage_downloaded_product_update(
+        &mut self,
+        downloaded: DownloadedProductUpdate,
+    ) -> Result<ShellSnapshotView> {
+        let verified = self
+            .update_manager
+            .verify_bytes(&downloaded.package_bytes)?;
+        let generation = parse_product_generation(&verified)?;
+        validate_product_generation(&generation)?;
+        let pointer = self.update_manager.stage_candidate(&verified)?;
+        self.available_product_update = Some(downloaded.available);
+        self.update_phase = "staged".to_string();
+        self.product_generation_notice = Some(format!(
+            "Verified and staged generation {} (sequence {}). Activation is still explicit.",
+            pointer.release_id, pointer.sequence
+        ));
+        (self.snapshot_invalidated)();
+        self.snapshot()
+    }
+
+    pub fn activate_staged_product_update(&mut self) -> Result<ShellSnapshotView> {
+        let verified = self
+            .update_manager
+            .load_staged()?
+            .ok_or_else(|| anyhow::anyhow!("no verified product generation is staged"))?;
+        let generation = parse_product_generation(&verified)?;
+        validate_product_generation(&generation)?;
+        let pointer = self.update_manager.activate_staged()?;
+        self.product_generation = Some(ActiveProductGeneration {
+            pointer: pointer.clone(),
+            generation,
+            source: ActiveSource::Current,
+        });
+        self.available_product_update = None;
+        self.update_phase = "active".to_string();
+        self.product_generation_notice = Some(format!(
+            "Activated staged product generation {}.",
+            pointer.release_id
+        ));
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("activated staged product generation {}", pointer.release_id),
+        );
+        (self.snapshot_invalidated)();
+        self.snapshot()
+    }
+
+    pub fn discard_staged_product_update(&mut self) -> Result<ShellSnapshotView> {
+        let discarded = self.update_manager.discard_staged()?;
+        self.update_phase = "idle".to_string();
+        self.product_generation_notice = Some(match discarded {
+            Some(pointer) => format!("Discarded staged generation {}.", pointer.release_id),
+            None => "No staged product generation was present.".to_string(),
+        });
+        (self.snapshot_invalidated)();
+        self.snapshot()
+    }
+
+    pub fn record_product_update_failure(&mut self, message: &str) {
+        self.update_phase = "failed".to_string();
+        self.product_generation_notice = Some(format!("Product update failed: {message}"));
+        self.push_activity(
+            ServiceActivityLevel::Error,
+            format!("product update failed: {message}"),
+        );
+        (self.snapshot_invalidated)();
     }
 
     pub fn install_product_update(
@@ -3415,6 +3559,7 @@ impl VoxelleCommandHost {
             source: ActiveSource::Current,
         });
         self.product_generation_notice = None;
+        self.update_phase = "active".to_string();
         self.push_activity(
             ServiceActivityLevel::Info,
             format!(
@@ -3944,6 +4089,7 @@ impl VoxelleCommandHost {
             ),
             None => ("builtin-recovery".to_string(), 0, "builtin".to_string()),
         };
+        let staged = self.update_manager.staged_pointer().ok().flatten();
         Ok(ProductGenerationStatusView {
             kernel_version: env!("CARGO_PKG_VERSION").to_string(),
             active_release_id,
@@ -3951,6 +4097,17 @@ impl VoxelleCommandHost {
             source,
             previous_available,
             update_authentication_available: self.trusted_update_key_count > 0,
+            available_release_id: self
+                .available_product_update
+                .as_ref()
+                .map(|available| available.manifest.release_id.clone()),
+            available_sequence: self
+                .available_product_update
+                .as_ref()
+                .map(|available| available.manifest.sequence),
+            staged_release_id: staged.as_ref().map(|pointer| pointer.release_id.clone()),
+            staged_sequence: staged.map(|pointer| pointer.sequence),
+            phase: self.update_phase.clone(),
             notice: self.product_generation_notice.clone(),
         })
     }
@@ -5023,6 +5180,34 @@ fn default_commands() -> Vec<UiCommand> {
             "workbench.layout.reset",
             "Reset Workbench Layout",
             "Restore every view to its default dock",
+            None,
+            true,
+        ),
+        shell_command(
+            "product.update.check",
+            "Check GitHub Releases",
+            "Discover the latest signed beta manifest without trusting GitHub as authority",
+            None,
+            true,
+        ),
+        shell_command(
+            "product.update.stageAvailable",
+            "Download and Stage Update",
+            "Download, authenticate, validate, and stage the available generation",
+            None,
+            true,
+        ),
+        shell_command(
+            "product.update.activateStaged",
+            "Activate Staged Update",
+            "Atomically activate the verified staged product generation",
+            None,
+            true,
+        ),
+        shell_command(
+            "product.update.discardStaged",
+            "Discard Staged Update",
+            "Remove the staged generation without changing the active product",
             None,
             true,
         ),

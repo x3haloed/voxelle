@@ -96,21 +96,31 @@ command/view identity inventory, and one atomically selected signed generation.
 
 The kernel owns this sequence:
 
-1. bound package bytes;
-2. parse the versioned envelope;
-3. verify the signer against embedded trust roots;
-4. verify the domain-separated canonical signature and content hash;
-5. reject incompatible kernel versions and non-monotonic release sequences;
-6. stage the exact verified bytes by content hash;
-7. parse and semantically validate the generation without activating it;
-8. atomically replace the active pointer while retaining the previous pointer;
-9. publish one snapshot invalidation after activation;
-10. permit explicit rollback to the still-verified previous package;
-11. on restart, re-verify the selected package before use and fall back to the
+1. fetch only the fixed GitHub `releases/latest/download/VOXELLE-RELEASE.json`
+   transport location with bounded redirects, response time, and bytes;
+2. parse and authenticate that manifest against the installed release roots;
+3. select exactly one signed `product-update` artifact for target `any` and
+   fetch its signed filename from the same fixed release location;
+4. require the downloaded byte length and SHA-256 to equal the authenticated
+   manifest before parsing the update package;
+5. bound package bytes and parse the versioned envelope;
+6. verify the package signer, domain-separated canonical signature, and exact
+   release ID, channel, and sequence agreement with the manifest;
+7. reject incompatible kernel versions and non-monotonic release sequences;
+8. stage the exact verified bytes by content hash and persist a staged pointer;
+9. parse and semantically validate the generation without activating it;
+10. require a separate explicit activation command;
+11. atomically replace the active pointer while retaining the previous pointer;
+12. publish one snapshot invalidation after activation;
+13. permit explicit rollback to the still-verified previous package;
+14. on restart, re-verify active and staged packages before use and fall back to the
     previous verified generation or built-in recovery generation if necessary.
 
 Only the kernel writes active/previous pointers. Generation payloads never
-select themselves.
+select themselves. The package store retains only the generations referenced by
+active, previous, and staged pointers; unreferenced content-addressed packages
+are removed. Discovery, download, staging, activation, failure, discard, and
+rollback are distinct observable states.
 
 ## Initial generation boundary
 
@@ -172,4 +182,3 @@ signed release manifest, local verification from a clean download directory,
 publication to a GitHub Release, readback of the published assets, and the
 existing field-test evidence. Platform claims remain bounded where the actual
 platform artifact has not been executed.
-

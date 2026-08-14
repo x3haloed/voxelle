@@ -554,10 +554,25 @@ function productUpdateView(snapshot) {
     ["Generation", generation.active_release_id],
     ["Sequence", String(generation.active_sequence)],
     ["Source", generation.source],
+    ["Update state", generation.phase],
+    ["Available", generation.available_release_id
+      ? `${generation.available_release_id} · sequence ${generation.available_sequence}`
+      : "none discovered"],
+    ["Staged", generation.staged_release_id
+      ? `${generation.staged_release_id} · sequence ${generation.staged_sequence}`
+      : "none"],
     ["Signed updates", generation.update_authentication_available ? "available" : "no trusted release root embedded"],
   ]));
   if (generation.notice) {
     fragment.append(element("p", "notice", generation.notice));
+  }
+  fragment.append(commandButton("product.update.check"));
+  if (generation.available_release_id && generation.phase === "available") {
+    fragment.append(commandButton("product.update.stageAvailable"));
+  }
+  if (generation.staged_release_id) {
+    fragment.append(commandButton("product.update.activateStaged"));
+    fragment.append(commandButton("product.update.discardStaged"));
   }
 
   const form = element("form", "field-stack");
@@ -1551,6 +1566,10 @@ async function runCommand(command, payload) {
         });
         uiState.productUpdateDraft = "";
         return;
+      case "product.update.check":
+      case "product.update.stageAvailable":
+      case "product.update.activateStaged":
+      case "product.update.discardStaged":
       case "product.update.rollback":
         currentSnapshot = await shell.execute(command, {});
         return;

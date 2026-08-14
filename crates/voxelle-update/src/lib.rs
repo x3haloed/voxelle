@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use futures_util::StreamExt;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +18,9 @@ pub const RELEASE_MANIFEST_SIGNATURE_DOMAIN_V1: &[u8] = b"voxelle/release-manife
 pub const MAX_UPDATE_PACKAGE_BYTES: usize = 1024 * 1024;
 pub const MAX_RELEASE_ID_BYTES: usize = 128;
 pub const MAX_CHANNEL_BYTES: usize = 32;
+pub const GITHUB_RELEASE_BASE: &str =
+    "https://github.com/x3haloed/voxelle/releases/latest/download";
+pub const RELEASE_MANIFEST_NAME: &str = "VOXELLE-RELEASE.json";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UpdatePackageV1 {
@@ -60,6 +64,18 @@ pub struct ReleaseManifestV1 {
     pub artifacts: Vec<ReleaseArtifactV1>,
     pub signer_key_id: String,
     pub signature_b64: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AvailableProductUpdate {
+    pub manifest: ReleaseManifestV1,
+    pub artifact: ReleaseArtifactV1,
+}
+
+#[derive(Debug, Clone)]
+pub struct DownloadedProductUpdate {
+    pub available: AvailableProductUpdate,
+    pub package_bytes: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -196,6 +212,71 @@ impl UpdateManager {
         Ok(manifest)
     }
 
+    pub async fn discover_github_release(&self) -> Result<AvailableProductUpdate> {
+        let raw = fetch_bounded(
+            &format!("{GITHUB_RELEASE_BASE}/{RELEASE_MANIFEST_NAME}"),
+            MAX_UPDATE_PACKAGE_BYTES,
+        )
+        .await
+        .context("download latest GitHub release manifest")?;
+        let manifest = self.verify_release_manifest_bytes(&raw)?;
+        let artifact = manifest
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == "product-update" && artifact.target == "any")
+            .cloned()
+            .ok_or_else(|| {
+                anyhow!("signed release has no product-update artifact for any target")
+            })?;
+        if artifact.bytes as usize > MAX_UPDATE_PACKAGE_BYTES {
+            return Err(anyhow!(
+                "signed product update exceeds the kernel size limit"
+            ));
+        }
+        Ok(AvailableProductUpdate { manifest, artifact })
+    }
+
+    pub async fn download_github_update(
+        &self,
+        available: AvailableProductUpdate,
+    ) -> Result<DownloadedProductUpdate> {
+        let package_bytes = fetch_bounded(
+            &format!("{GITHUB_RELEASE_BASE}/{}", available.artifact.name),
+            MAX_UPDATE_PACKAGE_BYTES,
+        )
+        .await
+        .context("download signed product update")?;
+        self.verify_downloaded_update(available, package_bytes)
+    }
+
+    pub fn verify_downloaded_update(
+        &self,
+        available: AvailableProductUpdate,
+        package_bytes: Vec<u8>,
+    ) -> Result<DownloadedProductUpdate> {
+        if package_bytes.len() as u64 != available.artifact.bytes
+            || hex_sha256(&package_bytes) != available.artifact.sha256
+        {
+            return Err(anyhow!(
+                "downloaded product update does not match the signed release manifest"
+            ));
+        }
+        let verified = self.verify_bytes(&package_bytes)?;
+        let package = verified.package();
+        if package.release_id != available.manifest.release_id
+            || package.sequence != available.manifest.sequence
+            || package.channel != available.manifest.channel
+        {
+            return Err(anyhow!(
+                "product update identity does not match the signed release manifest"
+            ));
+        }
+        Ok(DownloadedProductUpdate {
+            available,
+            package_bytes,
+        })
+    }
+
     pub fn stage(&self, package: &VerifiedPackage) -> Result<PathBuf> {
         let package_dir = self.root.join("packages");
         fs::create_dir_all(&package_dir).context("create update package directory")?;
@@ -209,6 +290,39 @@ impl UpdateManager {
         }
         atomic_write(&path, &package.raw).context("stage update package")?;
         Ok(path)
+    }
+
+    pub fn stage_candidate(&self, package: &VerifiedPackage) -> Result<GenerationPointerV1> {
+        self.stage(package)?;
+        let pointer = package.pointer();
+        write_json_atomic(&self.root.join("staged.json"), &pointer)
+            .context("persist staged generation pointer")?;
+        self.prune_packages()?;
+        Ok(pointer)
+    }
+
+    pub fn load_staged(&self) -> Result<Option<VerifiedPackage>> {
+        let Some(pointer) = self.read_pointer("staged.json")? else {
+            return Ok(None);
+        };
+        Ok(Some(self.load_pointer(&pointer)?))
+    }
+
+    pub fn activate_staged(&self) -> Result<GenerationPointerV1> {
+        let package = self
+            .load_staged()?
+            .ok_or_else(|| anyhow!("no verified product generation is staged"))?;
+        let pointer = self.activate(&package)?;
+        remove_file_if_exists(&self.root.join("staged.json"))?;
+        self.prune_packages()?;
+        Ok(pointer)
+    }
+
+    pub fn discard_staged(&self) -> Result<Option<GenerationPointerV1>> {
+        let pointer = self.read_pointer("staged.json").ok().flatten();
+        remove_file_if_exists(&self.root.join("staged.json"))?;
+        self.prune_packages()?;
+        Ok(pointer)
     }
 
     pub fn activate(&self, package: &VerifiedPackage) -> Result<GenerationPointerV1> {
@@ -227,6 +341,7 @@ impl UpdateManager {
         let pointer = package.pointer();
         write_json_atomic(&self.root.join("active.json"), &pointer)
             .context("activate update pointer")?;
+        self.prune_packages()?;
         Ok(pointer)
     }
 
@@ -295,6 +410,43 @@ impl UpdateManager {
         self.read_pointer("previous.json")
     }
 
+    pub fn staged_pointer(&self) -> Result<Option<GenerationPointerV1>> {
+        self.read_pointer("staged.json")
+    }
+
+    pub fn prune_packages(&self) -> Result<usize> {
+        let package_dir = self.root.join("packages");
+        if !package_dir.exists() {
+            return Ok(0);
+        }
+        let mut retained = std::collections::BTreeSet::new();
+        for name in ["active.json", "previous.json", "staged.json"] {
+            if let Some(pointer) = self.read_pointer(name)? {
+                retained.insert(format!("{}.voxupdate", pointer.package_sha256));
+            }
+        }
+        let mut removed = 0;
+        for entry in fs::read_dir(&package_dir).context("read update package directory")? {
+            let entry = entry.context("read update package entry")?;
+            if !entry
+                .file_type()
+                .context("inspect update package entry")?
+                .is_file()
+            {
+                continue;
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if name.ends_with(".voxupdate") && !retained.contains(name) {
+                fs::remove_file(entry.path()).context("remove unreferenced update package")?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     fn read_pointer(&self, name: &str) -> Result<Option<GenerationPointerV1>> {
         let path = self.root.join(name);
         let bytes = match fs::read(&path) {
@@ -328,6 +480,49 @@ impl UpdateManager {
             ));
         }
         Ok(package)
+    }
+}
+
+async fn fetch_bounded(url: &str, max_bytes: usize) -> Result<Vec<u8>> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(std::time::Duration::from_secs(30))
+        .user_agent("Voxelle-Update/0.1")
+        .build()
+        .context("build release transport client")?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .context("request release artifact")?
+        .error_for_status()
+        .context("release artifact HTTP status")?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(anyhow!("release artifact exceeds the download size limit"));
+    }
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("read release artifact body")?;
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(anyhow!("release artifact exceeds the download size limit"));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    if bytes.is_empty() {
+        return Err(anyhow!("release artifact is empty"));
+    }
+    Ok(bytes)
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("remove {}", path.display())),
     }
 }
 
@@ -589,6 +784,93 @@ mod tests {
             .expect_err("tampered artifact metadata")
             .to_string()
             .contains("signature"));
+    }
+
+    #[test]
+    fn staged_generation_survives_restart_and_storage_is_bounded_to_live_pointers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = Keypair::generate().expect("key");
+        let initial = manager(dir.path(), &key);
+        let one = initial
+            .verify_bytes(&signed_package(&key, 1, serde_json::json!({"name": "one"})))
+            .expect("verify one");
+        initial.activate(&one).expect("activate one");
+        let two = initial
+            .verify_bytes(&signed_package(&key, 2, serde_json::json!({"name": "two"})))
+            .expect("verify two");
+        initial.stage_candidate(&two).expect("stage two");
+
+        let reopened = manager(dir.path(), &key);
+        assert_eq!(
+            reopened
+                .load_staged()
+                .expect("load staged")
+                .expect("staged")
+                .package()
+                .sequence,
+            2
+        );
+        reopened.activate_staged().expect("activate staged");
+
+        let three = reopened
+            .verify_bytes(&signed_package(
+                &key,
+                3,
+                serde_json::json!({"name": "three"}),
+            ))
+            .expect("verify three");
+        reopened.stage(&three).expect("orphan three");
+        assert_eq!(reopened.prune_packages().expect("prune"), 1);
+        let package_count = fs::read_dir(reopened.root().join("packages"))
+            .expect("packages")
+            .count();
+        assert_eq!(package_count, 2, "active and rollback packages remain");
+    }
+
+    #[test]
+    fn downloaded_update_must_match_manifest_and_package_identity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = Keypair::generate().expect("key");
+        let manager = manager(dir.path(), &key);
+        let raw = signed_package(&key, 7, serde_json::json!({"name": "seven"}));
+        let artifact = ReleaseArtifactV1 {
+            name: "beta-7.voxupdate".to_string(),
+            sha256: hex_sha256(&raw),
+            bytes: raw.len() as u64,
+            kind: "product-update".to_string(),
+            target: "any".to_string(),
+        };
+        let available = AvailableProductUpdate {
+            manifest: ReleaseManifestV1 {
+                format: RELEASE_MANIFEST_FORMAT_V1.to_string(),
+                release_id: "beta-7".to_string(),
+                sequence: 7,
+                channel: "beta".to_string(),
+                artifacts: vec![artifact.clone()],
+                signer_key_id: key.id.clone(),
+                signature_b64: "already verified upstream".to_string(),
+            },
+            artifact,
+        };
+        manager
+            .verify_downloaded_update(available.clone(), raw.clone())
+            .expect("matching update");
+
+        let mut wrong_hash = available.clone();
+        wrong_hash.artifact.sha256 = "0".repeat(64);
+        assert!(manager
+            .verify_downloaded_update(wrong_hash, raw.clone())
+            .expect_err("hash mismatch")
+            .to_string()
+            .contains("manifest"));
+
+        let mut wrong_identity = available;
+        wrong_identity.manifest.sequence = 8;
+        assert!(manager
+            .verify_downloaded_update(wrong_identity, raw)
+            .expect_err("identity mismatch")
+            .to_string()
+            .contains("identity"));
     }
 
     #[test]
