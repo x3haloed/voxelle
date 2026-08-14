@@ -747,6 +747,39 @@ textarea {
   margin-top: 18px;
 }
 
+.choice-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 0;
+  border: 0;
+}
+
+.choice-list legend {
+  padding: 0;
+  font-weight: 700;
+}
+
+.choice-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.choice-checkbox input {
+  width: auto;
+  margin-top: 0.2em;
+}
+
+.status-badge.danger {
+  color: var(--activity-error, #b42318);
+  font-weight: 700;
+}
+
+.member-actions {
+  margin-top: 8px;
+}
+
 .definition-grid {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);

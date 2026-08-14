@@ -14,7 +14,7 @@ export type ChannelView = { room_id: string, name: string, topic: string, visibi
 
 export type RoleView = { role_id: string, name: string, permissions: Array<string>, member_count: number, };
 
-export type ProfileView = { peer_id: string, display_name: string, about: string, };
+export type ProfileView = { peer_id: string, display_name: string, about: string, banned: boolean, role_ids: Array<string>, };
 
 export type SearchResultView = { room_id: string, message: MessageView, };
 

@@ -260,6 +260,8 @@ pub struct ProfileView {
     pub peer_id: String,
     pub display_name: String,
     pub about: String,
+    pub banned: bool,
+    pub role_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1947,16 +1949,31 @@ impl VoxelleHome {
         let store = self.open_store()?;
         let governance = store.room_events(&config.space.governance_room_id)?;
         let state = derive_governance_state(&governance, &config.room_context(), now_ms());
-        let mut profiles: BTreeMap<String, ProfileView> = state
+        let principals: BTreeSet<String> = state
             .members
             .iter()
+            .chain(state.banned.iter())
+            .cloned()
+            .collect();
+        let mut profiles: BTreeMap<String, ProfileView> = principals
+            .iter()
             .map(|peer_id| {
+                let mut role_ids: Vec<String> = state
+                    .member_roles
+                    .get(peer_id)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .collect();
+                role_ids.sort();
                 (
                     peer_id.clone(),
                     ProfileView {
                         peer_id: peer_id.clone(),
                         display_name: short_peer_label(peer_id),
                         about: String::new(),
+                        banned: state.banned.contains(peer_id),
+                        role_ids,
                     },
                 )
             })
@@ -1969,7 +1986,7 @@ impl VoxelleHome {
                     .into_iter()
                     .filter(|event| {
                         event.kind == "PROFILE_UPDATE"
-                            && state.members.contains(&event.author_peer_id)
+                            && principals.contains(&event.author_peer_id)
                     }),
             );
         }
@@ -1979,24 +1996,20 @@ impl VoxelleHome {
                 .then(left.event_id.cmp(&right.event_id))
         });
         for event in updates {
-            profiles.insert(
-                event.author_peer_id.clone(),
-                ProfileView {
-                    peer_id: event.author_peer_id,
-                    display_name: event
-                        .body
-                        .get("display_name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("Member")
-                        .to_string(),
-                    about: event
-                        .body
-                        .get("about")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                },
-            );
+            if let Some(profile) = profiles.get_mut(&event.author_peer_id) {
+                profile.display_name = event
+                    .body
+                    .get("display_name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Member")
+                    .to_string();
+                profile.about = event
+                    .body
+                    .get("about")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+            }
         }
         Ok(profiles.into_values().collect())
     }

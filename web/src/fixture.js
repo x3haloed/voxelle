@@ -52,17 +52,26 @@ export const fixtureSnapshot = {
       },
     ],
     channels: [{ room_id: "room:general", name: "general", topic: "", visibility: "public", selected: true, unread_count: 0 }],
-    roles: [],
+    roles: [{
+      role_id: "role:moderator-preview",
+      name: "Moderator",
+      permissions: ["message:moderate", "message:pin"],
+      member_count: 1,
+    }],
     profiles: [
       {
         peer_id: "ed25519:alice000000000000000000000000000000000000000000000000",
         display_name: "Alice",
         about: "Building a private place for friends.",
+        banned: false,
+        role_ids: ["role:moderator-preview"],
       },
       {
         peer_id: "ed25519:peer5b2a91c840e200000000000000000000000000000000000000",
         display_name: "Bob",
         about: "Here for the weekend plans.",
+        banned: false,
+        role_ids: [],
       },
     ],
     notifications: [

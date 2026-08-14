@@ -331,7 +331,13 @@ reactions, mentions, threads, pins, and content-addressed attachments. SQLite
 retains the accepted facts; multi-room QUIC anti-entropy forwards them through
 ordinary peers; the app projects unread cursors, mention notifications, and
 local full-text search. A serialized two-home test exercises those commands
-through the same host used by the native shell.
+through the same host used by the native shell. That serialized path now also
+projects admitted role assignments and ban state, proves that a banned member
+loses current membership and role assignment, and proves that unbanning only
+permits a future invited rejoin. The packaged macOS People surface presents
+human permission names and member/role actions while keeping stable IDs in
+command payloads; private-channel creation selects current named members and
+explains the self-only case without requiring principal-ID entry.
 
 Private channels have crossed their first confidentiality and recovery gate.
 Each member publishes a signed X25519 encryption key, private channel creation

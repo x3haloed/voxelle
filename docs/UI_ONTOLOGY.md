@@ -102,6 +102,14 @@ advanced details for diagnosis and intervention. Those disclosures project the
 same Rust-owned state and invoke the same semantic commands; they are not a
 parallel authority path.
 
+Governance follows the same rule. Role creation exposes named, bounded
+permission choices; role assignment, ban, and unban controls lead with member
+and role names while stable principal and role IDs remain command payloads.
+The UI projects assignments and bans from the admitted governance state rather
+than reconstructing authorization. Removing a ban is described precisely: it
+permits a principal to use a valid invite again, but does not itself restore
+membership.
+
 The initialized default is a conversation workspace rather than a dashboard of
 all registered views. Channels, the selected conversation, its composer, and
 direct media remain in the workbench. Focused header surfaces expose people and

@@ -1099,7 +1099,7 @@ mod tests {
                 "role.grant",
                 serde_json::json!({
                     "peer_id": bob_peer_id,
-                    "role_id": role_id
+                    "role_id": role_id.clone()
                 }),
             )
             .await
@@ -1139,6 +1139,48 @@ mod tests {
             .profiles
             .iter()
             .any(|profile| profile.display_name == "Bob Builder"));
+        let bob_profile = final_home
+            .profiles
+            .iter()
+            .find(|profile| profile.display_name == "Bob Builder")
+            .expect("Bob profile");
+        assert!(!bob_profile.banned);
+        assert!(bob_profile.role_ids.contains(&role_id));
+
+        let banned = alice
+            .execute_serialized_command(
+                "member.ban",
+                serde_json::json!({
+                    "peer_id": bob_peer_id,
+                    "reason": "serialized governance test"
+                }),
+            )
+            .await
+            .expect("ban member");
+        let banned_home = banned.home.expect("home");
+        let banned_bob = banned_home
+            .profiles
+            .iter()
+            .find(|profile| profile.display_name == "Bob Builder")
+            .expect("banned Bob profile");
+        assert!(banned_bob.banned);
+        assert!(banned_bob.role_ids.is_empty());
+        let unbanned = alice
+            .execute_serialized_command(
+                "member.unban",
+                serde_json::json!({
+                    "peer_id": bob_peer_id,
+                    "reason": "serialized governance test complete"
+                }),
+            )
+            .await
+            .expect("unban member");
+        assert!(!unbanned
+            .home
+            .expect("home")
+            .profiles
+            .iter()
+            .any(|profile| profile.peer_id == bob_peer_id));
 
         let search = alice
             .execute_serialized_command(

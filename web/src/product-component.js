@@ -3,6 +3,16 @@ const {
   app,
 } = api;
 
+const ROLE_PERMISSIONS = [
+  "message:post",
+  "message:moderate",
+  "message:pin",
+  "channel:manage",
+  "role:manage",
+  "member:ban",
+  "invite:create",
+];
+
 if (!(app instanceof HTMLElement)) {
   throw new Error("missing #app");
 }
@@ -15,7 +25,11 @@ const uiState = {
   messageDraft: "",
   channelNameDraft: "",
   channelTopicDraft: "",
-  channelMembersDraft: "",
+  channelPrivateDraft: false,
+  channelMembersDraft: new Set(),
+  roleNameDraft: "",
+  rolePermissionsDraft: new Set(),
+  roleCreateOpen: false,
   profileNameDraft: "",
   profileAboutDraft: "",
   profileDraftInitialized: false,
@@ -319,6 +333,7 @@ function utilityCenter(snapshot, kind) {
         content.append(
           utilitySection("You", profileSummaryView(snapshot)),
           utilitySection("Members", memberProfilesView(snapshot)),
+          utilitySection("Roles and access", roleListView(snapshot)),
           utilitySection("Invite people", inviteExchangeView(snapshot)),
         );
         return content;
@@ -1302,11 +1317,40 @@ function channelListView(snapshot) {
     labeledInput("Topic", "What belongs here?", uiState.channelTopicDraft, (value) => { uiState.channelTopicDraft = value; }),
   );
   const privacy = element("details", "advanced-details");
-  privacy.append(
-    element("summary", "", "Make this a private channel"),
-    element("p", "summary", "Add member principal IDs. Blank creates a public channel."),
-    labeledInput("Private members", "Principal IDs, comma-separated", uiState.channelMembersDraft, (value) => { uiState.channelMembersDraft = value; }),
+  privacy.open = uiState.channelPrivateDraft;
+  const privacySummary = element("summary", "", "Private channel options");
+  const privateToggle = choiceCheckbox(
+    "Only selected members can read this channel",
+    uiState.channelPrivateDraft,
+    (checked) => {
+      uiState.channelPrivateDraft = checked;
+      render();
+    },
   );
+  const memberChoices = element("fieldset", "choice-list");
+  memberChoices.append(element("legend", "", "Who can read it?"));
+  const eligibleProfiles = (snapshot.home?.profiles ?? []).filter(
+    (profile) => !profile.banned && profile.peer_id !== snapshot.home?.profile.peer_id,
+  );
+  for (const profile of eligibleProfiles) {
+    memberChoices.append(choiceCheckbox(
+      profile.display_name,
+      uiState.channelMembersDraft.has(profile.peer_id),
+      (checked) => updateSet(uiState.channelMembersDraft, profile.peer_id, checked),
+    ));
+  }
+  privacy.append(
+    privacySummary,
+    privateToggle,
+    element("p", "summary", "You are always included. Private channel content is encrypted for the selected members."),
+  );
+  if (uiState.channelPrivateDraft) {
+    privacy.append(
+      eligibleProfiles.length > 0
+        ? memberChoices
+        : element("p", "summary", "No other current members. This channel will be private to you."),
+    );
+  }
   form.append(privacy, submitButton("channel.create"));
   create.append(form);
   fragment.append(list, create);
@@ -1327,11 +1371,40 @@ function memberProfilesView(snapshot) {
       element("strong", "", `${profile.display_name}${isOwn ? " · you" : ""}`),
       element("span", "muted", profile.about),
     );
+    const roleNames = profile.role_ids
+      .map((roleId) => snapshot.home?.roles.find((role) => role.role_id === roleId)?.name)
+      .filter(Boolean);
+    copy.append(element(
+      "span",
+      profile.banned ? "status-badge danger" : "muted",
+      profile.banned ? "Banned from this space" : roleNames.join(", ") || "Member",
+    ));
     body.append(
       element("div", "profile-avatar small", profileInitials(profile.display_name)),
       copy,
     );
     row.append(body);
+    if (!isOwn) {
+      const actions = element("details", "advanced-details member-actions");
+      const memberAction = profile.banned
+        ? commandButton("member.unban", { peer_id: profile.peer_id, reason: "" })
+        : commandButton("member.ban", { peer_id: profile.peer_id, reason: "Removed by a space administrator" });
+      memberAction.textContent = profile.banned
+        ? `Allow ${profile.display_name} to rejoin`
+        : `Ban ${profile.display_name} from this space`;
+      actions.append(
+        element("summary", "", "Member actions"),
+        element(
+          "p",
+          "summary",
+          profile.banned
+            ? "This removes the ban. They still need a valid invite to become a member again."
+            : "Banning removes this principal's authority to participate; retained history remains authoritative.",
+        ),
+        memberAction,
+      );
+      row.append(actions);
+    }
     list.append(row);
   }
   fragment.append(list);
@@ -1340,6 +1413,7 @@ function memberProfilesView(snapshot) {
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function roleListView(snapshot) {
+  const fragment = document.createDocumentFragment();
   const list = element("ol", "peer-list");
   for (const role of snapshot.home?.roles ?? []) {
     const row = element("li", "peer-row");
@@ -1347,16 +1421,69 @@ function roleListView(snapshot) {
     const body = element("div", "peer-body");
     body.append(
       element("strong", "", role.name),
-      element("span", "muted", `${role.member_count} member(s)`),
-      element("span", "mono", role.permissions.join(", ") || "no permissions"),
+      element("span", "muted", `${role.member_count} ${role.member_count === 1 ? "member" : "members"}`),
+      element("span", "muted", role.permissions.map(permissionLabel).join(", ") || "No additional permissions"),
     );
     row.append(body);
+    if (role.role_id !== "role:everyone") {
+      const members = element("details", "advanced-details");
+      members.append(element("summary", "", "Manage members"));
+      const memberList = element("div", "choice-list");
+      for (const profile of snapshot.home?.profiles ?? []) {
+        if (profile.banned) continue;
+        const assigned = profile.role_ids.includes(role.role_id);
+        const action = commandButton(assigned ? "role.revoke" : "role.grant", {
+          peer_id: profile.peer_id,
+          role_id: role.role_id,
+        });
+        action.textContent = assigned ? `Remove ${profile.display_name}` : `Add ${profile.display_name}`;
+        memberList.append(action);
+      }
+      members.append(memberList);
+      row.append(members);
+    }
     list.append(row);
   }
-  const controls = element("div", "control-row");
-  controls.append(commandButton("role.create"), commandButton("role.grant"));
-  list.append(controls);
-  return list;
+  const create = element("details", "advanced-details");
+  create.open = uiState.roleCreateOpen;
+  create.addEventListener("toggle", () => {
+    uiState.roleCreateOpen = create.open;
+  });
+  create.append(element("summary", "", "Create a role"));
+  const form = element("form", "field-stack");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!uiState.roleNameDraft.trim()) {
+      uiState.error = "Enter a role name.";
+      render();
+      return;
+    }
+    if (uiState.rolePermissionsDraft.size === 0) {
+      uiState.error = "Choose at least one permission for this role.";
+      render();
+      return;
+    }
+    runCommand("role.create", {
+      name: uiState.roleNameDraft,
+      permissions: [...uiState.rolePermissionsDraft],
+    }).catch(reportError);
+  });
+  form.append(labeledInput("Role name", "For example, Moderator", uiState.roleNameDraft, (value) => {
+    uiState.roleNameDraft = value;
+  }));
+  const permissions = element("fieldset", "choice-list");
+  permissions.append(element("legend", "", "What can this role do?"));
+  for (const permission of ROLE_PERMISSIONS) {
+    permissions.append(choiceCheckbox(
+      permissionLabel(permission),
+      uiState.rolePermissionsDraft.has(permission),
+      (checked) => updateSet(uiState.rolePermissionsDraft, permission, checked),
+    ));
+  }
+  form.append(permissions, submitButton("role.create"));
+  create.append(form);
+  fragment.append(list, create);
+  return fragment;
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -1991,16 +2118,25 @@ async function runCommand(command, payload) {
       case "channel.rotateKey":
         currentSnapshot = await shell.execute(command, payload);
         return;
-      case "channel.create":
+      case "channel.create": {
+        const privateMembers = uiState.channelPrivateDraft
+          ? [...uiState.channelMembersDraft]
+          : [];
+        if (uiState.channelPrivateDraft && privateMembers.length === 0) {
+          const ownPeerId = currentSnapshot.home?.profile.peer_id;
+          if (ownPeerId) privateMembers.push(ownPeerId);
+        }
         currentSnapshot = await shell.execute(command, payload ?? {
           name: uiState.channelNameDraft,
           topic: uiState.channelTopicDraft,
-          private_members: uiState.channelMembersDraft.split(",").map((value) => value.trim()).filter(Boolean),
+          private_members: privateMembers,
         });
         uiState.channelNameDraft = "";
         uiState.channelTopicDraft = "";
-        uiState.channelMembersDraft = "";
+        uiState.channelPrivateDraft = false;
+        uiState.channelMembersDraft.clear();
         return;
+      }
       case "message.edit": {
         const text = payload?.text ?? window.prompt("New message text");
         if (text === null) return;
@@ -2080,28 +2216,36 @@ async function runCommand(command, payload) {
         currentSnapshot = await shell.execute(command, payload);
         return;
       case "role.create": {
-        const name = payload?.name ?? window.prompt("Role name");
-        if (!name) return;
-        const permissionsText = payload?.permissions?.join(",") ?? window.prompt("Permissions (comma-separated)", "message:moderate,message:pin") ?? "";
+        if (!payload) {
+          uiState.roleCreateOpen = true;
+          openPeopleUtility();
+          return;
+        }
         currentSnapshot = await shell.execute(command, {
-          name,
-          permissions: payload?.permissions ?? permissionsText.split(",").map((value) => value.trim()).filter(Boolean),
+          name: payload.name,
+          permissions: payload.permissions,
         });
+        uiState.roleNameDraft = "";
+        uiState.rolePermissionsDraft.clear();
+        uiState.roleCreateOpen = false;
         return;
       }
       case "role.grant":
       case "role.revoke": {
-        const peer_id = payload?.peer_id ?? window.prompt("Member peer ID");
-        const role_id = payload?.role_id ?? window.prompt("Role ID");
-        if (!peer_id || !role_id) return;
-        currentSnapshot = await shell.execute(command, { peer_id, role_id });
+        if (!payload?.peer_id || !payload?.role_id) {
+          openPeopleUtility();
+          return;
+        }
+        currentSnapshot = await shell.execute(command, payload);
         return;
       }
       case "member.ban":
       case "member.unban": {
-        const peer_id = payload?.peer_id ?? window.prompt("Member peer ID");
-        if (!peer_id) return;
-        currentSnapshot = await shell.execute(command, { peer_id, reason: payload?.reason ?? "" });
+        if (!payload?.peer_id) {
+          openPeopleUtility();
+          return;
+        }
+        currentSnapshot = await shell.execute(command, payload);
         return;
       }
       case "invite.copy":
@@ -2238,6 +2382,39 @@ function labeledInput(label, placeholder, value, onInput) {
   });
   field.append(element("span", "", label), input);
   return field;
+}
+
+function choiceCheckbox(label, checked, onChange) {
+  const field = element("label", "choice-checkbox");
+  const input = element("input", "");
+  input.type = "checkbox";
+  input.checked = checked;
+  input.addEventListener("change", () => onChange(input.checked));
+  field.append(input, element("span", "", label));
+  return field;
+}
+
+function updateSet(values, value, included) {
+  if (included) values.add(value);
+  else values.delete(value);
+}
+
+function permissionLabel(permission) {
+  return {
+    "message:post": "Post messages",
+    "message:moderate": "Edit or remove other people's messages",
+    "message:pin": "Pin messages",
+    "channel:manage": "Create and manage channels",
+    "role:manage": "Create roles and assign access",
+    "member:ban": "Ban members or allow rejoining",
+    "invite:create": "Invite people",
+  }[permission] ?? permission;
+}
+
+function openPeopleUtility() {
+  uiState.connectionOpen = false;
+  uiState.paletteOpen = false;
+  uiState.utilityOpen = "people";
 }
 
 /** @param {string} value */
