@@ -1,7 +1,8 @@
 # Hot-Swappable Product Boundary
 
-Status: executable majority boundary implemented; packaged-native signed
-activation evidence pending for this widened payload.
+Status: executable maximum-admissible browser boundary implemented and verified
+through signed packaged-native activation, failure recovery, rollback, and
+restart on macOS; native Windows lived verification remains external.
 
 ## Claim
 
@@ -65,6 +66,25 @@ or cross-client semantic compatibility. In particular, a component cannot:
 This is not counted as unfinished componentization: those are the explicit
 stable capabilities against which independently updatable product code runs.
 
+## Maximum boundary fixed point
+
+The remaining 203 browser-runtime lines cannot move into the generation without
+making the generation select, authenticate, or bootstrap itself:
+
+- the loader must exist before verified generation bytes can execute;
+- the lifecycle host must retain the old component while it compiles the next
+  one and must own restoration when mounting fails;
+- the shell bridge must cross the OS WebView/native boundary and expose only the
+  kernel's serialized command and invalidation interfaces.
+
+Moving any of these into the payload would create a circular bootstrap or let
+the replaceable code redefine its own capability boundary. The remaining Rust
+application code either implements one of the defended authorities, projects
+already accepted meaning without asking the frontend to reconstruct protocol
+truth, or adapts those authorities to the stable command vocabulary. Under the
+current truthful-system contract, this is therefore the maximum admissible
+hot-swappable boundary rather than merely the first majority threshold.
+
 ## Boundary accounting
 
 At this checkpoint the replaceable executable, helper modules, and stylesheet
@@ -94,5 +114,32 @@ installer. The host contains no parallel view renderer or recovery stylesheet.
   offline-inviter forwarding, public feature, private-room recovery,
   workbench/palette, and media slices affected by the widened boundary.
 
-Until the packaged-native item and full preservation rerun pass, the boundary is
-implemented but the final lived majority claim remains open.
+## Current packaged-native evidence
+
+Commit `3710372` produced universal macOS DMG SHA-256 `ab03b8bc`; `hdiutil`
+verified its disk image, `lipo` reported `x86_64 arm64`, and strict deep code-sign
+verification accepted its ad-hoc signature.
+
+The mounted packaged app used a fresh home and completed these real UI paths:
+
+1. initialized a principal/space, started the IPv6 peer service, and retained
+   the message `survives executable component swap`;
+2. installed signed sequence 4 containing malformed executable source; the
+   loader left the running component intact and kernel rollback returned to the
+   built-in generation while the service and message remained visible;
+3. installed signed sequence 5 (package SHA-256 `b235a67c`) and changed the
+   running heading to `Voxelle · Live Component 5` without process restart;
+4. installed signed sequence 6 (package SHA-256 `59d2dd81`) and changed the
+   running heading to `Voxelle · Live Component 6`, again preserving the online
+   service and retained message;
+5. explicitly rolled back to sequence 5 and observed its executable heading,
+   retained message, and online service;
+6. terminated and relaunched the packaged process on the same home, which
+   re-verified and mounted sequence 5 and retained the message. As specified,
+   the peer service restarted offline until requested online again.
+
+Together with the workspace preservation suite and component-host failure tests,
+this closes the local macOS evidence for the 93.2% browser-runtime ownership
+claim. Windows native first-launch and non-loopback multi-machine evidence remain
+bounded external beta gates; neither changes which code owns the component
+boundary.
