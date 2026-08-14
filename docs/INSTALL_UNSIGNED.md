@@ -95,6 +95,14 @@ beta path: a release operator runs the tests, builds both platform artifacts,
 signs one manifest over the collected bytes, verifies it from a clean
 directory, publishes with `gh`, and reads the published assets back.
 
+When collecting macOS restart evidence, create the test home and relaunch it
+with the exact same built `.app`. Rebuilding and ad-hoc-signing the bundle
+between those two launches changes the executable identity that macOS Keychain
+uses to protect the encrypted identity-vault unlock key; that tests replacement
+of the native artifact, not ordinary restart. Development-only tests that must
+cross rebuilds may explicitly use `VOXELLE_VAULT_BACKEND=test-file`, but that is
+not evidence for the production Keychain path.
+
 Do not enable GitHub's **Set as a pre-release** option for these beta builds.
 The signed manifest—not GitHub—declares the `beta` channel, while installed
 kernels intentionally discover only the repository's

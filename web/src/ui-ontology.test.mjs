@@ -103,6 +103,14 @@ test("default workbench prioritizes conversation while advanced views stay regis
   assert.equal(visibility["service.activity"], false);
 });
 
+test("ordinary native launch starts the peer service unless a person opts out", () => {
+  const startOnline = defaultUiOntology.behaviors.find(
+    (behavior) => behavior.id === "runtime.startOnlineOnLaunch",
+  );
+  assert.deepEqual(startOnline?.default_value, { type: "bool", value: true });
+  assert.deepEqual(startOnline?.current_value, { type: "bool", value: true });
+});
+
 test("identity and invitation views use human-facing labels without changing stable ids", () => {
   const labels = Object.fromEntries(
     defaultUiOntology.views.map((view) => [view.id, view.label]),

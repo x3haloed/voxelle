@@ -3740,7 +3740,10 @@ impl VoxelleCommandHost {
             ServiceActivityLevel::Info,
             format!("initialized home for {default_room}"),
         );
-        self.snapshot()
+        self.start_service(StartServiceRequest {
+            bind: None,
+            advertise: None,
+        })
     }
 
     pub fn start_service(&mut self, request: StartServiceRequest) -> Result<ShellSnapshotView> {
@@ -5658,7 +5661,7 @@ fn default_behaviors() -> Vec<UiBehavior> {
         behavior(
             "runtime.startOnlineOnLaunch",
             "Start Online On Launch",
-            UiBehaviorValue::Bool(false),
+            UiBehaviorValue::Bool(true),
             &["runtime.status"],
         ),
     ]
@@ -7105,6 +7108,10 @@ mod tests {
         assert_eq!(metric_value(&ontology, "sidebar.width"), 360.0);
         assert_eq!(
             behavior_value(&ontology, "timestamps.visible"),
+            UiBehaviorValue::Bool(true)
+        );
+        assert_eq!(
+            behavior_value(&ontology, "runtime.startOnlineOnLaunch"),
             UiBehaviorValue::Bool(true)
         );
         assert!(ontology

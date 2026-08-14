@@ -37,7 +37,8 @@ function syncAttributes(current, desired) {
 /** @param {Element} current @param {Element} desired */
 function syncControlState(current, desired) {
   if (!["INPUT", "TEXTAREA", "SELECT"].includes(current.tagName)) return;
-  if (current.ownerDocument?.activeElement === current) return;
+  const syncFocusedValue = desired.getAttribute("data-sync-focused-value") === "true";
+  if (current.ownerDocument?.activeElement === current && !syncFocusedValue) return;
   const currentControl = /** @type {HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement} */ (current);
   const desiredControl = /** @type {HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement} */ (desired);
   if (currentControl.value !== desiredControl.value) currentControl.value = desiredControl.value;

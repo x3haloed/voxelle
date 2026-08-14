@@ -50,18 +50,23 @@ The important thing is that each running host has its own home root.
 
 ## Surfaces To Watch
 
-Use these panels in the workbench:
+Use the ordinary human surfaces first:
 
-- `Profile Summary`: confirms the current home, peer, device, and space
-  identity.
-- `Runtime Status`: shows online state plus listen and advertised addresses.
-- `Network Health`: shows lower-level setup and reachability rows.
-- `Invite Exchange`: creates and copies a signed membership invite and imports
-  ordinary peer availability records after membership exists.
-- `Peer List`: shows imported availability records and exposes diagnosis/sync.
-- `Field Test`: shows the operator checklist for the current peer.
-- `Service Activity`: shows diagnostic, sync, service, update, and error events.
-- `Room Timeline` and `Message Composer`: read and send test messages.
+- **People** in the header shows the local profile and members, creates and
+  copies a signed membership invite, and progressively discloses identity and
+  manual peer details.
+- **Online / Offline** in the header opens Connection & Sync health. It shows
+  automatic service, reachability, and synchronization state without requiring
+  topology on the ordinary success path.
+- **Channels**, **Conversation**, and **Message Composer** select rooms, project
+  accepted messages, and send test messages.
+
+For operator intervention, choose **More → Edit layout** and restore the
+registered `Runtime Status`, `Network Health`, `Connections`, `Field Test`, and
+`Service Activity` views. These expose listen/advertised addresses, imported
+ordinary peer records, explicit diagnosis and sync, the re-entrant field-test
+checklist, and service errors. The advanced views invoke the same Rust semantic
+commands as the focused surfaces; they are not a separate authority path.
 
 Do not conflate the two signed JSON objects. A `.voxinvite` grants membership;
 a peer record only advertises replaceable endpoint availability and grants no

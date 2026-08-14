@@ -1470,6 +1470,7 @@ function messageComposerView(snapshot) {
   });
   const channel = snapshot.home?.channels.find((candidate) => candidate.selected);
   const input = element("textarea", "message-input");
+  input.dataset.syncFocusedValue = "true";
   input.rows = 2;
   input.placeholder = `Message ${channel ? `#${channel.name}` : "this room"}`;
   input.setAttribute("aria-label", input.placeholder);

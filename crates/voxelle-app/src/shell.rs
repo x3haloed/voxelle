@@ -275,7 +275,9 @@ mod tests {
             .execute_serialized_command("home.init", serde_json::json!({"default_room": null}))
             .await
             .expect("initialize original home");
-        let original_profile = initialized.home.expect("original home").profile;
+        let initialized_home = initialized.home.expect("original home");
+        assert_eq!(initialized_home.runtime.state, crate::RuntimeState::Online);
+        let original_profile = initialized_home.profile;
         let kit_path = dir.path().join("offline.voxrecover");
 
         let exported = original
@@ -314,6 +316,41 @@ mod tests {
             .service_activity
             .iter()
             .any(|item| item.summary.contains("recovered identity onto device")));
+    }
+
+    #[tokio::test]
+    async fn serialized_shell_reopens_an_initialized_home_without_stalling() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let original = ShellState::new(&home);
+        original
+            .execute_serialized_command("home.init", serde_json::json!({"default_room": null}))
+            .await
+            .expect("initialize home");
+        original
+            .execute_serialized_command(
+                "message.send",
+                serde_json::json!({"text": "persists through restart", "room": null}),
+            )
+            .await
+            .expect("send message");
+        drop(original);
+
+        let reopened = ShellState::new(&home);
+        let snapshot = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            reopened.execute_serialized_command("shell.refresh", serde_json::json!({})),
+        )
+        .await
+        .expect("reopened shell refresh should not stall")
+        .expect("refresh reopened home");
+
+        let reopened_home = snapshot.home.expect("reopened home");
+        assert_eq!(reopened_home.runtime.state, crate::RuntimeState::Offline);
+        assert_eq!(
+            reopened_home.room.messages[0].text,
+            "persists through restart"
+        );
     }
 
     #[tokio::test]

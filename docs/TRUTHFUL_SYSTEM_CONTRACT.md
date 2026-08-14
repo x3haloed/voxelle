@@ -280,6 +280,18 @@ Tauri run moved and hid views, filtered and invoked the palette from the native
 keyboard shortcut, quit, relaunched, and projected the saved layout through the
 real bridge.
 
+The focused human shell has crossed an additional lived macOS gate. A fresh
+ad-hoc-signed `.app` launch presented only create, signed-invite join, and
+identity recovery; creating a space brought the ordinary peer service online
+without a topology step. The native file dialog wrote a mode-`0600` recovery
+kit and removed the persistent recovery warning only after the Rust command
+accepted it. The People surface updated a profile and created a signed invite,
+and the native composer carried a keyboard-authored message through Rust
+admission and cleared only after success. Terminating and relaunching the exact
+same bundle preserved and projected that message and automatically restored the
+online service. This is local packaged-debug evidence, not the external
+three-machine, Windows, assistive-technology, or release-artifact gate.
+
 The public Discord families have crossed their operational gate. Space
 governance now carries channel definitions, profiles, roles, permissions,
 bans, and invites. Signed room events carry posts, edits, redaction tombstones,

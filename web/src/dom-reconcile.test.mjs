@@ -132,3 +132,24 @@ test("keyed workbench views move without losing their node identity", () => {
 
   assert.deepEqual(root.childNodes, [second, first]);
 });
+
+test("a controlled focused input can accept an authoritative cleared value", () => {
+  const document = { activeElement: null };
+  const root = element(document, "main", "root");
+  const input = element(document, "textarea", "composer");
+  input.value = "accepted message";
+  root.append(input);
+  document.activeElement = input;
+
+  const desired = element(document, "main", "desired-root");
+  const desiredInput = element(document, "textarea", "composer");
+  desiredInput.setAttribute("data-sync-focused-value", "true");
+  desiredInput.value = "";
+  desired.append(desiredInput);
+
+  reconcileChildren(root, desired);
+
+  assert.equal(root.childNodes[0], input);
+  assert.equal(input.value, "");
+  assert.equal(document.activeElement, input);
+});

@@ -6,7 +6,9 @@
     <title>Voxelle</title>
   </head>
   <body>
-    <main id="app" class="app-shell" aria-live="polite"></main>
+    <main id="app" class="app-shell" aria-live="polite">
+      <p class="startup-status" role="status">Opening Voxelle…</p>
+    </main>
     <script>
       window.addEventListener("error", (event) => {
         document.querySelector("#app").textContent = `Voxelle failed to render: ${event.message}`;

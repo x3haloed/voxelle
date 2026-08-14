@@ -4,6 +4,7 @@ import { ProductComponentHost } from "./product-component-host.mjs";
 const app = document.querySelector("#app");
 if (!(app instanceof HTMLElement)) throw new Error("missing #app");
 
+app.textContent = "Connecting to the local Voxelle runtime…";
 const shell = await createShellClient();
 const componentApi = Object.freeze({
   shell,
@@ -29,6 +30,7 @@ function scheduleActivation(snapshot) {
   return transition;
 }
 
+app.textContent = "Loading your local Voxelle home…";
 const initialSnapshot = await shell.execute("shell.refresh");
 if (!initialSnapshot.product_component && shell.mode === "preview") {
   const moduleSources = await Promise.all([
@@ -46,6 +48,7 @@ if (!initialSnapshot.product_component && shell.mode === "preview") {
     styles: await fetch("./src/styles.css", { cache: "no-store" }).then((response) => response.text()),
   };
 }
+app.textContent = "Preparing your workspace…";
 await scheduleActivation(initialSnapshot);
 await shell.onSnapshotInvalidated(async () => {
   const snapshot = await shell.execute("shell.refresh");
