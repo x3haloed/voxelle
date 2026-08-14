@@ -699,8 +699,9 @@ pub fn builtin_product_generation() -> ProductGenerationV1 {
 }
 
 fn builtin_product_component_source() -> String {
-    const MODULES: [&str; 4] = [
+    const MODULES: [&str; 5] = [
         include_str!("../../../web/src/call-media.mjs"),
+        include_str!("../../../web/src/connection-status.mjs"),
         include_str!("../../../web/src/dom-reconcile.mjs"),
         include_str!("../../../web/src/ui-ontology.mjs"),
         include_str!("../../../web/src/workbench.mjs"),
@@ -3748,7 +3749,16 @@ impl VoxelleCommandHost {
 
     pub fn start_service(&mut self, request: StartServiceRequest) -> Result<ShellSnapshotView> {
         if self.service.is_some() {
-            return self.snapshot();
+            if request.bind.is_none() && request.advertise.is_none() {
+                return self.snapshot();
+            }
+            if let Some(service) = self.service.take() {
+                service.stop()?;
+                self.push_activity(
+                    ServiceActivityLevel::Info,
+                    "service stopped for address reconfiguration",
+                );
+            }
         }
 
         let bind = request
@@ -7388,6 +7398,31 @@ mod tests {
             .iter()
             .any(|item| item.summary.starts_with("served sync:")));
         alice.stop_service().expect("stop");
+    }
+
+    #[tokio::test]
+    async fn go_online_reconfigures_an_online_service_when_addresses_are_supplied() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init and start");
+
+        let advertised = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 42424);
+        let snapshot = host
+            .start_service(StartServiceRequest {
+                bind: Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0)),
+                advertise: Some(advertised),
+            })
+            .expect("reconfigure online service");
+
+        assert_eq!(
+            snapshot.home.expect("home").runtime.advertised_addr,
+            Some(advertised)
+        );
+        assert!(host.activity.iter().any(|item| {
+            item.summary == "service stopped for address reconfiguration"
+        }));
+        host.stop_service().expect("stop service");
     }
 
     #[test]

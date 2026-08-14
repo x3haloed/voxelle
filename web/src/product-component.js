@@ -261,22 +261,14 @@ function header(snapshot) {
 }
 
 function connectionCenterButton(snapshot) {
-  const attentionCount = snapshot.network_health.rows.filter((row) =>
-    row.status === "needs_attention" || row.status === "broken"
-  ).length;
-  const online = snapshot.home?.runtime.state === "online";
-  const label = attentionCount > 0
-    ? `${online ? "Online" : "Offline"} · ${attentionCount} issue${attentionCount === 1 ? "" : "s"}`
-    : online ? "Online" : "Offline";
-  const button = actionButton(label, () => {
+  const status = connectionHeaderState(snapshot);
+  const button = actionButton(status.label, () => {
     uiState.utilityOpen = "";
     uiState.connectionOpen = !uiState.connectionOpen;
     render();
-  }, attentionCount > 0
-    ? `${attentionCount} connection item${attentionCount === 1 ? "" : "s"} need attention`
-    : "Review connection and synchronization health");
+  }, status.help);
   button.classList.add("connection-button");
-  button.dataset.status = attentionCount > 0 ? "attention" : "working";
+  button.dataset.status = status.tone;
   button.setAttribute("aria-expanded", String(uiState.connectionOpen));
   button.setAttribute("aria-controls", "connection-center");
   return button;
@@ -376,7 +368,7 @@ function connectionCenter(snapshot) {
     element(
       "p",
       "summary",
-      "Voxelle tries ordinary peers automatically. Details appear here when availability needs attention.",
+      "Voxelle tries ordinary peers automatically. Change addresses here when intervention is needed; setup checks stay distinct from broken states.",
     ),
   );
   heading.append(
@@ -387,7 +379,7 @@ function connectionCenter(snapshot) {
     }),
   );
   const body = element("div", "connection-center-body");
-  body.append(networkHealthView(snapshot));
+  body.append(serviceOptions(), networkHealthView(snapshot));
   aside.append(heading, body);
   return aside;
 }
@@ -2161,16 +2153,7 @@ function peerRequest(peer) {
 
 /** @param {import("./shell-contract").NetworkHealthStatus} status */
 function statusLabel(status) {
-  switch (status) {
-    case "working":
-      return "working";
-    case "needs_attention":
-      return "attention";
-    case "broken":
-      return "broken";
-    case "unknown":
-      return "unknown";
-  }
+  return connectionHealthLabel(status);
 }
 
 /**

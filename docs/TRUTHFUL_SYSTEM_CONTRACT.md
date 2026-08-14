@@ -275,7 +275,13 @@ The unsigned install path has also crossed a native artifact gate: Tauri emits
 an ad-hoc-signed universal macOS DMG (arm64 plus x86_64) and is configured for a
 Windows NSIS artifact, with SHA-256 manifests and narrow per-app Gatekeeper and
 SmartScreen instructions. A native Windows build and first launch still require
-the external Windows runner named in the evidence horizon.
+the external Windows runner named in the evidence horizon. Replacing an
+ad-hoc-signed macOS build changes its CDHash and can trigger a Keychain access
+decision for the existing encrypted identity-vault key. The loading surface
+explains that pending operating-system request, and the install guide limits
+approval to a replacement whose signed release manifest was independently
+verified. Ordinary restart evidence continues to use the exact same artifact;
+replacement continuity is a separate lived gate.
 
 The workbench risk has crossed its first lived gate. Every Rust-registered view
 can move among all five docks by drag/drop or an accessible selector, reorder,

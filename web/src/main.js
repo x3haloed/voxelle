@@ -31,10 +31,22 @@ function scheduleActivation(snapshot) {
 }
 
 app.textContent = "Loading your local Voxelle home…";
-const initialSnapshot = await shell.execute("shell.refresh");
+const credentialWaitNotice = window.setTimeout(() => {
+  app.textContent = "Opening your local Voxelle identity… If your operating system asks whether Voxelle may access its saved credential, approve it to continue.";
+}, 1200);
+let initialSnapshot;
+try {
+  initialSnapshot = await shell.execute("shell.refresh");
+} catch (error) {
+  app.textContent = `Voxelle could not open your local identity: ${error?.message ?? String(error)}`;
+  throw error;
+} finally {
+  window.clearTimeout(credentialWaitNotice);
+}
 if (!initialSnapshot.product_component && shell.mode === "preview") {
   const moduleSources = await Promise.all([
     "./src/call-media.mjs",
+    "./src/connection-status.mjs",
     "./src/dom-reconcile.mjs",
     "./src/ui-ontology.mjs",
     "./src/workbench.mjs",

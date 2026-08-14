@@ -45,6 +45,14 @@ Do not use `sudo spctl --master-disable`. If macOS still quarantines a copy
 whose signed manifest you verified, the narrow fallback is
 `xattr -dr com.apple.quarantine /Applications/Voxelle.app`.
 
+When replacing Voxelle with another independently verified build, macOS may
+ask whether the new copy may access the existing `app.voxelle.identity-vault`
+Keychain item. Ad-hoc signatures identify each build by its changing code hash,
+so this is expected even when the bundle name and path are unchanged. Approve
+the request only after verifying the replacement's signed release manifest.
+Declining leaves the encrypted identity unreadable to that build; an offline
+`.voxrecover` kit remains the supported recovery path on a fresh home.
+
 ## Windows
 
 1. Download the NSIS `.exe`, `VOXELLE-RELEASE.json`, and optional
@@ -99,7 +107,9 @@ When collecting macOS restart evidence, create the test home and relaunch it
 with the exact same built `.app`. Rebuilding and ad-hoc-signing the bundle
 between those two launches changes the executable identity that macOS Keychain
 uses to protect the encrypted identity-vault unlock key; that tests replacement
-of the native artifact, not ordinary restart. Development-only tests that must
+of the native artifact, not ordinary restart. The native loading surface must
+make a pending operating-system credential request explicit rather than
+appearing frozen. Development-only tests that must
 cross rebuilds may explicitly use `VOXELLE_VAULT_BACKEND=test-file`, but that is
 not evidence for the production Keychain path.
 
