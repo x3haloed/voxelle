@@ -339,6 +339,16 @@ human permission names and member/role actions while keeping stable IDs in
 command payloads; private-channel creation selects current named members and
 explains the self-only case without requiring principal-ID entry.
 
+The packaged macOS conversation surface has crossed a lived reply/edit gate. A
+person selected Reply on a retained message, received named composer context,
+posted through `message.send` with the authoritative thread root, and observed
+both the reply annotation and incremented root count. The same run opened an
+inline edit, focused the native text control, saved through `message.edit`, and
+exercised Escape cancellation without a browser prompt. The edited root and
+thread reply survived a full restart of the exact same artifact. Existing
+serialized two-home evidence continues to prove convergence through those same
+commands; this lived run is local packaged-debug evidence.
+
 Private channels have crossed their first confidentiality and recovery gate.
 Each member publishes a signed X25519 encryption key, private channel creation
 wraps a random epoch key independently to each admitted member, and every

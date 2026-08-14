@@ -680,6 +680,39 @@ h3 {
   margin: 6px 0 0;
 }
 
+.message-edit-form,
+.reply-context,
+.reply-context-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.message-edit-input {
+  min-height: 72px;
+}
+
+.message-edit-form .row-actions {
+  margin: 0;
+}
+
+.reply-context {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding: 8px 10px;
+  border-left: 3px solid var(--text-secondary);
+  background: color-mix(in srgb, var(--panel-background) 94%, var(--text-primary));
+}
+
+.reply-context-copy {
+  min-width: 0;
+}
+
+.reply-context-copy .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .attachment-link {
   width: max-content;
   max-width: 100%;

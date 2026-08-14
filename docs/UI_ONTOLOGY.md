@@ -213,6 +213,13 @@ Commands should be reachable from more than one surface over time:
 
 The command ID is the durable concept. The button is only one affordance.
 
+Message reply and edit affordances remain inside the conversation surface.
+Selecting Reply establishes local composer context, but the accepted action is
+still `message.send` with the root event ID in its payload. Inline editing and
+its Enter/save or Escape/cancel keyboard paths invoke `message.edit` only when
+the person commits. Draft context is disposable presentation state; it never
+becomes a parallel message or thread authority.
+
 ### 3.4 Semantic Tokens
 
 A semantic token is a named visual meaning, not a raw color.

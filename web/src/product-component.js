@@ -23,6 +23,10 @@ const uiState = {
   peerRecordDraft: "",
   spaceInviteDraft: "",
   messageDraft: "",
+  replyTargetEventId: "",
+  replyPreview: null,
+  editingMessageId: "",
+  messageEditDraft: "",
   channelNameDraft: "",
   channelTopicDraft: "",
   channelPrivateDraft: false,
@@ -1567,10 +1571,15 @@ function roomTimelineView(snapshot) {
       time.dateTime = safeDateTime(message.created_ms) ?? "";
       meta.append(time);
     }
-    content.append(meta, element("p", message.redacted ? "muted" : "message-text", message.text));
+    if (uiState.editingMessageId === message.event_id && !message.redacted) {
+      content.append(meta, messageEditForm(message, snapshot));
+    } else {
+      content.append(meta, element("p", message.redacted ? "muted" : "message-text", message.text));
+    }
     const annotations = element("div", "message-annotations");
     if (message.edited_ms !== null) annotations.append(element("small", "muted", "edited"));
     if (message.pinned) annotations.append(element("small", "muted", "pinned"));
+    if (message.thread_root_event_id !== null) annotations.append(element("small", "muted", "thread reply"));
     if (message.reply_count > 0) annotations.append(element("small", "muted", `${message.reply_count} repl${message.reply_count === 1 ? "y" : "ies"}`));
     if (annotations.children.length > 0) content.append(annotations);
     const reactions = element("div", "message-reactions");
@@ -1590,12 +1599,13 @@ function roomTimelineView(snapshot) {
     actionDetails.append(element("summary", "", "Message actions"));
     const actions = element("div", "row-actions");
     actions.append(
+      actionButton("Reply", () => beginReply(message, author.display_name)),
       commandButton("reaction.add", { target_event_id: message.event_id, emoji: "👍", room: snapshot.home?.room.room_id ?? null }),
       commandButton("pin.add", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
     );
-    if (own) {
+    if (own && !message.redacted) {
       actions.append(
-        commandButton("message.edit", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
+        actionButton("Edit", () => beginMessageEdit(message)),
         commandButton("message.redact", { target_event_id: message.event_id, room: snapshot.home?.room.room_id ?? null }),
       );
     }
@@ -1606,6 +1616,73 @@ function roomTimelineView(snapshot) {
   }
   fragment.append(context, list);
   return fragment;
+}
+
+function messageEditForm(message, snapshot) {
+  const form = element("form", "message-edit-form");
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!uiState.messageEditDraft.trim()) return;
+    runCommand("message.edit", {
+      target_event_id: message.event_id,
+      text: uiState.messageEditDraft,
+      room: snapshot.home?.room.room_id ?? null,
+      mentions: [],
+    }).catch(reportError);
+  });
+  const input = element("textarea", "message-edit-input");
+  input.dataset.syncFocusedValue = "true";
+  input.rows = 2;
+  input.value = uiState.messageEditDraft;
+  input.setAttribute("aria-label", "Edit message");
+  input.addEventListener("input", () => {
+    uiState.messageEditDraft = input.value;
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      cancelMessageEdit();
+    } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
+      event.preventDefault();
+      if (input.value.trim()) form.requestSubmit();
+    }
+  });
+  const controls = element("div", "row-actions");
+  const save = submitButton("message.edit");
+  save.textContent = "Save changes";
+  controls.append(save, actionButton("Cancel edit", cancelMessageEdit));
+  form.append(input, element("span", "composer-hint", "Enter to save · Escape to cancel"), controls);
+  return form;
+}
+
+function beginMessageEdit(message) {
+  uiState.editingMessageId = message.event_id;
+  uiState.messageEditDraft = message.text;
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".message-edit-input")?.focus());
+}
+
+function cancelMessageEdit() {
+  uiState.editingMessageId = "";
+  uiState.messageEditDraft = "";
+  render();
+}
+
+function beginReply(message, authorName) {
+  uiState.replyTargetEventId = message.thread_root_event_id ?? message.event_id;
+  uiState.replyPreview = {
+    authorName,
+    text: message.text,
+  };
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".message-input")?.focus());
+}
+
+function cancelReply() {
+  uiState.replyTargetEventId = "";
+  uiState.replyPreview = null;
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".message-input")?.focus());
 }
 
 function messageComposerView(snapshot) {
@@ -1658,6 +1735,16 @@ function messageComposerView(snapshot) {
     count,
     submitButton("message.send"),
   );
+  if (uiState.replyTargetEventId && uiState.replyPreview) {
+    const replyContext = element("div", "reply-context");
+    const replyCopy = element("div", "reply-context-copy");
+    replyCopy.append(
+      element("strong", "", `Replying to ${uiState.replyPreview.authorName}`),
+      element("span", "muted", replyExcerpt(uiState.replyPreview.text)),
+    );
+    replyContext.append(replyCopy, actionButton("Cancel reply", cancelReply));
+    form.append(replyContext);
+  }
   form.append(input, fileInput, controls);
 
   return form;
@@ -2105,9 +2192,11 @@ async function runCommand(command, payload) {
           text: payload?.text ?? uiState.messageDraft,
           room: payload?.room ?? null,
           mentions: payload?.mentions ?? [],
-          thread_root_event_id: payload?.thread_root_event_id ?? null,
+          thread_root_event_id: payload?.thread_root_event_id ?? blankToNull(uiState.replyTargetEventId),
         });
         uiState.messageDraft = "";
+        uiState.replyTargetEventId = "";
+        uiState.replyPreview = null;
         return;
       case "channel.select":
         currentSnapshot = await shell.execute(command, payload);
@@ -2138,9 +2227,12 @@ async function runCommand(command, payload) {
         return;
       }
       case "message.edit": {
-        const text = payload?.text ?? window.prompt("New message text");
-        if (text === null) return;
-        currentSnapshot = await shell.execute(command, { ...payload, text, mentions: payload?.mentions ?? [] });
+        if (!payload?.target_event_id || typeof payload?.text !== "string") {
+          throw new Error("Choose Edit from one of your messages first.");
+        }
+        currentSnapshot = await shell.execute(command, { ...payload, mentions: payload.mentions ?? [] });
+        uiState.editingMessageId = "";
+        uiState.messageEditDraft = "";
         return;
       }
       case "message.redact":
@@ -2421,6 +2513,11 @@ function openPeopleUtility() {
 function blankToNull(value) {
   const trimmed = value.trim();
   return trimmed.length === 0 ? null : trimmed;
+}
+
+function replyExcerpt(text) {
+  const compact = text.replace(/\s+/g, " ").trim();
+  return compact.length > 80 ? `${compact.slice(0, 77)}…` : compact;
 }
 
 /** @param {File} file */
