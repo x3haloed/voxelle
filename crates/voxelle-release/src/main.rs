@@ -13,6 +13,8 @@ use voxelle_update::{
     RELEASE_MANIFEST_FORMAT_V1, TRUST_TRANSITION_FORMAT_V1, UPDATE_FORMAT_V1,
 };
 
+mod evidence;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "voxelle-release",
@@ -108,6 +110,34 @@ enum Command {
         transition: PathBuf,
         #[arg(long)]
         state_dir: PathBuf,
+    },
+    BetaEvidenceTemplate {
+        #[arg(long)]
+        trust_roots: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        source_commit: String,
+    },
+    VerifyBetaEvidence {
+        #[arg(long)]
+        trust_roots: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        evidence: PathBuf,
+        #[arg(long)]
+        expected_commit: String,
+    },
+    VerifySigningSecret {
+        #[arg(long)]
+        trust_roots: PathBuf,
+        #[arg(long)]
+        secret: PathBuf,
+        #[arg(long)]
+        role: String,
     },
 }
 
@@ -209,7 +239,80 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Command::BetaEvidenceTemplate {
+            trust_roots,
+            manifest,
+            output,
+            source_commit,
+        } => {
+            let roots = read_trust_roots(&trust_roots)?;
+            let manager = UpdateManager::new(".", "0.1.0", roots.clone())?;
+            let manifest = manager.verify_release_manifest_bytes(&fs::read(manifest)?)?;
+            let template = evidence::template(&manifest, &roots, source_commit)?;
+            write_new_json(&output, &template)?;
+            println!("wrote beta evidence template {}", output.display());
+            Ok(())
+        }
+        Command::VerifyBetaEvidence {
+            trust_roots,
+            manifest,
+            evidence: evidence_path,
+            expected_commit,
+        } => {
+            let roots = read_trust_roots(&trust_roots)?;
+            let manager = UpdateManager::new(".", "0.1.0", roots.clone())?;
+            let manifest = manager.verify_release_manifest_bytes(&fs::read(manifest)?)?;
+            let receipt: evidence::BetaEvidenceV1 =
+                serde_json::from_slice(&fs::read(&evidence_path).context("read beta evidence")?)
+                    .context("parse beta evidence")?;
+            evidence::validate(&receipt, &manifest, &roots, &expected_commit)?;
+            println!(
+                "verified complete beta evidence for {} at {}",
+                receipt.release_id, receipt.source_commit
+            );
+            Ok(())
+        }
+        Command::VerifySigningSecret {
+            trust_roots,
+            secret,
+            role,
+        } => verify_signing_secret(&trust_roots, &secret, &role),
     }
+}
+
+fn verify_signing_secret(trust_roots: &Path, secret_path: &Path, role: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(secret_path)
+        .with_context(|| format!("inspect signing secret {}", secret_path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(anyhow!("signing secret must be a regular non-symlink file"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(anyhow!(
+                "signing secret must not be accessible to group or others"
+            ));
+        }
+    }
+    let expected_role = match role {
+        "release" => ReleaseKeyRole::Release,
+        "recovery" => ReleaseKeyRole::Recovery,
+        value => return Err(anyhow!("unsupported release key role {value}")),
+    };
+    let key = read_signing_key(secret_path)?;
+    let roots = read_trust_roots(trust_roots)?;
+    let trusted = roots
+        .iter()
+        .find(|trusted| trusted.key_id == key.id)
+        .ok_or_else(|| anyhow!("signing secret is not present in the trusted release roots"))?;
+    if trusted.role != expected_role || trusted.spki_b64 != key.spki_b64 {
+        return Err(anyhow!(
+            "signing secret does not match the expected trusted capability"
+        ));
+    }
+    println!("verified {role} signing secret {}", key.id);
+    Ok(())
 }
 
 fn sign_trust_transition(

@@ -214,6 +214,16 @@ publication to a GitHub Release, readback of the published assets, and the
 existing field-test evidence. Platform claims remain bounded where the actual
 platform artifact has not been executed.
 
+The full gate is closed only when a `voxelle-beta-evidence/v1` receipt passes
+the release verifier against the authenticated manifest and its exact tag
+commit. The receipt consolidates public readback and packaged macOS evidence,
+native Windows first launch, three distinct non-loopback field machines with
+offline-inviter forwarding and converged messages, and separately protected
+offline custody plus restore tests for the release and recovery capabilities.
+The receipt makes omissions and contradictions machine-visible; it remains an
+operator evidence record and is not itself protocol or update authority. See
+`docs/BETA_EVIDENCE.md`.
+
 ## Current release evidence
 
 The current macOS preview slice was published on 2026-08-14 as

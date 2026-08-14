@@ -131,6 +131,12 @@ hello from peer c
 
 ## What To Record
 
+For a beta-gate run, begin with the release-bound evidence template and follow
+`docs/BETA_EVIDENCE.md`. The completed receipt is required in addition to these
+human-readable notes; it rejects loopback endpoints, duplicate machines, a
+non-offline inviter, missing bidirectional checks, and incomplete message
+convergence.
+
 For each peer, write down:
 
 - Machine name or role: A, B, C.

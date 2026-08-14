@@ -83,6 +83,10 @@ to weaken system-wide security.
   `scripts/publish-github-release-api.sh TAG TITLE NOTES_FILE ASSET...`
 - Clean readback of the latest published release:
   `scripts/verify-github-release.sh NEW_DOWNLOAD_DIR`
+- Release-bound beta evidence template and verifier:
+  `cargo run -q -p voxelle-release -- beta-evidence-template ...` and
+  `cargo run -q -p voxelle-release -- verify-beta-evidence ...`; see
+  `docs/BETA_EVIDENCE.md`.
 
 The macOS script emits a universal build when both Apple targets are installed;
 otherwise it emits a native build. The scripts never request or synthesize a
