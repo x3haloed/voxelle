@@ -213,3 +213,28 @@ signed release manifest, local verification from a clean download directory,
 publication to a GitHub Release, readback of the published assets, and the
 existing field-test evidence. Platform claims remain bounded where the actual
 platform artifact has not been executed.
+
+## Current release evidence
+
+The macOS preview slice was published on 2026-08-14 as
+[`v0.1.0-beta.1`](https://github.com/x3haloed/voxelle/releases/tag/v0.1.0-beta.1),
+an ordinary latest release whose signed manifest declares the `beta` channel.
+The tag resolves to commit `58f198a6d52c472967701ff42db77300c3568fa1`.
+
+- GitHub readback through `/releases/latest/download` returned the 772-byte
+  signed manifest, 15,131,305-byte universal DMG, and 32,708-byte product
+  generation. Clean-directory verification authenticated the manifest and
+  both listed artifacts.
+- The read-back DMG passed `hdiutil verify`; its executable is a universal
+  `x86_64 arm64` Mach-O, and `codesign --verify --deep --strict` accepted its
+  ad-hoc hardened-runtime signature.
+- The packaged native app discovered sequence 1 from the public fixed path,
+  staged it without activation, activated it in-process as a signed source,
+  then rolled back to `builtin-recovery`. The resulting store had neither an
+  active nor staged pointer and retained the verified signed generation as the
+  previous rollback target.
+
+This is a bounded macOS preview claim, not the complete cross-platform beta
+gate. A Windows installer built and exercised on Windows, the existing
+multi-machine field test, and protected offline relocation of both signing
+secrets remain required before this contract may claim full beta readiness.

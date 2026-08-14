@@ -73,6 +73,9 @@ to weaken system-wide security.
   `cargo run -p voxelle-release -- verify-trust-transition --trust-roots EMBEDDED_ROOTS --transition ROTATION.voxtrust --state-dir TRUST_STATE`
 - GitHub Release publication:
   `scripts/publish-github-release.sh TAG TITLE ASSET...`
+- GitHub API publication through the existing Git credential helper when `gh`
+  is unavailable:
+  `scripts/publish-github-release-api.sh TAG TITLE NOTES_FILE ASSET...`
 - Clean readback of the latest published release:
   `scripts/verify-github-release.sh NEW_DOWNLOAD_DIR`
 
