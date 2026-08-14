@@ -7,6 +7,8 @@ import {
   disconnectedParticipantIds,
   isCameraUnavailable,
   leaveCall,
+  mediaCaptureErrorMessage,
+  participantConnectionLabel,
 } from "./call-media.mjs";
 
 test("camera capture requests audio and video together", async () => {
@@ -57,6 +59,29 @@ test("permission denial is not mislabeled as missing hardware", async () => {
     denied,
   );
   assert.equal(isCameraUnavailable(denied), false);
+  assert.equal(
+    mediaCaptureErrorMessage(denied, true),
+    "Voxelle could not use your camera and microphone. Allow access in system settings, then try again.",
+  );
+});
+
+test("capture failures give a local recovery action without leaking technical errors", () => {
+  const busy = new Error("Could not start video source");
+  busy.name = "NotReadableError";
+  assert.equal(
+    mediaCaptureErrorMessage(busy, false),
+    "Your microphone is unavailable or already in use. Close other media apps, then try again.",
+  );
+  assert.equal(
+    mediaCaptureErrorMessage(new Error("opaque platform failure"), true),
+    "Voxelle could not start video. Check your media devices, then try again.",
+  );
+});
+
+test("participant connection states remain direct and human readable", () => {
+  assert.equal(participantConnectionLabel("new"), "Connecting directly");
+  assert.equal(participantConnectionLabel("connected"), "Connected directly");
+  assert.equal(participantConnectionLabel("failed"), "Direct connection unavailable");
 });
 
 test("local media stops even when durable leave fails", async () => {

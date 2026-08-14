@@ -364,9 +364,13 @@ deterministically selected four peers without rejecting otherwise valid facts,
 and heartbeat expiry releases a slot after a crash. Public and private rooms
 reuse the same acceptance, encryption, storage, and sync path. Deterministic UI
 tests exercise camera requests, voice fallback when hardware is absent, and
-permission-denial truthfulness. This verification machine has no physical
-camera or microphone, so physical-device capture is not claimed as lived local
-evidence.
+permission-denial truthfulness. The packaged macOS surface now presents mutually
+exclusive pre-join and in-call actions, explains the direct four-person envelope
+before capture, localizes actionable permission and device failures, and names
+each participant's direct connection state for assistive technology. This
+verification machine has no physical camera or microphone, so capture,
+permission prompts, two-device media flow, and the resulting in-call tiles are
+not claimed as lived local evidence.
 
 The final local fixed-point pass is green for the changed system authorities:
 71 Rust tests, 9 browser-shell behavior tests, strict lint, generated-contract

@@ -31,8 +31,10 @@ const uiState = {
   paletteOpen: false,
   paletteQuery: "",
   localMediaStream: null,
+  localMediaMode: "",
   remoteMediaStreams: new Map(),
   peerConnections: new Map(),
+  peerConnectionStates: new Map(),
   pendingIce: new Map(),
   seenCallSignals: new Set(),
   processingCallSignals: false,
@@ -1541,43 +1543,56 @@ function callMeshView(snapshot) {
   const localPeerId = snapshot.home?.profile.peer_id;
   const joined = Boolean(localPeerId && call?.participants.includes(localPeerId));
   const controls = element("div", "control-row");
-  controls.append(
-    commandButton("call.join", { video: false }),
-    commandButton("call.join", { video: true }),
-    commandButton("call.leave"),
-  );
-  controls.children[0].textContent = "Join voice";
-  controls.children[1].textContent = "Join video";
+  if (joined) {
+    controls.append(commandButton("call.leave"));
+  } else {
+    controls.append(
+      commandButton("call.join", { video: false }),
+      commandButton("call.join", { video: true }),
+    );
+    controls.children[0].textContent = "Join with microphone";
+    controls.children[0].title = "Ask for microphone access and join this room's direct call";
+    controls.children[1].textContent = "Join with camera";
+    controls.children[1].title = "Ask for camera and microphone access and join this room's direct call";
+  }
   const status = element(
     "p",
     "summary",
     joined
-      ? `${call?.participants.length ?? 0} of 4 peers in direct mesh`
-      : "Media stays in direct WebRTC connections; replicated signed events carry signaling only.",
+      ? `${call?.participants.length ?? 0} of 4 people in this direct call. Your media does not pass through a Voxelle service.`
+      : "Start a direct call for up to four people in this room. Choose whether to turn on your camera before joining.",
   );
+  status.setAttribute("aria-live", "polite");
   const videos = element("div", "call-grid");
   if (joined) {
-    const localVideo = element("video", "call-video");
-    localVideo.autoplay = true;
-    localVideo.muted = true;
-    localVideo.playsInline = true;
-    localVideo.dataset.peerId = "local";
-    videos.append(callTile("You", localVideo));
+    const localMedia = uiState.localMediaMode === "video"
+      ? callVideo("local", true)
+      : element("div", "call-media-placeholder", "Microphone on");
+    videos.append(callTile(`You · ${uiState.localMediaMode === "video" ? "Camera on" : "Voice only"}`, localMedia));
     for (const peerId of call?.participants ?? []) {
       if (peerId === localPeerId) continue;
-      const video = element("video", "call-video");
-      video.autoplay = true;
-      video.playsInline = true;
-      video.dataset.peerId = peerId;
-      videos.append(callTile(profileForPeer(snapshot, peerId).display_name, video));
+      const label = participantConnectionLabel(uiState.peerConnectionStates.get(peerId));
+      videos.append(callTile(`${profileForPeer(snapshot, peerId).display_name} · ${label}`, callVideo(peerId, false)));
     }
   }
   fragment.append(status);
   if (uiState.mediaNotice) {
-    fragment.append(element("p", "call-warning", uiState.mediaNotice));
+    const notice = element("p", "call-warning", uiState.mediaNotice);
+    notice.setAttribute("role", "status");
+    notice.setAttribute("aria-live", "polite");
+    fragment.append(notice);
   }
   fragment.append(controls, videos);
   return fragment;
+}
+
+function callVideo(peerId, muted) {
+  const video = element("video", "call-video");
+  video.autoplay = true;
+  video.muted = muted;
+  video.playsInline = true;
+  video.dataset.peerId = peerId;
+  return video;
 }
 
 function callTile(label, video) {
@@ -1659,6 +1674,7 @@ function ensurePeerConnection(peerId, callId) {
   const existing = uiState.peerConnections.get(peerId);
   if (existing) return existing;
   const pc = new RTCPeerConnection({ iceServers: [] });
+  uiState.peerConnectionStates.set(peerId, "connecting");
   for (const track of uiState.localMediaStream?.getTracks() ?? []) {
     pc.addTrack(track, uiState.localMediaStream);
   }
@@ -1677,7 +1693,16 @@ function ensurePeerConnection(peerId, callId) {
     attachCallMedia();
   });
   pc.addEventListener("connectionstatechange", () => {
-    if (["failed", "closed"].includes(pc.connectionState)) closePeerConnection(peerId);
+    if (uiState.peerConnections.get(peerId) !== pc) return;
+    uiState.peerConnectionStates.set(peerId, pc.connectionState);
+    if (pc.connectionState === "failed") {
+      uiState.mediaNotice = `Could not connect directly to ${profileForPeer(currentSnapshot, peerId).display_name}. They can leave and rejoin to try again.`;
+      closePeerConnection(peerId);
+      uiState.peerConnectionStates.set(peerId, "failed");
+    } else if (pc.connectionState === "closed") {
+      closePeerConnection(peerId);
+    }
+    render();
   });
   pc.__voxelleCallId = callId;
   uiState.peerConnections.set(peerId, pc);
@@ -1708,12 +1733,15 @@ function closePeerConnection(peerId) {
   uiState.peerConnections.delete(peerId);
   uiState.remoteMediaStreams.delete(peerId);
   uiState.pendingIce.delete(peerId);
+  uiState.peerConnectionStates.delete(peerId);
 }
 
 function stopLocalMedia() {
   for (const track of uiState.localMediaStream?.getTracks() ?? []) track.stop();
   uiState.localMediaStream = null;
+  uiState.localMediaMode = "";
   for (const peerId of [...uiState.peerConnections.keys()]) closePeerConnection(peerId);
+  uiState.peerConnectionStates.clear();
   uiState.seenCallSignals.clear();
 }
 
@@ -2005,11 +2033,19 @@ async function runCommand(command, payload) {
         return;
       case "call.join": {
         if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
-          throw new Error("This WebView does not provide WebRTC media capture");
+          uiState.mediaNotice = "Voice and video are unavailable in this installation. Update Voxelle or use a supported native build, then try again.";
+          return;
         }
         stopLocalMedia();
-        const capture = await captureCallMedia(navigator.mediaDevices, Boolean(payload?.video));
+        let capture;
+        try {
+          capture = await captureCallMedia(navigator.mediaDevices, Boolean(payload?.video));
+        } catch (error) {
+          uiState.mediaNotice = mediaCaptureErrorMessage(error, Boolean(payload?.video));
+          return;
+        }
         uiState.localMediaStream = capture.stream;
+        uiState.localMediaMode = capture.video ? "video" : "voice";
         uiState.mediaNotice = capture.notice;
         try {
           currentSnapshot = await shell.execute(command, {

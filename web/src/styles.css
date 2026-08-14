@@ -863,6 +863,15 @@ textarea {
   background: #111;
 }
 
+.call-media-placeholder {
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  background: radial-gradient(circle at 50% 35%, #343a46, #111 70%);
+  font-weight: 700;
+}
+
 .call-tile figcaption {
   padding: 6px 8px;
 }
