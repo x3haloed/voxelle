@@ -372,6 +372,17 @@ expired, conflicting, partial, and oversized input without turning preview
 parsing into admission. This is local packaged evidence, not external delivery,
 offline-inviter, Windows, or assistive-technology evidence.
 
+Fresh onboarding now makes a `.voxinvite` file the ordinary handoff, keeps the
+raw signed JSON fallback behind explicit disclosure, and disables submission
+until one of those sources contains input. A rendered fresh-state interaction
+probe exercised the visible file-picker trigger, confirmed the hidden native
+input does not create a duplicate accessible control, carried a selected file
+into the same bounded claims review, and verified that manual text remains
+keyboard-reachable. Desktop and narrow viewport checks showed no horizontal
+overflow. This is rendered browser evidence for presentation and interaction,
+not a new native file-dialog or successful-admission claim; the preceding
+packaged gate remains the Rust-owned admission evidence.
+
 Customization has crossed a focused native macOS gate. The packaged workbench
 opens one human settings surface from More, presents everyday behavior before
 advanced semantic-token and metric controls, and exposes contextual accessible

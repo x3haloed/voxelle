@@ -90,7 +90,10 @@ membership or protocol authority.
 
 1. Launch the host with a fresh isolated home; do not initialize a separate
    space first.
-2. Paste A's signed invite JSON into `Or join a space` and run `Join Space`.
+2. Choose A's `.voxinvite` file under **Join with an invite**, review the
+   displayed space, authority, expiry, and included peers, then run **Join
+   Space**. If the invite arrived as complete signed text instead, expand
+   **Paste invite JSON instead** and paste it there.
 3. Confirm the join creates B's durable principal, admits it to A's space,
    synchronizes retained history, and goes online without manual topology
    steps on the ordinary success path.

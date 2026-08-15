@@ -472,27 +472,65 @@ function onboardingExperience(snapshot) {
   });
   const inviteFile = document.createElement("input");
   inviteFile.type = "file";
+  inviteFile.hidden = true;
   inviteFile.accept = ".voxinvite,application/json";
-  inviteFile.setAttribute("aria-label", "Choose a signed Voxelle invite");
+  const inviteSource = element("p", "invite-source muted", "No invite selected yet.");
+  inviteSource.setAttribute("aria-live", "polite");
   inviteFile.addEventListener("change", async () => {
     const file = inviteFile.files?.[0];
     if (!file) return;
-    uiState.spaceInviteDraft = await file.text();
-    inviteText.value = uiState.spaceInviteDraft;
-    updateInviteReview(inviteReview, uiState.spaceInviteDraft);
+    try {
+      uiState.spaceInviteDraft = await file.text();
+      inviteText.value = uiState.spaceInviteDraft;
+      manualInvite.open = false;
+      inviteSource.textContent = uiState.spaceInviteDraft.trim()
+        ? `Selected ${file.name}. Review its claims below before joining.`
+        : `${file.name} is empty. Choose a complete signed invite file.`;
+      inviteSource.classList.remove("muted");
+      inviteSource.classList.toggle("invite-review-warning", !uiState.spaceInviteDraft.trim());
+      updateInviteReview(inviteReview, uiState.spaceInviteDraft);
+      joinButton.disabled = !uiState.spaceInviteDraft.trim();
+    } catch (error) {
+      uiState.spaceInviteDraft = "";
+      inviteText.value = "";
+      inviteSource.textContent = "Voxelle could not read that invite file. Choose it again or paste the complete invite JSON.";
+      inviteSource.classList.remove("muted");
+      inviteSource.classList.add("invite-review-warning");
+      updateInviteReview(inviteReview, "");
+      joinButton.disabled = true;
+    }
   });
+  const chooseInvite = actionButton("Choose invite file…", () => inviteFile.click());
   const inviteText = element("textarea", "invite-input");
   inviteText.rows = 5;
-  inviteText.placeholder = "Paste signed .voxinvite JSON";
+  inviteText.placeholder = "Paste complete signed .voxinvite JSON";
   inviteText.setAttribute("aria-label", "Signed Voxelle invite");
   inviteText.value = uiState.spaceInviteDraft;
   inviteText.addEventListener("input", () => {
     uiState.spaceInviteDraft = inviteText.value;
+    inviteSource.textContent = inviteText.value.trim()
+      ? "Using manually pasted invite JSON. Review its claims below before joining."
+      : "No invite selected yet.";
+    inviteSource.classList.toggle("muted", !inviteText.value.trim());
+    inviteSource.classList.remove("invite-review-warning");
     updateInviteReview(inviteReview, uiState.spaceInviteDraft);
+    joinButton.disabled = !inviteText.value.trim();
   });
+  const manualInvite = element("details", "advanced-details invite-manual");
+  manualInvite.append(
+    element("summary", "", "Paste invite JSON instead"),
+    element(
+      "p",
+      "summary",
+      "Use this when someone sent the complete signed invite as text instead of a .voxinvite file.",
+    ),
+    inviteText,
+  );
   const inviteReview = element("div", "invite-review");
   updateInviteReview(inviteReview, uiState.spaceInviteDraft);
-  joinForm.append(inviteFile, inviteText, inviteReview, submitButton("space.join"));
+  const joinButton = submitButton("space.join");
+  joinButton.disabled = !uiState.spaceInviteDraft.trim();
+  joinForm.append(inviteFile, chooseInvite, inviteSource, manualInvite, inviteReview, joinButton);
   join.append(joinForm);
 
   const recover = onboardingChoice(

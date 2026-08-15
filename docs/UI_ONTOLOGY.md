@@ -209,7 +209,9 @@ announcing a dismissible success status. An unavailable or rejected clipboard
 is a structured `needs_human` failure with a manual path through the complete
 Signed invite details; absence of the browser API never counts as success.
 
-Fresh onboarding previews bounded claims from pasted or selected invite JSON:
+Fresh onboarding leads with choosing a `.voxinvite` file, progressively
+discloses raw JSON paste as a text-handoff fallback, and previews bounded claims
+from either source:
 space name and stable ID, claimed authority, expiry, and included ordinary-peer
 count. It labels those values as untrusted, explains that an unbound bearer
 invite may be reused until expiry or revocation, and warns about locally visible
