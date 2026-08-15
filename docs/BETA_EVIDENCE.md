@@ -180,6 +180,13 @@ With that technology active and without using a pointer, complete and record:
   document-level horizontal scrolling; and
 - entering, operating, and leaving the direct-media surface.
 
+After restoring identity on the fresh device, confirm the success status states
+that authority from previous devices was revoked and directs the person to save
+a fresh offline recovery kit. Keyboard focus must land on that fresh-kit action,
+including after dismissing the status. Save the kit, then confirm the Identity
+Recovery view shows when it was last saved and offers **Save a fresh recovery
+kit** without displaying or retaining its filesystem path.
+
 While operating that surface, mute and unmute the local microphone through the
 named call control and through the command palette. Confirm the assistive
 technology announces the resulting **Microphone muted** and **Microphone on**

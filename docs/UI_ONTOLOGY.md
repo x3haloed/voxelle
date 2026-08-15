@@ -322,7 +322,12 @@ Until a recovery-kit export succeeds, the ordinary shell shows a compact
 recovery setup prompt. The durable health marker records only completion time,
 never recovery bytes or their filesystem location. After export, the prompt
 recedes and the Identity Recovery view remains available through Edit layout
-for intentionally creating a fresh offline copy.
+for intentionally creating a fresh offline copy. Successful identity
+restoration announces that authority from previous devices was revoked, moves
+keyboard focus to the required fresh-kit action, and keeps that action as the
+status-dismissal fallback. Once saved, the recovery view shows the recorded save
+time and labels the renewal action **Save a fresh recovery kit**; neither
+presentation retains or reveals the selected path.
 
 Views should be bound to app-layer ViewModels or commands. They should not
 assemble protocol, store, sync, or network concepts directly.

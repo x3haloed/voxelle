@@ -1140,24 +1140,32 @@ function profileSummaryView(snapshot) {
 function identityRecoveryView(snapshot) {
   const fragment = document.createDocumentFragment();
   if (snapshot.home) {
+    const recovery = snapshot.home.recovery;
     const warning = element("div", "recovery-warning");
     warning.append(
       element(
         "h3",
         "",
-        snapshot.home.recovery.kit_exported
+        recovery.kit_exported
           ? "Recovery kit saved"
           : "Keep this capability offline",
       ),
       element(
         "p",
         "summary",
-        snapshot.home.recovery.kit_exported
+        recovery.kit_exported
           ? "Voxelle recorded that a recovery kit was saved. Keep it protected and offline; save a fresh copy whenever your recovery plan changes."
           : "Anyone holding this file can rotate your identity authority away from every current device. Save it to protected offline storage; do not send it as a message or keep it beside this computer.",
       ),
     );
-    fragment.append(warning, commandButton("identity.recovery.export"));
+    if (recovery.kit_exported) {
+      warning.append(definitionGrid([
+        ["Last saved", formatRecoveryKitSavedTime(recovery.last_exported_ms)],
+      ]));
+    }
+    const save = commandButton("identity.recovery.export");
+    if (recovery.kit_exported) save.textContent = "Save a fresh recovery kit";
+    fragment.append(warning, save);
   } else {
     const copy = element("div", "empty-state");
     copy.append(
@@ -1177,6 +1185,12 @@ function identityRecoveryView(snapshot) {
     fragment.append(copy);
   }
   return fragment;
+}
+
+function formatRecoveryKitSavedTime(value) {
+  if (!Number.isFinite(value)) return "Recorded time unavailable";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "Recorded time unavailable" : date.toLocaleString();
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -3477,6 +3491,7 @@ async function runCommand(command, payload) {
           path,
           max_events_per_peer: payload?.max_events_per_peer ?? 4096,
         });
+        uiState.status = "Identity recovered on this device. Authority from previous devices was revoked. Save a fresh offline recovery kit now.";
         return;
       }
       case "peer.import": {
@@ -3777,13 +3792,16 @@ function commandCompletionFocusTarget(command) {
   if (command === "home.archiveForRecovery") {
     return app.querySelector('[data-command="identity.recovery.restore"]');
   }
-  if (command === "home.init" || command === "space.join") {
+  if (
+    command === "home.init"
+    || command === "space.join"
+    || command === "identity.recovery.restore"
+  ) {
     return app.querySelector(".recovery-setup-prompt .command-button")
       ?? app.querySelector(".message-input");
   }
   if (
     command === "identity.recovery.export"
-    || command === "identity.recovery.restore"
     || command === "channel.create"
     || command === "attachment.add"
   ) {
@@ -3931,6 +3949,7 @@ function focusAfterNoticeDismissal(returnElement, returnActionKey, validationTar
           : restoredAction && (!activeSurface || activeSurface.contains(restoredAction))
             ? restoredAction
             : activeSurface?.querySelector("[data-dialog-initial-focus='true']")
+            ?? app.querySelector(".recovery-setup-prompt .command-button")
             ?? app.querySelector(".message-input")
             ?? app.querySelector(".app-header button"));
     target?.focus();

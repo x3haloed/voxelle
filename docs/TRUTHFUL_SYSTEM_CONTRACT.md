@@ -227,6 +227,16 @@ lost home through an ordinary retaining peer into a fresh home, propagates the
 new head back, and proves that the retaining peer rejects a newly signed event
 from the lost device.
 
+The human recovery handoff now follows that authority result instead of falling
+through silently to conversation. A successful restore announces that authority
+from previous devices was revoked and focuses the fresh recovery-kit action;
+status dismissal preserves the same fallback. The Identity Recovery view shows only
+the locally recorded save time and a fresh-kit renewal action, never the bearer
+file path or bytes. Deterministic presentation regressions cover the handoff on
+top of the existing serialized principal-continuity, revocation, restart, and
+ordinary-peer recovery evidence; external assistive-technology operation
+remains a separate beta gate.
+
 Transport handshakes now carry the bounded identity proof that authorizes the
 claimed device. The receiver derives the principal and current device key from
 that proof, while the dialer binds the result to the expected peer record and
