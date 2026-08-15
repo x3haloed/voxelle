@@ -1034,16 +1034,32 @@ track was negotiated. Deterministic authority, serialized two-home, device-track
 and palette tests cover this path; physical camera behavior remains an external
 human evidence gate.
 
-The final local fixed-point pass is green for the changed system authorities:
-71 Rust tests, 9 browser-shell behavior tests, strict lint, generated-contract
-equality, a universal macOS package build, ad-hoc signature and checksum
-inspection, packaged native initialization, accepted message projection,
-layout and message persistence across restart, IPv6 QUIC startup, and retained
-artifact inspection all pass. The universal app contains both arm64 and
-x86_64 executables, occupies 31 MiB unpacked, and ships in an 11 MiB DMG. The
-initialized native test home occupied 84 KiB after one message and one saved
-layout change; its application state consisted of the encrypted identity vault,
-the separate QUIC credential, SQLite, and SQLite crash-safety sidecars.
+The current local verification pass is green for the changed system
+authorities: 119 Rust workspace tests, 135 frontend behavior tests, strict
+`voxelle-app` lint, generated-contract equality, IPv6 QUIC startup, retained
+artifact inspection, and the authority-specific recovery, invitation,
+governance, private-room, media, update, release-evidence, CLI, inhabitant, and
+native-host paths all pass. The current universal macOS build and its DMG
+inspection are recorded separately below so artifact-specific claims remain
+distinguishable from semantic test evidence.
+
+A later current-branch native rehearsal rebuilt the human-UX branch as the
+universal `Voxelle_0.1.0_universal.dmg`. `hdiutil verify` accepted the image,
+its SHA-256 was
+`65d3ac79477cd133d3aea8f11644b73c6ac86e0de25a3ba1977b6866c2796c95`,
+`lipo` reported both `x86_64` and `arm64`, and strict `codesign` verification
+accepted the intended ad-hoc hardened-runtime signature. From the mounted
+read-only DMG, a disposable `VOXELLE_HOME_ROOT` with the documented test-file
+vault displayed only Create, signed-invite Join, and Recover; accepted Create,
+immediately projected the recovery-kit obligation, opened the native
+`.voxrecover` save chooser without writing, admitted a harmless message through
+Rust, and projected it in Conversation. The app then exited cleanly and the
+disposable home was removed. This is current packaged-WebView and local
+admission evidence, not production Keychain, restart, invite, recovery,
+multi-peer, physical-media, beta.4, or release-receipt evidence. The authenticated
+beta.3 manifest and its three artifacts remain internally valid but are 91
+commits behind this rehearsal branch, so they cannot evidence these later human
+UX changes.
 
 The locally natural compression point is therefore the current authority
 topology, not the smallest imaginable byte count. The remaining separations

@@ -15,6 +15,14 @@ does not make a test true. Operators must retain the associated screenshots,
 machine notes, and failure logs outside release assets; the verifier only makes
 missing, inconsistent, or weaker claims fail closed.
 
+Local packaged rehearsals remain useful before release assembly, but they do
+not become receipt evidence merely because the DMG verifies or a disposable
+home completes setup and messaging. The release manifest, source commit, and
+receipt must identify the same generation. In particular, the authenticated
+beta.3 artifacts predate the current human-UX branch and must not be reused as
+evidence for its behavior; assemble a new signed generation before recording
+the distribution, Windows, field, human, or custody sections for this code.
+
 ## 1. Create the release-bound template
 
 From the reviewed source checkout, use the release manifest downloaded through
