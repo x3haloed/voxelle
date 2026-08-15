@@ -220,10 +220,12 @@ second manually coordinated owner reference.
 
 When a successful semantic command replaces its initiating surface, the
 coordinator rejects the document root as a meaningful origin and selects a
-causal fallback. Fresh creation or join focuses recovery setup; successful
-recovery-kit export, identity restoration, or channel creation focuses the
-message composer. These are presentation destinations after Rust acceptance,
-not alternate command completion state.
+causal fallback. Fresh creation, join, or identity restoration focuses recovery
+setup; successful recovery-kit export or channel creation focuses the message
+composer. Accepted channel selection exposes the Rust-selected row as the
+current location and moves focus there after its Select button disappears.
+These are presentation destinations after Rust acceptance, not alternate
+command completion state.
 
 Installing a selected product package, activating a staged generation, rolling
 back, and rotating release-signing trust all enter one modal confirmation path

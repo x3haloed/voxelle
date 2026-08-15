@@ -409,6 +409,14 @@ preview-rejected signed-invite command. In both cases the alert cleared and
 focus remained in the causal workflow. This is rendered WebView-equivalent
 evidence, not native assistive-technology or successful-command evidence.
 
+Channel navigation now preserves that causal location when acceptance changes
+the control topology. The Rust-selected channel row exposes
+`aria-current=page`, and a completed `channel.select` moves focus from the
+removed Select button to that surviving row. The frontend neither predicts the
+selection nor marks it current before the returned snapshot. Deterministic
+source and rendered accessibility-tree evidence cover this handoff; actual
+assistive-technology operation remains part of the external human gate.
+
 The degraded-connection human path has crossed a focused local macOS gate. Two
 separately identified ad-hoc-signed native bundles joined through a real signed
 invite. After the inviter exited, an explicit refresh retained the failed

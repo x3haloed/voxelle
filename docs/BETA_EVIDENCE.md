@@ -209,8 +209,10 @@ its missing prerequisite rather than allowing an avoidable failing action.
 In the channel list, conversation, and People surface, navigate repeated
 channel, message, reaction, member, role, and invitation controls. Confirm each
 announced name identifies the visible target rather than relying on position
-alone. Close one transient panel with Escape and confirm focus returns to its
-invoking header control with the collapsed state announced.
+alone. Select a different channel and confirm the accepted selected row is
+announced as the current location and receives focus after its Select button
+disappears. Close one transient panel with Escape and confirm focus returns to
+its invoking header control with the collapsed state announced.
 Open at least one disclosure with Enter and another with Space. Confirm the
 assistive technology announces each as an actionable control and reports the
 collapsed or expanded state after activation.

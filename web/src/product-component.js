@@ -2049,6 +2049,7 @@ function channelListView(snapshot) {
     const row = element("li", channel.selected ? "peer-row selected" : "peer-row");
     row.dataset.renderKey = `channel:${channel.room_id}`;
     row.tabIndex = -1;
+    if (channel.selected) row.setAttribute("aria-current", "page");
     const body = element("div", "peer-body");
     body.append(
       element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channel.name}${channel.unread_count > 0 ? ` (${channel.unread_count})` : ""}`),
@@ -3540,6 +3541,7 @@ async function runCommand(command, payload) {
       }
       case "channel.select":
         currentSnapshot = await shell.execute(command, payload);
+        focusChannelRow(payload.room_id);
         return;
       case "message.open":
         currentSnapshot = await shell.execute(command, payload);
