@@ -7004,6 +7004,7 @@ mod tests {
         assert!(source.contains("function disambiguatedRoleLabel"));
         assert!(source.contains("function disambiguatedChannelLabel"));
         assert!(source.contains("function disambiguatedInviteLabel"));
+        assert!(source.contains("function disambiguatedMessageLabel"));
         assert!(source.contains("memberBanConfirmation(profile, memberLabel)"));
         assert!(source.contains("roleAssignmentConfirmation("));
         assert!(source.contains("roleLabel,"));

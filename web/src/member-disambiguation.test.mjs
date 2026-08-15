@@ -25,3 +25,11 @@ test("same-expiry invites retain one stable label through revocation review", ()
   assert.match(source, /Revoke invite expiring \$\{inviteLabel\} confirmation/);
   assert.match(source, /confirm\.textContent = `Revoke invite expiring \$\{inviteLabel\}`/);
 });
+
+test("identical messages retain one stable label through actions and deletion review", () => {
+  assert.match(source, /disambiguatedMessageLabel\(messageContext, messageContexts\)/);
+  assert.match(source, /contextualActionButton\("Reply", `Reply to \$\{messageLabel\}`/);
+  assert.match(source, /contextualActionButton\("Edit", `Edit \$\{messageLabel\}`/);
+  assert.match(source, /contextualActionButton\("Delete…", `Delete \$\{messageLabel\}`/);
+  assert.match(source, /messageDeleteConfirmation\(message, messageLabel, snapshot\)/);
+});

@@ -182,3 +182,27 @@ export function disambiguatedInviteLabel(invite, invites) {
     ? `${invite.display_expiry} · invite ${stableId.slice(-markerLength)}`
     : invite.display_expiry;
 }
+
+/**
+ * Make identical visible message contexts stable without cluttering ordinary posts.
+ * @param {{event_id: string, display_context: string}} message
+ * @param {Array<{event_id: string, display_context: string}>} messages
+ */
+export function disambiguatedMessageLabel(message, messages) {
+  const duplicates = messages.filter((candidate) => (
+    candidate.display_context === message.display_context
+  ));
+  const stableId = message.event_id.slice(message.event_id.lastIndexOf(":") + 1);
+  let markerLength = Math.min(8, stableId.length);
+  while (
+    markerLength < stableId.length
+    && duplicates.some((candidate) => (
+      candidate.event_id !== message.event_id
+      && candidate.event_id.slice(candidate.event_id.lastIndexOf(":") + 1)
+        .endsWith(stableId.slice(-markerLength))
+    ))
+  ) markerLength += 1;
+  return duplicates.length > 1
+    ? `${message.display_context} · message ${stableId.slice(-markerLength)}`
+    : message.display_context;
+}

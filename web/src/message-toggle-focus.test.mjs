@@ -8,8 +8,8 @@ test("reaction and pin controls expose target-specific names and stable focus ke
   assert.match(source, /button\.dataset\.messageFocusKey = `reaction-chip:\$\{reaction\.emoji\}`/);
   assert.match(source, /thumb\.dataset\.messageFocusKey = "reaction-action:thumb"/);
   assert.match(source, /pin\.dataset\.messageFocusKey = "pin-action"/);
-  assert.match(source, /reaction on \$\{messageContextLabel\(message, author\.display_name\)\}/);
-  assert.match(source, /\$\{message\.pinned \? "Unpin" : "Pin"\} \$\{messageContextLabel/);
+  assert.match(source, /reaction on \$\{messageLabel\}/);
+  assert.match(source, /\$\{message\.pinned \? "Unpin" : "Pin"\} \$\{messageLabel\}/);
 });
 
 test("accepted message toggles reacquire the replacement control or message row", () => {

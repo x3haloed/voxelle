@@ -265,14 +265,17 @@ matching role markers and permission descriptions. Create two channels with the
 same name, including one private channel; confirm their cards, Select and key
 rotation controls, header, conversation, composer, search results, and
 notification actions retain distinct matching channel markers. Select a
-different channel
-and confirm the accepted selected row is
+different channel and confirm the accepted selected row is
 announced as the current location and receives focus after its Select button
 disappears. Add and remove a reaction, then pin and unpin a message. Confirm the
 replacement control keeps focus, names its message target, and exposes the
 opposite admitted action; if the last visible reaction disappears, focus may
 fall back to that message row. Close one transient panel with Escape and confirm
 focus returns to its invoking header control with the collapsed state announced.
+Have one author post identical text twice. Confirm both message rows retain
+distinct matching markers across reactions, Message actions, Reply, Edit,
+Delete, and deletion review; repeat with identical attachment filenames and
+confirm the Download and Delete-file labels remain distinct.
 Open at least one disclosure with Enter and another with Space. Confirm the
 assistive technology announces each as an actionable control and reports the
 collapsed or expanded state after activation. In channel creation, turn private

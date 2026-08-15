@@ -469,6 +469,12 @@ its Enter/save or Escape/cancel keyboard paths invoke `message.edit` only when
 the person commits. Draft context is disposable presentation state; it never
 becomes a parallel message or thread authority.
 
+When the same author has identical bounded visible message context more than
+once, controls append the shortest unique event-ID suffix. That context remains
+consistent across reactions, downloads, Message actions, Reply, Edit, Delete,
+and deletion review. Unique message contexts remain uncluttered, and commands
+continue to carry complete event IDs.
+
 Mention composition leads with current display names. The composer and inline
 editor insert a visible `@name`, then carry the corresponding stable peer IDs
 through `message.send` or `message.edit`. A typed name resolves automatically

@@ -760,6 +760,20 @@ marker through the focused confirmation and final Revoke button, and returned
 to both unchanged rows after cancellation without invoking governance. This is
 not admitted-governance, packaged-native, or assistive-technology evidence.
 
+Repeated identical posts no longer collapse message controls back into
+position-dependent labels. The frontend compares the existing bounded
+author/content or attachment context among visible messages and, only on
+collision, appends the shortest unique message-event-ID suffix of at least
+eight characters. That label persists across reaction chips and actions,
+downloads, Message actions, Reply, Edit, Delete, and the focused deletion review.
+Every command still carries the complete target event ID, and Rust remains the
+message authority. Deterministic helper, product-source, and native bundle tests
+cover the mapping. A rendered duplicate-own-message fixture exposed two distinct
+action disclosures, carried the selected suffix through Reply, Edit, Delete,
+the focused deletion review, and its final Delete button, then returned after
+cancellation without invoking the command. This is not admitted-message,
+packaged-native, attachment-collision, or assistive-technology evidence.
+
 Accepted reaction and pin toggles also preserve causal keyboard location
 without preserving a stale command listener. Reconciliation replaces the
 control when the Rust-projected action changes from add to remove or back; a

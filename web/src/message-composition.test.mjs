@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   disambiguatedChannelLabel,
   disambiguatedInviteLabel,
+  disambiguatedMessageLabel,
   disambiguatedMemberLabel,
   disambiguatedRoleLabel,
   insertMentionText,
@@ -169,5 +170,36 @@ test("same-expiry invites receive stable bounded disambiguators", () => {
   assert.equal(
     disambiguatedInviteLabel(collidingSuffixes[1], collidingSuffixes),
     "Tomorrow · invite b12345678",
+  );
+});
+
+test("identical visible messages receive stable bounded disambiguators", () => {
+  const messages = [
+    { event_id: "evt:post-aaa11111", display_context: "message from Alice: Same text" },
+    { event_id: "evt:post-bbb22222", display_context: "message from Alice: Same text" },
+  ];
+  assert.equal(
+    disambiguatedMessageLabel(messages[0], messages),
+    "message from Alice: Same text · message aaa11111",
+  );
+  assert.equal(
+    disambiguatedMessageLabel(messages[1], messages),
+    "message from Alice: Same text · message bbb22222",
+  );
+  assert.equal(
+    disambiguatedMessageLabel(messages[0], [messages[0]]),
+    "message from Alice: Same text",
+  );
+  const collidingSuffixes = [
+    { event_id: "evt:first-a12345678", display_context: "message from Bob: Repeated" },
+    { event_id: "evt:second-b12345678", display_context: "message from Bob: Repeated" },
+  ];
+  assert.equal(
+    disambiguatedMessageLabel(collidingSuffixes[0], collidingSuffixes),
+    "message from Bob: Repeated · message a12345678",
+  );
+  assert.equal(
+    disambiguatedMessageLabel(collidingSuffixes[1], collidingSuffixes),
+    "message from Bob: Repeated · message b12345678",
   );
 });

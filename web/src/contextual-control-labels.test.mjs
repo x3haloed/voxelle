@@ -10,8 +10,8 @@ test("channel actions expose their visible channel context", () => {
 });
 
 test("message action disclosures expose author and bounded content context", () => {
-  assert.match(source, /actionSummary\.setAttribute\("aria-label", messageActionsLabel\(message, author\.display_name\)\)/);
-  assert.match(source, /reaction on \$\{messageContextLabel\(message, author\.display_name\)\}/);
+  assert.match(source, /actionSummary\.setAttribute\("aria-label", messageActionsLabel\(messageLabel\)\)/);
+  assert.match(source, /reaction on \$\{messageLabel\}/);
   assert.match(source, /text\.length > 48 \? `\$\{text\.slice\(0, 47\)\}…` : text/);
 });
 

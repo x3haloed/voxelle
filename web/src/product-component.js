@@ -2662,6 +2662,13 @@ function roomTimelineView(snapshot) {
     element("p", "summary", channel?.topic || "Messages retained and synchronized by space members."),
   );
   const messages = snapshot.home?.room.messages ?? [];
+  const messageContexts = messages.map((message) => ({
+    event_id: message.event_id,
+    display_context: messageContextLabel(
+      message,
+      profileForPeer(snapshot, message.author_peer_id).display_name,
+    ),
+  }));
   const list = element("ol", "message-list");
   if (messages.length === 0) {
     const empty = element("li", "conversation-empty");
@@ -2678,6 +2685,10 @@ function roomTimelineView(snapshot) {
     row.dataset.messageEventId = message.event_id;
     row.tabIndex = -1;
     const author = profileForPeer(snapshot, message.author_peer_id);
+    const messageContext = messageContexts.find((candidate) => candidate.event_id === message.event_id);
+    const messageLabel = messageContext
+      ? disambiguatedMessageLabel(messageContext, messageContexts)
+      : messageContextLabel(message, author.display_name);
     const avatar = element("div", "profile-avatar small", profileInitials(author.display_name));
     const content = element("div", "message-content");
     const meta = element("div", "message-meta");
@@ -2706,7 +2717,7 @@ function roomTimelineView(snapshot) {
       button.textContent = `${reaction.emoji} ${reaction.peer_ids.length}`;
       button.setAttribute(
         "aria-label",
-        `${ownReaction ? "Remove" : "Add"} ${reaction.emoji} reaction on ${messageContextLabel(message, author.display_name)}`,
+        `${ownReaction ? "Remove" : "Add"} ${reaction.emoji} reaction on ${messageLabel}`,
       );
       button.dataset.messageFocusKey = `reaction-chip:${reaction.emoji}`;
       reactions.append(button);
@@ -2721,12 +2732,12 @@ function roomTimelineView(snapshot) {
       link.href = `data:${attachment.mime};base64,${attachment.data_b64}`;
       link.download = attachment.filename;
       link.rel = "noopener";
-      link.setAttribute("aria-label", `Download ${attachment.filename}, ${formatFileSize(attachment.size_bytes)}`);
+      link.setAttribute("aria-label", `Download ${attachment.filename} from ${messageLabel}, ${formatFileSize(attachment.size_bytes)}`);
       content.append(link);
     }
     const actionDetails = element("details", "message-actions");
     const actionSummary = disclosureSummary("Message actions");
-    actionSummary.setAttribute("aria-label", messageActionsLabel(message, author.display_name));
+    actionSummary.setAttribute("aria-label", messageActionsLabel(messageLabel));
     actionDetails.append(actionSummary);
     const actions = element("div", "row-actions");
     const ownThumb = message.reactions
@@ -2740,7 +2751,7 @@ function roomTimelineView(snapshot) {
     thumb.textContent = ownThumb ? "Remove 👍" : "React 👍";
     thumb.setAttribute(
       "aria-label",
-      `${ownThumb ? "Remove" : "Add"} 👍 reaction on ${messageContextLabel(message, author.display_name)}`,
+      `${ownThumb ? "Remove" : "Add"} 👍 reaction on ${messageLabel}`,
     );
     thumb.dataset.messageFocusKey = "reaction-action:thumb";
     const pin = commandButton(message.pinned ? "pin.remove" : "pin.add", {
@@ -2749,24 +2760,24 @@ function roomTimelineView(snapshot) {
     });
     pin.setAttribute(
       "aria-label",
-      `${message.pinned ? "Unpin" : "Pin"} ${messageContextLabel(message, author.display_name)}`,
+      `${message.pinned ? "Unpin" : "Pin"} ${messageLabel}`,
     );
     pin.dataset.messageFocusKey = "pin-action";
     actions.append(
-      actionButton("Reply", () => beginReply(message, author.display_name)),
+      contextualActionButton("Reply", `Reply to ${messageLabel}`, () => beginReply(message, author.display_name)),
       thumb,
       pin,
     );
     if (own && !message.redacted) {
       if ((message.attachments ?? []).length === 0) {
-        actions.append(actionButton("Edit", () => beginMessageEdit(message)));
+        actions.append(contextualActionButton("Edit", `Edit ${messageLabel}`, () => beginMessageEdit(message)));
       }
-      actions.append(actionButton("Delete…", () => beginMessageDelete(message.event_id)));
+      actions.append(contextualActionButton("Delete…", `Delete ${messageLabel}`, () => beginMessageDelete(message.event_id)));
     }
     actionDetails.append(actions);
     content.append(actionDetails);
     if (uiState.deletingMessageId === message.event_id) {
-      content.append(messageDeleteConfirmation(message, snapshot));
+      content.append(messageDeleteConfirmation(message, messageLabel, snapshot));
     }
     row.append(avatar, content);
     list.append(row);
@@ -2775,13 +2786,13 @@ function roomTimelineView(snapshot) {
   return fragment;
 }
 
-function messageDeleteConfirmation(message, snapshot) {
+function messageDeleteConfirmation(message, messageLabel, snapshot) {
   const attachment = message.attachments?.[0] ?? null;
   const confirmation = element("section", "message-delete-confirmation");
   confirmation.setAttribute("role", "alertdialog");
-  confirmation.setAttribute("aria-label", attachment ? "Delete attachment confirmation" : "Delete message confirmation");
+  confirmation.setAttribute("aria-label", `Delete ${messageLabel} confirmation`);
   confirmation.append(
-    element("strong", "", attachment ? `Delete ${attachment.filename} from this conversation?` : "Delete this message?"),
+    element("strong", "", attachment ? `Delete ${attachment.filename} from ${messageLabel}?` : `Delete ${messageLabel}?`),
     element(
       "p",
       "summary",
@@ -2795,7 +2806,7 @@ function messageDeleteConfirmation(message, snapshot) {
     target_event_id: message.event_id,
     room: snapshot.home?.room.room_id ?? null,
   });
-  remove.textContent = attachment ? "Delete file" : "Delete message";
+  remove.textContent = attachment ? `Delete file from ${messageLabel}` : `Delete ${messageLabel}`;
   controls.append(remove, actionButton("Cancel deletion", () => cancelMessageDelete(message.event_id)));
   confirmation.append(controls);
   return confirmation;
@@ -3483,6 +3494,12 @@ function actionButton(label, action, title = label) {
   button.disabled = uiState.busyCommand !== "";
   button.addEventListener("pointerdown", (event) => event.stopPropagation());
   button.addEventListener("click", action);
+  return button;
+}
+
+function contextualActionButton(label, ariaLabel, action) {
+  const button = actionButton(label, action);
+  button.setAttribute("aria-label", ariaLabel);
   return button;
 }
 
@@ -4461,8 +4478,8 @@ function profileInitials(displayName) {
   return parts.slice(0, 2).map((part) => part[0].toUpperCase()).join("");
 }
 
-function messageActionsLabel(message, authorName) {
-  return `Actions for ${messageContextLabel(message, authorName)}`;
+function messageActionsLabel(messageLabel) {
+  return `Actions for ${messageLabel}`;
 }
 
 function messageContextLabel(message, authorName) {
