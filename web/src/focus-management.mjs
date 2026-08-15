@@ -50,16 +50,24 @@ export class FocusSurfaceCoordinator {
   }
 
   currentElement() {
-    return this.document.activeElement?.focus
-      ? this.document.activeElement
-      : null;
+    const active = this.document.activeElement;
+    if (
+      !active?.focus
+      || active === this.document.body
+      || active === this.document.documentElement
+    ) return null;
+    return active;
   }
 
-  /** @param {HTMLElement | null} target */
-  restoreWhenNoSurface(target) {
-    if (!target) return;
+  /** @param {HTMLElement | null} target @param {() => HTMLElement | null} [fallback] */
+  restoreWhenNoSurface(target, fallback = () => null) {
     this.schedule(() => {
-      if (!this.surface && target.isConnected) target.focus();
+      if (this.surface) return;
+      if (target?.isConnected) {
+        target.focus();
+      } else {
+        fallback()?.focus();
+      }
     });
   }
 

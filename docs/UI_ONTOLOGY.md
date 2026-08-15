@@ -178,6 +178,12 @@ moves into a newly opened surface, modal Tab navigation remains contained, and
 closing returns focus to the invoking control when it still exists. Snapshot
 refreshes do not make the entire application a live region; only bounded status
 and alert surfaces announce changes to assistive technology.
+When a successful semantic command replaces its initiating surface, the
+coordinator rejects the document root as a meaningful origin and selects a
+causal fallback. Fresh creation or join focuses recovery setup; successful
+recovery-kit export, identity restoration, or channel creation focuses the
+message composer. These are presentation destinations after Rust acceptance,
+not alternate command completion state.
 
 Command failures lead with a bounded human explanation and a concrete recovery
 action. Rust-owned recovery categories travel with the same serialized command

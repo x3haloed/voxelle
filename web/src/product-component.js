@@ -2646,9 +2646,27 @@ async function runCommand(command, payload) {
   } finally {
     uiState.busyCommand = "";
     render();
-    focusCoordinator.restoreWhenNoSurface(commandReturnElement);
+    focusCoordinator.restoreWhenNoSurface(
+      commandReturnElement,
+      () => commandCompletionFocusTarget(command),
+    );
     if (refreshQueued) queueMicrotask(() => publishRefresh().catch(reportError));
   }
+}
+
+function commandCompletionFocusTarget(command) {
+  if (command === "home.init" || command === "space.join") {
+    return app.querySelector(".recovery-setup-prompt .command-button")
+      ?? app.querySelector(".message-input");
+  }
+  if (
+    command === "identity.recovery.export"
+    || command === "identity.recovery.restore"
+    || command === "channel.create"
+  ) {
+    return app.querySelector(".message-input");
+  }
+  return null;
 }
 
 /** @param {unknown} error */

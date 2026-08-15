@@ -134,3 +134,37 @@ test("command completion restores its surviving origin unless a surface opened",
   frames.shift()();
   assert.equal(origin.focusCount, 1);
 });
+
+test("command completion uses a stable fallback when its origin disappeared", () => {
+  const frames = [];
+  const origin = { isConnected: false, focusCount: 0, focus() { this.focusCount += 1; } };
+  const fallback = { focusCount: 0, focus() { this.focusCount += 1; } };
+  const coordinator = new FocusSurfaceCoordinator(
+    { activeElement: origin },
+    (callback) => frames.push(callback),
+  );
+  coordinator.restoreWhenNoSurface(origin, () => fallback);
+  frames.shift()();
+  assert.equal(origin.focusCount, 0);
+  assert.equal(fallback.focusCount, 1);
+
+  coordinator.synchronize("utility", () => null);
+  frames.shift()();
+  coordinator.restoreWhenNoSurface(origin, () => fallback);
+  frames.shift()();
+  assert.equal(fallback.focusCount, 1);
+});
+
+test("document roots are not treated as useful command origins", () => {
+  const body = { focus() {} };
+  const documentElement = { focus() {} };
+  const document = { activeElement: body, body, documentElement };
+  const coordinator = new FocusSurfaceCoordinator(document, () => {});
+  assert.equal(coordinator.currentElement(), null);
+  document.activeElement = documentElement;
+  assert.equal(coordinator.currentElement(), null);
+
+  const button = { focus() {} };
+  document.activeElement = button;
+  assert.equal(coordinator.currentElement(), button);
+});

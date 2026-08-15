@@ -311,6 +311,17 @@ inviter received and projected the accepted message. This is local
 packaged-debug evidence, not the external three-machine, Windows,
 assistive-technology, or release-artifact gate.
 
+A new disposable-home run of the current ad-hoc-signed macOS `.app` exposed and
+then closed a keyboard handoff gap in that same path. Native pointer activation
+left the WebView document root active after `home.init`, so the vanished create
+button had no meaningful focus destination. The coordinator now rejects
+document roots as command origins and uses causal fallbacks. Repeating the
+fresh run focused **Save Recovery Kit** after accepted creation; after the
+native save dialog wrote a uniquely named kit and Rust removed the recovery
+prompt, focus moved to **Message #general**. Deterministic tests cover both a
+disconnected origin and a document-root origin. This is lived local macOS focus
+evidence, not an assistive-technology claim.
+
 Customization has crossed a focused native macOS gate. The packaged workbench
 opens one human settings surface from More, presents everyday behavior before
 advanced semantic-token and metric controls, and exposes contextual accessible
