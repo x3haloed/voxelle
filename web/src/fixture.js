@@ -57,7 +57,10 @@ export const fixtureSnapshot = {
         default_room: "room:general",
       },
     ],
-    channels: [{ room_id: "room:general", name: "general", topic: "", visibility: "public", selected: true, unread_count: 0 }],
+    channels: [
+      { room_id: "room:general", name: "general", topic: "", visibility: "public", key_epoch: 0, private_member_count: 0, selected: true, unread_count: 0 },
+      { room_id: "room:plans", name: "plans", topic: "Private weekend planning", visibility: "private", key_epoch: 2, private_member_count: 2, selected: false, unread_count: 0 },
+    ],
     roles: [{
       role_id: "role:moderator-preview",
       name: "Moderator",

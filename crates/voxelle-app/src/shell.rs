@@ -1700,10 +1700,9 @@ mod tests {
             .await
             .expect("send");
 
-        assert_eq!(
-            snapshot.home.expect("home").room.messages[0].text,
-            "serialized shell command"
-        );
+        let home = snapshot.home.expect("home");
+        assert_eq!(home.room.messages[0].text, "serialized shell command");
+        let local_peer_id = home.profile.peer_id;
         let updated = shell
             .execute_serialized_command(
                 "ui.preference.set",
@@ -1722,6 +1721,42 @@ mod tests {
             .expect("reset customization");
         assert_eq!(metric_value(&reset, "sidebar.width"), 360.0);
 
+        let private = shell
+            .execute_serialized_command(
+                "channel.create",
+                serde_json::json!({
+                    "name": "Private notes",
+                    "topic": "Rotation contract",
+                    "private_members": [local_peer_id]
+                }),
+            )
+            .await
+            .expect("create private channel");
+        let private_room_id = private
+            .home
+            .expect("home")
+            .channels
+            .into_iter()
+            .find(|channel| channel.name == "Private notes")
+            .expect("private channel")
+            .room_id;
+        let rotated = shell
+            .execute_serialized_command(
+                "channel.rotateKey",
+                serde_json::json!({ "room_id": private_room_id }),
+            )
+            .await
+            .expect("rotate through semantic command");
+        let rotated_channel = rotated
+            .home
+            .expect("home")
+            .channels
+            .into_iter()
+            .find(|channel| channel.name == "Private notes")
+            .expect("rotated private channel");
+        assert_eq!(rotated_channel.key_epoch, 2);
+        assert_eq!(rotated_channel.private_member_count, 1);
+
         let reopened = ShellState::new(dir.path().join("home"));
         assert_eq!(
             metric_value(
@@ -1733,6 +1768,19 @@ mod tests {
             ),
             360.0
         );
+        let reopened_snapshot = reopened
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("reopened channel projection");
+        let reopened_channel = reopened_snapshot
+            .home
+            .expect("home")
+            .channels
+            .into_iter()
+            .find(|channel| channel.name == "Private notes")
+            .expect("reopened private channel");
+        assert_eq!(reopened_channel.key_epoch, 2);
+        assert_eq!(reopened_channel.private_member_count, 1);
         let unknown = shell
             .execute_serialized_command("not_a_command", serde_json::json!({}))
             .await

@@ -10,7 +10,7 @@ export type ReactionView = { emoji: string, peer_ids: Array<string>, };
 
 export type AttachmentView = { event_id: string, filename: string, mime: string, sha256: string, data_b64: string, };
 
-export type ChannelView = { room_id: string, name: string, topic: string, visibility: string, selected: boolean, unread_count: number, };
+export type ChannelView = { room_id: string, name: string, topic: string, visibility: string, key_epoch: number, private_member_count: number, selected: boolean, unread_count: number, };
 
 export type RoleView = { role_id: string, name: string, permissions: Array<string>, member_count: number, };
 

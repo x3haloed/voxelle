@@ -147,6 +147,28 @@ hello from peer c
 8. Bring A back online and sync it against either B or C.
 9. Confirm all three peers can eventually see A, B, and C messages.
 
+## Private-Channel Test
+
+Use the same three admitted peers to exercise confidentiality without creating
+a second authority path.
+
+1. On A, create a private channel containing A and B but not C.
+2. Record the projected private-member count and key epoch, then send a unique
+   harmless marker in that channel.
+3. Synchronize B and C. Confirm B can open and read the private channel while C
+   does not see it or its marker.
+4. On A, choose **Rotate key…**. With the confirmation open, verify it names
+   the current private-member count, future-content protection, and the fact
+   that earlier retained material cannot be erased. Confirm the rotation.
+5. Confirm the projected epoch advances, send a second unique marker, and
+   synchronize B and C again. B must read both epochs; C must remain excluded.
+6. Restart A and confirm the advanced epoch and private-member count reconstruct
+   before sending more private content.
+
+Do not treat rotation as proof that a prior recipient forgot old keys or
+plaintext. The test proves current membership-bound distribution and future
+epoch use, not remote erasure or forward secrecy.
+
 ## What To Record
 
 For a beta-gate run, begin with the release-bound evidence template and follow
@@ -237,6 +259,8 @@ Minimum useful success:
 - C can use A's signed invite to join and receive history through ordinary peer
   B while A is offline.
 - A, B, and C can eventually see a message from each peer.
+- A and B can exchange content across a private-channel key rotation while C
+  remains excluded and the epoch reconstructs after restart.
 - The operator can explain what happened using only the workbench panels.
 
 Strong success:

@@ -250,6 +250,9 @@ pub struct ChannelView {
     pub name: String,
     pub topic: String,
     pub visibility: String,
+    #[ts(type = "number")]
+    pub key_epoch: u64,
+    pub private_member_count: usize,
     pub selected: bool,
     pub unread_count: usize,
 }
@@ -1959,6 +1962,8 @@ impl VoxelleHome {
                     ChannelVisibility::Private => "private",
                 }
                 .to_string(),
+                key_epoch: channel.key_epoch,
+                private_member_count: channel.private_members.len(),
                 selected: selected_room.unwrap_or(&config.space.default_room_id) == channel.room_id,
                 unread_count: unread_counts.get(&channel.room_id).copied().unwrap_or(0),
             })
@@ -7391,7 +7396,8 @@ mod tests {
     #[tokio::test]
     async fn private_room_is_ciphertext_for_members_only_and_survives_recovery() {
         let dir = tempdir().expect("tempdir");
-        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let alice_root = dir.path().join("alice");
+        let alice = VoxelleHome::new(&alice_root);
         let bob = VoxelleHome::new(dir.path().join("bob"));
         let charlie = VoxelleHome::new(dir.path().join("charlie"));
         let recovered = VoxelleHome::new(dir.path().join("alice-recovered"));
@@ -7433,6 +7439,14 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .expect("room id")
             .to_string();
+        let created_channel = alice
+            .channels(None)
+            .expect("created channel projection")
+            .into_iter()
+            .find(|channel| channel.room_id == room_id)
+            .expect("private channel");
+        assert_eq!(created_channel.key_epoch, 1);
+        assert_eq!(created_channel.private_member_count, 2);
         let sent = alice
             .send_message("e2e secret phrase", Some(&room_id))
             .expect("private send");
@@ -7466,6 +7480,14 @@ mod tests {
                 room_id: room_id.clone(),
             })
             .expect("rotate key epoch");
+        let rotated_channel = VoxelleHome::new(&alice_root)
+            .channels(None)
+            .expect("restart channel projection")
+            .into_iter()
+            .find(|channel| channel.room_id == room_id)
+            .expect("rotated channel");
+        assert_eq!(rotated_channel.key_epoch, 2);
+        assert_eq!(rotated_channel.private_member_count, 2);
         alice
             .send_message("secret after rotation", Some(&room_id))
             .expect("send under new epoch");

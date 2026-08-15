@@ -27,6 +27,7 @@ const uiState = {
   spaceInviteDraft: "",
   inviteExpiryMinutes: 1440,
   revokingInviteId: "",
+  rotatingChannelId: "",
   messageDraft: "",
   messageMentionsDraft: new Set(),
   replyTargetEventId: "",
@@ -1797,17 +1798,31 @@ function channelListView(snapshot) {
   for (const channel of snapshot.home?.channels ?? []) {
     const row = element("li", channel.selected ? "peer-row selected" : "peer-row");
     row.dataset.renderKey = `channel:${channel.room_id}`;
+    row.tabIndex = -1;
     const body = element("div", "peer-body");
     body.append(
       element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channel.name}${channel.unread_count > 0 ? ` (${channel.unread_count})` : ""}`),
       element("span", "muted", channel.topic),
     );
+    if (channel.visibility === "private") {
+      body.append(element(
+        "span",
+        "muted",
+        `${channel.private_member_count} member${channel.private_member_count === 1 ? "" : "s"} · key epoch ${channel.key_epoch}`,
+      ));
+    }
     const actions = element("div", "row-actions");
     if (!channel.selected) {
       actions.append(commandButton("channel.select", { room_id: channel.room_id }));
     }
     if (channel.visibility === "private") {
-      actions.append(commandButton("channel.rotateKey", { room_id: channel.room_id }));
+      if (uiState.rotatingChannelId === channel.room_id) {
+        row.append(body, channelKeyRotationConfirmation(channel));
+        list.append(row);
+        continue;
+      }
+      const rotate = actionButton("Rotate key…", () => beginChannelKeyRotation(channel.room_id));
+      actions.append(rotate);
     }
     row.append(body);
     if (actions.children.length > 0) row.append(actions);
@@ -1863,6 +1878,54 @@ function channelListView(snapshot) {
   create.append(form);
   fragment.append(list, create);
   return fragment;
+}
+
+function channelKeyRotationConfirmation(channel) {
+  const confirmation = element("section", "channel-key-confirmation");
+  confirmation.setAttribute("role", "alertdialog");
+  confirmation.setAttribute("aria-label", `Rotate key for ${channel.name}`);
+  confirmation.append(
+    element("strong", "", `Rotate the key for #${channel.name}?`),
+    element(
+      "p",
+      "summary",
+      `Voxelle will admit a fresh key epoch for the ${channel.private_member_count} current private-channel member${channel.private_member_count === 1 ? "" : "s"} and synchronize it through ordinary peers.`,
+    ),
+    element(
+      "p",
+      "recovery-note",
+      "The new key protects future content after rotation. It cannot erase earlier ciphertext, keys, or plaintext that recipients already retained.",
+    ),
+  );
+  const controls = element("div", "row-actions");
+  const confirm = commandButton("channel.rotateKey", { room_id: channel.room_id });
+  confirm.textContent = "Rotate private-channel key";
+  controls.append(
+    confirm,
+    actionButton("Cancel key rotation", () => cancelChannelKeyRotation(channel.room_id)),
+  );
+  confirmation.append(controls);
+  return confirmation;
+}
+
+function beginChannelKeyRotation(roomId) {
+  uiState.rotatingChannelId = roomId;
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".channel-key-confirmation .command-button")?.focus());
+}
+
+function cancelChannelKeyRotation(roomId) {
+  uiState.rotatingChannelId = "";
+  render();
+  focusChannelRow(roomId);
+}
+
+function focusChannelRow(roomId) {
+  window.requestAnimationFrame(() => {
+    [...app.querySelectorAll(".peer-row")]
+      .find((row) => row.dataset.renderKey === `channel:${roomId}`)
+      ?.focus();
+  });
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -2972,6 +3035,8 @@ async function runCommand(command, payload) {
         return;
       case "channel.rotateKey":
         currentSnapshot = await shell.execute(command, payload);
+        uiState.rotatingChannelId = "";
+        focusChannelRow(payload.room_id);
         return;
       case "channel.create": {
         const privateMembers = uiState.channelPrivateDraft

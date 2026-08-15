@@ -529,6 +529,17 @@ stores the private room, retained events and local key files lack the message
 plaintext, admitted peers decrypt successive epochs, and a fresh recovered
 home restores the epoch keys and history from an ordinary peer.
 
+The private-channel rotation affordance now projects the admitted epoch and
+current private-member count from Rust and requires an explicit confirmation.
+The copy names the forward-only confidentiality effect and refuses to imply
+remote erasure of earlier ciphertext, keys, or plaintext. Rendered interaction
+evidence proves alert-dialog focus and stable-row focus return; the existing
+three-home confidentiality regression now also proves that the projected epoch
+advances through admitted governance and reconstructs after restart. A
+serialized-shell regression carries `channel.rotateKey` through the shared
+semantic host and observes that same durable projection. This is not
+packaged-native, physical-participant, or external-network evidence.
+
 The local durability topology now uses one SQLite database for accepted events,
 monotonic identity heads, the selected accepted space-genesis ID, peer records,
 read cursors, UI preferences, and authenticated ciphertext room-key envelopes.

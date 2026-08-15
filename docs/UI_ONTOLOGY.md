@@ -342,6 +342,14 @@ lost. It states that other roles remain unchanged, then invokes only
 `role.grant` or `role.revoke`. Canceling or completing restores focus to the
 stable role row; accepted Rust governance remains the only assignment truth.
 
+Private-channel rows project the admitted key epoch and current private-member
+count from Rust. Key rotation is not a one-click toggle: its focused
+confirmation states that the new epoch is packaged only for the current
+private members, protects future content after admission, and cannot erase old
+ciphertext, keys, or plaintext already retained. Canceling or completing the
+semantic `channel.rotateKey` action returns focus to the stable channel row;
+the frontend never generates or predicts key material.
+
 Projected reaction and pin state determines whether the visible action invokes
 the add or remove command; the frontend does not guess a toggle result. Message
 deletion is a separate confirmed step that states the retained signed-tombstone
