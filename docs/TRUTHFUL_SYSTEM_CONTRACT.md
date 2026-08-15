@@ -462,6 +462,19 @@ human permission names and member/role actions while keeping stable IDs in
 command payloads; private-channel creation selects current named members and
 explains the self-only case without requiring principal-ID entry.
 
+File sharing now has a human consent boundary before admission. Selecting a
+file opens a focused review of its name, type, decoded size, destination,
+projected audience, and durable-retention limitation; cancel returns to the one
+visible attachment affordance without publishing bytes. The Rust projection
+reports decoded size from the already-admitted content, while the serialized
+two-home path proves hash/size projection, convergence, search, and an admitted
+attachment tombstone. Core admission now permits an attachment author or
+authorized moderator to create the same `MSG_REDACT` fact the projection
+already understood. The P2P draft records the existing standalone
+`ATTACHMENT_ADD` wire shape. Rendered evidence covers review focus, cancellation,
+file-specific actions, and refusal to simulate preview acceptance; this is not
+new packaged-native file-dialog or external-machine evidence.
+
 The member-ban affordance now requires an explicit confirmation that explains
 loss of participation authority, retained history, and the fresh-invite
 requirement before it invokes `member.ban`. Rendered-preview evidence exercises

@@ -355,6 +355,16 @@ the add or remove command; the frontend does not guess a toggle result. Message
 deletion is a separate confirmed step that states the retained signed-tombstone
 effect before invoking `message.redact`.
 
+Choosing a file does not publish it. The composer first shows a focused review
+of the filename, Rust-enforced size envelope, claimed type, selected channel,
+projected audience, and retained-copy limitation. Only **Share file** invokes
+`attachment.add`; cancel discards the frontend draft and returns focus to the
+single visible file-picker affordance. Accepted attachments project their
+authoritative decoded size and download metadata without an empty message or an
+inapplicable Edit action. Deleting an attachment invokes the same admitted
+`message.redact` tombstone path as a post; it hides the projected bytes but does
+not promise erasure from accepted history or recipient copies.
+
 ### 3.4 Semantic Tokens
 
 A semantic token is a named visual meaning, not a raw color.

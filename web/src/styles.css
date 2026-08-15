@@ -254,6 +254,22 @@ h3 {
   margin: 0;
 }
 
+.attachment-review {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--activity-error);
+}
+
+.attachment-review .row-actions {
+  margin: 0;
+}
+
+.attachment-link {
+  display: inline-grid;
+  gap: 2px;
+}
+
 .success-label {
   color: var(--runtime-online);
   font-weight: 700;

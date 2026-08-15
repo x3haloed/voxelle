@@ -407,6 +407,7 @@ Room message kinds:
 - `MSG_POST` (post a message)
 - `MSG_EDIT` (edit a prior message)
 - `MSG_REDACT` (tombstone/hide a prior message)
+- `ATTACHMENT_ADD` (bounded content-addressed file bytes as a standalone room fact)
 - `REACTION_ADD`
 - `REACTION_REMOVE`
 - `PIN_ADD`
@@ -442,8 +443,19 @@ Unless specified, unknown fields in `body` **MUST** be ignored.
 - `text` (string): replacement text
 
 `MSG_REDACT` body:
-- `target_event_id` (string): event being redacted
+- `target_event_id` (string): `MSG_POST` or `ATTACHMENT_ADD` event being redacted
 - `reason` (string, optional)
+
+`ATTACHMENT_ADD` body:
+- `filename` (string): human-visible filename, 1--255 characters
+- `mime` (string): claimed media type, 1--127 characters
+- `sha256` (string): `sha256:` plus the base64url digest of the decoded bytes
+- `data_b64` (string): 1--256 KiB of file bytes encoded as standard base64
+
+Attachments are standalone facts in the current protocol rather than nested
+`MSG_POST.attachments`. A redaction changes the projected visibility of an
+attachment but does not delete the accepted signed fact or copies already
+retained by recipients.
 
 `REACTION_ADD` / `REACTION_REMOVE` body:
 - `target_event_id` (string)

@@ -124,6 +124,14 @@ hello from peer b
 3. Confirm B's message appears in `Room Timeline`.
 4. Send a reply from A.
 5. Have B sync A again and confirm A's reply appears.
+6. Choose a harmless non-empty file no larger than 256 KiB. Before sharing,
+   confirm the review names its filename, type, size, `#general`, admitted-space
+   audience, and retained-copy limitation. Share it and have B synchronize.
+7. On B, confirm the projected filename and size, download it, and compare its
+   SHA-256 with A's original. On A, choose **Delete…**, review the tombstone
+   limitation, and confirm; after another sync B must project the tombstone.
+   Record that this does not erase B's already downloaded copy or the accepted
+   signed fact.
 
 ## Third-Peer Test
 

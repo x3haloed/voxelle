@@ -1830,7 +1830,7 @@ fn validate_room_event_body(
         }
         "MSG_REDACT" => {
             let original = target("MSG_REDACT")?;
-            if original.kind != "MSG_POST"
+            if !matches!(original.kind.as_str(), "MSG_POST" | "ATTACHMENT_ADD")
                 || (original.author_peer_id != event.author_peer_id
                     && !peer_has_permission(state, context, author, PERMISSION_MESSAGE_MODERATE))
             {
@@ -3138,6 +3138,43 @@ mod tests {
         let error = accept_event(&edit, &[join, post, redact], &context, 1_020)
             .expect_err("redacted message cannot be restored");
         assert!(matches!(error, AcceptError::Invalid(message) if message.contains("redacted")));
+    }
+
+    #[test]
+    fn attachment_author_can_redact_the_retained_attachment_projection() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let context = RoomContext::new(authority.peer_id.clone());
+        let join = member_join(&authority);
+        let bytes = b"private draft";
+        let attachment = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:post".to_string()]),
+            "room:general",
+            1_000,
+            "ATTACHMENT_ADD",
+            vec![],
+            json!({
+                "filename": "draft.txt",
+                "mime": "text/plain",
+                "sha256": format!("sha256:{}", base64url_sha256(bytes)),
+                "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes),
+            }),
+        )
+        .expect("attachment");
+        accept_event(&attachment, std::slice::from_ref(&join), &context, 1_000)
+            .expect("attachment accepted");
+        let redact = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:post".to_string()]),
+            "room:general",
+            1_010,
+            "MSG_REDACT",
+            vec![attachment.event_id.clone()],
+            json!({"target_event_id": attachment.event_id}),
+        )
+        .expect("redact");
+        accept_event(&redact, &[join, attachment], &context, 1_010)
+            .expect("attachment author may redact");
     }
 
     #[test]

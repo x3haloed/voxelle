@@ -241,6 +241,7 @@ pub struct AttachmentView {
     pub filename: String,
     pub mime: String,
     pub sha256: String,
+    pub size_bytes: usize,
     pub data_b64: String,
 }
 
@@ -3582,12 +3583,18 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                         reply_count: 0,
                         pinned: false,
                         reactions: Vec::new(),
-                        attachments: vec![AttachmentView {
-                            event_id: event.event_id.clone(),
-                            filename: string_event_body(event, "filename"),
-                            mime: string_event_body(event, "mime"),
-                            sha256: string_event_body(event, "sha256"),
-                            data_b64: string_event_body(event, "data_b64"),
+                        attachments: vec![{
+                            let data_b64 = string_event_body(event, "data_b64");
+                            AttachmentView {
+                                event_id: event.event_id.clone(),
+                                filename: string_event_body(event, "filename"),
+                                mime: string_event_body(event, "mime"),
+                                sha256: string_event_body(event, "sha256"),
+                                size_bytes: base64::engine::general_purpose::STANDARD
+                                    .decode(&data_b64)
+                                    .map_or(0, |bytes| bytes.len()),
+                                data_b64,
+                            }
                         }],
                     },
                 );

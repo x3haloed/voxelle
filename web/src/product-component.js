@@ -28,6 +28,7 @@ const uiState = {
   inviteExpiryMinutes: 1440,
   revokingInviteId: "",
   rotatingChannelId: "",
+  pendingAttachment: null,
   messageDraft: "",
   messageMentionsDraft: new Set(),
   replyTargetEventId: "",
@@ -2282,7 +2283,7 @@ function roomTimelineView(snapshot) {
     }
     if (uiState.editingMessageId === message.event_id && !message.redacted) {
       content.append(meta, messageEditForm(message, snapshot));
-    } else {
+    } else if (message.redacted || message.text) {
       content.append(meta, element("p", message.redacted ? "muted" : "message-text", message.text));
     }
     const annotations = element("div", "message-annotations");
@@ -2301,9 +2302,15 @@ function roomTimelineView(snapshot) {
     }
     if (reactions.children.length > 0) content.append(reactions);
     for (const attachment of message.attachments ?? []) {
-      const link = element("a", "attachment-link", attachment.filename);
+      const link = element("a", "attachment-link");
+      link.append(
+        element("strong", "", attachment.filename),
+        element("span", "muted", `${formatFileSize(attachment.size_bytes)} · ${attachment.mime}`),
+      );
       link.href = `data:${attachment.mime};base64,${attachment.data_b64}`;
       link.download = attachment.filename;
+      link.rel = "noopener";
+      link.setAttribute("aria-label", `Download ${attachment.filename}, ${formatFileSize(attachment.size_bytes)}`);
       content.append(link);
     }
     const actionDetails = element("details", "message-actions");
@@ -2328,10 +2335,10 @@ function roomTimelineView(snapshot) {
       pin,
     );
     if (own && !message.redacted) {
-      actions.append(
-        actionButton("Edit", () => beginMessageEdit(message)),
-        actionButton("Delete…", () => beginMessageDelete(message.event_id)),
-      );
+      if ((message.attachments ?? []).length === 0) {
+        actions.append(actionButton("Edit", () => beginMessageEdit(message)));
+      }
+      actions.append(actionButton("Delete…", () => beginMessageDelete(message.event_id)));
     }
     actionDetails.append(actions);
     content.append(actionDetails);
@@ -2346,20 +2353,27 @@ function roomTimelineView(snapshot) {
 }
 
 function messageDeleteConfirmation(message, snapshot) {
+  const attachment = message.attachments?.[0] ?? null;
   const confirmation = element("section", "message-delete-confirmation");
   confirmation.setAttribute("role", "alertdialog");
-  confirmation.setAttribute("aria-label", "Delete message confirmation");
+  confirmation.setAttribute("aria-label", attachment ? "Delete attachment confirmation" : "Delete message confirmation");
   confirmation.append(
-    element("strong", "", "Delete this message?"),
-    element("p", "summary", "Its text will be replaced by a signed tombstone. The deletion remains part of retained history."),
+    element("strong", "", attachment ? `Delete ${attachment.filename} from this conversation?` : "Delete this message?"),
+    element(
+      "p",
+      "summary",
+      attachment
+        ? "Voxelle will add a signed tombstone and hide the file bytes from the conversation projection. Accepted history and copies already retained or downloaded cannot be erased."
+        : "Its text will be replaced by a signed tombstone. The deletion remains part of retained history.",
+    ),
   );
   const controls = element("div", "row-actions");
   const remove = commandButton("message.redact", {
     target_event_id: message.event_id,
     room: snapshot.home?.room.room_id ?? null,
   });
-  remove.textContent = "Delete message";
-  controls.append(remove, actionButton("Cancel deletion", cancelMessageDelete));
+  remove.textContent = attachment ? "Delete file" : "Delete message";
+  controls.append(remove, actionButton("Cancel deletion", () => cancelMessageDelete(message.event_id)));
   confirmation.append(controls);
   return confirmation;
 }
@@ -2370,9 +2384,18 @@ function beginMessageDelete(eventId) {
   window.requestAnimationFrame(() => app.querySelector(".message-delete-confirmation .command-button")?.focus());
 }
 
-function cancelMessageDelete() {
+function cancelMessageDelete(eventId) {
   uiState.deletingMessageId = "";
   render();
+  focusMessageRow(eventId);
+}
+
+function focusMessageRow(eventId) {
+  window.requestAnimationFrame(() => {
+    [...app.querySelectorAll("[data-message-event-id]")]
+      .find((row) => row.dataset.messageEventId === eventId)
+      ?.focus();
+  });
 }
 
 function messageEditForm(message, snapshot) {
@@ -2438,7 +2461,7 @@ function beginReply(message, authorName) {
   uiState.replyTargetEventId = message.thread_root_event_id ?? message.event_id;
   uiState.replyPreview = {
     authorName,
-    text: message.text,
+    text: message.text || message.attachments?.[0]?.filename || "Shared file",
   };
   render();
   window.requestAnimationFrame(() => app.querySelector(".message-input")?.focus());
@@ -2477,31 +2500,49 @@ function messageComposerView(snapshot) {
   });
   const fileInput = element("input", "");
   fileInput.type = "file";
-  fileInput.className = "visually-hidden";
-  fileInput.setAttribute("aria-label", "Attach file");
+  fileInput.hidden = true;
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files?.[0];
     if (!file) return;
-    if (file.size > 256 * 1024) {
-      reportError(new Error("attachments are limited to 256 KiB"));
+    fileInput.value = "";
+    if (file.size === 0 || file.size > 256 * 1024) {
+      reportError({
+        message: "That file cannot be attached.",
+        recovery: "needs_input",
+        recovery_message: "Choose a non-empty file no larger than 256 KiB, then review it before sharing.",
+        detail: `selected attachment size was ${file.size} bytes`,
+      });
       return;
     }
-    const data_b64 = await fileAsBase64(file);
-    await runCommand("attachment.add", {
-      filename: file.name,
-      mime: file.type || "application/octet-stream",
-      data_b64,
-      room: null,
-    });
+    try {
+      const data_b64 = await fileAsBase64(file);
+      uiState.pendingAttachment = {
+        filename: file.name,
+        mime: file.type || "application/octet-stream",
+        sizeBytes: file.size,
+        data_b64,
+      };
+      render();
+      window.requestAnimationFrame(() => app.querySelector(".attachment-review .command-button")?.focus());
+    } catch (error) {
+      reportError({
+        message: "Voxelle could not read that file.",
+        recovery: "needs_input",
+        recovery_message: "Choose the file again. Nothing was shared.",
+        detail: errorMessage(error),
+      });
+    }
   });
   const controls = element("div", "composer-controls");
+  const attach = actionButton("Attach file…", () => fileInput.click());
+  attach.classList.add("attach-file-button");
   controls.append(
     mentionPicker(input, snapshot, (value, peerId) => {
       uiState.messageDraft = value;
       uiState.messageMentionsDraft.add(peerId);
       count.textContent = String(value.length);
     }),
-    actionButton("Attach", () => fileInput.click()),
+    attach,
     element("span", "composer-hint", "Enter to send · Shift+Enter for a new line"),
     count,
     submitButton("message.send"),
@@ -2516,9 +2557,52 @@ function messageComposerView(snapshot) {
     replyContext.append(replyCopy, actionButton("Cancel reply", cancelReply));
     form.append(replyContext);
   }
-  form.append(input, fileInput, controls);
+  form.append(input, fileInput);
+  if (uiState.pendingAttachment) {
+    form.append(attachmentReview(channel, uiState.pendingAttachment));
+  }
+  form.append(controls);
 
   return form;
+}
+
+function attachmentReview(channel, attachment) {
+  const review = element("section", "attachment-review");
+  review.setAttribute("role", "alertdialog");
+  review.setAttribute("aria-label", `Review ${attachment.filename} before sharing`);
+  const audience = channel?.visibility === "private"
+    ? `${channel.private_member_count} current private-channel member${channel.private_member_count === 1 ? "" : "s"}`
+    : "every admitted space member who receives this channel";
+  review.append(
+    element("strong", "", `Share ${attachment.filename} in #${channel?.name ?? "this channel"}?`),
+    definitionGrid([
+      ["Size", formatFileSize(attachment.sizeBytes)],
+      ["Type", attachment.mime],
+      ["Audience", audience],
+    ]),
+    element(
+      "p",
+      "recovery-note",
+      "Accepted file bytes synchronize through retaining peers. Deleting later adds a signed tombstone but cannot erase copies already retained or downloaded.",
+    ),
+  );
+  const controls = element("div", "row-actions");
+  const confirm = commandButton("attachment.add", {
+    filename: attachment.filename,
+    mime: attachment.mime,
+    data_b64: attachment.data_b64,
+    room: null,
+  });
+  confirm.textContent = "Share file";
+  controls.append(confirm, actionButton("Cancel file sharing", cancelAttachmentReview));
+  review.append(controls);
+  return review;
+}
+
+function cancelAttachmentReview() {
+  uiState.pendingAttachment = null;
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".attach-file-button")?.focus());
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -3078,13 +3162,18 @@ async function runCommand(command, payload) {
       case "message.redact":
         currentSnapshot = await shell.execute(command, payload);
         uiState.deletingMessageId = "";
+        focusMessageRow(payload.target_event_id);
         return;
       case "reaction.add":
       case "reaction.remove":
       case "pin.add":
       case "pin.remove":
+        currentSnapshot = await shell.execute(command, payload);
+        return;
       case "attachment.add":
         currentSnapshot = await shell.execute(command, payload);
+        uiState.status = `Shared ${payload.filename}. Members who receive it may retain a copy.`;
+        uiState.pendingAttachment = null;
         return;
       case "profile.update":
         currentSnapshot = await shell.execute(command, payload ?? {
@@ -3274,6 +3363,7 @@ function commandCompletionFocusTarget(command) {
     command === "identity.recovery.export"
     || command === "identity.recovery.restore"
     || command === "channel.create"
+    || command === "attachment.add"
   ) {
     return app.querySelector(".message-input");
   }
@@ -3518,6 +3608,12 @@ async function fileAsBase64(file) {
     reader.readAsDataURL(file);
   });
   return String(dataUrl).split(",", 2)[1] ?? "";
+}
+
+function formatFileSize(sizeBytes) {
+  if (!Number.isFinite(sizeBytes) || sizeBytes < 0) return "Unknown size";
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  return `${(sizeBytes / 1024).toFixed(sizeBytes < 10 * 1024 ? 1 : 0)} KiB`;
 }
 
 /**

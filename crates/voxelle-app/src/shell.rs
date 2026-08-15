@@ -1540,11 +1540,16 @@ mod tests {
             .expect("root retained as tombstone");
         assert!(final_root.redacted);
         assert_eq!(final_root.text, "Message removed");
-        assert!(final_home.room.messages.iter().any(|message| message
-            .attachments
+        assert!(final_home
+            .room
+            .messages
             .iter()
-            .any(|attachment| attachment.filename == "notes.txt"
-                && attachment.sha256.starts_with("sha256:"))));
+            .any(|message| message
+                .attachments
+                .iter()
+                .any(|attachment| attachment.filename == "notes.txt"
+                    && attachment.sha256.starts_with("sha256:")
+                    && attachment.size_bytes == 11)));
         assert!(final_home
             .profiles
             .iter()
@@ -1652,6 +1657,27 @@ mod tests {
             .messages
             .iter()
             .any(|message| message.event_id == search_event_id));
+
+        let attachment_redacted = alice
+            .execute_serialized_command(
+                "message.redact",
+                serde_json::json!({
+                    "target_event_id": search_event_id,
+                    "room": channel_id
+                }),
+            )
+            .await
+            .expect("attachment tombstone");
+        let redacted_attachment = attachment_redacted
+            .home
+            .expect("home after attachment tombstone")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.event_id == search_event_id)
+            .expect("redacted attachment projection");
+        assert!(redacted_attachment.redacted);
+        assert!(redacted_attachment.attachments.is_empty());
 
         alice
             .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
