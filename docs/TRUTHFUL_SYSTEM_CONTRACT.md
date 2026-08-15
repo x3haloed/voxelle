@@ -339,6 +339,14 @@ human permission names and member/role actions while keeping stable IDs in
 command payloads; private-channel creation selects current named members and
 explains the self-only case without requiring principal-ID entry.
 
+The member-ban affordance now requires an explicit confirmation that explains
+loss of participation authority, retained history, and the fresh-invite
+requirement before it invokes `member.ban`. Rendered-preview evidence exercises
+confirmation focus, cancellation back to the stable member row, and refusal to
+simulate the semantic command. The serialized two-home test above remains the
+authority evidence for the accepted ban transition; this is not yet a new
+packaged-native or assistive-technology claim.
+
 The packaged macOS conversation surface has crossed a lived reply/edit gate. A
 person selected Reply on a retained message, received named composer context,
 posted through `message.send` with the authoritative thread root, and observed

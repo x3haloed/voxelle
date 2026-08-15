@@ -244,6 +244,12 @@ channel read through Rust, and then focuses the retained message as disposable
 presentation behavior. The frontend does not maintain a separate read state or
 infer notification validity.
 
+Banning a member requires an explicit focused confirmation that states the
+authority loss, retained-history behavior, and fresh-invite requirement before
+invoking `member.ban`. Canceling or completing the action restores a stable
+keyboard location in the member row. The confirmation does not predict or
+project governance state; the Rust snapshot remains authoritative.
+
 Projected reaction and pin state determines whether the visible action invokes
 the add or remove command; the frontend does not guess a toggle result. Message
 deletion is a separate confirmed step that states the retained signed-tombstone

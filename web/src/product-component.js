@@ -32,6 +32,7 @@ const uiState = {
   messageEditDraft: "",
   messageEditMentionsDraft: new Set(),
   deletingMessageId: "",
+  banningPeerId: "",
   channelNameDraft: "",
   channelTopicDraft: "",
   channelPrivateDraft: false,
@@ -1380,6 +1381,8 @@ function memberProfilesView(snapshot) {
   for (const profile of snapshot.home?.profiles ?? []) {
     const row = element("li", "peer-row");
     row.dataset.renderKey = `profile:${profile.peer_id}`;
+    row.dataset.profilePeerId = profile.peer_id;
+    row.tabIndex = -1;
     const body = element("div", "member-card");
     const isOwn = profile.peer_id === snapshot.home?.profile.peer_id;
     const copy = element("div", "member-copy");
@@ -1402,12 +1405,6 @@ function memberProfilesView(snapshot) {
     row.append(body);
     if (!isOwn) {
       const actions = element("details", "advanced-details member-actions");
-      const memberAction = profile.banned
-        ? commandButton("member.unban", { peer_id: profile.peer_id, reason: "" })
-        : commandButton("member.ban", { peer_id: profile.peer_id, reason: "Removed by a space administrator" });
-      memberAction.textContent = profile.banned
-        ? `Allow ${profile.display_name} to rejoin`
-        : `Ban ${profile.display_name} from this space`;
       actions.append(
         element("summary", "", "Member actions"),
         element(
@@ -1417,14 +1414,68 @@ function memberProfilesView(snapshot) {
             ? "This removes the ban. They still need a valid invite to become a member again."
             : "Banning removes this principal's authority to participate; retained history remains authoritative.",
         ),
-        memberAction,
       );
+      if (profile.banned) {
+        const allow = commandButton("member.unban", { peer_id: profile.peer_id, reason: "" });
+        allow.textContent = `Allow ${profile.display_name} to rejoin`;
+        actions.append(allow);
+      } else if (uiState.banningPeerId === profile.peer_id) {
+        actions.open = true;
+        actions.append(memberBanConfirmation(profile));
+      } else {
+        actions.append(actionButton(`Ban ${profile.display_name} from this space…`, () => {
+          beginMemberBan(profile.peer_id);
+        }));
+      }
       row.append(actions);
     }
     list.append(row);
   }
   fragment.append(list);
   return fragment;
+}
+
+function memberBanConfirmation(profile) {
+  const confirmation = element("section", "member-ban-confirmation");
+  confirmation.setAttribute("role", "alertdialog");
+  confirmation.setAttribute("aria-label", `Ban ${profile.display_name} confirmation`);
+  confirmation.append(
+    element("strong", "", `Ban ${profile.display_name}?`),
+    element(
+      "p",
+      "summary",
+      "They will lose authority to participate in this space. Their retained history remains, and allowing them later will still require a new valid invite.",
+    ),
+  );
+  const controls = element("div", "row-actions");
+  const confirm = commandButton("member.ban", {
+    peer_id: profile.peer_id,
+    reason: "Removed by a space administrator",
+  });
+  confirm.textContent = `Ban ${profile.display_name}`;
+  controls.append(confirm, actionButton("Cancel ban", () => cancelMemberBan(profile.peer_id)));
+  confirmation.append(controls);
+  return confirmation;
+}
+
+function beginMemberBan(peerId) {
+  uiState.banningPeerId = peerId;
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".member-ban-confirmation .command-button")?.focus());
+}
+
+function cancelMemberBan(peerId) {
+  uiState.banningPeerId = "";
+  render();
+  focusProfileRow(peerId);
+}
+
+function focusProfileRow(peerId) {
+  window.requestAnimationFrame(() => {
+    const row = [...app.querySelectorAll("[data-profile-peer-id]")]
+      .find((candidate) => candidate.dataset.profilePeerId === peerId);
+    row?.focus();
+  });
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -2456,6 +2507,8 @@ async function runCommand(command, payload) {
           return;
         }
         currentSnapshot = await shell.execute(command, payload);
+        uiState.banningPeerId = "";
+        focusProfileRow(payload.peer_id);
         return;
       }
       case "invite.copy":
