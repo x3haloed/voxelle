@@ -249,7 +249,9 @@ When a form can identify an incomplete prerequisite before submission, its
 presentation names the failing control, marks it invalid, associates one inline
 repair message, and returns keyboard focus there. This does not admit the input
 or replace Rust validation; a completed form still invokes the same semantic
-command and authoritative decision path.
+command and authoritative decision path. Editing that exact field clears the
+stale presentation error; unrelated edits do not, and later Rust or
+infrastructure failures do not inherit a frontend field marker.
 
 Failed peer diagnosis and synchronization remain current-session observations
 in the Rust command host rather than disappearing with an error banner. They

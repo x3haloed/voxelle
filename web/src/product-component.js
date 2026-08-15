@@ -2366,6 +2366,7 @@ function roleListView(snapshot) {
       permissionLabel(permission),
       uiState.rolePermissionsDraft.has(permission),
       (checked) => updateSet(uiState.rolePermissionsDraft, permission, checked),
+      "role-permissions",
     ));
   }
   form.append(permissions, submitButton("role.create"));
@@ -3676,6 +3677,7 @@ function commandCompletionFocusTarget(command) {
 /** @param {unknown} error */
 function reportError(error) {
   uiState.busyCommand = "";
+  clearValidation();
   const presentation = presentShellError(error);
   uiState.error = presentation.message;
   uiState.errorRecovery = presentation.recoveryMessage;
@@ -3697,6 +3699,10 @@ function clearError() {
   uiState.error = "";
   uiState.errorRecovery = "";
   uiState.errorDetail = "";
+  clearValidation();
+}
+
+function clearValidation() {
   uiState.validationTarget = "";
   uiState.validationMessage = "";
 }
@@ -3847,6 +3853,7 @@ function labeledInput(label, placeholder, value, onInput, validationTarget = "")
   input.value = value;
   input.addEventListener("input", () => {
     onInput(input.value);
+    clearCorrectedValidation(validationTarget);
   });
   applyValidationState(input, validationTarget);
   inputLabel.append(element("span", "", label), input);
@@ -3881,12 +3888,21 @@ function focusValidationTarget(target) {
   }
 }
 
-function choiceCheckbox(label, checked, onChange) {
+function clearCorrectedValidation(target) {
+  if (!target || uiState.validationTarget !== target) return;
+  clearError();
+  render();
+}
+
+function choiceCheckbox(label, checked, onChange, validationTarget = "") {
   const field = element("label", "choice-checkbox");
   const input = element("input", "");
   input.type = "checkbox";
   input.checked = checked;
-  input.addEventListener("change", () => onChange(input.checked));
+  input.addEventListener("change", () => {
+    onChange(input.checked);
+    clearCorrectedValidation(validationTarget);
+  });
   field.append(input, element("span", "", label));
   return field;
 }

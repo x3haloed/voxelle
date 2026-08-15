@@ -558,8 +558,11 @@ The channel and role creation forms now make their narrower frontend
 prerequisite checks causally usable: empty channel name, empty role name, and
 missing role permissions each mark and describe the exact control or group and
 return keyboard focus to it. The accessible field name remains separate from
-the error description. This presentation check does not accept the command or
-replace the Rust classifier and semantic admission path.
+the error description. Editing that exact field or selecting a missing
+permission removes the stale inline and global error immediately; unrelated
+edits and later non-validation failures cannot inherit or erase a field marker
+accidentally. This presentation check does not accept the command or replace
+the Rust classifier and semantic admission path.
 Invite joining now preserves the same distinction: an observed revocation,
 expiry, or malformed signed invite asks for corrected input; an already-used
 home names the separate-fresh-home requirement; and an unexplained local join

@@ -15,3 +15,9 @@ test("invalid controls share an inline description and receive focus", () => {
   assert.match(source, /control\.setAttribute\("aria-describedby", `validation-\$\{target\}`\)/);
   assert.match(source, /control\.querySelector\("input"\)\?\.focus\(\)/);
 });
+
+test("editing the failing control clears only its stale presentation error", () => {
+  assert.match(source, /clearCorrectedValidation\(validationTarget\)/);
+  assert.match(source, /uiState\.validationTarget !== target/);
+  assert.match(source, /clearValidation\(\);\n  const presentation = presentShellError/);
+});
