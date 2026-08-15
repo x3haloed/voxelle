@@ -1099,8 +1099,12 @@ function profileSummaryView(snapshot) {
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!uiState.profileNameDraft.trim()) {
-      setUserError("Enter a display name.", "profile-name");
+    const nameError = shortTextDraftError(uiState.profileNameDraft, {
+      fieldName: "Display name",
+      emptyMessage: "Enter a display name.",
+    });
+    if (nameError) {
+      setUserError(nameError, "profile-name");
       render();
       return;
     }
@@ -2108,8 +2112,12 @@ function channelCreateDisclosure(snapshot) {
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!uiState.channelNameDraft.trim()) {
-      setUserError("Enter a channel name.", "channel-name");
+    const nameError = shortTextDraftError(uiState.channelNameDraft, {
+      fieldName: "Channel name",
+      emptyMessage: "Enter a channel name.",
+    });
+    if (nameError) {
+      setUserError(nameError, "channel-name");
       render();
       return;
     }
@@ -2385,8 +2393,12 @@ function roleListView(snapshot) {
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!uiState.roleNameDraft.trim()) {
-      setUserError("Enter a role name.", "role-name");
+    const nameError = shortTextDraftError(uiState.roleNameDraft, {
+      fieldName: "Role name",
+      emptyMessage: "Enter a role name.",
+    });
+    if (nameError) {
+      setUserError(nameError, "role-name");
       render();
       return;
     }

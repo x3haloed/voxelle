@@ -191,6 +191,9 @@ Open retained search and confirm **Search Messages** follows the same disabled
 empty, whitespace, visible-term, and cleared states. In profile editing, submit
 a whitespace-only display name; confirm the field is announced invalid, receives
 focus with **Enter a display name**, and clears that stale error when corrected.
+Also exercise a leading-space profile name, an 81-character channel name, and a
+trailing-space role name; confirm each form names and focuses its own correction
+without claiming the command was admitted.
 
 After restoring identity on the fresh device, confirm the success status states
 that authority from previous devices was revoked and directs the person to save

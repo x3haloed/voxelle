@@ -425,7 +425,11 @@ frontend does not interpret those terms; Rust remains the authority for index
 scope, accessible channels, bounds, and returned retained facts. Profile editing
 uses the complementary correction pattern: submitting an empty display name
 marks, describes, and focuses that field, and editing it clears only the stale
-validation presentation.
+validation presentation. Profile, channel, and role names share one advisory
+draft check for the Rust-admitted name shape: nonempty, no leading or trailing
+space, no control characters, and at most 80 Unicode characters. Each form
+names and focuses its own correction; Rust still independently validates the
+submitted fact.
 
 Message reply and edit affordances remain inside the conversation surface.
 Selecting Reply establishes local composer context, but the accepted action is

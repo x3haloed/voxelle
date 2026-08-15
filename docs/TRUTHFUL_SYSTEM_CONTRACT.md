@@ -596,6 +596,15 @@ immediately; unrelated
 edits and later non-validation failures cannot inherit or erase a field marker
 accidentally. This presentation check does not accept the command or replace
 the Rust classifier and semantic admission path.
+
+Those three human-name forms now also share one testable advisory mirror of the
+Rust-admitted short-text shape: no leading or trailing space, no control
+characters, and at most 80 Unicode characters. Rendered probes focused and
+described a leading-space profile name, an 81-character channel name, and a
+trailing-space role name. The helper is included in both preview and builtin
+product-component assembly, with a Rust bundle regression proving the native
+source contains the helper and all three consumers. This remains corrective
+presentation; Rust independently decides admission and protects replay paths.
 Invite joining now preserves the same distinction: an observed revocation,
 expiry, or malformed signed invite asks for corrected input; an already-used
 home names the separate-fresh-home requirement; and an unexplained local join

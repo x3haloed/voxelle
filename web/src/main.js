@@ -72,6 +72,7 @@ if (!initialSnapshot.product_component && shell.mode === "preview") {
     "./src/dom-reconcile.mjs",
     "./src/error-presentation.mjs",
     "./src/focus-management.mjs",
+    "./src/form-draft.mjs",
     "./src/invite-preview.mjs",
     "./src/message-composition.mjs",
     "./src/product-update-confirmation.mjs",

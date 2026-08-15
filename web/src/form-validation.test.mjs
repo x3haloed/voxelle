@@ -5,9 +5,9 @@ import test from "node:test";
 const source = readFileSync(new URL("./product-component.js", import.meta.url), "utf8");
 
 test("correctable form errors identify their failing controls", () => {
-  assert.match(source, /setUserError\("Enter a display name\.", "profile-name"\)/);
-  assert.match(source, /setUserError\("Enter a channel name\.", "channel-name"\)/);
-  assert.match(source, /setUserError\("Enter a role name\.", "role-name"\)/);
+  assert.match(source, /setUserError\(nameError, "profile-name"\)/);
+  assert.match(source, /setUserError\(nameError, "channel-name"\)/);
+  assert.match(source, /setUserError\(nameError, "role-name"\)/);
   assert.match(source, /setUserError\("Choose at least one permission for this role\.", "role-permissions"\)/);
 });
 
