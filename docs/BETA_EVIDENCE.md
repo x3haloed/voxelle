@@ -200,6 +200,11 @@ Enter 513 Unicode characters in profile About and 1,025 in channel Topic;
 confirm each optional field names its own limit and receives focus, while an
 empty optional field remains valid.
 
+Choose an attachment whose filename starts or ends with whitespace or exceeds
+255 Unicode characters. Confirm Voxelle does not read or review the bytes, asks
+for a rename, and states that nothing was shared. After renaming, confirm the
+ordinary focused attachment review and cancel/share paths still work.
+
 After restoring identity on the fresh device, confirm the success status states
 that authority from previous devices was revoked and directs the person to save
 a fresh offline recovery kit. Keyboard focus must land on that fresh-kit action,

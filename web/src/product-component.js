@@ -2915,6 +2915,20 @@ function messageComposerView(snapshot) {
     const file = fileInput.files?.[0];
     if (!file) return;
     fileInput.value = "";
+    const filenameError = shortTextDraftError(file.name, {
+      fieldName: "File name",
+      emptyMessage: "The selected file has no name.",
+      maxCharacters: 255,
+    });
+    if (filenameError) {
+      reportError({
+        message: "That file name cannot be shared.",
+        recovery: "needs_input",
+        recovery_message: `${filenameError} Rename the file, then choose it again. Nothing was shared.`,
+        detail: "selected attachment filename failed the local bounded-name check",
+      });
+      return;
+    }
     if (file.size === 0 || file.size > 256 * 1024) {
       reportError({
         message: "That file cannot be attached.",
@@ -2926,9 +2940,15 @@ function messageComposerView(snapshot) {
     }
     try {
       const data_b64 = await fileAsBase64(file);
+      const selectedMime = file.type || "application/octet-stream";
+      const mimeError = shortTextDraftError(selectedMime, {
+        fieldName: "File type",
+        emptyMessage: "The selected file type is empty.",
+        maxCharacters: 127,
+      });
       uiState.pendingAttachment = {
         filename: file.name,
-        mime: file.type || "application/octet-stream",
+        mime: mimeError ? "application/octet-stream" : selectedMime,
         sizeBytes: file.size,
         data_b64,
       };

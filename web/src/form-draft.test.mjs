@@ -24,6 +24,10 @@ test("short human names expose Rust-shaped local corrections", () => {
   );
   assert.equal(shortTextDraftError("😀".repeat(80), options), "");
   assert.equal(shortTextDraftError("Alice", options), "");
+  assert.equal(
+    shortTextDraftError("f".repeat(256), { ...options, fieldName: "File name", maxCharacters: 255 }),
+    "File name must be 255 characters or fewer.",
+  );
 });
 
 test("optional human text exposes bounded local corrections", () => {

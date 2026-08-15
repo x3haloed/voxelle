@@ -524,6 +524,12 @@ authoritative decoded size and download metadata without an empty message or an
 inapplicable Edit action. Deleting an attachment invokes the same admitted
 `message.redact` tombstone path as a post; it hides the projected bytes but does
 not promise erasure from accepted history or recipient copies.
+Before reading selected bytes, the frontend gives corrective rename guidance
+when the filename cannot satisfy Rust's nonempty, trimmed, control-free,
+255-Unicode-character shape. Empty or unusable browser MIME metadata degrades to
+`application/octet-stream` in the visible review rather than inventing a type or
+creating an unfixable rejection. Rust independently validates filename, MIME,
+decoded bytes, size, and hash at admission.
 
 ### 3.4 Semantic Tokens
 

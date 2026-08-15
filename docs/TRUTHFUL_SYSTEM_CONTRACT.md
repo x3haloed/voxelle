@@ -535,6 +535,14 @@ already understood. The P2P draft records the existing standalone
 `ATTACHMENT_ADD` wire shape. Rendered evidence covers review focus, cancellation,
 file-specific actions, and refusal to simulate preview acceptance; this is not
 new packaged-native file-dialog or external-machine evidence.
+Before reading bytes, attachment selection now applies the shared advisory
+short-text check to filenames with Rust's 255-Unicode-character bound and gives
+rename guidance that states nothing was shared. Unusable browser MIME metadata
+is normalized to the already-supported `application/octet-stream` label in the
+review instead of creating a locally unfixable failure. Deterministic helper and
+product-source regressions cover ordering and normalization. Rust still validates
+the original filename, projected MIME, decoded bytes, size, and hash; this is
+not new rendered or packaged file-dialog evidence.
 
 Manual multi-peer verification no longer silently targets the first stored
 availability record. Connection & sync and the re-entrant Field Test view share
