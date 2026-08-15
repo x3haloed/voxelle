@@ -12,6 +12,7 @@ import {
   localMicrophoneEnabled,
   mediaCaptureErrorMessage,
   participantConnectionLabel,
+  participantConnectionRecovery,
   participantMediaPresentation,
   setLocalCameraEnabled,
   toggleCameraIntent,
@@ -94,10 +95,23 @@ test("participant connection states remain direct and human readable", () => {
   assert.equal(participantConnectionLabel("failed"), "Direct connection unavailable");
 });
 
+test("transient and terminal direct connection loss expose distinct recovery", () => {
+  assert.equal(
+    participantConnectionRecovery("disconnected"),
+    "Voxelle is trying to restore this direct connection. If it does not recover, leave and rejoin the call.",
+  );
+  assert.equal(
+    participantConnectionRecovery("failed"),
+    "Leave and rejoin the call to try this direct connection again.",
+  );
+  assert.equal(participantConnectionRecovery("connected"), null);
+});
+
 test("remote voice-only participation never renders as an empty video", () => {
   assert.deepEqual(participantMediaPresentation(false, "connected"), {
     mediaLabel: "Voice only",
     connectionLabel: "Connected directly",
+    recoveryLabel: null,
     placeholderLabel: "Voice only",
     showVideo: false,
   });
@@ -107,29 +121,31 @@ test("remote camera intent cannot create blank video before a direct connection 
   assert.deepEqual(participantMediaPresentation(true, "new"), {
     mediaLabel: "Camera on",
     connectionLabel: "Connecting directly",
+    recoveryLabel: null,
     placeholderLabel: "Connecting directly",
     showVideo: false,
   });
   assert.deepEqual(participantMediaPresentation(true, "failed"), {
     mediaLabel: "Camera on",
     connectionLabel: "Direct connection unavailable",
+    recoveryLabel: "Leave and rejoin the call to try this direct connection again.",
     placeholderLabel: "Direct connection unavailable",
     showVideo: false,
   });
   assert.deepEqual(participantMediaPresentation(true, "connected"), {
     mediaLabel: "Camera on",
     connectionLabel: "Connected directly",
+    recoveryLabel: null,
     placeholderLabel: "Voice only",
     showVideo: true,
   });
 });
 
-test("a failed direct connection gives the local person a recovery action", () => {
-  assert.match(
-    productSource,
-    /Leave and rejoin the call to try this connection again\./,
-  );
+test("each degraded participant tile presents its own recovery action", () => {
   assert.match(productSource, /presentation\.placeholderLabel/);
+  assert.match(productSource, /presentation\.recoveryLabel/);
+  assert.match(productSource, /call-tile-recovery/);
+  assert.doesNotMatch(productSource, /uiState\.mediaNotice = `Could not connect directly/);
 });
 
 test("microphone toggling controls every local audio track and reports missing capture", () => {

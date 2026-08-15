@@ -57,12 +57,23 @@ export function participantConnectionLabel(connectionState) {
   return "Connecting directly";
 }
 
+export function participantConnectionRecovery(connectionState) {
+  if (connectionState === "disconnected") {
+    return "Voxelle is trying to restore this direct connection. If it does not recover, leave and rejoin the call.";
+  }
+  if (connectionState === "failed") {
+    return "Leave and rejoin the call to try this direct connection again.";
+  }
+  return null;
+}
+
 export function participantMediaPresentation(video, connectionState) {
   const connected = connectionState === "connected";
   const connectionLabel = participantConnectionLabel(connectionState);
   return {
     mediaLabel: video ? "Camera on" : "Voice only",
     connectionLabel,
+    recoveryLabel: participantConnectionRecovery(connectionState),
     placeholderLabel: connected
       ? "Voice only"
       : connectionLabel,

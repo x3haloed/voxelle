@@ -546,10 +546,13 @@ voice tile and accessible label rather than an empty video element; camera
 participants receive a video element only after the local direct WebRTC state
 is connected. Until then the tile visibly says **Connecting directly**; after a
 failed or disconnected connection it says **Direct connection unavailable**
-instead of presenting camera intent as received media. The failure notice gives
-the local person the available leave-and-rejoin recovery path. Connection
-wording remains separately derived from local WebRTC state, and neither
-presentation grants room participation or signaling authority.
+instead of presenting camera intent as received media. Each interrupted tile
+states that Voxelle is still trying and gives a conditional leave-and-rejoin
+path; each terminally failed tile directly gives that recovery action. Keeping
+guidance on the participant tile preserves attribution when more than one of
+the four direct connections degrades. Connection wording remains separately
+derived from local WebRTC state, and neither presentation grants room
+participation or signaling authority.
 Pre-join controls also follow the projected four-person envelope. Once four
 participants occupy the deterministic call projection, both visible join
 choices remain present but disabled with a full-call explanation. If the local

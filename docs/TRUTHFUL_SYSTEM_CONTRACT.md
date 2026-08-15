@@ -975,9 +975,12 @@ empty video element; a rendered preview probe exercised that label together
 with the independent **Connecting directly** state. Camera intent no longer
 creates a blank video element before that direct connection reaches
 `connected`: connecting and failed peers retain explicit placeholders, and a
-failed connection tells the local person to leave and rejoin to retry. A
-deterministic projection test covers connected, connecting, and failed camera
-intent, while a rendered preview exercised the connecting camera-intent tile.
+transiently disconnected tile distinguishes ongoing reconnection from the
+terminal failed tile's leave-and-rejoin action. Recovery remains attributed to
+each participant rather than a global notice, including when multiple direct
+connections degrade. Deterministic projection tests cover connected,
+connecting, disconnected, and failed camera intent, while rendered previews
+exercise the connecting and interrupted camera-intent tiles.
 This does not move
 participant selection, media authorization, or connection truth into the
 frontend. The verification machine has no physical camera or microphone, so

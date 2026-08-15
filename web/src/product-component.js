@@ -3308,6 +3308,7 @@ function callMeshView(snapshot) {
       videos.append(callTile(
         `${profileForPeer(snapshot, peerId).display_name} · ${presentation.mediaLabel} · ${presentation.connectionLabel}`,
         media,
+        presentation.recoveryLabel,
       ));
     }
   }
@@ -3331,9 +3332,14 @@ function callVideo(peerId, muted) {
   return video;
 }
 
-function callTile(label, video) {
+function callTile(label, video, recoveryLabel = null) {
   const tile = element("figure", "call-tile");
   tile.append(video, element("figcaption", "mono", label));
+  if (recoveryLabel) {
+    const recovery = element("p", "call-tile-recovery", recoveryLabel);
+    recovery.setAttribute("role", "status");
+    tile.append(recovery);
+  }
   return tile;
 }
 
@@ -3432,7 +3438,6 @@ function ensurePeerConnection(peerId, callId) {
     if (uiState.peerConnections.get(peerId) !== pc) return;
     uiState.peerConnectionStates.set(peerId, pc.connectionState);
     if (pc.connectionState === "failed") {
-      uiState.mediaNotice = `Could not connect directly to ${profileForPeer(currentSnapshot, peerId).display_name}. Leave and rejoin the call to try this connection again.`;
       closePeerConnection(peerId);
       uiState.peerConnectionStates.set(peerId, "failed");
     } else if (pc.connectionState === "closed") {
