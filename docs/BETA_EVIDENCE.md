@@ -288,6 +288,33 @@ development-copy removal, restore-test completion, timestamp, and operator in
 the `custody` object. Never put paths containing credentials, passwords,
 recovery material, or secret bytes in the evidence document.
 
+Only after the manual removal and restore checks are complete, record custody
+into a new staged receipt. Storage values are non-secret descriptions, not
+filesystem paths:
+
+```sh
+cargo run -q -p voxelle-release -- record-custody-beta-evidence \
+  --input CURRENT_RECEIPT.json \
+  --output beta-evidence.custody.json \
+  --trust-roots release/trusted-update-keys.json \
+  --manifest DOWNLOAD_DIR/VOXELLE-RELEASE.json \
+  --release-storage "NON-SECRET RELEASE MEDIUM DESCRIPTION" \
+  --recovery-storage "NON-SECRET RECOVERY MEDIUM DESCRIPTION" \
+  --attested-utc 2026-08-14T23:00:00Z \
+  --operator "OPERATOR NAME" \
+  --attest-separately-protected \
+  --attest-offline \
+  --attest-development-copies-removed \
+  --attest-restore-tested
+```
+
+The recorder authenticates the manifest and trust roots, derives the ordinary
+release and recovery-only key IDs from their distinct capability roles,
+requires distinct bounded storage descriptions and every custody observation,
+preserves other sections, and refuses output overwrite. It never reads, moves,
+unmounts, or deletes a signing secret. Those operations remain manual because
+mistaken automation here could destroy release authority.
+
 ## 6. Verify the complete gate
 
 ```sh

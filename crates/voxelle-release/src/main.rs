@@ -124,6 +124,7 @@ enum Command {
     RecordHumanBetaEvidence(Box<RecordHumanBetaEvidenceArgs>),
     RecordFieldBetaEvidence(Box<RecordFieldBetaEvidenceArgs>),
     RecordDistributionBetaEvidence(Box<RecordDistributionBetaEvidenceArgs>),
+    RecordCustodyBetaEvidence(Box<RecordCustodyBetaEvidenceArgs>),
     VerifyBetaEvidence {
         #[arg(long)]
         trust_roots: PathBuf,
@@ -290,6 +291,34 @@ struct RecordDistributionBetaEvidenceArgs {
     attest_rollback_to_previous: bool,
     #[arg(long, required = true)]
     attest_reactivated_current: bool,
+}
+
+#[derive(Debug, Args)]
+struct RecordCustodyBetaEvidenceArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    trust_roots: PathBuf,
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    release_storage: String,
+    #[arg(long)]
+    recovery_storage: String,
+    #[arg(long)]
+    attested_utc: String,
+    #[arg(long)]
+    operator: String,
+    #[arg(long, required = true)]
+    attest_separately_protected: bool,
+    #[arg(long, required = true)]
+    attest_offline: bool,
+    #[arg(long, required = true)]
+    attest_development_copies_removed: bool,
+    #[arg(long, required = true)]
+    attest_restore_tested: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -626,6 +655,44 @@ fn main() -> Result<()> {
                 "recorded distribution beta evidence in {}",
                 output.display()
             );
+            Ok(())
+        }
+        Command::RecordCustodyBetaEvidence(args) => {
+            let RecordCustodyBetaEvidenceArgs {
+                input,
+                output,
+                trust_roots,
+                manifest,
+                release_storage,
+                recovery_storage,
+                attested_utc,
+                operator,
+                attest_separately_protected,
+                attest_offline,
+                attest_development_copies_removed,
+                attest_restore_tested,
+            } = *args;
+            let roots = read_trust_roots(&trust_roots)?;
+            let manager = UpdateManager::new(".", "0.1.0", roots.clone())?;
+            let manifest = manager.verify_release_manifest_bytes(&fs::read(manifest)?)?;
+            let mut receipt: evidence::BetaEvidenceV1 =
+                serde_json::from_slice(&fs::read(&input).context("read beta evidence receipt")?)
+                    .context("parse beta evidence receipt")?;
+            let custody = evidence::CustodyEvidenceV1 {
+                release_key_id: String::new(),
+                recovery_key_id: String::new(),
+                release_storage,
+                recovery_storage,
+                separately_protected: attest_separately_protected,
+                offline: attest_offline,
+                development_copies_removed: attest_development_copies_removed,
+                restore_tested: attest_restore_tested,
+                attested_utc,
+                operator,
+            };
+            evidence::record_custody(&mut receipt, custody, &manifest, &roots)?;
+            write_new_json(&output, &receipt)?;
+            println!("recorded custody beta evidence in {}", output.display());
             Ok(())
         }
         Command::VerifyBetaEvidence {

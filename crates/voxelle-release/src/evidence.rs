@@ -339,6 +339,35 @@ pub fn record_distribution(
     Ok(())
 }
 
+pub fn record_custody(
+    evidence: &mut BetaEvidenceV1,
+    mut custody: CustodyEvidenceV1,
+    manifest: &ReleaseManifestV1,
+    roots: &[TrustedReleaseKey],
+) -> Result<()> {
+    if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
+        return Err(anyhow!(
+            "unsupported beta evidence format {}",
+            evidence.format
+        ));
+    }
+    if evidence.release_id != manifest.release_id || evidence.sequence != manifest.sequence {
+        return Err(anyhow!(
+            "beta evidence does not identify the signed release"
+        ));
+    }
+    custody.release_key_id =
+        key_for_id_and_role(roots, &manifest.signer_key_id, ReleaseKeyRole::Release)?
+            .key_id
+            .clone();
+    custody.recovery_key_id = one_key_for_role(roots, ReleaseKeyRole::Recovery)?
+        .key_id
+        .clone();
+    validate_custody(&custody, manifest, roots)?;
+    evidence.custody = custody;
+    Ok(())
+}
+
 fn validate_distribution(
     distribution: &DistributionEvidenceV1,
     manifest: &ReleaseManifestV1,
@@ -893,6 +922,33 @@ mod tests {
         wrong_receipt.sequence += 1;
         assert!(
             record_distribution(&mut wrong_receipt, complete.distribution, &manifest()).is_err()
+        );
+    }
+
+    #[test]
+    fn custody_recorder_derives_capability_ids_before_replacing_the_section() {
+        let complete = valid();
+        let mut observed = complete.custody.clone();
+        observed.release_key_id.clear();
+        observed.recovery_key_id.clear();
+        let mut receipt = complete.clone();
+        receipt.custody.operator.clear();
+        receipt.custody.restore_tested = false;
+
+        record_custody(&mut receipt, observed.clone(), &manifest(), &roots())
+            .expect("record valid custody evidence");
+        assert_eq!(receipt.custody.release_key_id, "release");
+        assert_eq!(receipt.custody.recovery_key_id, "recovery");
+        assert!(receipt.custody.restore_tested);
+
+        let mut refused = observed;
+        refused.recovery_storage = refused.release_storage.clone();
+        let retained_operator = receipt.custody.operator.clone();
+        assert!(record_custody(&mut receipt, refused, &manifest(), &roots()).is_err());
+        assert_eq!(receipt.custody.operator, retained_operator);
+        assert_ne!(
+            receipt.custody.release_storage,
+            receipt.custody.recovery_storage
         );
     }
 

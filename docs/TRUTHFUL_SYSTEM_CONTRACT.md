@@ -721,3 +721,11 @@ DMG verification, universal binary inspection, packaged launch, live
 activation, rollback, and current-generation reactivation. This binds the
 record to release identity without claiming the recorder performed any of
 those lived operations.
+
+Custody recording likewise authenticates only public release material. It
+derives distinct ordinary-release and recovery-only key IDs from the reviewed
+capability roles, requires separate non-secret storage descriptions plus
+separate-protection, offline, development-copy-removal, and restore-test
+attestations, and validates before staged replacement. The recorder never
+reads, moves, unmounts, or deletes signing secrets; destructive removal remains
+an explicit operator action after recoverability is established.
