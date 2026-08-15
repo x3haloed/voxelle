@@ -108,6 +108,11 @@ Do not enter `none`, `unknown`, or a generic claim. Accessibility-tree tests,
 keyboard automation, and deterministic media mocks are valuable development
 evidence, but they do not satisfy this actual assistive-technology gate.
 
+During those keyboard-only paths, invoke at least one form-backed action from
+the command palette and confirm focus lands in the required visible input. Also
+inspect one unavailable command and confirm the assistive technology announces
+its missing prerequisite rather than allowing an avoidable failing action.
+
 Then use two or three distinct physical participants drawn from the three
 machine roles in the field receipt. In `human.media`, record the participating roles
 and confirm all of the following with real microphones and cameras:

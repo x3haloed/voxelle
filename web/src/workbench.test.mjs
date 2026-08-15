@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   filterPaletteCommands,
   moveView,
+  paletteCommandAvailability,
   placementsFromViews,
   setViewVisible,
   shiftView,
@@ -52,4 +53,31 @@ test("palette search and registry shortcuts use command metadata", () => {
     { key: "p", metaKey: false, ctrlKey: true, shiftKey: true, altKey: false },
     "Mod+Shift+P",
   ));
+});
+
+test("palette availability explains causal prerequisites without changing command ids", () => {
+  const fresh = {
+    hasHome: false,
+    hasHomeError: false,
+    runtimeOnline: false,
+    hasInvite: false,
+    joinedCall: false,
+  };
+  assert.deepEqual(paletteCommandAvailability("channel.create", fresh), {
+    available: false,
+    reason: "Create, join, or recover a space first",
+  });
+  assert.equal(paletteCommandAvailability("space.join", fresh).available, true);
+
+  const active = {
+    hasHome: true,
+    hasHomeError: false,
+    runtimeOnline: true,
+    hasInvite: false,
+    joinedCall: false,
+  };
+  assert.equal(paletteCommandAvailability("space.join", active).available, false);
+  assert.equal(paletteCommandAvailability("identity.recovery.restore", active).available, false);
+  assert.equal(paletteCommandAvailability("invite.copy", active).reason, "Create a signed invite first");
+  assert.equal(paletteCommandAvailability("channel.create", active).available, true);
 });

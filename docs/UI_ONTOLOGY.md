@@ -309,6 +309,17 @@ Commands should be reachable from more than one surface over time:
 
 The command ID is the durable concept. The button is only one affordance.
 
+The human command palette remains a projection of the complete Rust-owned
+registry, but invocation is contextual. Commands whose causal prerequisite is
+absent stay visible and disabled with a concrete reason—for example, channel
+creation before a home exists or identity restoration on an active home.
+Commands requiring human draft context do not submit empty retained frontend
+state: Join Space focuses invite selection, Create Channel opens and focuses
+the channel form, Update Profile and Create Role open their exact People
+disclosures, and Search Messages opens its focused search field. Each form
+invokes the same stable semantic command with an explicit payload only when the
+person submits it. Shortcut invocation uses the same availability decision.
+
 Manual diagnosis and synchronization expose an explicit, disposable target
 selection over Rust-projected ordinary peer records. The selector names the
 peer and shows its address, principal, and device; each action carries that

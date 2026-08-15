@@ -1303,6 +1303,15 @@ textarea {
   background: var(--message-own-background);
 }
 
+.command-palette-result:disabled {
+  opacity: 0.68;
+}
+
+.command-palette-result:disabled:hover {
+  outline: 0;
+  background: transparent;
+}
+
 .command-palette-copy {
   min-width: 0;
   display: grid;
@@ -1313,6 +1322,10 @@ textarea {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.command-palette-copy .command-unavailable {
+  color: var(--activity-error);
 }
 
 kbd {

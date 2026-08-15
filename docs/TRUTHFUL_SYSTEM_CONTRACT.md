@@ -325,6 +325,20 @@ Tauri run moved and hid views, filtered and invoked the palette from the native
 keyboard shortcut, quit, relaunched, and projected the saved layout through the
 real bridge.
 
+The human palette now projects causal availability without narrowing that
+registry or creating another command vocabulary. Unavailable commands remain
+discoverable but disabled with the missing prerequisite; active-home join and
+restore, fresh-home channel/profile/role/search, offline leave, and invite copy
+without an invite no longer fall through to avoidable command errors.
+Form-backed commands route to the same invite, channel, profile, role, search,
+peer-import, update-package, or trust-transition surface and focus the required
+input; only explicit form submission supplies the semantic payload. A rendered
+active/fresh-home probe covers disabled reasons and palette-to-input focus for
+join, channel creation, profile editing, role creation, and retained search.
+Deterministic tests cover prerequisite classification while preserving stable
+command IDs. This is presentation evidence, not new command-host admission or
+assistive-technology evidence.
+
 The focused human shell has crossed an additional lived macOS gate. A fresh
 ad-hoc-signed `.app` launch presented only create, signed-invite join, and
 identity recovery; creating a space brought the ordinary peer service online

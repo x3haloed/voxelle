@@ -42,6 +42,7 @@ const uiState = {
   channelTopicDraft: "",
   channelPrivateDraft: false,
   channelMembersDraft: new Set(),
+  channelCreateOpen: false,
   roleNameDraft: "",
   rolePermissionsDraft: new Set(),
   roleCreateOpen: false,
@@ -49,6 +50,7 @@ const uiState = {
   profileNameDraft: "",
   profileAboutDraft: "",
   profileDraftInitialized: false,
+  profileEditOpen: false,
   searchDraft: "",
   bindDraft: "",
   advertiseDraft: "",
@@ -61,6 +63,7 @@ const uiState = {
   layoutEditing: false,
   connectionOpen: false,
   utilityOpen: "",
+  utilityFocusSelector: "",
   paletteOpen: false,
   paletteQuery: "",
   localMediaStream: null,
@@ -196,7 +199,7 @@ function render() {
     ...(uiState.connectionOpen && currentSnapshot.home
       ? [connectionCenter(currentSnapshot)]
       : []),
-    ...(uiState.utilityOpen && currentSnapshot.home
+    ...(uiState.utilityOpen && (currentSnapshot.home || uiState.utilityOpen === "updates")
       ? [utilityCenter(currentSnapshot, uiState.utilityOpen)]
       : []),
     ...(uiState.productConfirmationCommand
@@ -275,6 +278,15 @@ function handleKeydown(event) {
   );
   if (!command) return;
   event.preventDefault();
+  const availability = paletteAvailability(command.id, currentSnapshot);
+  if (!availability.available) {
+    rememberFocusReturn();
+    uiState.connectionOpen = false;
+    uiState.paletteOpen = true;
+    uiState.paletteQuery = command.label;
+    render();
+    return;
+  }
   runCommand(command.id).catch(reportError);
 }
 document.addEventListener("keydown", handleKeydown);
@@ -368,6 +380,7 @@ function utilityButton(kind, label) {
   const button = actionButton(label, () => {
     if (uiState.utilityOpen !== kind) rememberFocusReturn();
     uiState.connectionOpen = false;
+    uiState.utilityFocusSelector = "";
     uiState.utilityOpen = uiState.utilityOpen === kind ? "" : kind;
     render();
   });
@@ -401,6 +414,11 @@ function utilityCenter(snapshot, kind) {
       title: "Search messages",
       summary: "Search retained messages and attachment names on this device.",
       render: () => messageSearchView(snapshot),
+    },
+    channels: {
+      title: "Create a channel",
+      summary: "Choose the channel name, topic, visibility, and current members before admission.",
+      render: () => channelCreateDisclosure(snapshot),
     },
     settings: {
       title: "Customize Voxelle",
@@ -510,7 +528,10 @@ function onboardingExperience(snapshot) {
   const joinForm = element("form", "field-stack");
   joinForm.addEventListener("submit", (event) => {
     event.preventDefault();
-    runCommand("space.join").catch(reportError);
+    runCommand("space.join", {
+      space_invite_json: uiState.spaceInviteDraft,
+      max_events: 4096,
+    }).catch(reportError);
   });
   const inviteFile = document.createElement("input");
   inviteFile.type = "file";
@@ -543,6 +564,7 @@ function onboardingExperience(snapshot) {
     }
   });
   const chooseInvite = actionButton("Choose invite file…", () => inviteFile.click());
+  chooseInvite.classList.add("invite-file-button");
   const inviteText = element("textarea", "invite-input");
   inviteText.rows = 5;
   inviteText.placeholder = "Paste complete signed .voxinvite JSON";
@@ -989,7 +1011,10 @@ function profileSummaryView(snapshot) {
     const joinForm = element("form", "field-stack");
     joinForm.addEventListener("submit", (event) => {
       event.preventDefault();
-      runCommand("space.join").catch(reportError);
+      runCommand("space.join", {
+        space_invite_json: uiState.spaceInviteDraft,
+        max_events: 4096,
+      }).catch(reportError);
     });
     const inviteInput = element("textarea", "peer-record-input");
     inviteInput.placeholder = "Paste signed .voxinvite JSON";
@@ -1041,11 +1066,18 @@ function profileSummaryView(snapshot) {
   );
 
   const edit = element("details", "advanced-details profile-edit");
+  edit.open = uiState.profileEditOpen;
+  edit.addEventListener("toggle", () => {
+    uiState.profileEditOpen = edit.open;
+  });
   edit.append(element("summary", "", "Edit your profile"));
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    runCommand("profile.update").catch(reportError);
+    runCommand("profile.update", {
+      display_name: uiState.profileNameDraft,
+      about: uiState.profileAboutDraft,
+    }).catch(reportError);
   });
   form.append(
     labeledInput(
@@ -2004,12 +2036,27 @@ function channelListView(snapshot) {
     if (actions.children.length > 0) row.append(actions);
     list.append(row);
   }
+  fragment.append(list, channelCreateDisclosure(snapshot));
+  return fragment;
+}
+
+function channelCreateDisclosure(snapshot) {
   const create = element("details", "channel-create advanced-details");
+  create.open = uiState.channelCreateOpen;
+  create.addEventListener("toggle", () => {
+    uiState.channelCreateOpen = create.open;
+  });
   create.append(element("summary", "", "Create a channel"));
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    runCommand("channel.create").catch(reportError);
+    if (!uiState.channelNameDraft.trim()) {
+      setUserError("Enter a channel name.");
+      render();
+      window.requestAnimationFrame(() => app.querySelector(".channel-create input")?.focus());
+      return;
+    }
+    runCommand("channel.create", channelCreatePayload(snapshot)).catch(reportError);
   });
   form.append(
     labeledInput("Name", "new-channel", uiState.channelNameDraft, (value) => { uiState.channelNameDraft = value; }),
@@ -2052,8 +2099,22 @@ function channelListView(snapshot) {
   }
   form.append(privacy, submitButton("channel.create"));
   create.append(form);
-  fragment.append(list, create);
-  return fragment;
+  return create;
+}
+
+function channelCreatePayload(snapshot) {
+  const privateMembers = uiState.channelPrivateDraft
+    ? [...uiState.channelMembersDraft]
+    : [];
+  if (uiState.channelPrivateDraft && privateMembers.length === 0) {
+    const ownPeerId = snapshot.home?.profile.peer_id;
+    if (ownPeerId) privateMembers.push(ownPeerId);
+  }
+  return {
+    name: uiState.channelNameDraft,
+    topic: uiState.channelTopicDraft,
+    private_members: privateMembers,
+  };
 }
 
 function channelKeyRotationConfirmation(channel) {
@@ -2250,6 +2311,7 @@ function roleListView(snapshot) {
     list.append(row);
   }
   const create = element("details", "advanced-details");
+  create.classList.add("role-create");
   create.open = uiState.roleCreateOpen;
   create.addEventListener("toggle", () => {
     uiState.roleCreateOpen = create.open;
@@ -2353,7 +2415,11 @@ function messageSearchView(snapshot) {
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    runCommand("message.search").catch(reportError);
+    runCommand("message.search", {
+      query: uiState.searchDraft,
+      room: null,
+      limit: 50,
+    }).catch(reportError);
   });
   form.append(labeledInput("Search", "Words in messages or attachment names", uiState.searchDraft, (value) => { uiState.searchDraft = value; }), submitButton("message.search"));
   const results = element("ol", "message-list");
@@ -3022,7 +3088,7 @@ function commandPalette(snapshot) {
     const first = filterPaletteCommands(
       snapshot.ui_ontology.commands,
       uiState.paletteQuery,
-    )[0];
+    ).find((command) => paletteAvailability(command.id, snapshot).available);
     if (first) executePaletteCommand(first.id);
   });
   form.append(input);
@@ -3052,6 +3118,12 @@ function populatePaletteResults(list, snapshot) {
       element("small", "muted", command.description),
     );
     button.append(copy);
+    const availability = paletteAvailability(command.id, snapshot);
+    button.disabled = !availability.available;
+    if (!availability.available) {
+      copy.append(element("small", "command-unavailable", availability.reason));
+      button.setAttribute("aria-description", availability.reason);
+    }
     if (command.shortcut) {
       button.append(element("kbd", "", command.shortcut.replace("Mod", navigator.platform.includes("Mac") ? "⌘" : "Ctrl")));
     }
@@ -3062,9 +3134,22 @@ function populatePaletteResults(list, snapshot) {
 }
 
 function executePaletteCommand(commandId) {
+  const availability = paletteAvailability(commandId, currentSnapshot);
+  if (!availability.available) return;
   uiState.paletteOpen = false;
   uiState.paletteQuery = "";
   runCommand(commandId).catch(reportError);
+}
+
+function paletteAvailability(commandId, snapshot) {
+  const localPeerId = snapshot.home?.profile.peer_id;
+  return paletteCommandAvailability(commandId, {
+    hasHome: Boolean(snapshot.home),
+    hasHomeError: Boolean(snapshot.home_error),
+    runtimeOnline: snapshot.home?.runtime.state === "online",
+    hasInvite: Boolean(snapshot.home?.invite?.space_invite_json),
+    joinedCall: Boolean(localPeerId && snapshot.home?.call?.participants.includes(localPeerId)),
+  });
 }
 
 /**
@@ -3139,6 +3224,27 @@ function submitButton(command) {
  * @param {unknown} [payload]
  */
 async function runCommand(command, payload) {
+  if (command === "space.join" && !payload) {
+    focusInviteJoin();
+    return;
+  }
+  if (command === "channel.create" && !payload) {
+    openChannelCreate();
+    return;
+  }
+  if (command === "profile.update" && !payload) {
+    openPeopleForm(".profile-edit");
+    return;
+  }
+  if (command === "role.create" && !payload) {
+    uiState.roleCreateOpen = true;
+    openPeopleForm(".role-create");
+    return;
+  }
+  if (command === "message.search" && !payload) {
+    openSearchUtility();
+    return;
+  }
   if (command === "peer.import") {
     const preview = peerRecordClaimPreview(uiState.peerRecordDraft);
     if (preview.state !== "claims" || !preview.recognized) {
@@ -3227,8 +3333,8 @@ async function runCommand(command, payload) {
         return;
       case "space.join":
         currentSnapshot = await shell.execute(command, {
-          space_invite_json: uiState.spaceInviteDraft,
-          max_events: 4096,
+          space_invite_json: payload.space_invite_json,
+          max_events: payload.max_events ?? 4096,
         });
         uiState.spaceInviteDraft = "";
         return;
@@ -3312,22 +3418,12 @@ async function runCommand(command, payload) {
         focusChannelRow(payload.room_id);
         return;
       case "channel.create": {
-        const privateMembers = uiState.channelPrivateDraft
-          ? [...uiState.channelMembersDraft]
-          : [];
-        if (uiState.channelPrivateDraft && privateMembers.length === 0) {
-          const ownPeerId = currentSnapshot.home?.profile.peer_id;
-          if (ownPeerId) privateMembers.push(ownPeerId);
-        }
-        currentSnapshot = await shell.execute(command, payload ?? {
-          name: uiState.channelNameDraft,
-          topic: uiState.channelTopicDraft,
-          private_members: privateMembers,
-        });
+        currentSnapshot = await shell.execute(command, payload);
         uiState.channelNameDraft = "";
         uiState.channelTopicDraft = "";
         uiState.channelPrivateDraft = false;
         uiState.channelMembersDraft.clear();
+        uiState.channelCreateOpen = false;
         return;
       }
       case "message.edit": {
@@ -3365,20 +3461,14 @@ async function runCommand(command, payload) {
         uiState.pendingAttachment = null;
         return;
       case "profile.update":
-        currentSnapshot = await shell.execute(command, payload ?? {
-          display_name: uiState.profileNameDraft,
-          about: uiState.profileAboutDraft,
-        });
+        currentSnapshot = await shell.execute(command, payload);
         uiState.profileNameDraft = "";
         uiState.profileAboutDraft = "";
         uiState.profileDraftInitialized = false;
+        uiState.profileEditOpen = false;
         return;
       case "message.search":
-        currentSnapshot = await shell.execute(command, payload ?? {
-          query: uiState.searchDraft,
-          room: null,
-          limit: 50,
-        });
+        currentSnapshot = await shell.execute(command, payload);
         return;
       case "call.join": {
         if (!navigator.mediaDevices?.getUserMedia || typeof RTCPeerConnection === "undefined") {
@@ -3429,11 +3519,6 @@ async function runCommand(command, payload) {
         currentSnapshot = await shell.execute(command, payload);
         return;
       case "role.create": {
-        if (!payload) {
-          uiState.roleCreateOpen = true;
-          openPeopleUtility();
-          return;
-        }
         currentSnapshot = await shell.execute(command, {
           name: payload.name,
           permissions: payload.permissions,
@@ -3659,6 +3744,8 @@ function synchronizeTransientFocus() {
       ? app.querySelector(".command-palette-input")
       : surface.startsWith("product-confirmation:")
         ? app.querySelector(".product-update-confirmation [data-dialog-initial-focus='true']")
+        : surface.startsWith("utility:") && uiState.utilityFocusSelector
+          ? app.querySelector(uiState.utilityFocusSelector)
         : app.querySelector("[data-dialog-initial-focus='true']");
     if (surface === "palette") {
       target?.setSelectionRange?.(target.value.length, target.value.length);
@@ -3780,10 +3867,57 @@ function permissionLabel(permission) {
   }[permission] ?? permission;
 }
 
-function openPeopleUtility() {
+function openPeopleUtility(focusSelector = "") {
   uiState.connectionOpen = false;
   uiState.paletteOpen = false;
   uiState.utilityOpen = "people";
+  uiState.utilityFocusSelector = focusSelector;
+}
+
+function openPeopleForm(disclosureSelector) {
+  openPeopleUtility(`${disclosureSelector} input`);
+  render();
+  window.requestAnimationFrame(() => {
+    const disclosure = app.querySelector(disclosureSelector);
+    if (disclosure) disclosure.open = true;
+    disclosure?.querySelector("input")?.focus();
+  });
+}
+
+function openSearchUtility() {
+  uiState.connectionOpen = false;
+  uiState.paletteOpen = false;
+  uiState.utilityOpen = "search";
+  uiState.utilityFocusSelector = ".utility-center input";
+  render();
+}
+
+function openChannelCreate() {
+  const visibleDisclosure = app.querySelector(".channel-create");
+  uiState.paletteOpen = false;
+  uiState.channelCreateOpen = true;
+  if (visibleDisclosure) {
+    uiState.utilityOpen = "";
+    uiState.utilityFocusSelector = "";
+  } else {
+    uiState.utilityOpen = "channels";
+    uiState.utilityFocusSelector = ".channel-create input";
+  }
+  render();
+  window.requestAnimationFrame(() => {
+    const disclosure = app.querySelector(".channel-create");
+    if (disclosure) disclosure.open = true;
+    disclosure?.querySelector("input")?.focus();
+  });
+}
+
+function focusInviteJoin() {
+  uiState.paletteOpen = false;
+  render();
+  window.requestAnimationFrame(() => (
+    app.querySelector(".invite-file-button")
+    ?? app.querySelector(".invite-input")
+  )?.focus());
 }
 
 /** @param {string} value */

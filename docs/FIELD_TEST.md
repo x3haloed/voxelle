@@ -70,6 +70,9 @@ registered `Runtime Status`, `Network Health`, `Connections`, `Field Test`, and
 ordinary peer records, explicit diagnosis and sync, the re-entrant field-test
 checklist, and service errors. The advanced views invoke the same Rust semantic
 commands as the focused surfaces; they are not a separate authority path.
+The command palette keeps unavailable operations visible with their missing
+prerequisite and routes form-backed operations to the same focused inputs; it
+must not submit empty drafts merely because the command started in the palette.
 
 Do not conflate the two signed JSON objects. A `.voxinvite` grants membership;
 a peer record only advertises replaceable endpoint availability and grants no
