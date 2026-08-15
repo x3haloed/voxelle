@@ -58,7 +58,9 @@ Use the ordinary human surfaces first:
   identity and manual peer details.
 - **Online / Offline** in the header opens Connection & Sync health. It shows
   automatic service, reachability, and synchronization state without requiring
-  topology on the ordinary success path.
+  topology on the ordinary success path. For manual checks, choose the exact
+  named peer and verify its IPv6 address, principal, and device before running
+  diagnosis or sync; the selection grants no membership or authority.
 - **Channels**, **Conversation**, and **Message Composer** select rooms, project
   accepted messages, and send test messages.
 
@@ -107,7 +109,10 @@ instantaneous-revocation behavior; neither is claimed.
 3. Confirm the join creates B's durable principal, admits it to A's space,
    synchronizes retained history, and goes online without manual topology
    steps on the ordinary success path.
-4. In `Peer List`, diagnose A and run an explicit sync as a re-entrant check.
+4. In `Connection & sync`, select A by its displayed address, principal, and
+   device; alternatively, open A's exact row in `Peer List`. Diagnose A and run
+   an explicit sync as a re-entrant check. Record the peer-named activity
+   result.
 5. In `Message Composer`, send a message like:
 
 ```text
@@ -120,7 +125,9 @@ hello from peer b
 ### Peer A Again
 
 1. Import B's peer record if needed; this must not change membership.
-2. Run `Diagnose Peer` and `Sync Peer`.
+2. In `Connection & sync`, select B and confirm the displayed address,
+   principal, and device match B's recorded values. Run the B-named diagnosis
+   and sync actions; do not infer the target from peer ordering.
 3. Confirm B's message appears in `Room Timeline`.
 4. Send a reply from A.
 5. Have B sync A again and confirm A's reply appears.
@@ -151,8 +158,10 @@ Peer C should prove that the system is not only pairwise happy-path glue.
 hello from peer c
 ```
 
-7. Have B import C's ordinary peer record if needed, diagnose C, and sync C.
-8. Bring A back online and sync it against either B or C.
+7. Have B import C's ordinary peer record if needed, explicitly select C,
+   confirm C's address/principal/device tuple, diagnose C, and sync C.
+8. Bring A back online, explicitly select either B or C, and sync that named
+   peer. Record which topology edge was exercised.
 9. Confirm all three peers can eventually see A, B, and C messages.
 
 ## Private-Channel Test

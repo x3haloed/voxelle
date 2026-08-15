@@ -77,6 +77,12 @@ The verifier rejects IPv4, loopback, multicast, and documentation-only
 `[::]:PORT`, but an advertised address must identify an actual usable interface
 and cannot be unspecified.
 
+For every manual diagnosis or sync, use **Connection & sync** to select the
+named target and compare its displayed address, principal, and device with the
+role record before invoking the peer-named action. Retain the corresponding
+peer-named Service Activity result. A generic success against whichever peer
+happened to be stored first is not directional field evidence.
+
 ## 4. Record human causal-path evidence
 
 Use an actual supported desktop and name the assistive technology in the

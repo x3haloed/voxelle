@@ -309,6 +309,13 @@ Commands should be reachable from more than one surface over time:
 
 The command ID is the durable concept. The button is only one affordance.
 
+Manual diagnosis and synchronization expose an explicit, disposable target
+selection over Rust-projected ordinary peer records. The selector names the
+peer and shows its address, principal, and device; each action carries that
+exact principal/device tuple to `peer.diagnose` or `peer.sync`, and the Field
+Test view evaluates peer-named activity for the selected target. Selection does
+not import availability, grant membership, or become routing authority.
+
 Message reply and edit affordances remain inside the conversation surface.
 Selecting Reply establishes local composer context, but the accepted action is
 still `message.send` with the root event ID in its payload. Inline editing and

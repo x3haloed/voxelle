@@ -270,6 +270,19 @@ h3 {
   gap: 2px;
 }
 
+.peer-target {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--panel-border);
+}
+
+.peer-target h3,
+.peer-target .row-actions,
+.peer-target .recovery-note {
+  margin: 0;
+}
+
 .success-label {
   color: var(--runtime-online);
   font-weight: 700;

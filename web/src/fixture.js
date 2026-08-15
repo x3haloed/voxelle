@@ -56,6 +56,13 @@ export const fixtureSnapshot = {
         addr: "[::1]:49153",
         default_room: "room:general",
       },
+      {
+        label: "Carol",
+        peer_id: "ed25519:carol000000000000000000000000000000000000000000000000",
+        device_id: "ed25519:caroldevice00000000000000000000000000000000000000000",
+        addr: "[fd00::23]:49154",
+        default_room: "room:general",
+      },
     ],
     channels: [
       { room_id: "room:general", name: "general", topic: "", visibility: "public", key_epoch: 0, private_member_count: 0, selected: true, unread_count: 0 },

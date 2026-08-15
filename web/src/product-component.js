@@ -52,6 +52,7 @@ const uiState = {
   searchDraft: "",
   bindDraft: "",
   advertiseDraft: "",
+  peerTargetKey: "",
   productUpdateDraft: "",
   trustTransitionDraft: "",
   productConfirmationCommand: "",
@@ -465,7 +466,7 @@ function connectionCenter(snapshot) {
   close.dataset.dialogInitialFocus = "true";
   heading.append(copy, close);
   const body = element("div", "connection-center-body");
-  body.append(serviceOptions(), networkHealthView(snapshot));
+  body.append(serviceOptions(), peerTargetView(snapshot, true), networkHealthView(snapshot));
   aside.append(heading, body);
   return aside;
 }
@@ -1151,7 +1152,7 @@ function networkHealthView(snapshot) {
 
   const rows = element("ol", "health-list");
   for (const row of snapshot.network_health.rows) {
-    rows.append(healthRow(row));
+    rows.append(healthRow(row, snapshot));
   }
   fragment.append(rows);
   return fragment;
@@ -1458,8 +1459,9 @@ function serviceOptions() {
 
 /**
  * @param {import("./shell-contract").NetworkHealthRow} row
+ * @param {import("./shell-contract").ShellSnapshotView} snapshot
  */
-function healthRow(row) {
+function healthRow(row, snapshot) {
   const item = element("li", "health-row");
   item.dataset.renderKey = `health:${row.id}`;
   item.dataset.status = row.status;
@@ -1480,9 +1482,96 @@ function healthRow(row) {
 
   item.append(indicator, body);
   if (row.primary_action) {
-    item.append(commandButton(row.primary_action, row.primary_action_payload ?? undefined));
+    const peers = snapshot.home?.peers ?? [];
+    const target = row.primary_action_payload
+      ? peers.find((peer) => (
+        peer.peer_id === row.primary_action_payload.peer_id
+        && peer.device_id === row.primary_action_payload.device_id
+      )) ?? selectedPeerTarget(snapshot)
+      : selectedPeerTarget(snapshot);
+    const payload = row.primary_action_payload
+      ?? (isPeerOperation(row.primary_action) && target ? peerRequest(target) : undefined);
+    const action = commandButton(row.primary_action, payload);
+    if (isPeerOperation(row.primary_action) && target) {
+      action.textContent = `${peerOperationVerb(row.primary_action)} ${target.label}`;
+      action.setAttribute(
+        "aria-label",
+        `${peerOperationVerb(row.primary_action)} ${target.label} at ${target.addr}`,
+      );
+    }
+    item.append(action);
   }
   return item;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function peerTargetView(snapshot, includeActions = false) {
+  const section = element("section", "peer-target");
+  const peers = snapshot.home?.peers ?? [];
+  section.append(element("h3", "", "Peer for manual checks"));
+  if (peers.length === 0) {
+    section.append(element(
+      "p",
+      "summary",
+      "No ordinary peer is known yet. Join with a signed invite or import availability in Invite People before diagnosing or synchronizing.",
+    ));
+    return section;
+  }
+
+  const target = selectedPeerTarget(snapshot);
+  const field = element("label", "field");
+  field.append(element("span", "", "Target peer"));
+  const select = element("select", "peer-target-select");
+  select.setAttribute("aria-label", "Peer for manual checks");
+  for (const peer of peers) {
+    const option = element("option", "", `${peer.label} · ${peer.addr}`);
+    option.value = peerTargetKey(peer);
+    option.selected = peer === target;
+    select.append(option);
+  }
+  select.addEventListener("change", () => {
+    uiState.peerTargetKey = select.value;
+    render();
+    window.requestAnimationFrame(() => app.querySelector(".peer-target-select")?.focus());
+  });
+  field.append(select);
+  section.append(
+    field,
+    definitionGrid([
+      ["Address", target.addr],
+      ["Principal", target.peer_id],
+      ["Device", target.device_id],
+    ]),
+    element(
+      "p",
+      "recovery-note",
+      "This chooses one stored availability record. It does not grant membership or change peer authority.",
+    ),
+  );
+  if (includeActions) {
+    const controls = element("div", "row-actions");
+    for (const command of ["peer.diagnose", "peer.sync"]) {
+      const button = commandButton(command, peerRequest(target));
+      button.textContent = `${peerOperationVerb(command)} ${target.label}`;
+      button.setAttribute("aria-label", `${peerOperationVerb(command)} ${target.label} at ${target.addr}`);
+      controls.append(button);
+    }
+    section.append(controls);
+  }
+  return section;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function selectedPeerTarget(snapshot) {
+  return resolvePeerTarget(snapshot.home?.peers ?? [], uiState.peerTargetKey);
+}
+
+function isPeerOperation(command) {
+  return command === "peer.diagnose" || command === "peer.sync";
+}
+
+function peerOperationVerb(command) {
+  return command === "peer.diagnose" ? "Diagnose" : "Sync";
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -1690,6 +1779,10 @@ function cancelInviteRevocation(inviteId) {
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function fieldTestView(snapshot) {
   const fragment = document.createDocumentFragment();
+  const target = selectedPeerTarget(snapshot);
+  const targetEvidence = peerActivityEvidence(snapshot.service_activity, target);
+  const diagnosticReached = targetEvidence.diagnosticReached;
+  const targetSynced = targetEvidence.synchronized;
   const rows = [
     {
       label: "Home initialized",
@@ -1723,17 +1816,21 @@ function fieldTestView(snapshot) {
     },
     {
       label: "Peer diagnostic",
-      status: activityIncludes(snapshot, "diagnostic reached") ? "working" : "needs_attention",
+      status: diagnosticReached ? "working" : "needs_attention",
       command: (snapshot.home?.peers.length ?? 0) > 0 ? "peer.diagnose" : "peer.import",
-      detail: activityIncludes(snapshot, "diagnostic reached")
-        ? "latest diagnostic reached a peer"
-        : "run against an imported peer",
+      payload: target ? peerRequest(target) : undefined,
+      detail: diagnosticReached
+        ? `${target.label} was reached at ${target.addr}`
+        : `no successful diagnostic recorded for ${target?.label ?? "an imported peer"}`,
     },
     {
       label: "Room sync",
-      status: activityIncludes(snapshot, "sync") ? "working" : "needs_attention",
+      status: targetSynced ? "working" : "needs_attention",
       command: (snapshot.home?.peers.length ?? 0) > 0 ? "peer.sync" : "peer.import",
-      detail: `${snapshot.home?.room.messages.length ?? 0} visible message(s)`,
+      payload: target ? peerRequest(target) : undefined,
+      detail: targetSynced
+        ? `${target.label} synchronized; ${snapshot.home?.room.messages.length ?? 0} visible message(s)`
+        : `no successful synchronization recorded for ${target?.label ?? "an imported peer"}`,
     },
   ];
 
@@ -1750,12 +1847,17 @@ function fieldTestView(snapshot) {
     );
     item.append(body);
     if (row.command) {
-      item.append(commandButton(row.command));
+      const action = commandButton(row.command, row.payload);
+      if (isPeerOperation(row.command) && target) {
+        action.textContent = `${peerOperationVerb(row.command)} ${target.label}`;
+        action.setAttribute("aria-label", `${peerOperationVerb(row.command)} ${target.label} at ${target.addr}`);
+      }
+      item.append(action);
     }
     list.append(item);
   }
 
-  fragment.append(list);
+  fragment.append(peerTargetView(snapshot), list);
   return fragment;
 }
 
@@ -3479,7 +3581,7 @@ function synchronizeTransientFocus() {
 }
 
 function firstPeerRequest() {
-  const peer = currentSnapshot.home?.peers[0];
+  const peer = selectedPeerTarget(currentSnapshot);
   if (!peer) {
     throw new Error("no peer available");
   }

@@ -475,6 +475,17 @@ already understood. The P2P draft records the existing standalone
 file-specific actions, and refusal to simulate preview acceptance; this is not
 new packaged-native file-dialog or external-machine evidence.
 
+Manual multi-peer verification no longer silently targets the first stored
+availability record. Connection & sync and the re-entrant Field Test view share
+a disposable explicit target selection, show its address/principal/device
+tuple, and send that exact principal/device payload through the existing Rust
+diagnose or sync command. Field-test completion is evaluated against the
+peer-named activity result for the selected target rather than any prior peer
+success. Deterministic selection tests and rendered two-peer evidence cover
+target retention, fallback when a record disappears, keyboard focus, visible
+identity, and command payloads. This does not add routing or membership
+authority, and it is not non-loopback or three-machine evidence.
+
 The member-ban affordance now requires an explicit confirmation that explains
 loss of participation authority, retained history, and the fresh-invite
 requirement before it invokes `member.ban`. Rendered-preview evidence exercises

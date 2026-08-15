@@ -40,3 +40,33 @@ export function connectionHealthLabel(status) {
       return "unknown";
   }
 }
+
+/**
+ * @param {{peer_id: string, device_id: string}} peer
+ */
+export function peerTargetKey(peer) {
+  return JSON.stringify([peer.peer_id, peer.device_id]);
+}
+
+/**
+ * Keep a deliberate target selected across snapshot refreshes, while falling
+ * back to the first currently known peer when the previous record disappears.
+ *
+ * @param {Array<{peer_id: string, device_id: string}>} peers
+ * @param {string} requestedKey
+ */
+export function resolvePeerTarget(peers, requestedKey) {
+  return peers.find((peer) => peerTargetKey(peer) === requestedKey) ?? peers[0] ?? null;
+}
+
+/**
+ * @param {Array<{summary: string}>} activity
+ * @param {{label: string} | null} target
+ */
+export function peerActivityEvidence(activity, target) {
+  if (!target) return { diagnosticReached: false, synchronized: false };
+  return {
+    diagnosticReached: activity.some((item) => item.summary === `diagnostic reached ${target.label}`),
+    synchronized: activity.some((item) => item.summary.startsWith(`synced ${target.label}:`)),
+  };
+}
