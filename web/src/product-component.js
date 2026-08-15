@@ -25,10 +25,12 @@ const uiState = {
   peerRecordDraft: "",
   spaceInviteDraft: "",
   messageDraft: "",
+  messageMentionsDraft: new Set(),
   replyTargetEventId: "",
   replyPreview: null,
   editingMessageId: "",
   messageEditDraft: "",
+  messageEditMentionsDraft: new Set(),
   deletingMessageId: "",
   channelNameDraft: "",
   channelTopicDraft: "",
@@ -1685,7 +1687,6 @@ function messageEditForm(message, snapshot) {
       target_event_id: message.event_id,
       text: uiState.messageEditDraft,
       room: snapshot.home?.room.room_id ?? null,
-      mentions: [],
     }).catch(reportError);
   });
   const input = element("textarea", "message-edit-input");
@@ -1709,13 +1710,22 @@ function messageEditForm(message, snapshot) {
   const save = submitButton("message.edit");
   save.textContent = "Save changes";
   controls.append(save, actionButton("Cancel edit", cancelMessageEdit));
-  form.append(input, element("span", "composer-hint", "Enter to save · Escape to cancel"), controls);
+  form.append(
+    input,
+    mentionPicker(input, snapshot, (value, peerId) => {
+      uiState.messageEditDraft = value;
+      uiState.messageEditMentionsDraft.add(peerId);
+    }),
+    element("span", "composer-hint", "Enter to save · Escape to cancel"),
+    controls,
+  );
   return form;
 }
 
 function beginMessageEdit(message) {
   uiState.editingMessageId = message.event_id;
   uiState.messageEditDraft = message.text;
+  uiState.messageEditMentionsDraft = new Set(message.mentions ?? []);
   render();
   window.requestAnimationFrame(() => app.querySelector(".message-edit-input")?.focus());
 }
@@ -1723,6 +1733,7 @@ function beginMessageEdit(message) {
 function cancelMessageEdit() {
   uiState.editingMessageId = "";
   uiState.messageEditDraft = "";
+  uiState.messageEditMentionsDraft.clear();
   render();
 }
 
@@ -1788,6 +1799,11 @@ function messageComposerView(snapshot) {
   });
   const controls = element("div", "composer-controls");
   controls.append(
+    mentionPicker(input, snapshot, (value, peerId) => {
+      uiState.messageDraft = value;
+      uiState.messageMentionsDraft.add(peerId);
+      count.textContent = String(value.length);
+    }),
     actionButton("Attach", () => fileInput.click()),
     element("span", "composer-hint", "Enter to send · Shift+Enter for a new line"),
     count,
@@ -2249,17 +2265,25 @@ async function runCommand(command, payload) {
           ),
         );
         return;
-      case "message.send":
+      case "message.send": {
+        const text = payload?.text ?? uiState.messageDraft;
         currentSnapshot = await shell.execute(command, {
-          text: payload?.text ?? uiState.messageDraft,
+          text,
           room: payload?.room ?? null,
-          mentions: payload?.mentions ?? [],
+          mentions: payload?.mentions
+            ?? mentionedPeerIds(
+              text,
+              currentSnapshot.home?.profiles ?? [],
+              uiState.messageMentionsDraft,
+            ),
           thread_root_event_id: payload?.thread_root_event_id ?? blankToNull(uiState.replyTargetEventId),
         });
         uiState.messageDraft = "";
+        uiState.messageMentionsDraft.clear();
         uiState.replyTargetEventId = "";
         uiState.replyPreview = null;
         return;
+      }
       case "channel.select":
         currentSnapshot = await shell.execute(command, payload);
         return;
@@ -2292,9 +2316,18 @@ async function runCommand(command, payload) {
         if (!payload?.target_event_id || typeof payload?.text !== "string") {
           throw new Error("Choose Edit from one of your messages first.");
         }
-        currentSnapshot = await shell.execute(command, { ...payload, mentions: payload.mentions ?? [] });
+        currentSnapshot = await shell.execute(command, {
+          ...payload,
+          mentions: payload.mentions
+            ?? mentionedPeerIds(
+              payload.text,
+              currentSnapshot.home?.profiles ?? [],
+              uiState.messageEditMentionsDraft,
+            ),
+        });
         uiState.editingMessageId = "";
         uiState.messageEditDraft = "";
+        uiState.messageEditMentionsDraft.clear();
         return;
       }
       case "message.redact":
@@ -2601,6 +2634,43 @@ function choiceCheckbox(label, checked, onChange) {
   input.addEventListener("change", () => onChange(input.checked));
   field.append(input, element("span", "", label));
   return field;
+}
+
+function mentionPicker(input, snapshot, onChange) {
+  const details = element("details", "mention-picker");
+  details.append(element("summary", "command-button", "Mention someone"));
+  const choices = element("div", "mention-choices");
+  const profiles = (snapshot.home?.profiles ?? []).filter((profile) =>
+    !profile.banned && profile.peer_id !== snapshot.home?.profile.peer_id);
+  const nameCounts = new Map();
+  for (const profile of profiles) {
+    const name = profile.display_name.trim().toLocaleLowerCase();
+    nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+  }
+  if (profiles.length === 0) {
+    choices.append(element("p", "summary", "No other current members to mention."));
+  }
+  for (const profile of profiles) {
+    const duplicate = nameCounts.get(profile.display_name.trim().toLocaleLowerCase()) > 1;
+    const label = duplicate
+      ? `Mention ${profile.display_name} · member ${shortId(profile.peer_id)}`
+      : `Mention ${profile.display_name}`;
+    choices.append(actionButton(label, () => {
+      const insertion = insertMentionText(
+        input.value,
+        input.selectionStart,
+        input.selectionEnd,
+        profile.display_name,
+      );
+      input.value = insertion.text;
+      onChange(insertion.text, profile.peer_id);
+      details.open = false;
+      input.focus();
+      input.setSelectionRange(insertion.caret, insertion.caret);
+    }));
+  }
+  details.append(choices);
+  return details;
 }
 
 function updateSet(values, value, included) {

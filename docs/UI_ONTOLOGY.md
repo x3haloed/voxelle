@@ -232,6 +232,12 @@ its Enter/save or Escape/cancel keyboard paths invoke `message.edit` only when
 the person commits. Draft context is disposable presentation state; it never
 becomes a parallel message or thread authority.
 
+Mention composition leads with current display names. The composer and inline
+editor insert a visible `@name`, then carry the corresponding stable peer IDs
+through `message.send` or `message.edit`. A typed name resolves automatically
+only when unambiguous; duplicate display names require the member picker, which
+disambiguates the choice without making raw IDs the ordinary interaction.
+
 Projected reaction and pin state determines whether the visible action invokes
 the add or remove command; the frontend does not guess a toggle result. Message
 deletion is a separate confirmed step that states the retained signed-tombstone

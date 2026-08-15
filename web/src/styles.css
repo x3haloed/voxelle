@@ -286,6 +286,17 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.mention-picker {
+  position: relative;
+}
+
+.mention-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 6px;
+}
+
 .recovery-setup-prompt > div {
   display: grid;
   gap: 2px;

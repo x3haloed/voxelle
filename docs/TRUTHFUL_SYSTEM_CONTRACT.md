@@ -349,6 +349,14 @@ thread reply survived a full restart of the exact same artifact. Existing
 serialized two-home evidence continues to prove convergence through those same
 commands; this lived run is local packaged-debug evidence.
 
+The human composer and inline editor now expose a named member picker for
+mentions. Rendered-preview evidence proves that selecting a member inserts the
+visible name and returns focus to the text control; deterministic composition
+tests prove unambiguous typed-name resolution and duplicate-name selection; and
+the serialized two-home command test carries the resulting stable peer ID into
+the admitted message and recipient notification. This is local semantic and
+rendered evidence, not a new packaged-native or assistive-technology claim.
+
 The same packaged surface now derives reaction and pin actions from projected
 accepted state: a native run added and removed the local reaction and pinned
 and unpinned the message through their distinct semantic commands. Deletion no

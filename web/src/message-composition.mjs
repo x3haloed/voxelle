@@ -1,0 +1,55 @@
+const MENTION_BOUNDARY = /[\s.,!?;:()[\]{}'"-]/;
+
+/**
+ * Resolve visible @names to the stable peer IDs carried by the command.
+ * @param {string} text
+ * @param {Array<{peer_id: string, display_name: string}>} profiles
+ * @param {Iterable<string>} [selectedPeerIds]
+ */
+export function mentionedPeerIds(text, profiles, selectedPeerIds = []) {
+  const lower = text.toLocaleLowerCase();
+  const selected = new Set(selectedPeerIds);
+  const nameCounts = new Map();
+  for (const profile of profiles) {
+    const name = profile.display_name.trim().toLocaleLowerCase();
+    if (name) nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
+  }
+  const ids = [];
+  for (const profile of profiles) {
+    const name = profile.display_name.trim();
+    if (!name) continue;
+    if (!selected.has(profile.peer_id)
+        && nameCounts.get(name.toLocaleLowerCase()) !== 1) continue;
+    const token = `@${name.toLocaleLowerCase()}`;
+    let index = lower.indexOf(token);
+    while (index !== -1) {
+      const next = lower[index + token.length];
+      if (next === undefined || MENTION_BOUNDARY.test(next)) {
+        ids.push(profile.peer_id);
+        break;
+      }
+      index = lower.indexOf(token, index + token.length);
+    }
+  }
+  return ids;
+}
+
+/**
+ * @param {string} text
+ * @param {number | null} selectionStart
+ * @param {number | null} selectionEnd
+ * @param {string} displayName
+ */
+export function insertMentionText(text, selectionStart, selectionEnd, displayName) {
+  const start = selectionStart ?? text.length;
+  const end = selectionEnd ?? start;
+  const before = text.slice(0, start);
+  const after = text.slice(end);
+  const leading = before && !/\s$/.test(before) ? " " : "";
+  const trailing = after && !/^\s/.test(after) ? " " : "";
+  const inserted = `${leading}@${displayName.trim()}${trailing || " "}`;
+  return {
+    text: `${before}${inserted}${after}`,
+    caret: before.length + inserted.length,
+  };
+}
