@@ -158,3 +158,27 @@ export function disambiguatedChannelLabel(channel, channels) {
     ? `${channel.name} · channel ${stableId.slice(-markerLength)}`
     : channel.name;
 }
+
+/**
+ * Make same-expiry bearer invites stable without cluttering ordinary rows.
+ * @param {{invite_id: string, display_expiry: string}} invite
+ * @param {Array<{invite_id: string, display_expiry: string}>} invites
+ */
+export function disambiguatedInviteLabel(invite, invites) {
+  const duplicates = invites.filter((candidate) => (
+    candidate.display_expiry === invite.display_expiry
+  ));
+  const stableId = invite.invite_id.slice(invite.invite_id.lastIndexOf(":") + 1);
+  let markerLength = Math.min(8, stableId.length);
+  while (
+    markerLength < stableId.length
+    && duplicates.some((candidate) => (
+      candidate.invite_id !== invite.invite_id
+      && candidate.invite_id.slice(candidate.invite_id.lastIndexOf(":") + 1)
+        .endsWith(stableId.slice(-markerLength))
+    ))
+  ) markerLength += 1;
+  return duplicates.length > 1
+    ? `${invite.display_expiry} · invite ${stableId.slice(-markerLength)}`
+    : invite.display_expiry;
+}

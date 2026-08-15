@@ -334,7 +334,9 @@ than silently changing an out-of-range caller request.
 The People surface projects active invitations from Rust's admitted governance
 state rather than remembering frontend actions. `space.invite.revoke` carries
 the stable invite event ID through the ordinary signed-governance admission and
-peer-sync path. Revocation requires an explicit alert-dialog confirmation that
+peer-sync path. When human-formatted expiries collide, the row action and review
+append the shortest unique invite-ID suffix; unique expiries remain uncluttered.
+Revocation requires an explicit alert-dialog confirmation that
 names the stale-partition limitation; cancel returns focus to the originating
 invite row.
 

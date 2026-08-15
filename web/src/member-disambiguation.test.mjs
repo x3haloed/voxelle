@@ -19,3 +19,9 @@ test("duplicate channel names retain one stable label across causal surfaces", (
   assert.match(source, /Message \$\{channel \? `#\$\{channelLabel\}` : "this room"\}/);
   assert.match(source, /disambiguatedChannelLabel\(channel, snapshot\.home\?\.channels \?\? \[\]\)/);
 });
+
+test("same-expiry invites retain one stable label through revocation review", () => {
+  assert.match(source, /const inviteLabel = disambiguatedInviteLabel\(invite, activeInvites\)/);
+  assert.match(source, /Revoke invite expiring \$\{inviteLabel\} confirmation/);
+  assert.match(source, /confirm\.textContent = `Revoke invite expiring \$\{inviteLabel\}`/);
+});

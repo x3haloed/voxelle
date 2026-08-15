@@ -184,6 +184,10 @@ Before creating an invite, change among the bounded expiry choices and confirm
 the live review names the selected signed bearer-capability window and the
 button says **Create signed invite**. After creation, confirm the projected
 absolute expiry matches that choice.
+Create two active invites whose expiries render identically; confirm their row
+actions remain distinct and the chosen invite marker persists through the
+revocation confirmation and final Revoke button while the other invite remains
+unchanged after cancellation.
 
 In **Connection & sync**, enter an advertised IPv6 address without brackets or
 a port, then a bracketed address with port `70000`. Invoke **Go Online** each

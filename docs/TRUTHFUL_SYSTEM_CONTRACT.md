@@ -748,6 +748,18 @@ rotation review, and the notification action; it did not invoke either room
 command. This is not admitted-channel, packaged-native, or
 assistive-technology evidence.
 
+Active invite revocation no longer collapses multiple bearer capabilities with
+the same human-formatted expiry into identical actions. The frontend compares
+the displayed expiry labels and, only on collision, appends the shortest unique
+invite-event-ID suffix of at least eight characters to the row action, focused
+confirmation, and final Revoke button. The full invite event ID remains visible
+in the row and is the sole governance command payload. Deterministic helper,
+product-source, and native bundle tests cover the mapping. A rendered
+same-expiry fixture probe observed two distinct row actions, carried the chosen
+marker through the focused confirmation and final Revoke button, and returned
+to both unchanged rows after cancellation without invoking governance. This is
+not admitted-governance, packaged-native, or assistive-technology evidence.
+
 Accepted reaction and pin toggles also preserve causal keyboard location
 without preserving a stale command listener. Reconciliation replaces the
 control when the Rust-projected action changes from add to remove or back; a

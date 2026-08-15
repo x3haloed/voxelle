@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   disambiguatedChannelLabel,
+  disambiguatedInviteLabel,
   disambiguatedMemberLabel,
   disambiguatedRoleLabel,
   insertMentionText,
@@ -140,5 +141,33 @@ test("duplicate channel names receive stable bounded disambiguators", () => {
   assert.equal(
     disambiguatedChannelLabel(collidingSuffixes[1], collidingSuffixes),
     "plans · channel b12345678",
+  );
+});
+
+test("same-expiry invites receive stable bounded disambiguators", () => {
+  const invites = [
+    { invite_id: "evt:invite-aaa11111", display_expiry: "Friday at 4:00 PM" },
+    { invite_id: "evt:invite-bbb22222", display_expiry: "Friday at 4:00 PM" },
+  ];
+  assert.equal(
+    disambiguatedInviteLabel(invites[0], invites),
+    "Friday at 4:00 PM · invite aaa11111",
+  );
+  assert.equal(
+    disambiguatedInviteLabel(invites[1], invites),
+    "Friday at 4:00 PM · invite bbb22222",
+  );
+  assert.equal(disambiguatedInviteLabel(invites[0], [invites[0]]), "Friday at 4:00 PM");
+  const collidingSuffixes = [
+    { invite_id: "evt:first-a12345678", display_expiry: "Tomorrow" },
+    { invite_id: "evt:second-b12345678", display_expiry: "Tomorrow" },
+  ];
+  assert.equal(
+    disambiguatedInviteLabel(collidingSuffixes[0], collidingSuffixes),
+    "Tomorrow · invite a12345678",
+  );
+  assert.equal(
+    disambiguatedInviteLabel(collidingSuffixes[1], collidingSuffixes),
+    "Tomorrow · invite b12345678",
   );
 });

@@ -1856,8 +1856,12 @@ function inviteExchangeView(snapshot) {
   );
   if (activeInvites.length > 0) {
     const list = element("ol", "peer-list");
-    for (const activeInvite of activeInvites) {
-      list.append(activeInviteRow(activeInvite));
+    const inviteContexts = activeInvites.map((activeInvite) => ({
+      ...activeInvite,
+      display_expiry: new Date(activeInvite.expires_ms).toLocaleString(),
+    }));
+    for (const activeInvite of inviteContexts) {
+      list.append(activeInviteRow(activeInvite, inviteContexts));
     }
     active.append(list);
   }
@@ -1914,11 +1918,12 @@ function inviteCreationForm() {
   return form;
 }
 
-function activeInviteRow(invite) {
+function activeInviteRow(invite, activeInvites) {
   const row = element("li", "peer-row active-invite-row");
   row.dataset.inviteId = invite.invite_id;
   row.tabIndex = -1;
-  const inviteExpiry = new Date(invite.expires_ms).toLocaleString();
+  const inviteExpiry = invite.display_expiry;
+  const inviteLabel = disambiguatedInviteLabel(invite, activeInvites);
   row.append(definitionGrid([
     ["Expires", inviteExpiry],
     ["Created", new Date(invite.created_ms).toLocaleString()],
@@ -1927,9 +1932,9 @@ function activeInviteRow(invite) {
   if (uiState.revokingInviteId === invite.invite_id) {
     const confirmation = element("section", "invite-revoke-confirmation");
     confirmation.setAttribute("role", "alertdialog");
-    confirmation.setAttribute("aria-label", "Revoke invite confirmation");
+    confirmation.setAttribute("aria-label", `Revoke invite expiring ${inviteLabel} confirmation`);
     confirmation.append(
-      element("strong", "", "Revoke this invite?"),
+      element("strong", "", `Revoke invite expiring ${inviteLabel}?`),
       element(
         "p",
         "summary",
@@ -1938,13 +1943,13 @@ function activeInviteRow(invite) {
     );
     const controls = element("div", "row-actions");
     const confirm = commandButton("space.invite.revoke", { invite_id: invite.invite_id });
-    confirm.textContent = "Revoke this invite";
+    confirm.textContent = `Revoke invite expiring ${inviteLabel}`;
     controls.append(confirm, actionButton("Cancel revocation", () => cancelInviteRevocation(invite.invite_id)));
     confirmation.append(controls);
     row.append(confirmation);
   } else {
     const revoke = actionButton("Revoke invite…", () => beginInviteRevocation(invite.invite_id));
-    revoke.setAttribute("aria-label", `Revoke invite expiring ${inviteExpiry}`);
+    revoke.setAttribute("aria-label", `Revoke invite expiring ${inviteLabel}`);
     row.append(revoke);
   }
   return row;

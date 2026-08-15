@@ -18,5 +18,5 @@ test("message action disclosures expose author and bounded content context", () 
 test("governance row controls expose their visible member, role, and invite targets", () => {
   assert.match(source, /Actions for member \$\{memberLabel\}/);
   assert.match(source, /Manage members for role \$\{roleLabel\}/);
-  assert.match(source, /Revoke invite expiring \$\{inviteExpiry\}/);
+  assert.match(source, /Revoke invite expiring \$\{inviteLabel\}/);
 });
