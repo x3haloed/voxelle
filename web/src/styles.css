@@ -822,6 +822,15 @@ h3 {
   margin: 0;
 }
 
+.product-update-confirmation {
+  display: grid;
+  gap: 12px;
+}
+
+.product-update-confirmation .row-actions {
+  margin: 0;
+}
+
 .attachment-link {
   width: max-content;
   max-width: 100%;

@@ -283,6 +283,18 @@ approval to a replacement whose signed release manifest was independently
 verified. Ordinary restart evidence continues to use the exact same artifact;
 replacement continuity is a separate lived gate.
 
+The human update surface now has a direct **More → Product updates** route in
+addition to its stable dockable view. Package installation, staged activation,
+rollback, and release-trust rotation enter one modal review path from either
+the view or command palette; missing package or trust-transition input instead
+opens and focuses the required field. A rendered interaction probe exercised
+modal entry, bounded authority copy, forward and reverse Tab containment,
+Escape cancellation with focus return, and palette-to-input routing.
+Deterministic tests enumerate the four consequential commands and distinguish
+non-mutating discovery, staging, and staged-package discard. This is human
+presentation evidence, not new kernel-verification, native activation, or
+release-root custody evidence.
+
 The workbench risk has crossed its first lived gate. Every Rust-registered view
 can move among all five docks by drag/drop or an accessible selector, reorder,
 hide, restore, and reset. Rust rejects incomplete, duplicate, unknown, or

@@ -153,6 +153,7 @@ Current registered views:
 - `identity.recovery`
 - `runtime.status`
 - `network.health`
+- `product.update`
 - `invite.exchange`
 - `peer.list`
 - `field.test`
@@ -169,7 +170,10 @@ Current registered views:
 The default workbench keeps conversation, people, invitation, and attention
 surfaces visible. Recovery, runtime, network-health, field-test, product-update,
 role-management, and service-activity views start hidden but remain dockable
-and are reachable through Edit layout. A compact Connection surface projects the
+and are reachable through Edit layout. Product Updates is also directly
+reachable from More because update discovery, verification, activation,
+rollback, and release-trust review must not depend on editing the workbench.
+A compact Connection surface projects the
 same Rust-owned network-health rows when topology or synchronization needs
 attention; it does not create a second health model in the frontend.
 
@@ -184,6 +188,15 @@ causal fallback. Fresh creation or join focuses recovery setup; successful
 recovery-kit export, identity restoration, or channel creation focuses the
 message composer. These are presentation destinations after Rust acceptance,
 not alternate command completion state.
+
+Installing a selected product package, activating a staged generation, rolling
+back, and rotating release-signing trust all enter one modal confirmation path
+whether invoked from their view or the command palette. The review names the
+running/staged generation where applicable, explains whether product-generation
+or future release-key authority changes, traps modal focus, and returns focus on
+cancel. Missing package or trust-transition input routes palette users to the
+same Product Updates surface and required field. Confirmation never substitutes
+for native-kernel authentication or activation.
 
 Command failures lead with a bounded human explanation and a concrete recovery
 action. Rust-owned recovery categories travel with the same serialized command

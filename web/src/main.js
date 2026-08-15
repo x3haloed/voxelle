@@ -73,6 +73,7 @@ if (!initialSnapshot.product_component && shell.mode === "preview") {
     "./src/focus-management.mjs",
     "./src/invite-preview.mjs",
     "./src/message-composition.mjs",
+    "./src/product-update-confirmation.mjs",
     "./src/ui-ontology.mjs",
     "./src/workbench.mjs",
   ].map((url) => fetch(url, { cache: "no-store" }).then((response) => response.text())));

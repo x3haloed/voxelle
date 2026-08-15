@@ -50,6 +50,7 @@ const uiState = {
   advertiseDraft: "",
   productUpdateDraft: "",
   trustTransitionDraft: "",
+  productConfirmationCommand: "",
   draggedViewId: "",
   layoutEditing: false,
   connectionOpen: false,
@@ -192,6 +193,9 @@ function render() {
     ...(uiState.utilityOpen && currentSnapshot.home
       ? [utilityCenter(currentSnapshot, uiState.utilityOpen)]
       : []),
+    ...(uiState.productConfirmationCommand
+      ? [productUpdateConfirmation(currentSnapshot)]
+      : []),
     currentSnapshot.home
       ? workbenchShell(currentSnapshot)
       : onboardingExperience(currentSnapshot),
@@ -232,6 +236,16 @@ function recoverySetupPrompt() {
 }
 
 function handleKeydown(event) {
+  if (event.key === "Tab" && uiState.productConfirmationCommand) {
+    const confirmation = app.querySelector(".product-update-confirmation");
+    if (confirmation) trapModalTab(event, confirmation);
+    return;
+  }
+  if (event.key === "Escape" && uiState.productConfirmationCommand) {
+    event.preventDefault();
+    cancelProductConfirmation();
+    return;
+  }
   if (event.key === "Tab" && uiState.paletteOpen) {
     const palette = app.querySelector(".command-palette");
     if (palette) trapModalTab(event, palette);
@@ -321,6 +335,12 @@ function headerMore(snapshot) {
         uiState.utilityOpen = "settings";
         render();
       }),
+      actionButton("Product updates", () => {
+        rememberFocusReturn();
+        uiState.connectionOpen = false;
+        uiState.utilityOpen = "updates";
+        render();
+      }),
       layoutEditorButton(),
     );
   }
@@ -374,6 +394,11 @@ function utilityCenter(snapshot, kind) {
       title: "Customize Voxelle",
       summary: "Choose everyday behavior first. Advanced appearance and spacing remain available when you want them.",
       render: () => customizationEditor(snapshot),
+    },
+    updates: {
+      title: "Product updates",
+      summary: "Discover, verify, activate, or roll back signed product generations without making a release host authoritative.",
+      render: () => productUpdateView(snapshot),
     },
   };
   const definition = definitions[kind] ?? definitions.people;
@@ -1160,8 +1185,10 @@ function productUpdateView(snapshot) {
   packageInput.placeholder = "Paste a signed .voxupdate package";
   packageInput.value = uiState.productUpdateDraft;
   packageInput.setAttribute("aria-label", "Signed product update package");
+  packageInput.dataset.productUpdateInput = "package";
   packageInput.addEventListener("input", () => {
     uiState.productUpdateDraft = packageInput.value;
+    installButton.disabled = !packageInput.value.trim();
   });
   const fileInput = document.createElement("input");
   fileInput.type = "file";
@@ -1172,12 +1199,15 @@ function productUpdateView(snapshot) {
     if (!file) return;
     uiState.productUpdateDraft = await file.text();
     packageInput.value = uiState.productUpdateDraft;
+    installButton.disabled = !uiState.productUpdateDraft.trim();
   });
+  const installButton = submitButton("product.update.install");
+  installButton.disabled = !uiState.productUpdateDraft.trim();
   form.append(
     fileInput,
     packageInput,
     element("p", "summary", "The native kernel verifies the embedded release signature before staging or activation. GitHub and mirrors are transport only."),
-    submitButton("product.update.install"),
+    installButton,
   );
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1190,13 +1220,17 @@ function productUpdateView(snapshot) {
   trustInput.placeholder = "Paste a signed .voxtrust transition";
   trustInput.value = uiState.trustTransitionDraft;
   trustInput.setAttribute("aria-label", "Signed release trust transition");
+  trustInput.dataset.productUpdateInput = "trust";
   trustInput.addEventListener("input", () => {
     uiState.trustTransitionDraft = trustInput.value;
+    trustButton.disabled = !trustInput.value.trim();
   });
+  const trustButton = submitButton("product.update.rotateTrust");
+  trustButton.disabled = !uiState.trustTransitionDraft.trim();
   trustForm.append(
     trustInput,
     element("p", "summary", "Trust transitions are ordered, signed by a currently trusted release key, and can add or retire release keys without trusting GitHub."),
-    submitButton("product.update.rotateTrust"),
+    trustButton,
   );
   trustForm.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1207,6 +1241,69 @@ function productUpdateView(snapshot) {
     fragment.append(commandButton("product.update.rollback"));
   }
   return fragment;
+}
+
+function productUpdateConfirmation(snapshot) {
+  const command = uiState.productConfirmationCommand;
+  const generation = snapshot.product_generation;
+  const content = productConfirmationContent(command, generation);
+  if (!content) return document.createDocumentFragment();
+  const backdrop = element("div", "command-palette-backdrop product-confirmation-backdrop");
+  const dialog = element("section", "command-palette product-update-confirmation");
+  dialog.setAttribute("role", "alertdialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-labelledby", "product-confirmation-title");
+  const title = element("h2", "", content.title);
+  title.id = "product-confirmation-title";
+  const confirm = commandButton(command, { confirmed: true });
+  confirm.textContent = content.confirm;
+  confirm.dataset.dialogInitialFocus = "true";
+  const controls = element("div", "row-actions");
+  controls.append(confirm, actionButton("Cancel", cancelProductConfirmation));
+  dialog.append(
+    title,
+    element("p", "summary", content.description),
+    element(
+      "p",
+      "summary",
+      "Your conversations, identity, membership, and retained facts remain owned by the native protocol authorities; this action changes only the signed product-generation or release-trust state described above.",
+    ),
+    controls,
+  );
+  backdrop.append(dialog);
+  return backdrop;
+}
+
+function beginProductConfirmation(command) {
+  rememberFocusReturn();
+  uiState.paletteOpen = false;
+  uiState.paletteQuery = "";
+  uiState.productConfirmationCommand = command;
+  render();
+}
+
+function openProductUpdates(inputKind = "", status = "") {
+  rememberFocusReturn();
+  uiState.paletteOpen = false;
+  uiState.paletteQuery = "";
+  uiState.connectionOpen = false;
+  uiState.utilityOpen = "updates";
+  uiState.status = status;
+  render();
+  if (inputKind) {
+    window.requestAnimationFrame(() => {
+      app.querySelector(`[data-product-update-input="${inputKind}"]`)?.focus();
+    });
+  }
+}
+
+function cancelProductConfirmation() {
+  const command = uiState.productConfirmationCommand;
+  uiState.productConfirmationCommand = "";
+  render();
+  window.requestAnimationFrame(() => {
+    app.querySelector(`[data-command="${command}"]`)?.focus();
+  });
 }
 
 function serviceOptions() {
@@ -2468,6 +2565,8 @@ async function saveLayout(placements) {
 function submitButton(command) {
   const button = element("button", "command-button", commandLabel(command));
   button.type = "submit";
+  button.dataset.command = command;
+  button.dataset.actionKey = `submit:${command}`;
   button.disabled = uiState.busyCommand !== "";
   return button;
 }
@@ -2477,6 +2576,35 @@ function submitButton(command) {
  * @param {unknown} [payload]
  */
 async function runCommand(command, payload) {
+  if (
+    (command === "product.update.install" && !uiState.productUpdateDraft.trim())
+    || (command === "product.update.rotateTrust" && !uiState.trustTransitionDraft.trim())
+  ) {
+    const inputKind = command === "product.update.install" ? "package" : "trust";
+    openProductUpdates(inputKind);
+    return;
+  }
+  if (
+    command === "product.update.activateStaged"
+    && !currentSnapshot.product_generation.staged_release_id
+  ) {
+    openProductUpdates("", "No staged product update is ready to activate.");
+    return;
+  }
+  if (
+    command === "product.update.rollback"
+    && !currentSnapshot.product_generation.previous_available
+  ) {
+    openProductUpdates("", "No previous verified product generation is available to restore.");
+    return;
+  }
+  if (
+    productConfirmationRequired(command)
+    && payload?.confirmed !== true
+  ) {
+    beginProductConfirmation(command);
+    return;
+  }
   const commandReturnElement = focusCoordinator.currentElement();
   // Capture before the busy render disables the focused command button; browsers
   // may blur a control as soon as it becomes disabled.
@@ -2786,19 +2914,27 @@ async function runCommand(command, payload) {
           package_json: uiState.productUpdateDraft,
         });
         uiState.productUpdateDraft = "";
+        uiState.productConfirmationCommand = "";
         return;
       case "product.update.rotateTrust":
         currentSnapshot = await shell.execute(command, {
           transition_json: uiState.trustTransitionDraft,
         });
         uiState.trustTransitionDraft = "";
+        uiState.productConfirmationCommand = "";
         return;
       case "product.update.check":
       case "product.update.stageAvailable":
       case "product.update.activateStaged":
+        currentSnapshot = await shell.execute(command, {});
+        uiState.productConfirmationCommand = "";
+        return;
       case "product.update.discardStaged":
+        currentSnapshot = await shell.execute(command, {});
+        return;
       case "product.update.rollback":
         currentSnapshot = await shell.execute(command, {});
+        uiState.productConfirmationCommand = "";
         return;
       default:
         throw new Error(`No command handler is registered for ${command}`);
@@ -2918,7 +3054,9 @@ function rememberFocusReturn() {
 }
 
 function synchronizeTransientFocus() {
-  const surface = uiState.paletteOpen
+  const surface = uiState.productConfirmationCommand
+    ? `product-confirmation:${uiState.productConfirmationCommand}`
+    : uiState.paletteOpen
     ? "palette"
     : uiState.connectionOpen
       ? "connection"
@@ -2928,7 +3066,9 @@ function synchronizeTransientFocus() {
   focusCoordinator.synchronize(surface, () => {
     const target = surface === "palette"
       ? app.querySelector(".command-palette-input")
-      : app.querySelector("[data-dialog-initial-focus='true']");
+      : surface.startsWith("product-confirmation:")
+        ? app.querySelector(".product-update-confirmation [data-dialog-initial-focus='true']")
+        : app.querySelector("[data-dialog-initial-focus='true']");
     if (surface === "palette") {
       target?.setSelectionRange?.(target.value.length, target.value.length);
     }
