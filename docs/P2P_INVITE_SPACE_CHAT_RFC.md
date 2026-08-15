@@ -407,6 +407,8 @@ Room message kinds:
 - `MSG_POST` (post a message)
 - `MSG_EDIT` (edit a prior message)
 - `MSG_REDACT` (tombstone/hide a prior message)
+- `MSG_ACK` (participant observation or handling assertion)
+- `MSG_CONTINUATION` (bounded conversational intention update)
 - `ATTACHMENT_ADD` (bounded content-addressed file bytes as a standalone room fact)
 - `REACTION_ADD`
 - `REACTION_REMOVE`
@@ -437,6 +439,10 @@ Unless specified, unknown fields in `body` **MUST** be ignored.
 - `msg_id` (string, optional): stable identifier for UI threading; if omitted, use `event_id`
 - `text` (string): UTF-8 text
 - `attachments` (array, optional): implementation-defined descriptors (hashes, sizes, mime)
+- `mentions` (array, optional): stable member principal IDs
+- `thread_root_event_id` (string, optional): admitted message this reply is threaded to
+- `client_request_id` (string, optional): 8--128 non-whitespace caller retry identity,
+  scoped to author principal, device, room, and semantic payload
 
 `MSG_EDIT` body:
 - `target_event_id` (string): event being edited
@@ -445,6 +451,34 @@ Unless specified, unknown fields in `body` **MUST** be ignored.
 `MSG_REDACT` body:
 - `target_event_id` (string): `MSG_POST` or `ATTACHMENT_ADD` event being redacted
 - `reason` (string, optional)
+
+`MSG_ACK` body:
+- `target_event_id` (string): admitted `MSG_POST` or `ATTACHMENT_ADD`
+- `state` (string): `observed` | `handled`
+- `result_event_id` (string, optional): only with `handled`; MUST identify the
+  asserting principal's visible admitted `MSG_POST` in the same room whose
+  `thread_root_event_id` is the target
+
+Acknowledgements are participant assertions, not correctness proofs. Handled
+state is monotonic in projection. Concurrent handled results from separately
+authorized devices MUST be retained as a deterministic conflict set rather
+than resolved by receipt order or wall-clock time.
+
+`MSG_CONTINUATION` body:
+- `target_event_id` (string): admitted `MSG_POST` in the same room
+- `state` (string): `continuing` | `released` | `declined`
+- `lease_ms` (integer, required only for `continuing`): 60,000--604,800,000
+- `supersedes_event_ids` (array): zero to 16 admitted `MSG_CONTINUATION`
+  event IDs by this principal for the same target and room
+- `client_request_id` (string): 8--128 non-whitespace caller retry identity,
+  scoped to author principal, device, room, and the complete semantic payload
+
+A continuation is a bounded intention, not presence, work, correctness, or a
+partition-proof lease. Expiry locally projects current intent as unknown and
+overdue; it does not assert abandonment. Unsuperseded concurrent heads project
+as conflict. A new fact may reconcile conflict only by causally naming all
+known heads; arrival order and timestamps never choose a winner. Future-dated
+continuation facts are rejected even within the general event skew allowance.
 
 `ATTACHMENT_ADD` body:
 - `filename` (string): human-visible filename, 1--255 characters

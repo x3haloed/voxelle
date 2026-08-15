@@ -29,7 +29,7 @@ Voxelle is ready for a credible beta when people and agents can install or attac
 
 ## Prediction errors
 
-- **Expected:** A participant can distinguish a temporarily quiet continuing conversation from one whose intended counterpart has stopped participating.
-  **Observed:** Independent source-blind agents can now trace handled work to ordinary threaded result messages, retain concurrent-device result conflicts, resume at the same endpoint after clean restart, and classify a missing local target as a synchronization gap. No presence, session, lease, or explicit abandonment fact yet distinguishes intentional absence from stalled participation.
-  **Uncertain:** Which soft, expiring continuity observation remains useful to humans and agents without becoming membership, authority, a global-online claim, or a hidden agent task state.
-  **Evidence:** Source-blind public result/restart experiments, deterministic concurrent-result projection tests, and encrypted private-room result/acknowledgement coverage.
+- **Expected:** An explicit decline can communicate enough context for a person or agent to choose the next useful action.
+  **Observed:** Independent source-blind residents can distinguish absent assertion, bounded continuing intent, expired unknown/overdue intent, release, decline, and handled threaded results across sync and restart. A decline currently carries no structured reason, so its cause requires a separate ordinary reply whose association is conventional rather than explicit.
+  **Uncertain:** Whether a bounded decline reason belongs on the assertion, should bind an ordinary threaded reply, or is unnecessary once lived mixed human/agent trials exercise the workflow.
+  **Evidence:** Three source-blind continuation lifecycle, adversarial, and stream experiments against the built inhabitant service.

@@ -38,6 +38,7 @@ pub fn shell_command_payload(command_id: &str) -> Option<ShellCommandPayload> {
         "identity.recovery.restore" => Typed("RestoreRecoveryKitRequest"),
         "message.send" => Typed("SendMessageRequest"),
         "message.acknowledge" => Typed("AcknowledgeMessageRequest"),
+        "message.continuation.update" => Typed("UpdateMessageContinuationRequest"),
         "channel.select" => Typed("SelectChannelRequest"),
         "message.open" => Typed("OpenMessageRequest"),
         "channel.markRead" => Typed("MarkReadRequest"),
@@ -118,6 +119,15 @@ impl ShellState {
             .collect()
     }
 
+    /// Projects current local meaning without initiating peer synchronization.
+    pub async fn observational_snapshot(&self) -> ShellResult<ShellSnapshotView> {
+        self.host
+            .lock()
+            .await
+            .snapshot()
+            .map_err(|error| ShellError::for_command("shell.refresh", error))
+    }
+
     pub async fn execute_serialized_command(
         &self,
         command_id: &str,
@@ -183,6 +193,10 @@ impl ShellState {
             "identity.recovery.restore" => host.restore_recovery_kit(parse_request(payload)?).await,
             "message.send" => host.send_message(parse_request(payload)?).await,
             "message.acknowledge" => host.acknowledge_message(parse_request(payload)?).await,
+            "message.continuation.update" => {
+                host.update_message_continuation(parse_request_for(command_id, payload)?)
+                    .await
+            }
             "channel.select" => host.select_channel(parse_request(payload)?),
             "message.open" => host.open_message(parse_request(payload)?),
             "channel.markRead" => host.mark_read(parse_request(payload)?),
@@ -237,6 +251,18 @@ fn parse_request<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> 
             "Refresh the workspace and try once more. If it repeats, retain the technical details for a bug report."
                 .to_string(),
         detail: format!("invalid command payload: {error}"),
+    })
+}
+
+fn parse_request_for<T: serde::de::DeserializeOwned>(
+    command_id: &str,
+    payload: serde_json::Value,
+) -> ShellResult<T> {
+    serde_json::from_value(payload).map_err(|error| {
+        ShellError::for_command(
+            command_id,
+            anyhow::anyhow!("invalid command payload: {error}"),
+        )
     })
 }
 
@@ -379,6 +405,20 @@ fn command_error_presentation(
             "Refresh and synchronize with a known peer, then retry. If it remains unavailable, verify the target event ID.",
         );
     }
+    if command_id == "message.continuation.update"
+        && (detail
+            .to_ascii_lowercase()
+            .contains("read target is unknown")
+            || detail
+                .to_ascii_lowercase()
+                .contains("superseded fact does not exist"))
+    {
+        return (
+            "That continuation context is not available on this device yet.",
+            ShellRecovery::NeedsSync,
+            "Refresh and synchronize, then rebuild the update from the current continuation head IDs.",
+        );
+    }
     if command_id.starts_with("product.update.") {
         return (
             "Voxelle could not complete the signed product update.",
@@ -473,6 +513,16 @@ fn correctable_input_presentation(
                 || detail.contains("msg_ack result does not exist")
                 || detail.contains("handled acknowledgement is terminal")
         }
+        "message.continuation.update" => {
+            detail.contains("msg_continuation")
+                || detail.contains("unknown variant")
+                || detail.contains("continuing requires a lease")
+                || detail.contains("continuation head event id is malformed")
+                || detail.contains("continuation updates may supersede")
+                || detail.contains("continuation supersedes_event_ids")
+                || detail.contains("different continuation payload")
+                || detail.contains("client_request_id must be")
+        }
         "reaction.add" | "reaction.remove" => detail.contains("reaction emoji is invalid"),
         "attachment.add" => {
             detail.contains("decode attachment")
@@ -514,6 +564,10 @@ fn correctable_input_presentation(
         "message.acknowledge" => (
             "That acknowledgement cannot use this result.",
             "Use no result for Observed. For Handled, choose your own visible message in this room that replies to the target; an existing handled result cannot be rebound.",
+        ),
+        "message.continuation.update" => (
+            "That continuation update needs correcting.",
+            "For Continuing, use a bounded lease from 1 minute through 7 days. Release and Decline have no lease. Reconcile current head IDs before replacing an earlier update.",
         ),
         "reaction.add" | "reaction.remove" => (
             "That reaction is not valid.",
@@ -2149,8 +2203,40 @@ mod tests {
             "event rejected: Invalid(\"observed MSG_ACK cannot name a result\")"
         )
         .is_some());
+        assert!(correctable_input_presentation(
+            "message.continuation.update",
+            "unknown variant `working`, expected one of `continuing`, `released`, `declined`"
+        )
+        .is_some());
+        assert!(correctable_input_presentation(
+            "message.continuation.update",
+            "continuation head event ID is malformed"
+        )
+        .is_some());
         assert!(correctable_input_presentation("member.ban", "not authorized").is_none());
         assert!(correctable_input_presentation("message.send", "database is locked").is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_continuation_state_is_correctable_input() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let shell = ShellState::new(temp.path());
+        let error = shell
+            .execute_serialized_command(
+                "message.continuation.update",
+                serde_json::json!({
+                    "target_event_id": "e:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    "room": null,
+                    "state": "working",
+                    "lease_ms": 60_000,
+                    "supersedes_event_ids": [],
+                    "client_request_id": "invalid-state-test"
+                }),
+            )
+            .await
+            .expect_err("unknown state must be rejected");
+        assert_eq!(error.recovery, ShellRecovery::NeedsInput);
+        assert!(error.detail.contains("unknown variant"));
     }
 
     #[test]

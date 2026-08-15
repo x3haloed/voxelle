@@ -51,6 +51,9 @@ const MAX_PROJECTED_MESSAGES: usize = 500;
 const MAX_PROJECTED_CALL_SIGNALS: usize = 256;
 const MAX_SEARCH_QUERY_CHARACTERS: usize = 1024;
 const MAX_INVITE_EXPIRY_MINUTES: u64 = 30 * 24 * 60;
+const MIN_CONTINUATION_LEASE_MS: u64 = 60_000;
+const MAX_CONTINUATION_LEASE_MS: u64 = 7 * 24 * 60 * 60_000;
+const MAX_CONTINUATION_HEADS: usize = 16;
 const LOCAL_HOME_STATE_FILES: [&str; 5] = [
     "identity.json",
     "quic-cert.json",
@@ -231,7 +234,30 @@ pub struct MessageView {
     pub pinned: bool,
     pub reactions: Vec<ReactionView>,
     pub acknowledgements: Vec<MessageAcknowledgementView>,
+    pub continuations: Vec<MessageContinuationView>,
     pub attachments: Vec<AttachmentView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageContinuationView {
+    pub peer_id: String,
+    pub state: MessageContinuationProjectionState,
+    #[ts(type = "number")]
+    pub asserted_ms: i64,
+    #[ts(type = "number | null")]
+    pub expires_ms: Option<i64>,
+    pub overdue: bool,
+    pub head_event_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageContinuationProjectionState {
+    Unknown,
+    Continuing,
+    Released,
+    Declined,
+    Conflict,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -632,6 +658,8 @@ pub fn shell_contract_typescript() -> String {
         ProfileSummary::decl(&cfg),
         MessageView::decl(&cfg),
         MessageAcknowledgementView::decl(&cfg),
+        MessageContinuationView::decl(&cfg),
+        MessageContinuationProjectionState::decl(&cfg),
         ReactionView::decl(&cfg),
         AttachmentView::decl(&cfg),
         ChannelView::decl(&cfg),
@@ -667,6 +695,8 @@ pub fn shell_contract_typescript() -> String {
         SendMessageRequest::decl(&cfg),
         AcknowledgeMessageRequest::decl(&cfg),
         MessageAcknowledgementState::decl(&cfg),
+        UpdateMessageContinuationRequest::decl(&cfg),
+        MessageContinuationState::decl(&cfg),
         SelectChannelRequest::decl(&cfg),
         OpenMessageRequest::decl(&cfg),
         MarkReadRequest::decl(&cfg),
@@ -997,6 +1027,27 @@ pub struct AcknowledgeMessageRequest {
     pub room: Option<String>,
     pub state: MessageAcknowledgementState,
     pub result_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageContinuationState {
+    Continuing,
+    Released,
+    Declined,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct UpdateMessageContinuationRequest {
+    pub target_event_id: String,
+    pub room: Option<String>,
+    pub state: MessageContinuationState,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub lease_ms: Option<u64>,
+    #[serde(default)]
+    pub supersedes_event_ids: Vec<String>,
+    pub client_request_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1789,6 +1840,23 @@ impl VoxelleHome {
         )
     }
 
+    pub fn update_message_continuation(
+        &self,
+        request: &UpdateMessageContinuationRequest,
+    ) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "MSG_CONTINUATION",
+            serde_json::json!({
+                "target_event_id": request.target_event_id,
+                "state": request.state,
+                "lease_ms": request.lease_ms,
+                "supersedes_event_ids": request.supersedes_event_ids,
+                "client_request_id": request.client_request_id,
+            }),
+        )
+    }
+
     pub fn edit_message(&self, request: &EditMessageRequest) -> Result<EventV1> {
         self.create_room_event(
             request.room.as_deref(),
@@ -2048,7 +2116,10 @@ impl VoxelleHome {
     pub fn read_messages(&self, room: Option<&str>) -> Result<Vec<MessageView>> {
         let config = self.load_config()?;
         let room = room.unwrap_or(&config.space.default_room_id);
-        Ok(project_messages(self.decrypted_room_events(room)?))
+        Ok(project_messages(
+            self.decrypted_room_events(room)?,
+            now_ms(),
+        ))
     }
 
     fn message_for_client_request(
@@ -2064,6 +2135,29 @@ impl VoxelleHome {
             .into_iter()
             .find(|event| {
                 event.kind == "MSG_POST"
+                    && event.author_peer_id == identity.peer_id
+                    && event.delegation.device_id == identity.device.id
+                    && event
+                        .body
+                        .get("client_request_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(client_request_id)
+            }))
+    }
+
+    fn continuation_for_client_request(
+        &self,
+        room: Option<&str>,
+        client_request_id: &str,
+    ) -> Result<Option<EventV1>> {
+        let config = self.load_config()?;
+        let identity = self.load_identity()?;
+        let room_id = room.unwrap_or(&config.space.default_room_id);
+        Ok(self
+            .decrypted_room_events(room_id)?
+            .into_iter()
+            .find(|event| {
+                event.kind == "MSG_CONTINUATION"
                     && event.author_peer_id == identity.peer_id
                     && event.delegation.device_id == identity.device.id
                     && event
@@ -3712,7 +3806,7 @@ fn unread_count(
         .count()
 }
 
-fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
+fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<MessageView> {
     events.sort_by(|left, right| {
         left.created_ms
             .cmp(&right.created_ms)
@@ -3729,6 +3823,7 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
         BTreeMap::new();
     let mut acknowledgements: BTreeMap<String, BTreeMap<String, MessageAcknowledgementView>> =
         BTreeMap::new();
+    let mut continuations: BTreeMap<String, BTreeMap<String, Vec<EventV1>>> = BTreeMap::new();
     for event in &events {
         match event.kind.as_str() {
             "MSG_POST" => {
@@ -3776,6 +3871,7 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                         pinned: false,
                         reactions: Vec::new(),
                         acknowledgements: Vec::new(),
+                        continuations: Vec::new(),
                         attachments: Vec::new(),
                     },
                 );
@@ -3799,6 +3895,7 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                         pinned: false,
                         reactions: Vec::new(),
                         acknowledgements: Vec::new(),
+                        continuations: Vec::new(),
                         attachments: vec![{
                             let data_b64 = string_event_body(event, "data_b64");
                             AttachmentView {
@@ -3895,6 +3992,14 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                     }
                 }
             }
+            "MSG_CONTINUATION" => {
+                continuations
+                    .entry(string_event_body(event, "target_event_id"))
+                    .or_default()
+                    .entry(event.author_peer_id.clone())
+                    .or_default()
+                    .push(event.clone());
+            }
             _ => {}
         }
     }
@@ -3923,6 +4028,79 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
         if let Some(message) = messages.get_mut(&target) {
             message.acknowledgements = by_peer.into_values().collect();
         }
+    }
+    for (target, by_peer) in continuations {
+        let Some(message) = messages.get_mut(&target) else {
+            continue;
+        };
+        for (peer_id, facts) in by_peer {
+            let superseded: BTreeSet<String> = facts
+                .iter()
+                .flat_map(|event| {
+                    event
+                        .body
+                        .get("supersedes_event_ids")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .collect();
+            let mut heads: Vec<&EventV1> = facts
+                .iter()
+                .filter(|event| !superseded.contains(&event.event_id))
+                .collect();
+            heads.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+            if heads.is_empty() {
+                continue;
+            }
+            let head_event_ids = heads.iter().map(|event| event.event_id.clone()).collect();
+            let asserted_ms = heads
+                .iter()
+                .map(|event| event.created_ms)
+                .max()
+                .unwrap_or_default();
+            let (state, expires_ms, overdue) = if heads.len() > 1 {
+                (MessageContinuationProjectionState::Conflict, None, false)
+            } else {
+                let head = heads[0];
+                match string_event_body(head, "state").as_str() {
+                    "continuing" => {
+                        let expires_ms = head
+                            .body
+                            .get("lease_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|lease_ms| i64::try_from(lease_ms).ok())
+                            .and_then(|lease_ms| head.created_ms.checked_add(lease_ms));
+                        let overdue =
+                            expires_ms.is_none_or(|expires_ms| projection_ms >= expires_ms);
+                        (
+                            if overdue {
+                                MessageContinuationProjectionState::Unknown
+                            } else {
+                                MessageContinuationProjectionState::Continuing
+                            },
+                            expires_ms,
+                            overdue,
+                        )
+                    }
+                    "released" => (MessageContinuationProjectionState::Released, None, false),
+                    _ => (MessageContinuationProjectionState::Declined, None, false),
+                }
+            };
+            message.continuations.push(MessageContinuationView {
+                peer_id,
+                state,
+                asserted_ms,
+                expires_ms,
+                overdue,
+                head_event_ids,
+            });
+        }
+        message
+            .continuations
+            .sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
     }
     order
         .into_iter()
@@ -4584,6 +4762,89 @@ impl VoxelleCommandHost {
                 "acknowledged target message {} as {:?}{}",
                 target_event_id, request.state, result
             ),
+        );
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn update_message_continuation(
+        &mut self,
+        mut request: UpdateMessageContinuationRequest,
+    ) -> Result<ShellSnapshotView> {
+        let room = request.room.as_deref().or(self.selected_room_id.as_deref());
+        if request.client_request_id.len() < 8
+            || request.client_request_id.len() > 128
+            || request.client_request_id.chars().any(char::is_whitespace)
+        {
+            anyhow::bail!("client_request_id must be 8 to 128 non-whitespace characters");
+        }
+        match (request.state, request.lease_ms) {
+            (MessageContinuationState::Continuing, Some(lease_ms))
+                if (MIN_CONTINUATION_LEASE_MS..=MAX_CONTINUATION_LEASE_MS)
+                    .contains(&lease_ms) => {}
+            (MessageContinuationState::Released | MessageContinuationState::Declined, None) => {}
+            _ => anyhow::bail!(
+                "continuing requires a lease from 1 minute through 7 days; release and decline have no lease"
+            ),
+        }
+        if request.supersedes_event_ids.len() > MAX_CONTINUATION_HEADS {
+            anyhow::bail!(
+                "continuation updates may supersede at most {MAX_CONTINUATION_HEADS} heads"
+            );
+        }
+        if request.supersedes_event_ids.iter().any(|event_id| {
+            event_id
+                .strip_prefix("e:")
+                .and_then(|encoded| {
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(encoded)
+                        .ok()
+                })
+                .is_none_or(|bytes| bytes.len() != 32)
+        }) {
+            anyhow::bail!("continuation head event ID is malformed");
+        }
+        request.supersedes_event_ids.sort();
+        let original_len = request.supersedes_event_ids.len();
+        request.supersedes_event_ids.dedup();
+        if request.supersedes_event_ids.len() != original_len {
+            anyhow::bail!("continuation supersedes_event_ids must be unique");
+        }
+        if let Some(existing) = self
+            .home
+            .continuation_for_client_request(room, &request.client_request_id)?
+        {
+            let same_payload = existing.body.get("target_event_id")
+                == Some(&serde_json::json!(request.target_event_id))
+                && existing.body.get("state") == Some(&serde_json::json!(request.state))
+                && existing.body.get("lease_ms") == Some(&serde_json::json!(request.lease_ms))
+                && existing.body.get("supersedes_event_ids")
+                    == Some(&serde_json::json!(request.supersedes_event_ids));
+            if !same_payload {
+                anyhow::bail!(
+                    "client_request_id was already used for a different continuation payload"
+                );
+            }
+            self.push_activity(
+                ServiceActivityLevel::Info,
+                format!(
+                    "reused admitted continuation {} for idempotent retry",
+                    existing.event_id
+                ),
+            );
+            return self.snapshot();
+        }
+        self.home
+            .mark_read_through(room, &request.target_event_id)?;
+        let event = self
+            .home
+            .update_message_continuation(&UpdateMessageContinuationRequest {
+                room: room.map(ToOwned::to_owned),
+                ..request
+            })?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("updated message continuation {}", event.event_id),
         );
         self.sync_known_peers(256).await?;
         self.snapshot()
@@ -6131,6 +6392,13 @@ fn default_commands() -> Vec<UiCommand> {
             false,
         ),
         shell_command(
+            "message.continuation.update",
+            "Update Message Continuation",
+            "Publish, release, decline, renew, or reconcile a bounded intention to continue an exchange",
+            None,
+            false,
+        ),
+        shell_command(
             "channel.select",
             "Select Channel",
             "Open an accessible channel",
@@ -7612,7 +7880,7 @@ mod tests {
             serde_json::json!({"target_event_id":post.event_id}),
         )
         .expect("redact");
-        let projected = project_messages(vec![post, redact]);
+        let projected = project_messages(vec![post, redact], 10_000);
         assert_eq!(projected.len(), 1);
         assert!(projected[0].redacted);
         assert_eq!(projected[0].text, "Message removed");
@@ -7675,18 +7943,89 @@ mod tests {
             serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":result_b.event_id}),
         )
         .expect("ack b");
-        let forward = project_messages(vec![
-            target.clone(),
-            result_a.clone(),
-            result_b.clone(),
-            ack_a.clone(),
-            ack_b.clone(),
-        ]);
-        let reverse = project_messages(vec![target, result_b, result_a, ack_b, ack_a]);
+        let forward = project_messages(
+            vec![
+                target.clone(),
+                result_a.clone(),
+                result_b.clone(),
+                ack_a.clone(),
+                ack_b.clone(),
+            ],
+            10_000,
+        );
+        let reverse = project_messages(vec![target, result_b, result_a, ack_b, ack_a], 10_000);
         assert_eq!(forward, reverse);
         let acknowledgement = &forward[0].acknowledgements[0];
         assert!(acknowledgement.result_conflict);
         assert_eq!(acknowledgement.result_event_ids.len(), 2);
+    }
+
+    #[test]
+    fn continuation_expiry_is_unknown_and_concurrent_updates_conflict() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let delegation = || {
+            create_delegation(&identity, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("delegation")
+        };
+        let target = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            1,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"continue?","mentions":[]}),
+        )
+        .expect("target");
+        let continuing = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            2,
+            "MSG_CONTINUATION",
+            vec![target.event_id.clone()],
+            serde_json::json!({
+                "target_event_id": target.event_id,
+                "state": "continuing",
+                "lease_ms": 60_000,
+                "supersedes_event_ids": [],
+                "client_request_id": "continuation-a"
+            }),
+        )
+        .expect("continuing");
+        let expired = project_messages(vec![target.clone(), continuing.clone()], 70_000);
+        let expired_view = &expired[0].continuations[0];
+        assert_eq!(
+            expired_view.state,
+            MessageContinuationProjectionState::Unknown
+        );
+        assert!(expired_view.overdue);
+
+        let declined = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            3,
+            "MSG_CONTINUATION",
+            vec![target.event_id.clone()],
+            serde_json::json!({
+                "target_event_id": target.event_id,
+                "state": "declined",
+                "lease_ms": null,
+                "supersedes_event_ids": [],
+                "client_request_id": "continuation-b"
+            }),
+        )
+        .expect("declined");
+        let forward = project_messages(
+            vec![target.clone(), continuing.clone(), declined.clone()],
+            10_000,
+        );
+        let reverse = project_messages(vec![target, declined, continuing], 10_000);
+        assert_eq!(forward, reverse);
+        let conflict = &forward[0].continuations[0];
+        assert_eq!(conflict.state, MessageContinuationProjectionState::Conflict);
+        assert_eq!(conflict.head_event_ids.len(), 2);
     }
 
     #[test]
@@ -8126,6 +8465,17 @@ mod tests {
             })
             .expect("bob private acknowledgement");
         assert_eq!(private_ack.kind, "ROOM_ENCRYPTED");
+        let private_continuation = bob
+            .update_message_continuation(&UpdateMessageContinuationRequest {
+                target_event_id: sent.event_id.clone(),
+                room: Some(room_id.clone()),
+                state: MessageContinuationState::Continuing,
+                lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "private-continuation-001".to_string(),
+            })
+            .expect("bob private continuation");
+        assert_eq!(private_continuation.kind, "ROOM_ENCRYPTED");
         let raw_bob_room = bob
             .open_store()
             .expect("bob store")
@@ -8140,6 +8490,8 @@ mod tests {
             event.body.get("target_event_id").is_none()
                 && event.body.get("result_event_id").is_none()
                 && event.body.get("state").is_none()
+                && event.body.get("lease_ms").is_none()
+                && event.body.get("supersedes_event_ids").is_none()
         }));
         bob.sync_peer(&alice_record, 4096)
             .await
@@ -8154,6 +8506,10 @@ mod tests {
         assert_eq!(
             acknowledged.acknowledgements[0].result_event_ids,
             vec![private_result_id]
+        );
+        assert_eq!(
+            acknowledged.continuations[0].state,
+            MessageContinuationProjectionState::Continuing
         );
         alice
             .rotate_channel_key(&RotateChannelKeyRequest {
@@ -8814,6 +9170,73 @@ mod tests {
             home.channels[0].last_read_event_id.as_deref(),
             Some(event_id.as_str())
         );
+    }
+
+    #[tokio::test]
+    async fn continuation_intent_is_bounded_idempotent_and_causally_released() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let sent = host
+            .send_message(SendMessageRequest {
+                text: "quiet coordination".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                thread_root_event_id: None,
+                client_request_id: Some("continuation-target-001".to_string()),
+            })
+            .await
+            .expect("target");
+        let target_event_id = sent.home.expect("home").room.messages[0].event_id.clone();
+        let continuing = UpdateMessageContinuationRequest {
+            target_event_id: target_event_id.clone(),
+            room: None,
+            state: MessageContinuationState::Continuing,
+            lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+            supersedes_event_ids: Vec::new(),
+            client_request_id: "continuation-lease-001".to_string(),
+        };
+        let active = host
+            .update_message_continuation(continuing.clone())
+            .await
+            .expect("continuing");
+        let active_view = &active.home.expect("home").room.messages[0].continuations[0];
+        assert_eq!(
+            active_view.state,
+            MessageContinuationProjectionState::Continuing
+        );
+        assert!(!active_view.overdue);
+        let active_head = active_view.head_event_ids[0].clone();
+        let retried = host
+            .update_message_continuation(continuing.clone())
+            .await
+            .expect("idempotent retry");
+        assert_eq!(
+            retried.home.expect("home").room.messages[0].continuations[0].head_event_ids,
+            vec![active_head.clone()]
+        );
+        let mut conflict = continuing;
+        conflict.lease_ms = Some(MIN_CONTINUATION_LEASE_MS * 2);
+        assert!(host.update_message_continuation(conflict).await.is_err());
+
+        let released = host
+            .update_message_continuation(UpdateMessageContinuationRequest {
+                target_event_id,
+                room: None,
+                state: MessageContinuationState::Released,
+                lease_ms: None,
+                supersedes_event_ids: vec![active_head],
+                client_request_id: "continuation-release-001".to_string(),
+            })
+            .await
+            .expect("released");
+        let released_view = &released.home.expect("home").room.messages[0].continuations[0];
+        assert_eq!(
+            released_view.state,
+            MessageContinuationProjectionState::Released
+        );
+        assert!(!released_view.overdue);
     }
 
     #[test]

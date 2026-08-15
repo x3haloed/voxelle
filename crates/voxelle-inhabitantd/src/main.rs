@@ -213,6 +213,11 @@ impl DiscoveryView {
                     observation: "the signed acknowledgement is an admitted participant assertion, not proof that the work was correct; optional handled result_event_id must name the handler's visible admitted reply threaded to the target, while observed must omit it; concurrent device results are retained and projected as a conflict".to_string(),
                 },
                 CommandSemanticsView {
+                    command_id: "message.continuation.update".to_string(),
+                    retry: "reuse client_request_id only for the identical target, state, lease_ms, and sorted supersedes_event_ids; renewals and conflict resolutions use a new ID".to_string(),
+                    observation: "continuing is a bounded participant intention, not presence or proof of work; expiry projects unknown/overdue but emits no SSE event, so schedule a coordination snapshot fetch at expires_ms; coordination snapshot GET is observational and does not initiate peer sync; release and decline are explicit assertions, concurrent unsuperseded device updates project conflict, and handled remains separate completion evidence".to_string(),
+                },
+                CommandSemanticsView {
                     command_id: "channel.select".to_string(),
                     retry: "semantic idempotent".to_string(),
                     observation: "selection changes local context only and never marks messages read or acknowledges them".to_string(),
@@ -228,7 +233,7 @@ impl DiscoveryView {
                     observation: "starts the local runtime on the last successful automatic binding unless explicit addresses replace it, then attempts known peers; sync_evidence is peer-relative and never claims global currency".to_string(),
                 },
             ],
-            replay_policy: "none; on every connect or reconnect, use service.ready.current_sequence and fetch coordination_snapshot_url until its current_sequence is at least that value".to_string(),
+            replay_policy: "none; on every connect or reconnect, use service.ready.current_sequence and fetch coordination_snapshot_url until its current_sequence is at least that value; current_sequence covers admitted/invalidation transitions, while projected_at_ms timestamps time-derived projection and heartbeat is not semantic change evidence".to_string(),
         }
     }
 }
@@ -285,9 +290,7 @@ async fn coordination_snapshot(State(state): State<Arc<AppState>>) -> impl IntoR
         let before = snapshot_sequence();
         match time::timeout(
             Duration::from_secs(30),
-            state
-                .shell
-                .execute_serialized_command("shell.refresh", Value::Null),
+            state.shell.observational_snapshot(),
         )
         .await
         {
@@ -386,6 +389,10 @@ fn coordination_snapshot_value(snapshot: ShellSnapshotView, current_sequence: u6
         object.insert(
             "current_sequence".to_string(),
             Value::from(current_sequence),
+        );
+        object.insert(
+            "projected_at_ms".to_string(),
+            Value::from(u64::try_from(unix_ms()).unwrap_or(u64::MAX)),
         );
     }
     value

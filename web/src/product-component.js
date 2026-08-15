@@ -36,6 +36,7 @@ const uiState = {
   pendingAttachment: null,
   messageDraft: "",
   messageClientRequestId: "",
+  continuationRequestIds: new Map(),
   messageMentionsDraft: new Set(),
   replyTargetEventId: "",
   replyPreview: null,
@@ -119,6 +120,7 @@ const viewRenderers = {
 let currentSnapshot = await shell.execute("shell.refresh");
 let refreshInFlight = false;
 let refreshQueued = false;
+let continuationExpiryTimer = null;
 if (
   ontologyPresentation(currentSnapshot.ui_ontology).startOnlineOnLaunch
   && currentSnapshot.home?.runtime.state === "offline"
@@ -235,6 +237,25 @@ function render() {
   }
   attachCallMedia();
   processCallSignals().catch(reportError);
+  scheduleContinuationExpiryRefresh();
+}
+
+function scheduleContinuationExpiryRefresh() {
+  if (continuationExpiryTimer !== null) {
+    window.clearTimeout(continuationExpiryTimer);
+    continuationExpiryTimer = null;
+  }
+  const expiries = (currentSnapshot.home?.room.messages ?? [])
+    .flatMap((message) => message.continuations ?? [])
+    .filter((continuation) => continuation.state === "continuing")
+    .map((continuation) => continuation.expires_ms)
+    .filter(Number.isFinite);
+  if (expiries.length === 0) return;
+  const delay = Math.max(50, Math.min(...expiries) - Date.now() + 25);
+  continuationExpiryTimer = window.setTimeout(() => {
+    continuationExpiryTimer = null;
+    publishRefresh().catch(reportError);
+  }, Math.min(delay, 2_147_483_647));
 }
 
 function assertSnapshotContract(snapshot) {
@@ -1453,6 +1474,14 @@ function formatRecoveryKitSavedTime(value) {
   if (!Number.isFinite(value)) return "Recorded time unavailable";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Recorded time unavailable" : date.toLocaleString();
+}
+
+function continuationClientRequestId(targetEventId, state, headEventIds) {
+  const key = `${targetEventId}:${state}:${[...headEventIds].sort().join(",")}`;
+  if (!uiState.continuationRequestIds.has(key)) {
+    uiState.continuationRequestIds.set(key, crypto.randomUUID());
+  }
+  return uiState.continuationRequestIds.get(key);
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -3004,6 +3033,36 @@ function roomTimelineView(snapshot) {
         annotations.append(openResult);
       }
     }
+    for (const continuation of message.continuations ?? []) {
+      if ((message.acknowledgements ?? []).some(
+        (acknowledgement) => acknowledgement.peer_id === continuation.peer_id
+          && acknowledgement.state === "handled",
+      )) continue;
+      const continuingProfile = profileForPeer(snapshot, continuation.peer_id);
+      let label;
+      switch (continuation.state) {
+        case "continuing":
+          label = `${continuingProfile.display_name} intends to continue until ${formatRecoveryKitSavedTime(continuation.expires_ms)}`;
+          break;
+        case "released":
+          label = `${continuingProfile.display_name} released this exchange`;
+          break;
+        case "declined":
+          label = `${continuingProfile.display_name} declined to continue`;
+          break;
+        case "conflict":
+          label = `${continuingProfile.display_name} has conflicting continuation updates`;
+          break;
+        default:
+          label = `${continuingProfile.display_name}'s continuation window passed; current intent is unknown`;
+          break;
+      }
+      annotations.append(element(
+        "small",
+        continuation.state === "conflict" || continuation.overdue ? "warning-text" : "muted",
+        label,
+      ));
+    }
     if (annotations.children.length > 0) content.append(annotations);
     const reactions = element("div", "message-reactions");
     for (const reaction of message.reactions ?? []) {
@@ -3086,6 +3145,58 @@ function roomTimelineView(snapshot) {
         });
         handled.textContent = "Mark handled";
         actions.append(handled);
+      }
+      const ownContinuation = (message.continuations ?? []).find(
+        (continuation) => continuation.peer_id === snapshot.home?.profile.peer_id,
+      );
+      const continuationHeads = ownContinuation?.head_event_ids ?? [];
+      if (ownAcknowledgement?.state !== "handled") {
+        const keepOpen = commandButton("message.continuation.update", {
+          target_event_id: message.event_id,
+          room: snapshot.home?.room.room_id ?? null,
+          state: "continuing",
+          lease_ms: 15 * 60 * 1000,
+          supersedes_event_ids: continuationHeads,
+          client_request_id: continuationClientRequestId(
+            message.event_id,
+            "continuing",
+            continuationHeads,
+          ),
+        });
+        keepOpen.textContent = ownContinuation?.state === "continuing"
+          ? "Renew 15 min"
+          : "Keep open 15 min";
+        actions.append(keepOpen);
+        if (ownContinuation) {
+          const release = commandButton("message.continuation.update", {
+            target_event_id: message.event_id,
+            room: snapshot.home?.room.room_id ?? null,
+            state: "released",
+            lease_ms: null,
+            supersedes_event_ids: continuationHeads,
+            client_request_id: continuationClientRequestId(
+              message.event_id,
+              "released",
+              continuationHeads,
+            ),
+          });
+          release.textContent = "Release";
+          actions.append(release);
+        }
+        const decline = commandButton("message.continuation.update", {
+          target_event_id: message.event_id,
+          room: snapshot.home?.room.room_id ?? null,
+          state: "declined",
+          lease_ms: null,
+          supersedes_event_ids: continuationHeads,
+          client_request_id: continuationClientRequestId(
+            message.event_id,
+            "declined",
+            continuationHeads,
+          ),
+        });
+        decline.textContent = "Decline";
+        actions.append(decline);
       }
     }
     if (own && !message.redacted) {
@@ -4182,6 +4293,15 @@ async function runCommand(command, payload) {
         return;
       case "message.acknowledge":
         currentSnapshot = await shell.execute(command, payload);
+        focusMessageRow(payload.target_event_id);
+        return;
+      case "message.continuation.update":
+        currentSnapshot = await shell.execute(command, payload);
+        for (const key of uiState.continuationRequestIds.keys()) {
+          if (key.startsWith(`${payload.target_event_id}:`)) {
+            uiState.continuationRequestIds.delete(key);
+          }
+        }
         focusMessageRow(payload.target_event_id);
         return;
       case "attachment.add":

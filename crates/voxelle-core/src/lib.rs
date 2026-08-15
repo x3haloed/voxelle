@@ -1163,7 +1163,7 @@ pub fn accept_event<'a>(
                 return Err(AcceptError::PrivateRoom);
             }
         }
-        validate_room_event_body(event, accepted_room_events, &state, context)?;
+        validate_room_event_body(event, accepted_room_events, &state, context, now_ms)?;
         Ok(AcceptedEvent { event })
     }
 }
@@ -1756,6 +1756,7 @@ fn validate_room_event_body(
     accepted_events: &[EventV1],
     state: &GovernanceState,
     context: &RoomContext,
+    now_ms: i64,
 ) -> AcceptResult<()> {
     let body_size = serde_json::to_vec(&event.body)
         .map_err(|error| AcceptError::Invalid(error.to_string()))?
@@ -1900,6 +1901,104 @@ fn validate_room_event_body(
                 {
                     return Err(AcceptError::Invalid(
                         "MSG_ACK result must be the handler's visible admitted threaded reply"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        "MSG_CONTINUATION" => {
+            require_post()?;
+            if event.created_ms > now_ms {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION timestamp is in the future".to_string(),
+                ));
+            }
+            let target_message = target("MSG_CONTINUATION")?;
+            if target_message.kind != "MSG_POST" {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION target is not a message".to_string(),
+                ));
+            }
+            let state = string_body_field(event, "state");
+            let lease_ms = event
+                .body
+                .get("lease_ms")
+                .and_then(serde_json::Value::as_u64);
+            match state.as_deref() {
+                Some("continuing") if matches!(lease_ms, Some(60_000..=604_800_000)) => {}
+                Some("released" | "declined") if lease_ms.is_none() => {}
+                _ => {
+                    return Err(AcceptError::Invalid(
+                        "MSG_CONTINUATION state or lease_ms is invalid".to_string(),
+                    ))
+                }
+            }
+            let client_request_id =
+                string_body_field(event, "client_request_id").ok_or_else(|| {
+                    AcceptError::Invalid(
+                        "MSG_CONTINUATION client_request_id is missing".to_string(),
+                    )
+                })?;
+            if !valid_short_text(&client_request_id, 128)
+                || client_request_id.len() < 8
+                || client_request_id.chars().any(char::is_whitespace)
+            {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION client_request_id is invalid".to_string(),
+                ));
+            }
+            if accepted_events.iter().any(|candidate| {
+                candidate.room_id == event.room_id
+                    && candidate.author_peer_id == event.author_peer_id
+                    && candidate.delegation.device_id == event.delegation.device_id
+                    && candidate.kind == "MSG_CONTINUATION"
+                    && string_body_field(candidate, "client_request_id")
+                        == Some(client_request_id.clone())
+            }) {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION client_request_id was already admitted".to_string(),
+                ));
+            }
+            let supersedes = event
+                .body
+                .get("supersedes_event_ids")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    AcceptError::Invalid(
+                        "MSG_CONTINUATION supersedes_event_ids is invalid".to_string(),
+                    )
+                })?;
+            if supersedes.len() > 16
+                || supersedes.iter().any(|id| id.as_str().is_none())
+                || supersedes
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != supersedes.len()
+            {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION supersedes_event_ids is invalid".to_string(),
+                ));
+            }
+            for superseded_id in supersedes.iter().filter_map(serde_json::Value::as_str) {
+                let superseded = accepted_events
+                    .iter()
+                    .find(|candidate| {
+                        candidate.room_id == event.room_id && candidate.event_id == superseded_id
+                    })
+                    .ok_or_else(|| {
+                        AcceptError::Invalid(
+                            "MSG_CONTINUATION superseded fact does not exist".to_string(),
+                        )
+                    })?;
+                if superseded.kind != "MSG_CONTINUATION"
+                    || superseded.author_peer_id != event.author_peer_id
+                    || string_body_field(superseded, "target_event_id")
+                        != Some(target_message.event_id.clone())
+                {
+                    return Err(AcceptError::Invalid(
+                        "MSG_CONTINUATION may supersede only this participant's facts for the same message"
                             .to_string(),
                     ));
                 }
@@ -2171,7 +2270,7 @@ pub fn validate_room_event_semantics(
             return Err(AcceptError::PrivateRoom);
         }
     }
-    validate_room_event_body(event, accepted_events, &state, context)
+    validate_room_event_body(event, accepted_events, &state, context, now_ms)
 }
 
 fn validate_mentions(event: &EventV1) -> AcceptResult<()> {

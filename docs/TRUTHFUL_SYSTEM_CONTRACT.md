@@ -761,6 +761,25 @@ run showed an acknowledgement attempted before local message admission now
 returns `needs_sync`; after ordinary peer sync, the identical acknowledgement
 was admitted. This is same-machine continuity evidence, not external IPv6
 endpoint refresh, crash recovery, or global reachability evidence.
+
+Quiet coordination now has a separate bounded-intention truth rather than
+overloading durable observation or runtime presence. An admitted
+`MSG_CONTINUATION` may assert `continuing` for one minute through seven days,
+explicitly `released`, or explicitly `declined`; it causally supersedes only
+the same principal's known heads for the same message. Expiry projects current
+intent as unknown and overdue, never stopped or abandoned. Concurrent device
+heads remain an explicit deterministic conflict until a later fact supersedes
+all of them. The fact follows ordinary room membership, posting permission,
+private encryption, retention, sync, and recovery. It neither grants authority
+nor proves presence, work, correctness, or partition-free liveness.
+Three independent source-blind resident experiments exercised the advertised
+continuation contract through the built inhabitant service: idempotent retry,
+invalid input, sync, clean restart, active lease, time-only expiry, release,
+resume, decline, handled threaded result, and reconnect reconciliation. An
+adversarial probe found and drove removal of hidden peer synchronization from
+coordination snapshot GET; repeated post-fix reads preserved sync evidence and
+sequence while only `projected_at_ms` advanced. This remains same-machine
+loopback evidence, not external reachability, crash, or long-partition proof.
 Episodic agent actions no longer require repository-source inspection to learn
 their payload shape. The same Rust-projected `UiCommand` records used by the
 WebView now name each shell command's request DTO, while empty-payload and

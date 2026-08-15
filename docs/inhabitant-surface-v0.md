@@ -206,6 +206,7 @@ The v0 action set uses the same stable semantic command IDs as the UI:
 - `runtime.goOffline`
 - `message.send`
 - `message.acknowledge`
+- `message.continuation.update`
 - `peer.import`
 - `peer.diagnose`
 - `peer.sync`
@@ -251,6 +252,23 @@ This keeps existing peer availability hints usable for ordinary continuation;
 an explicit Bind or Advertise request replaces the saved automatic binding.
 Failure to reclaim a saved socket remains explicit rather than silently moving
 to a new endpoint and making other members' retained hints stale.
+
+`message.continuation.update` publishes a separate ordinary room fact rather
+than overloading durable observation. `continuing` requires a relative lease
+from one minute through seven days; `released` and `declined` carry no lease.
+Each update names the same participant's known continuation heads that it
+supersedes. A single unexpired head projects Continuing. Expiry projects
+Unknown with `overdue: true`; it never proves that the participant stopped.
+Concurrent unsuperseded device updates project Conflict until a new update
+supersedes every head. Runtime reachability and sync evidence remain separate.
+Lease expiry is a time-derived projection, not a new retained fact, and emits
+no stream event. Consumers schedule a local snapshot refresh at `expires_ms`
+and refresh after reconnect rather than waiting for an event that cannot exist.
+The coordination snapshot GET is observational and never initiates peer sync.
+Its `current_sequence` covers admitted or invalidated state, while
+`projected_at_ms` timestamps time-derived fields; heartbeat is not evidence of
+a semantic transition. A handled acknowledgement is completion evidence and
+does not retroactively rewrite a separate continuation assertion.
 
 ### 3.4 Action Result
 
