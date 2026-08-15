@@ -1130,15 +1130,14 @@ mod tests {
         assert_eq!(bob_received_home.notifications.len(), 1);
         let marked_read = bob
             .execute_serialized_command(
-                "channel.markRead",
+                "channel.select",
                 serde_json::json!({ "room_id": channel_id }),
             )
             .await
-            .expect("mark read");
+            .expect("open notification channel");
+        let marked_read_home = marked_read.home.expect("home");
         assert_eq!(
-            marked_read
-                .home
-                .expect("home")
+            marked_read_home
                 .channels
                 .iter()
                 .find(|channel| channel.room_id == channel_id)
@@ -1146,6 +1145,7 @@ mod tests {
                 .unread_count,
             0
         );
+        assert!(marked_read_home.notifications.is_empty());
 
         bob.execute_serialized_command(
             "reaction.add",

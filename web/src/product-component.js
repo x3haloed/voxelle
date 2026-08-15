@@ -1530,21 +1530,39 @@ function messageSearchView(snapshot) {
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function notificationCenterView(snapshot) {
   const fragment = document.createDocumentFragment();
-  const controls = element("div", "control-row");
-  controls.append(commandButton("channel.markRead"));
   const list = element("ol", "activity-list");
-  for (const notification of snapshot.home?.notifications ?? []) {
+  const notifications = snapshot.home?.notifications ?? [];
+  if (notifications.length === 0) {
+    list.append(element("li", "empty-state", "No unread mentions."));
+  }
+  for (const notification of notifications) {
     const row = element("li", "");
     row.dataset.renderKey = `notification:${notification.event_id}`;
+    const author = profileForPeer(snapshot, notification.author_peer_id).display_name;
+    const channel = channelName(snapshot, notification.room_id);
     row.append(
-      element("strong", "", profileForPeer(snapshot, notification.author_peer_id).display_name),
-      element("span", "muted", channelName(snapshot, notification.room_id)),
+      element("strong", "", author),
+      element("span", "muted", channel),
       element("span", "", notification.summary),
+      actionButton(`Open message from ${author} in ${channel}`, () => {
+        openNotification(notification).catch(reportError);
+      }),
     );
     list.append(row);
   }
-  fragment.append(controls, list);
+  fragment.append(list);
   return fragment;
+}
+
+async function openNotification(notification) {
+  uiState.utilityOpen = "";
+  await runCommand("channel.select", { room_id: notification.room_id });
+  window.requestAnimationFrame(() => {
+    const message = [...app.querySelectorAll("[data-message-event-id]")]
+      .find((candidate) => candidate.dataset.messageEventId === notification.event_id);
+    message?.scrollIntoView?.({ block: "center" });
+    message?.focus();
+  });
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -1572,6 +1590,8 @@ function roomTimelineView(snapshot) {
     const own = message.author_peer_id === snapshot.home?.profile.peer_id;
     const row = element("li", own ? "message own" : "message remote");
     row.dataset.renderKey = `message:${message.event_id}`;
+    row.dataset.messageEventId = message.event_id;
+    row.tabIndex = -1;
     const author = profileForPeer(snapshot, message.author_peer_id);
     const avatar = element("div", "profile-avatar small", profileInitials(author.display_name));
     const content = element("div", "message-content");

@@ -238,6 +238,12 @@ through `message.send` or `message.edit`. A typed name resolves automatically
 only when unambiguous; duplicate display names require the member picker, which
 disambiguates the choice without making raw IDs the ordinary interaction.
 
+Each projected mention notification is an affordance over `channel.select`.
+Opening it closes the notification surface, selects and marks the authoritative
+channel read through Rust, and then focuses the retained message as disposable
+presentation behavior. The frontend does not maintain a separate read state or
+infer notification validity.
+
 Projected reaction and pin state determines whether the visible action invokes
 the add or remove command; the frontend does not guess a toggle result. Message
 deletion is a separate confirmed step that states the retained signed-tombstone
