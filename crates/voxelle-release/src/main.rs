@@ -125,6 +125,16 @@ enum Command {
     RecordFieldBetaEvidence(Box<RecordFieldBetaEvidenceArgs>),
     RecordDistributionBetaEvidence(Box<RecordDistributionBetaEvidenceArgs>),
     RecordCustodyBetaEvidence(Box<RecordCustodyBetaEvidenceArgs>),
+    BetaEvidenceStatus {
+        #[arg(long)]
+        trust_roots: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        evidence: PathBuf,
+        #[arg(long)]
+        expected_commit: String,
+    },
     VerifyBetaEvidence {
         #[arg(long)]
         trust_roots: PathBuf,
@@ -694,6 +704,37 @@ fn main() -> Result<()> {
             write_new_json(&output, &receipt)?;
             println!("recorded custody beta evidence in {}", output.display());
             Ok(())
+        }
+        Command::BetaEvidenceStatus {
+            trust_roots,
+            manifest,
+            evidence: evidence_path,
+            expected_commit,
+        } => {
+            let roots = read_trust_roots(&trust_roots)?;
+            let manager = UpdateManager::new(".", "0.1.0", roots.clone())?;
+            let manifest = manager.verify_release_manifest_bytes(&fs::read(manifest)?)?;
+            let receipt: evidence::BetaEvidenceV1 =
+                serde_json::from_slice(&fs::read(&evidence_path).context("read beta evidence")?)
+                    .context("parse beta evidence")?;
+            let status = evidence::status(&receipt, &manifest, &roots, &expected_commit);
+            let mut failures = 0;
+            for item in status {
+                if let Some(error) = item.error {
+                    failures += 1;
+                    println!("FAIL {}: {}", item.section, error);
+                } else {
+                    println!("PASS {}", item.section);
+                }
+            }
+            if failures == 0 {
+                println!("all beta evidence sections are complete and internally consistent");
+                Ok(())
+            } else {
+                Err(anyhow!(
+                    "beta evidence has {failures} incomplete or invalid sections"
+                ))
+            }
         }
         Command::VerifyBetaEvidence {
             trust_roots,

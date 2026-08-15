@@ -317,6 +317,25 @@ mistaken automation here could destroy release authority.
 
 ## 6. Verify the complete gate
 
+At any point while assembling the staged receipt, inspect every gate in one
+authenticated pass:
+
+```sh
+cargo run -q -p voxelle-release -- beta-evidence-status \
+  --trust-roots release/trusted-update-keys.json \
+  --manifest DOWNLOAD_DIR/VOXELLE-RELEASE.json \
+  --evidence CURRENT_RECEIPT.json \
+  --expected-commit FULL_40_CHARACTER_TAG_COMMIT
+```
+
+The status command authenticates the release manifest, prints `PASS` or `FAIL`
+for release identity, distribution, Windows, field, human, and custody evidence,
+and exits unsuccessfully until every section is complete and internally
+consistent. It reports all section failures at once. Like the strict verifier,
+it checks the receipt—not whether an operator's lived observations were true.
+
+Once every status line passes, run the strict gate:
+
 ```sh
 cargo run -q -p voxelle-release -- verify-beta-evidence \
   --trust-roots release/trusted-update-keys.json \

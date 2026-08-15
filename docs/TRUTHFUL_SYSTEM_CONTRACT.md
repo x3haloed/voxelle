@@ -197,6 +197,11 @@ physical cameras, assistive-technology combinations, and operating-system
 unsigned-install policy variants require external runners or machines. Claims
 cover them only after those artifacts or runtimes are actually exercised.
 
+The authenticated beta-evidence status command may expose every incomplete
+receipt section in one pass, but it establishes only receipt completeness and
+internal consistency. It does not elevate operator attestations into observed
+or cryptographic proof of the lived causal paths.
+
 ## Construction And Verification Order
 
 1. Carry one identity through loss, recovery, rotation, revocation, remote

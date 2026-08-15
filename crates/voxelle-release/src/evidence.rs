@@ -270,6 +270,57 @@ pub fn validate(
     roots: &[TrustedReleaseKey],
     expected_commit: &str,
 ) -> Result<()> {
+    validate_release_identity(evidence, manifest, expected_commit)?;
+    validate_distribution(&evidence.distribution, manifest)?;
+    validate_windows(&evidence.windows, manifest)?;
+    validate_field(&evidence.field)?;
+    validate_human(&evidence.human, &evidence.field)?;
+    validate_custody(&evidence.custody, manifest, roots)?;
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct EvidenceStatus {
+    pub section: &'static str,
+    pub error: Option<String>,
+}
+
+pub fn status(
+    evidence: &BetaEvidenceV1,
+    manifest: &ReleaseManifestV1,
+    roots: &[TrustedReleaseKey],
+    expected_commit: &str,
+) -> Vec<EvidenceStatus> {
+    [
+        (
+            "release identity",
+            validate_release_identity(evidence, manifest, expected_commit),
+        ),
+        (
+            "distribution",
+            validate_distribution(&evidence.distribution, manifest),
+        ),
+        ("Windows", validate_windows(&evidence.windows, manifest)),
+        ("field", validate_field(&evidence.field)),
+        ("human", validate_human(&evidence.human, &evidence.field)),
+        (
+            "custody",
+            validate_custody(&evidence.custody, manifest, roots),
+        ),
+    ]
+    .into_iter()
+    .map(|(section, result)| EvidenceStatus {
+        section,
+        error: result.err().map(|error| error.to_string()),
+    })
+    .collect()
+}
+
+fn validate_release_identity(
+    evidence: &BetaEvidenceV1,
+    manifest: &ReleaseManifestV1,
+    expected_commit: &str,
+) -> Result<()> {
     if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
         return Err(anyhow!(
             "unsupported beta evidence format {}",
@@ -286,11 +337,6 @@ pub fn validate(
             "beta evidence source commit does not match the expected commit"
         ));
     }
-    validate_distribution(&evidence.distribution, manifest)?;
-    validate_windows(&evidence.windows, manifest)?;
-    validate_field(&evidence.field)?;
-    validate_human(&evidence.human, &evidence.field)?;
-    validate_custody(&evidence.custody, manifest, roots)?;
     Ok(())
 }
 
@@ -853,6 +899,41 @@ mod tests {
             "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f",
         )
         .expect("valid evidence");
+    }
+
+    #[test]
+    fn status_reports_every_invalid_section_in_one_pass() {
+        let mut evidence = valid();
+        evidence.source_commit = "wrong".to_string();
+        evidence.distribution.live_activation = false;
+        evidence.windows.main_window_visible = false;
+        evidence.field.machines[0].advertise_addr = "[::1]:47000".to_string();
+        evidence.human.assistive_technology.recovery = false;
+        evidence.custody.restore_tested = false;
+
+        let observed = status(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f",
+        );
+
+        assert_eq!(observed.len(), 6);
+        assert!(observed.iter().all(|item| item.error.is_some()));
+        assert_eq!(observed[0].section, "release identity");
+        assert_eq!(observed[5].section, "custody");
+    }
+
+    #[test]
+    fn status_marks_complete_evidence_as_ready() {
+        let observed = status(
+            &valid(),
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f",
+        );
+
+        assert!(observed.iter().all(|item| item.error.is_none()));
     }
 
     #[test]
