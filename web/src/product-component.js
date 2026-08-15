@@ -2943,6 +2943,7 @@ function callMeshView(snapshot) {
   const call = snapshot.home?.call;
   const localPeerId = snapshot.home?.profile.peer_id;
   const joined = Boolean(localPeerId && call?.participants.includes(localPeerId));
+  const callFull = !joined && (call?.participants.length ?? 0) >= 4;
   const controls = element("div", "control-row");
   if (joined) {
     const microphoneEnabled = localMicrophoneEnabled(uiState.localMediaStream);
@@ -2959,21 +2960,28 @@ function callMeshView(snapshot) {
       : "Resume an already captured camera and update the state shown to this direct call";
     controls.append(microphone, camera, commandButton("call.leave"));
   } else {
-    controls.append(
-      commandButton("call.join", { video: false }),
-      commandButton("call.join", { video: true }),
-    );
-    controls.children[0].textContent = "Join with microphone";
-    controls.children[0].title = "Ask for microphone access and join this room's direct call";
-    controls.children[1].textContent = "Join with camera";
-    controls.children[1].title = "Ask for camera and microphone access and join this room's direct call";
+    const joinWithMicrophone = commandButton("call.join", { video: false });
+    joinWithMicrophone.textContent = "Join with microphone";
+    joinWithMicrophone.title = callFull
+      ? "This direct call is full"
+      : "Ask for microphone access and join this room's direct call";
+    joinWithMicrophone.disabled = callFull;
+    const joinWithCamera = commandButton("call.join", { video: true });
+    joinWithCamera.textContent = "Join with camera";
+    joinWithCamera.title = callFull
+      ? "This direct call is full"
+      : "Ask for camera and microphone access and join this room's direct call";
+    joinWithCamera.disabled = callFull;
+    controls.append(joinWithMicrophone, joinWithCamera);
   }
   const status = element(
     "p",
     "summary",
     joined
       ? `${call?.participants.length ?? 0} of 4 people in this direct call. Your media does not pass through a Voxelle service.`
-      : "Start a direct call for up to four people in this room. Choose whether to turn on your camera before joining.",
+      : callFull
+        ? "This direct call is full (4 of 4). Wait for someone to leave before joining."
+        : "Start a direct call for up to four people in this room. Choose whether to turn on your camera before joining.",
   );
   status.setAttribute("aria-live", "polite");
   const videos = element("div", "call-grid");
@@ -3263,12 +3271,14 @@ function executePaletteCommand(commandId) {
 
 function paletteAvailability(commandId, snapshot) {
   const localPeerId = snapshot.home?.profile.peer_id;
+  const callParticipants = snapshot.home?.call?.participants ?? [];
   return paletteCommandAvailability(commandId, {
     hasHome: Boolean(snapshot.home),
     hasHomeError: Boolean(snapshot.home_error),
     runtimeOnline: snapshot.home?.runtime.state === "online",
     hasInvite: Boolean(snapshot.home?.invite?.space_invite_json),
-    joinedCall: Boolean(localPeerId && snapshot.home?.call?.participants.includes(localPeerId)),
+    joinedCall: Boolean(localPeerId && callParticipants.includes(localPeerId)),
+    callFull: callParticipants.length >= 4,
   });
 }
 

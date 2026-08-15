@@ -459,6 +459,14 @@ voice tile and accessible label rather than an empty video element; camera
 participants retain direct-video tiles. Connection wording remains separately
 derived from the local direct WebRTC state, and neither presentation grants
 room participation or signaling authority.
+Pre-join controls also follow the projected four-person envelope. Once four
+participants occupy the deterministic call projection, both visible join
+choices remain present but disabled with a full-call explanation. If the local
+principal is already admitted, the ordinary surface replaces Join with in-call
+controls. The palette and direct Join shortcut use those same projected facts:
+they describe either **already in this room's call** or **direct call is full**
+instead of starting redundant capture. Rust admission remains authoritative if
+projected state changes between presentation and invocation.
 Once joined, `call.microphone.toggle` changes only the enabled state of the
 WebView's local audio tracks. The in-call button and command palette invoke that
 same frontend command ID, and the local tile names **Microphone on** or

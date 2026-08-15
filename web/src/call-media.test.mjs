@@ -169,6 +169,13 @@ test("the active call and palette share the camera semantic command", () => {
   assert.match(productSource, /No camera track is available\. Leave and rejoin with camera/);
 });
 
+test("a full direct call disables both visible join choices", () => {
+  assert.match(productSource, /const callFull = !joined && \(call\?\.participants\.length \?\? 0\) >= 4/);
+  assert.match(productSource, /joinWithMicrophone\.disabled = callFull/);
+  assert.match(productSource, /joinWithCamera\.disabled = callFull/);
+  assert.match(productSource, /This direct call is full \(4 of 4\)\. Wait for someone to leave/);
+});
+
 test("local media stops even when durable leave fails", async () => {
   let stopped = false;
   await assert.rejects(

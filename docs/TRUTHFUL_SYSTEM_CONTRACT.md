@@ -747,7 +747,13 @@ exclusive pre-join and in-call actions, explains the direct four-person envelope
 before capture, localizes actionable permission and device failures, and names
 each participant's direct connection state for assistive technology. This
 surface now also receives each active participant's accepted camera intent from
-the Rust projection. Heartbeats preserve the latest admitted join mode, and a
+the Rust projection. A rendered capacity probe verifies that four projected
+participants disable both visible join choices and the palette Join command
+with an explicit full-call reason. A separate already-joined probe verifies that
+the visible surface exposes only in-call controls while palette Join remains
+disabled as redundant. These are presentation guards over projected state;
+Rust remains the admission authority if that state changes. Heartbeats preserve
+the latest admitted join mode, and a
 remote voice-only participant renders as an explicit voice tile instead of an
 empty video element; a rendered preview probe exercised that label together
 with the independent **Connecting directly** state. This does not move

@@ -109,6 +109,12 @@ export function paletteCommandAvailability(commandId, context) {
   if (commandId === "invite.copy" && !context.hasInvite) {
     return { available: false, reason: "Create a signed invite first" };
   }
+  if (commandId === "call.join" && context.joinedCall) {
+    return { available: false, reason: "You are already in this room's call" };
+  }
+  if (commandId === "call.join" && context.callFull) {
+    return { available: false, reason: "This room's direct call is full" };
+  }
   if (commandId === "call.leave" && !context.joinedCall) {
     return { available: false, reason: "You are not in this room's call" };
   }

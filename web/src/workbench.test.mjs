@@ -62,6 +62,7 @@ test("palette availability explains causal prerequisites without changing comman
     runtimeOnline: false,
     hasInvite: false,
     joinedCall: false,
+    callFull: false,
   };
   assert.deepEqual(paletteCommandAvailability("channel.create", fresh), {
     available: false,
@@ -79,6 +80,7 @@ test("palette availability explains causal prerequisites without changing comman
     runtimeOnline: true,
     hasInvite: false,
     joinedCall: false,
+    callFull: false,
   };
   assert.equal(paletteCommandAvailability("space.join", active).available, false);
   assert.equal(paletteCommandAvailability("identity.recovery.restore", active).available, false);
@@ -100,5 +102,13 @@ test("palette availability explains causal prerequisites without changing comman
   assert.equal(
     paletteCommandAvailability("call.camera.toggle", { ...active, joinedCall: true }).available,
     true,
+  );
+  assert.deepEqual(
+    paletteCommandAvailability("call.join", { ...active, joinedCall: true }),
+    { available: false, reason: "You are already in this room's call" },
+  );
+  assert.deepEqual(
+    paletteCommandAvailability("call.join", { ...active, callFull: true }),
+    { available: false, reason: "This room's direct call is full" },
   );
 });
