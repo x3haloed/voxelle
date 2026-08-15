@@ -402,6 +402,18 @@ h3 {
   overflow-wrap: anywhere;
 }
 
+.field [aria-invalid="true"],
+fieldset[aria-invalid="true"] {
+  border-color: var(--activity-error);
+  outline: 2px solid color-mix(in srgb, transparent 55%, var(--activity-error));
+  outline-offset: 2px;
+}
+
+.field-error {
+  color: var(--activity-error);
+  font-size: 0.85rem;
+}
+
 .mention-picker {
   position: relative;
 }
@@ -968,6 +980,11 @@ h3 {
 .field {
   color: var(--text-secondary);
   font-size: 0.85rem;
+}
+
+.field-label {
+  display: grid;
+  gap: var(--panel-gap);
 }
 
 input,

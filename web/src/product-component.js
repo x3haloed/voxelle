@@ -22,6 +22,8 @@ const uiState = {
   error: "",
   errorRecovery: "",
   errorDetail: "",
+  validationTarget: "",
+  validationMessage: "",
   status: "",
   peerRecordDraft: "",
   spaceInviteDraft: "",
@@ -2064,15 +2066,14 @@ function channelCreateDisclosure(snapshot) {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!uiState.channelNameDraft.trim()) {
-      setUserError("Enter a channel name.");
+      setUserError("Enter a channel name.", "channel-name");
       render();
-      window.requestAnimationFrame(() => app.querySelector(".channel-create input")?.focus());
       return;
     }
     runCommand("channel.create", channelCreatePayload(snapshot)).catch(reportError);
   });
   form.append(
-    labeledInput("Name", "new-channel", uiState.channelNameDraft, (value) => { uiState.channelNameDraft = value; }),
+    labeledInput("Name", "For example, announcements", uiState.channelNameDraft, (value) => { uiState.channelNameDraft = value; }, "channel-name"),
     labeledInput("Topic", "What belongs here?", uiState.channelTopicDraft, (value) => { uiState.channelTopicDraft = value; }),
   );
   const privacy = element("details", "advanced-details");
@@ -2338,12 +2339,12 @@ function roleListView(snapshot) {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!uiState.roleNameDraft.trim()) {
-      setUserError("Enter a role name.");
+      setUserError("Enter a role name.", "role-name");
       render();
       return;
     }
     if (uiState.rolePermissionsDraft.size === 0) {
-      setUserError("Choose at least one permission for this role.");
+      setUserError("Choose at least one permission for this role.", "role-permissions");
       render();
       return;
     }
@@ -2354,9 +2355,12 @@ function roleListView(snapshot) {
   });
   form.append(labeledInput("Role name", "For example, Moderator", uiState.roleNameDraft, (value) => {
     uiState.roleNameDraft = value;
-  }));
+  }, "role-name"));
   const permissions = element("fieldset", "choice-list");
+  applyValidationState(permissions, "role-permissions");
   permissions.append(element("legend", "", "What can this role do?"));
+  const permissionError = validationError("role-permissions");
+  if (permissionError) permissions.append(permissionError);
   for (const permission of ROLE_PERMISSIONS) {
     permissions.append(choiceCheckbox(
       permissionLabel(permission),
@@ -3680,16 +3684,21 @@ function reportError(error) {
   render();
 }
 
-function setUserError(message) {
+function setUserError(message, target) {
   uiState.error = message;
   uiState.errorRecovery = "Correct the highlighted information and try again.";
   uiState.errorDetail = "";
+  uiState.validationTarget = target;
+  uiState.validationMessage = message;
+  window.requestAnimationFrame(() => focusValidationTarget(target));
 }
 
 function clearError() {
   uiState.error = "";
   uiState.errorRecovery = "";
   uiState.errorDetail = "";
+  uiState.validationTarget = "";
+  uiState.validationMessage = "";
 }
 
 /** @param {unknown} error */
@@ -3828,17 +3837,48 @@ function statusLabel(status) {
  * @param {string} placeholder
  * @param {string} value
  * @param {(value: string) => void} onInput
+ * @param {string} [validationTarget]
  */
-function labeledInput(label, placeholder, value, onInput) {
-  const field = element("label", "field");
+function labeledInput(label, placeholder, value, onInput, validationTarget = "") {
+  const field = element("div", "field");
+  const inputLabel = element("label", "field-label");
   const input = element("input", "");
   input.placeholder = placeholder;
   input.value = value;
   input.addEventListener("input", () => {
     onInput(input.value);
   });
-  field.append(element("span", "", label), input);
+  applyValidationState(input, validationTarget);
+  inputLabel.append(element("span", "", label), input);
+  field.append(inputLabel);
+  const error = validationError(validationTarget);
+  if (error) field.append(error);
   return field;
+}
+
+function applyValidationState(control, target) {
+  if (!target) return;
+  control.dataset.validationTarget = target;
+  if (uiState.validationTarget !== target) return;
+  control.setAttribute("aria-invalid", "true");
+  control.setAttribute("aria-describedby", `validation-${target}`);
+}
+
+function validationError(target) {
+  if (!target || uiState.validationTarget !== target) return null;
+  const error = element("span", "field-error", uiState.validationMessage);
+  error.id = `validation-${target}`;
+  return error;
+}
+
+function focusValidationTarget(target) {
+  const control = [...app.querySelectorAll("[data-validation-target]")]
+    .find((candidate) => candidate.dataset.validationTarget === target);
+  if (control instanceof HTMLFieldSetElement) {
+    control.querySelector("input")?.focus();
+  } else {
+    control?.focus();
+  }
 }
 
 function choiceCheckbox(label, checked, onChange) {
