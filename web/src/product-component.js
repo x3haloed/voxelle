@@ -192,6 +192,7 @@ function render() {
   desired.append(
     header(currentSnapshot),
     globalErrorBanner(),
+    globalProgressBanner(),
     globalStatusBanner(),
     ...(currentSnapshot.home && !currentSnapshot.home.recovery.kit_exported
       ? [recoverySetupPrompt()]
@@ -498,6 +499,7 @@ function connectionCenter(snapshot) {
 function onboardingExperience(snapshot) {
   if (snapshot.home_error) return damagedHomeExperience(snapshot.home_error);
   const section = element("section", "onboarding");
+  section.setAttribute("aria-busy", String(Boolean(uiState.busyCommand)));
   section.setAttribute("aria-labelledby", "onboarding-title");
   const intro = element("div", "onboarding-intro");
   intro.append(
@@ -669,6 +671,7 @@ function inviteReviewContent(preview) {
 
 function damagedHomeExperience(homeError) {
   const section = element("section", "onboarding damaged-home");
+  section.setAttribute("aria-busy", String(Boolean(uiState.busyCommand)));
   section.setAttribute("aria-labelledby", "damaged-home-title");
   const panel = element("article", "damaged-home-panel");
   panel.append(
@@ -857,6 +860,7 @@ function preferenceForm(preference, input, request, showId) {
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function workbenchShell(snapshot) {
   const container = element("section", "workbench-container");
+  container.setAttribute("aria-busy", String(Boolean(uiState.busyCommand)));
   const hidden = snapshot.ui_ontology.views.filter((view) => !view.visible);
   if (uiState.layoutEditing && hidden.length > 0) {
     const shelf = element("nav", "hidden-view-shelf");
@@ -3204,7 +3208,10 @@ function commandButton(command, payload) {
   }
   button.disabled = uiState.busyCommand !== "";
   if (uiState.busyCommand === command) {
-    button.textContent = "Working";
+    button.textContent = commandProgress(
+      command,
+      currentSnapshot.ui_ontology.commands,
+    )?.buttonLabel ?? "Working…";
   }
   button.addEventListener("click", () => {
     runCommand(command, payload).catch(reportError);
@@ -3722,6 +3729,19 @@ function globalErrorBanner() {
       render();
     }),
   );
+  return banner;
+}
+
+function globalProgressBanner() {
+  const progress = commandProgress(
+    uiState.busyCommand,
+    currentSnapshot.ui_ontology.commands,
+  );
+  if (!progress) return document.createDocumentFragment();
+  const banner = element("section", "operation-status", progress.announcement);
+  banner.setAttribute("role", "status");
+  banner.setAttribute("aria-live", "polite");
+  banner.setAttribute("aria-atomic", "true");
   return banner;
 }
 

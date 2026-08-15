@@ -189,6 +189,11 @@ moves into a newly opened surface, modal Tab navigation remains contained, and
 closing returns focus to the invoking control when it still exists. Snapshot
 refreshes do not make the entire application a live region; only bounded status
 and alert surfaces announce changes to assistive technology.
+While a semantic command is in flight, one bounded status surface names the
+operation using that command's Rust-supplied label, the active workflow reports itself busy,
+and the initiating control keeps the same contextual operation name. Completion
+or failure removes that progress state and follows the ordinary focus and error
+paths; the frontend does not invent a second command lifecycle.
 Repeated controls expose enough visible row context in their accessible names
 to identify the target without reconstructing it from DOM position. Channel
 actions include the channel name and privacy where relevant; message action
@@ -447,6 +452,12 @@ Initial tokens:
 - `message.remote.background`
 - `activity.info`
 - `activity.error`
+
+Default surface tokens that sit behind system-derived text remain
+color-scheme-aware. In particular, own and remote message backgrounds derive
+from `Canvas`, `CanvasText`, and `LinkText` so the default conversation remains
+legible in both supported system schemes while retaining the same stable,
+user-editable token IDs.
 
 Each token should eventually expose:
 

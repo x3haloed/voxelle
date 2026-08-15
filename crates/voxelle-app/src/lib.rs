@@ -718,9 +718,10 @@ pub fn builtin_product_generation() -> ProductGenerationV1 {
 }
 
 fn builtin_product_component_source() -> String {
-    const MODULES: [&str; 12] = [
+    const MODULES: [&str; 13] = [
         include_str!("../../../web/src/call-media.mjs"),
         include_str!("../../../web/src/clipboard.mjs"),
+        include_str!("../../../web/src/command-progress.mjs"),
         include_str!("../../../web/src/connection-status.mjs"),
         include_str!("../../../web/src/dom-reconcile.mjs"),
         include_str!("../../../web/src/error-presentation.mjs"),
@@ -6006,14 +6007,14 @@ fn default_semantic_tokens() -> Vec<SemanticToken> {
             "message.own.background",
             "Own Message Background",
             "Messages authored by this peer",
-            "#e8f1ff",
+            "color-mix(in srgb, Canvas 88%, LinkText)",
             &["room.timeline"],
         ),
         semantic_token(
             "message.remote.background",
             "Remote Message Background",
             "Messages authored by other peers",
-            "#f2f2f2",
+            "color-mix(in srgb, Canvas 94%, CanvasText)",
             &["room.timeline"],
         ),
         semantic_token(

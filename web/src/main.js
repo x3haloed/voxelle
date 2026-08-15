@@ -67,6 +67,7 @@ if (!initialSnapshot.product_component && shell.mode === "preview") {
   const moduleSources = await Promise.all([
     "./src/call-media.mjs",
     "./src/clipboard.mjs",
+    "./src/command-progress.mjs",
     "./src/connection-status.mjs",
     "./src/dom-reconcile.mjs",
     "./src/error-presentation.mjs",

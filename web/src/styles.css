@@ -8,8 +8,8 @@
   --runtime-offline: GrayText;
   --peer-reachable: #18794e;
   --peer-unreachable: #b42318;
-  --message-own-background: #e8f1ff;
-  --message-remote-background: #f2f2f2;
+  --message-own-background: color-mix(in srgb, Canvas 88%, LinkText);
+  --message-remote-background: color-mix(in srgb, Canvas 94%, CanvasText);
   --activity-info: LinkText;
   --activity-error: #b42318;
   --sidebar-width: 360px;
@@ -380,6 +380,13 @@ h3 {
   color: var(--runtime-online);
   border-bottom: 1px solid var(--runtime-online);
   background: color-mix(in srgb, var(--panel-background) 92%, var(--runtime-online));
+}
+
+.operation-status {
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--activity-info);
+  background: color-mix(in srgb, var(--panel-background) 92%, var(--activity-info));
+  color: var(--text-secondary);
 }
 
 .error-copy {
