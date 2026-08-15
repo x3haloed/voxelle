@@ -30,13 +30,13 @@ use std::{
 use tokio::{
     net::TcpListener,
     signal,
-    sync::{broadcast, Semaphore},
+    sync::{broadcast, Mutex, Semaphore},
     time,
 };
 use tracing::info;
 use voxelle_app::{
-    resolve_home_root, shell_command_ids, shell_contract_typescript, ShellError, ShellRecovery,
-    ShellSnapshotView, ShellState,
+    resolve_home_root, shell_command_ids, shell_contract_typescript, ServiceActivityItem,
+    ShellError, ShellRecovery, ShellSnapshotView, ShellState,
 };
 
 #[derive(Debug, Parser)]
@@ -61,6 +61,7 @@ struct AppState {
     discovery: DiscoveryView,
     bearer_token: Arc<str>,
     request_slots: Arc<Semaphore>,
+    command_gate: Arc<Mutex<()>>,
     event_slots: Arc<Semaphore>,
     snapshot_changes: broadcast::Sender<u64>,
 }
@@ -91,6 +92,7 @@ struct ActionResult {
     ok: bool,
     command_id: String,
     snapshot: Option<ShellSnapshotView>,
+    activity_items: Vec<ServiceActivityItem>,
     error: Option<ShellError>,
     recovery: Option<ShellRecovery>,
 }
@@ -122,6 +124,7 @@ async fn main() -> Result<()> {
         discovery: discovery_view,
         bearer_token: Arc::from(bearer_token),
         request_slots: Arc::new(Semaphore::new(8)),
+        command_gate: Arc::new(Mutex::new(())),
         event_slots: Arc::new(Semaphore::new(8)),
         snapshot_changes,
     });
@@ -188,6 +191,10 @@ async fn snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
+    let Ok(_command_guard) = time::timeout(Duration::from_secs(1), state.command_gate.lock()).await
+    else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
     match time::timeout(
         Duration::from_secs(30),
         state
@@ -212,6 +219,10 @@ async fn command(
     else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
+    let Ok(command_guard) = time::timeout(Duration::from_secs(1), state.command_gate.lock()).await
+    else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
     let Ok(result) = time::timeout(
         Duration::from_secs(30),
         run_command(&state.shell, &command_id, payload),
@@ -220,6 +231,7 @@ async fn command(
     else {
         return StatusCode::GATEWAY_TIMEOUT.into_response();
     };
+    drop(command_guard);
     let status = if result.ok {
         notify_snapshot_change(&state.snapshot_changes);
         StatusCode::OK
@@ -230,12 +242,23 @@ async fn command(
 }
 
 async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionResult {
+    let activity_cursor = shell.activity_cursor().await;
     let result = shell.execute_serialized_command(command_id, payload).await;
+    let activity_items = match &result {
+        Ok(snapshot) => snapshot
+            .service_activity
+            .iter()
+            .filter(|item| item.id > activity_cursor)
+            .cloned()
+            .collect(),
+        Err(_) => shell.activity_items_after(activity_cursor).await,
+    };
     match result {
         Ok(snapshot) => ActionResult {
             ok: true,
             command_id: command_id.to_string(),
             snapshot: Some(snapshot),
+            activity_items,
             error: None,
             recovery: None,
         },
@@ -243,6 +266,7 @@ async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> Ac
             ok: false,
             command_id: command_id.to_string(),
             snapshot: None,
+            activity_items,
             recovery: Some(error.recovery),
             error: Some(error),
         },
@@ -491,12 +515,32 @@ mod tests {
             ShellRecovery::InternalError
         );
 
-        run_command(
+        let initialized = run_command(
             &shell,
             "home.init",
             serde_json::json!({ "default_room": null }),
         )
         .await;
+        assert!(initialized.ok);
+        assert!(initialized
+            .activity_items
+            .iter()
+            .any(|item| item.summary.starts_with("initialized home for ")));
+        assert!(initialized
+            .activity_items
+            .iter()
+            .any(|item| item.summary.starts_with("service started at ")));
+        let initialized_last_id = initialized
+            .activity_items
+            .last()
+            .expect("initialization activity")
+            .id;
+
+        let stopped = run_command(&shell, "runtime.goOffline", serde_json::json!({})).await;
+        assert_eq!(stopped.activity_items.len(), 1);
+        assert_eq!(stopped.activity_items[0].summary, "service stopped");
+        assert!(stopped.activity_items[0].id > initialized_last_id);
+
         let input = run_command(
             &shell,
             "message.search",

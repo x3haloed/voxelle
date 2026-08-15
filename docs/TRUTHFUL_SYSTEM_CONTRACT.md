@@ -722,6 +722,18 @@ rehearsal discovered `home.init` as `InitHomeRequest`, retrieved that declaratio
 from the advertised contract URL, submitted the typed payload, and received an
 initialized authoritative snapshot. Payload declarations are affordances, not
 validation or protocol authority.
+Inhabitant action results now attribute only the Rust-owned service activity
+created during that serialized HTTP command. The adapter captures the host's
+monotonic activity cursor, invokes the ordinary semantic command, and filters
+the returned snapshot or failed-command activity by that cursor. A sidecar
+command gate prevents concurrent agent calls or snapshot refreshes from
+claiming one another's rows;
+it does not alter the host's command serialization or admission path. An
+isolated authenticated HTTP rehearsal showed `home.init` returning only its
+initialization and service-start rows, the following `runtime.goOffline`
+returning only the later stop row, and an unsupported command returning
+structured `internal_error` with no inherited activity. This proves local
+causal result visibility, not external-agent judgment or autonomous recovery.
 Initial snapshot failure no longer ends in a static dead-end screen after
 advising the person to retry. The pre-component shell renders the same bounded
 structured explanation, states that retry does not delete, archive, or replace

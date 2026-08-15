@@ -223,6 +223,15 @@ Minimum fields:
 - `error`, nullable
 - `recovery`, nullable
 
+`activity_items` contains only retained service-activity rows whose monotonic
+IDs were created during that serialized HTTP action. The sidecar serializes
+snapshot refreshes and agent command requests around the Rust-owned activity
+cursor so concurrent callers cannot claim one another's results. Successful
+actions derive the rows
+from their returned authoritative snapshot; failed actions may report activity
+the Rust host recorded before returning its structured error. An empty list is
+an honest result for actions that produce no service activity.
+
 Errors should classify the recovery path:
 
 - `needs_home`

@@ -1,4 +1,4 @@
-use crate::{ShellSnapshotView, VoxelleCommandHost};
+use crate::{ServiceActivityItem, ShellSnapshotView, VoxelleCommandHost};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -95,6 +95,26 @@ impl ShellState {
                 trusted_update_keys,
             )),
         }
+    }
+
+    pub async fn activity_cursor(&self) -> u64 {
+        self.host
+            .lock()
+            .await
+            .activity
+            .last()
+            .map_or(0, |item| item.id)
+    }
+
+    pub async fn activity_items_after(&self, cursor: u64) -> Vec<ServiceActivityItem> {
+        self.host
+            .lock()
+            .await
+            .activity
+            .iter()
+            .filter(|item| item.id > cursor)
+            .cloned()
+            .collect()
     }
 
     pub async fn execute_serialized_command(
