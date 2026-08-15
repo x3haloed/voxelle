@@ -406,6 +406,13 @@ focus into the explicit archive confirmation, returned to truthful onboarding
 after acceptance, and focused **Recover My Identity**. This does not yet prove
 recovery from a damaged home on Windows or through an external-machine field
 test.
+The pre-archive safety review now owns modal keyboard focus: both Tab directions
+wrap within Archive and Cancel, Escape cancels, and focus returns to the stable
+prepare action even though opening the review removes the original DOM node. A
+read-only damaged-home preview and rendered interaction probe cover the dialog
+semantics and cancellation path without manufacturing a successful archive;
+the serialized Rust recovery regression and packaged macOS run remain the
+authority and accepted-transition evidence.
 
 A new disposable-home run of the current ad-hoc-signed macOS `.app` exposed and
 then closed a keyboard handoff gap in that same path. Native pointer activation

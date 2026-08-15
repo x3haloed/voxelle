@@ -11,9 +11,17 @@ export async function createShellClient() {
   fixtureUrl.searchParams.set("preview", String(Date.now()));
   const { fixtureSnapshot } = await import(fixtureUrl.href);
   const snapshot = structuredClone(fixtureSnapshot);
-  if (new URLSearchParams(window.location?.search ?? "").get("preview") === "fresh") {
+  const preview = new URLSearchParams(window.location?.search ?? "").get("preview");
+  if (preview === "fresh") {
     snapshot.home = null;
     snapshot.home_error = null;
+  } else if (preview === "damaged") {
+    snapshot.home = null;
+    snapshot.home_error = {
+      message: "The encrypted local identity could not be opened.",
+      recovery_message: "Retain this local state for diagnosis, or prepare the device only if you have the offline recovery kit for this identity.",
+      detail: "bounded preview: encrypted identity unavailable",
+    };
   }
   return new PreviewShellClient(snapshot, "preview");
 }

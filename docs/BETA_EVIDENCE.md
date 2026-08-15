@@ -274,6 +274,14 @@ including after dismissing the status. Save the kit, then confirm the Identity
 Recovery view shows when it was last saved and offers **Save a fresh recovery
 kit** without displaying or retaining its filesystem path.
 
+When a real unusable home is encountered, open **Prepare This Device for
+Recovery…** and confirm focus begins on **Archive local state and continue**.
+Use both Tab directions to verify focus stays between Archive and Cancel, then
+press Escape and confirm the archive does not run and focus returns to the
+prepare action. Do not damage a healthy home solely to satisfy this conditional
+observation; `?preview=damaged` may support presentation rehearsal but cannot
+satisfy the real archival or recovery evidence gate.
+
 While operating that surface, mute and unmute the local microphone through the
 named call control and through the command palette. Confirm the assistive
 technology announces the resulting **Microphone muted** and **Microphone on**

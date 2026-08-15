@@ -259,6 +259,16 @@ function recoverySetupPrompt() {
 }
 
 function handleKeydown(event) {
+  if (event.key === "Tab" && uiState.preparingHomeRecovery) {
+    const confirmation = app.querySelector(".home-recovery-confirmation");
+    if (confirmation) trapModalTab(event, confirmation);
+    return;
+  }
+  if (event.key === "Escape" && uiState.preparingHomeRecovery) {
+    event.preventDefault();
+    cancelDamagedHomeRecoveryPreparation();
+    return;
+  }
   if (event.key === "Tab" && uiState.customizationResetCommand) {
     const confirmation = app.querySelector(".customization-reset-confirmation");
     if (confirmation) trapModalTab(event, confirmation);
@@ -729,9 +739,12 @@ function damagedHomeExperience(homeError) {
   if (uiState.preparingHomeRecovery) {
     const confirmation = element("section", "home-recovery-confirmation");
     confirmation.setAttribute("role", "alertdialog");
-    confirmation.setAttribute("aria-label", "Prepare this device for identity recovery confirmation");
+    confirmation.setAttribute("aria-modal", "true");
+    confirmation.setAttribute("aria-labelledby", "home-recovery-confirmation-title");
+    const title = element("strong", "", "Prepare this device for recovery?");
+    title.id = "home-recovery-confirmation-title";
     confirmation.append(
-      element("strong", "", "Prepare this device for recovery?"),
+      title,
       element("p", "summary", "Voxelle will move the unusable local identity, device certificate, and retained database into a private archive inside this home. Nothing is deleted."),
       element("p", "recovery-note", "You need an offline .voxrecover kit to preserve the same identity. Without one, stop here and retain this archive for diagnosis."),
     );
@@ -739,23 +752,27 @@ function damagedHomeExperience(homeError) {
     const confirm = commandButton("home.archiveForRecovery");
     confirm.textContent = "Archive local state and continue";
     confirm.dataset.dialogInitialFocus = "true";
-    controls.append(confirm, actionButton("Cancel", () => {
-      uiState.preparingHomeRecovery = false;
-      render();
-      window.requestAnimationFrame(() => app.querySelector(".damaged-home-panel > .command-button")?.focus());
-    }));
+    controls.append(confirm, actionButton("Cancel", cancelDamagedHomeRecoveryPreparation));
     confirmation.append(controls);
     panel.append(confirmation);
   } else {
     const prepare = actionButton("Prepare This Device for Recovery…", () => {
+      rememberFocusReturn();
       uiState.preparingHomeRecovery = true;
       render();
-      window.requestAnimationFrame(() => app.querySelector(".home-recovery-confirmation .command-button")?.focus());
     });
     panel.append(prepare);
   }
   section.append(panel);
   return section;
+}
+
+function cancelDamagedHomeRecoveryPreparation() {
+  uiState.preparingHomeRecovery = false;
+  render();
+  window.requestAnimationFrame(() => {
+    app.querySelector(".damaged-home-panel > .command-button")?.focus();
+  });
 }
 
 function onboardingChoice(title, description) {
@@ -4354,7 +4371,9 @@ function focusAfterNoticeDismissal(returnElement, returnActionKey, validationTar
 }
 
 function synchronizeTransientFocus() {
-  const surface = uiState.customizationResetCommand
+  const surface = uiState.preparingHomeRecovery
+    ? "home-recovery"
+    : uiState.customizationResetCommand
     ? `customization-reset:${uiState.customizationResetCommand}`
     : uiState.productConfirmationCommand
     ? `product-confirmation:${uiState.productConfirmationCommand}`
@@ -4368,6 +4387,8 @@ function synchronizeTransientFocus() {
   focusCoordinator.synchronize(surface, () => {
     const target = surface === "palette"
       ? app.querySelector(".command-palette-input")
+      : surface === "home-recovery"
+        ? app.querySelector(".home-recovery-confirmation [data-dialog-initial-focus='true']")
       : surface.startsWith("customization-reset:")
         ? app.querySelector(".customization-reset-confirmation [data-dialog-initial-focus='true']")
       : surface.startsWith("product-confirmation:")

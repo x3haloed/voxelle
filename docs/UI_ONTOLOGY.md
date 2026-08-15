@@ -368,6 +368,11 @@ state into a private archive. The transition never deletes those files and does
 not move product-update trust state. Once Rust reports a genuinely fresh home,
 focus moves to `identity.recovery.restore` so the offline kit remains the one
 path that preserves principal continuity.
+The archive confirmation is a modal alert dialog: focus begins on the explicit
+archive action, Tab and Shift+Tab remain within Archive and Cancel, and Escape
+or Cancel returns focus to **Prepare This Device for Recovery…** without
+invoking Rust. A bounded `?preview=damaged` state makes this presentation
+reproducible while the preview shell continues to refuse every semantic action.
 
 Until a recovery-kit export succeeds, the ordinary shell shows a compact
 recovery setup prompt. The durable health marker records only completion time,

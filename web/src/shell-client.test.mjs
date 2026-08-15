@@ -32,6 +32,18 @@ test("fresh preview exposes the uninitialized human path without simulating auth
   await assert.rejects(client.execute("home.init"), /Preview only/);
 });
 
+test("damaged preview exposes structured recovery without simulating archival", async () => {
+  globalThis.window = { location: { search: "?preview=damaged" } };
+  const client = await createShellClient();
+  const snapshot = await client.execute("shell.refresh");
+
+  assert.equal(snapshot.home, null);
+  assert.equal(snapshot.home_error.message, "The encrypted local identity could not be opened.");
+  assert.match(snapshot.home_error.recovery_message, /offline recovery kit/);
+  assert.match(snapshot.home_error.detail, /bounded preview/);
+  await assert.rejects(client.execute("home.archiveForRecovery"), /Preview only/);
+});
+
 test("native shell subscribes to Rust snapshot invalidations", async () => {
   let eventName = "";
   let listener = null;
