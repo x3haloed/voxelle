@@ -71,6 +71,7 @@ if (!initialSnapshot.product_component && shell.mode === "preview") {
     "./src/dom-reconcile.mjs",
     "./src/error-presentation.mjs",
     "./src/focus-management.mjs",
+    "./src/invite-preview.mjs",
     "./src/message-composition.mjs",
     "./src/ui-ontology.mjs",
     "./src/workbench.mjs",

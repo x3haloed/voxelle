@@ -479,6 +479,7 @@ function onboardingExperience(snapshot) {
     if (!file) return;
     uiState.spaceInviteDraft = await file.text();
     inviteText.value = uiState.spaceInviteDraft;
+    updateInviteReview(inviteReview, uiState.spaceInviteDraft);
   });
   const inviteText = element("textarea", "invite-input");
   inviteText.rows = 5;
@@ -487,8 +488,11 @@ function onboardingExperience(snapshot) {
   inviteText.value = uiState.spaceInviteDraft;
   inviteText.addEventListener("input", () => {
     uiState.spaceInviteDraft = inviteText.value;
+    updateInviteReview(inviteReview, uiState.spaceInviteDraft);
   });
-  joinForm.append(inviteFile, inviteText, submitButton("space.join"));
+  const inviteReview = element("div", "invite-review");
+  updateInviteReview(inviteReview, uiState.spaceInviteDraft);
+  joinForm.append(inviteFile, inviteText, inviteReview, submitButton("space.join"));
   join.append(joinForm);
 
   const recover = onboardingChoice(
@@ -507,6 +511,58 @@ function onboardingExperience(snapshot) {
   choices.append(create, join, recover);
   section.append(intro, choices);
   return section;
+}
+
+function updateInviteReview(container, text) {
+  container.replaceChildren(inviteReviewContent(inviteClaimPreview(text)));
+}
+
+function inviteReviewContent(preview) {
+  if (preview.state === "empty") {
+    return element("p", "muted", "Choose or paste an invite to review its claims before joining.");
+  }
+  if (preview.state === "unavailable") {
+    const message = element("p", "invite-review-warning", preview.reason);
+    message.setAttribute("role", "status");
+    return message;
+  }
+  const review = element("section", "invite-review-claims");
+  review.setAttribute("aria-label", "Untrusted invite claims");
+  const expires = preview.expiresMs === null
+    ? "Missing or unrecognized"
+    : new Date(preview.expiresMs).toLocaleString();
+  review.append(
+    element("strong", "", "Review before joining"),
+    definitionGrid([
+      ["Space", preview.spaceName],
+      ["Space ID", preview.spaceId],
+      ["Authority", preview.authorityPeerId],
+      ["Expires", expires],
+      ["Included peers", preview.bootstrapCount === null ? "Unrecognized" : String(preview.bootstrapCount)],
+    ]),
+    element(
+      "p",
+      "recovery-note",
+      "This is a bearer invite. Anyone holding an unbound copy may attempt to join more than once until it expires or members revoke it.",
+    ),
+    element(
+      "p",
+      "summary",
+      "These are untrusted claims for review. Rust verifies the space genesis, authority signature, expiry, governance history, and peer records when you choose Join Space.",
+    ),
+  );
+  if (preview.expiredClaim || !preview.claimsConsistent) {
+    const warning = element(
+      "p",
+      "invite-review-warning",
+      preview.expiredClaim
+        ? "This invite claims it has expired. Rust will make the authoritative decision."
+        : "The displayed authority and space claims conflict. Rust is expected to reject this invite.",
+    );
+    warning.setAttribute("role", "alert");
+    review.prepend(warning);
+  }
+  return review;
 }
 
 function damagedHomeExperience(homeError) {

@@ -360,6 +360,18 @@ preserves technical detail, and directs the person to manually copy the
 complete signed JSON. This proves local clipboard feedback, not successful
 delivery to another person or an assistive-technology announcement.
 
+Invite admission has crossed a focused native macOS review gate. A second
+fresh, separately identified packaged bundle pasted a real Rust-created signed
+invite and, before submission, displayed **My Space**, stable space
+and authority identifiers, the local expiry time, one included ordinary peer,
+and the unbound bearer-reuse limitation. The surface explicitly labeled these
+as untrusted claims and named Rust's signature, genesis, expiry, governance,
+and peer-record checks. Choosing **Join Space** then completed through the real
+Rust command and projected both members. Deterministic preview tests cover
+expired, conflicting, partial, and oversized input without turning preview
+parsing into admission. This is local packaged evidence, not external delivery,
+offline-inviter, Windows, or assistive-technology evidence.
+
 Customization has crossed a focused native macOS gate. The packaged workbench
 opens one human settings surface from More, presents everyday behavior before
 advanced semantic-token and metric controls, and exposes contextual accessible

@@ -194,6 +194,25 @@ h3 {
   gap: 10px;
 }
 
+.invite-review,
+.invite-review-claims {
+  display: grid;
+  gap: 8px;
+}
+
+.invite-review-claims {
+  padding: 10px;
+  border: 1px solid var(--panel-border);
+}
+
+.invite-review-claims .definition-grid {
+  grid-template-columns: 92px minmax(0, 1fr);
+}
+
+.invite-review-warning {
+  color: var(--activity-error);
+}
+
 .success-label {
   color: var(--runtime-online);
   font-weight: 700;

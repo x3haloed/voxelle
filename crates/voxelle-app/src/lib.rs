@@ -714,13 +714,14 @@ pub fn builtin_product_generation() -> ProductGenerationV1 {
 }
 
 fn builtin_product_component_source() -> String {
-    const MODULES: [&str; 9] = [
+    const MODULES: [&str; 10] = [
         include_str!("../../../web/src/call-media.mjs"),
         include_str!("../../../web/src/clipboard.mjs"),
         include_str!("../../../web/src/connection-status.mjs"),
         include_str!("../../../web/src/dom-reconcile.mjs"),
         include_str!("../../../web/src/error-presentation.mjs"),
         include_str!("../../../web/src/focus-management.mjs"),
+        include_str!("../../../web/src/invite-preview.mjs"),
         include_str!("../../../web/src/message-composition.mjs"),
         include_str!("../../../web/src/ui-ontology.mjs"),
         include_str!("../../../web/src/workbench.mjs"),
