@@ -17,3 +17,11 @@ test("right-anchored dialogs size against scrollbar-safe containing width", () =
   assert.match(utilityRule, /calc\(100% - 2 \* var\(--panel-gap\)\)/);
   assert.doesNotMatch(`${connectionRule}${utilityRule}`, /100vw/);
 });
+
+test("compact transient panels become viewport-contained modal surfaces", () => {
+  const compact = css.slice(css.indexOf("@media (max-width: 760px)"));
+  const panelRule = compact.match(/\.connection-center \{[\s\S]*?\n  \}/)?.[0] ?? "";
+  assert.match(panelRule, /inset:\s*var\(--panel-gap\)/);
+  assert.match(panelRule, /width:\s*auto/);
+  assert.match(panelRule, /max-height:\s*none/);
+});

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -7,41 +8,63 @@ import {
   trapModalTab,
 } from "./focus-management.mjs";
 
+const focusSource = readFileSync(new URL("./focus-management.mjs", import.meta.url), "utf8");
+
 function fixture() {
   const document = { activeElement: null };
-  const make = (name, { hidden = false } = {}) => ({
-    name,
-    getAttribute(attribute) {
-      return attribute === "aria-hidden" && hidden ? "true" : null;
-    },
-    closest() {
-      return null;
-    },
-    focus() {
-      document.activeElement = this;
-    },
-  });
+  const make = (name, {
+    hidden = false,
+    rendered = true,
+    closedDetails = false,
+    summary = false,
+  } = {}) => {
+    const details = closedDetails ? {} : null;
+    return {
+      name,
+      tagName: summary ? "SUMMARY" : "BUTTON",
+      parentElement: summary ? details : null,
+      getAttribute(attribute) {
+        return attribute === "aria-hidden" && hidden ? "true" : null;
+      },
+      closest(selector) {
+        return selector === "details:not([open])" ? details : null;
+      },
+      getClientRects() {
+        return rendered ? [{}] : [];
+      },
+      focus() {
+        document.activeElement = this;
+      },
+    };
+  };
   const first = make("first");
   const hidden = make("hidden", { hidden: true });
+  const collapsed = make("collapsed", { closedDetails: true });
+  const summary = make("summary", { closedDetails: true, summary: true });
   const last = make("last");
   const container = {
     ownerDocument: document,
     querySelectorAll() {
-      return [first, hidden, last];
+      return [first, hidden, collapsed, summary, last];
     },
     contains(element) {
-      return [first, hidden, last].includes(element);
+      return [first, hidden, collapsed, summary, last].includes(element);
     },
     focus() {
       document.activeElement = this;
     },
   };
-  return { document, first, last, container };
+  return { document, first, summary, last, container };
 }
 
 test("focusable elements omit accessibility-hidden controls", () => {
-  const { first, last, container } = fixture();
-  assert.deepEqual(focusableElements(container), [first, last]);
+  const { first, summary, last, container } = fixture();
+  assert.deepEqual(focusableElements(container), [first, summary, last]);
+});
+
+test("native disclosure summaries remain in the modal focus order", () => {
+  assert.match(focusSource, /"summary",/);
+  assert.match(focusSource, /details:not\(\[open\]\)/);
 });
 
 test("Tab wraps forward and backward inside a modal", () => {

@@ -634,6 +634,18 @@ ownership/status and recovery-warning foregrounds measure 10.36:1 and 8.21:1
 contrast respectively. This is preview rendering evidence, not packaged-native
 or actual assistive-technology evidence.
 
+The populated active-home surface has now crossed the matching 420×700 rendered
+gate. The header, selected conversation, messages, composer, and direct-media
+actions remain in one vertical projection with equal document client and scroll
+widths. Opening People exposed that the prior fixed 104px panel offset covered
+the dynamically wrapped header while leaving its actions focusable. Compact
+Connection and utility panels now become viewport-contained modals, report
+`aria-modal=true`, and trap Tab within visible controls. The shared focus order
+keeps native disclosure summaries but excludes their collapsed descendants; a
+rendered Shift+Tab probe wrapped from **Close** to **Manual peer setup**. Desktop
+widths retain the existing nonmodal panels and command paths. This is rendered
+preview evidence, not packaged-native or actual assistive-technology evidence.
+
 The same packaged surface now derives reaction and pin actions from projected
 accepted state: a native run added and removed the local reaction and pinned
 and unpinned the message through their distinct semantic commands. Deletion no

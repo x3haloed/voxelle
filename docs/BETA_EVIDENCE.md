@@ -207,6 +207,10 @@ and transient Connection or utility action remain keyboard-reachable without
 document-level horizontal scrolling. Record the window size and any wrapping or
 stacking behavior; this operator observation complements rather than replaces
 the assistive-technology evidence above.
+If a transient surface becomes modal at that width, confirm it is announced as
+modal, Tab and Shift+Tab remain among visible controls (including collapsed
+disclosure summaries but not their hidden contents), and Escape returns to the
+invoking header action.
 
 Then use two or three distinct physical participants drawn from the three
 machine roles in the field receipt. In `human.media`, record the participating roles

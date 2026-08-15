@@ -1398,8 +1398,9 @@ kbd {
   }
 
   .connection-center {
-    top: 104px;
-    max-height: calc(100vh - 120px);
+    inset: var(--panel-gap);
+    width: auto;
+    max-height: none;
   }
 
   .recovery-setup-prompt {

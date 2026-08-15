@@ -123,6 +123,11 @@ This responsive projection must not rewrite persisted `place_id`, order, or
 visibility state, and it must not create a compact-only command path. Header
 actions and transient Connection and utility surfaces remain inside the
 scrollbar-safe containing width without requiring horizontal scrolling.
+When that width can no longer preserve a genuinely nonmodal panel beside a
+wrapped header, Connection and utility surfaces become viewport-contained
+modals without changing their view or command identities. Their `aria-modal`
+state follows the same compact media query, Tab remains within visible controls,
+and Escape returns to the invoking header action.
 
 ## 3. Primitive Categories
 
@@ -186,7 +191,9 @@ attention; it does not create a second health model in the frontend.
 
 Transient panels and modal command surfaces preserve keyboard location: focus
 moves into a newly opened surface, modal Tab navigation remains contained, and
-closing returns focus to the invoking control when it still exists. Snapshot
+closing returns focus to the invoking control when it still exists. Modal focus
+order excludes controls inside collapsed disclosures while keeping
+the disclosure summary itself reachable. Snapshot
 refreshes do not make the entire application a live region; only bounded status
 and alert surfaces announce changes to assistive technology.
 While a semantic command is in flight, one bounded status surface names the

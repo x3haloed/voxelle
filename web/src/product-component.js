@@ -87,6 +87,11 @@ const focusCoordinator = new FocusSurfaceCoordinator(
   document,
   (callback) => window.requestAnimationFrame(callback),
 );
+const compactTransientQuery = window.matchMedia?.("(max-width: 760px)") ?? null;
+const handleCompactTransientChange = () => {
+  if (uiState.connectionOpen || uiState.utilityOpen) render();
+};
+compactTransientQuery?.addEventListener?.("change", handleCompactTransientChange);
 
 const viewRenderers = {
   "profile.summary": profileSummaryView,
@@ -271,6 +276,17 @@ function handleKeydown(event) {
     render();
     return;
   }
+  if (
+    event.key === "Tab"
+    && compactTransientModal()
+    && (uiState.connectionOpen || uiState.utilityOpen)
+  ) {
+    const transient = app.querySelector(
+      uiState.connectionOpen ? ".connection-center" : ".utility-center",
+    );
+    if (transient) trapModalTab(event, transient);
+    return;
+  }
   if (event.key === "Escape" && (uiState.connectionOpen || uiState.utilityOpen)) {
     event.preventDefault();
     uiState.connectionOpen = false;
@@ -441,7 +457,7 @@ function utilityCenter(snapshot, kind) {
   const aside = element("aside", "connection-center utility-center");
   aside.id = "utility-center";
   aside.setAttribute("role", "dialog");
-  aside.setAttribute("aria-modal", "false");
+  aside.setAttribute("aria-modal", String(compactTransientModal()));
   aside.setAttribute("aria-labelledby", "utility-center-title");
   const heading = element("div", "connection-center-heading");
   const copy = element("div", "panel-title");
@@ -470,7 +486,7 @@ function connectionCenter(snapshot) {
   const aside = element("aside", "connection-center");
   aside.id = "connection-center";
   aside.setAttribute("role", "dialog");
-  aside.setAttribute("aria-modal", "false");
+  aside.setAttribute("aria-modal", String(compactTransientModal()));
   aside.setAttribute("aria-labelledby", "connection-center-title");
   const heading = element("div", "connection-center-heading");
   const copy = element("div", "panel-title");
@@ -3859,6 +3875,10 @@ function rememberFocusReturn() {
   focusCoordinator.rememberReturnElement();
 }
 
+function compactTransientModal() {
+  return Boolean(compactTransientQuery?.matches);
+}
+
 function rememberNoticeReturn(element = focusCoordinator.currentElement()) {
   if (
     element?.isConnected
@@ -4253,6 +4273,7 @@ function element(tag, className, text) {
 
 return async function disposeProductComponent() {
   window.clearInterval(heartbeatTimer);
+  compactTransientQuery?.removeEventListener?.("change", handleCompactTransientChange);
   document.removeEventListener("keydown", handleKeydown);
   document.removeEventListener("click", handleNoticeDismissalClick, true);
   stopSnapshotInvalidation?.();
