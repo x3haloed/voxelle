@@ -2598,6 +2598,7 @@ function roomTimelineView(snapshot) {
         "aria-label",
         `${ownReaction ? "Remove" : "Add"} ${reaction.emoji} reaction on ${messageContextLabel(message, author.display_name)}`,
       );
+      button.dataset.messageFocusKey = `reaction-chip:${reaction.emoji}`;
       reactions.append(button);
     }
     if (reactions.children.length > 0) content.append(reactions);
@@ -2627,10 +2628,20 @@ function roomTimelineView(snapshot) {
       room: snapshot.home?.room.room_id ?? null,
     });
     thumb.textContent = ownThumb ? "Remove 👍" : "React 👍";
+    thumb.setAttribute(
+      "aria-label",
+      `${ownThumb ? "Remove" : "Add"} 👍 reaction on ${messageContextLabel(message, author.display_name)}`,
+    );
+    thumb.dataset.messageFocusKey = "reaction-action:thumb";
     const pin = commandButton(message.pinned ? "pin.remove" : "pin.add", {
       target_event_id: message.event_id,
       room: snapshot.home?.room.room_id ?? null,
     });
+    pin.setAttribute(
+      "aria-label",
+      `${message.pinned ? "Unpin" : "Pin"} ${messageContextLabel(message, author.display_name)}`,
+    );
+    pin.dataset.messageFocusKey = "pin-action";
     actions.append(
       actionButton("Reply", () => beginReply(message, author.display_name)),
       thumb,
@@ -2697,6 +2708,18 @@ function focusMessageRow(eventId) {
     [...app.querySelectorAll("[data-message-event-id]")]
       .find((row) => row.dataset.messageEventId === eventId)
       ?.focus();
+  });
+}
+
+function focusMessageControl(eventId, focusKey) {
+  window.requestAnimationFrame(() => {
+    const row = [...app.querySelectorAll("[data-message-event-id]")]
+      .find((candidate) => candidate.dataset.messageEventId === eventId);
+    const replacement = focusKey
+      ? [...(row?.querySelectorAll("[data-message-focus-key]") ?? [])]
+        .find((candidate) => candidate.dataset.messageFocusKey === focusKey)
+      : null;
+    (replacement ?? row)?.focus();
   });
 }
 
@@ -3415,6 +3438,7 @@ async function runCommand(command, payload) {
     return;
   }
   const commandReturnElement = focusCoordinator.currentElement();
+  const messageFocusKey = commandReturnElement?.dataset?.messageFocusKey ?? "";
   rememberNoticeReturn(commandReturnElement);
   // Capture before the busy render disables the focused command button; browsers
   // may blur a control as soon as it becomes disabled.
@@ -3591,6 +3615,7 @@ async function runCommand(command, payload) {
       case "pin.add":
       case "pin.remove":
         currentSnapshot = await shell.execute(command, payload);
+        focusMessageControl(payload.target_event_id, messageFocusKey);
         return;
       case "attachment.add":
         currentSnapshot = await shell.execute(command, payload);

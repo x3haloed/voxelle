@@ -461,9 +461,14 @@ directs the person to leave and rejoin with camera; it does not silently request
 new capture or claim that renegotiation succeeded.
 
 Projected reaction and pin state determines whether the visible action invokes
-the add or remove command; the frontend does not guess a toggle result. Message
-deletion is a separate confirmed step that states the retained signed-tombstone
-effect before invoking `message.redact`.
+the add or remove command; the frontend does not guess a toggle result. Because
+the semantic command and listener change after acceptance, reconciliation still
+replaces that control. A separate presentation-only focus key reacquires the
+exact reaction or pin control after the returned snapshot, with the stable
+message row as fallback when removing the last visible reaction removes its
+chip. Repeated reaction and pin controls name the author and bounded message or
+attachment context. Message deletion is a separate confirmed step that states
+the retained signed-tombstone effect before invoking `message.redact`.
 
 Choosing a file does not publish it. The composer first shows a focused review
 of the filename, Rust-enforced size envelope, claimed type, selected channel,

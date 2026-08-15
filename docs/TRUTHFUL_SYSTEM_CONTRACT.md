@@ -620,14 +620,24 @@ name. Channel selection names the public or private channel, private-key
 rotation names its channel, and each message-action disclosure names the author
 plus a bounded text or attachment preview. Member actions name the member, role
 assignment names the role, invite revocation names the displayed expiry, and a
-visible reaction names the exact author/content context. A rendered
-accessibility-tree probe covers public text, mentioned text, attachment-only
-messages, and the populated People surface while the underlying controls
-continue to invoke the existing stable commands and payloads. Escape from that
+visible reaction or pin action names the exact author/content context. A
+rendered accessibility-tree probe covers public text, mentioned text,
+attachment-only messages, and the populated People surface while the
+underlying controls continue to invoke the existing stable commands and
+payloads. Escape from that
 nonmodal panel closes it, restores focus to its People invoker, and projects the
 collapsed state. Deterministic source regressions preserve the contextual
 labels and preview bound. This reduces nonvisual navigation ambiguity but is
 not the actual assistive-technology beta gate.
+
+Accepted reaction and pin toggles also preserve causal keyboard location
+without preserving a stale command listener. Reconciliation replaces the
+control when the Rust-projected action changes from add to remove or back; a
+distinct presentation-only key then focuses the exact successor. Removing the
+last visible reaction falls back to the stable message row when no chip
+survives. Deterministic regressions cover the replacement and contextual
+accessible names; actual assistive-technology behavior remains in the external
+human gate.
 
 Disclosure controls have crossed a broader rendered accessibility gate. More,
 onboarding fallbacks, profile and identity details, customization, signed
