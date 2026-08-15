@@ -650,6 +650,15 @@ Customize, and Product Updates, including expanded-state changes. This remains
 browser accessibility-tree and keyboard evidence, not an actual VoiceOver,
 Narrator, or NVDA claim.
 
+A rendered private-channel probe exposed that blanket disclosure preservation
+also blocked intentional product-driven closure: turning private mode off
+cleared the checkbox while leaving its now-inapplicable options expanded. The
+reconciler now preserves `open` only for native user-owned disclosures and
+honors it for explicitly controlled profile, peer-import, channel, privacy,
+role-member, and role-create forms. Unit coverage proves both sides of that
+boundary, and the repeated probe observed `{checked:false, open:false}`. This is
+rendered presentation evidence, not an authority or assistive-technology claim.
+
 Fresh onboarding has also crossed a rendered system-color and narrow-window
 gate. At 420×700 it keeps create, signed-invite join, and recovery in one
 vertical causal path without document-level horizontal overflow; the manual

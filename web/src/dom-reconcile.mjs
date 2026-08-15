@@ -29,7 +29,8 @@ function compatible(current, desired) {
 
 /** @param {Element} current @param {Element} desired */
 function syncAttributes(current, desired) {
-  const preserveOpen = current.tagName === "DETAILS";
+  const preserveOpen = current.tagName === "DETAILS"
+    && desired.getAttribute("data-sync-open") !== "true";
   const desiredNames = new Set();
   for (const attribute of desired.attributes) {
     desiredNames.add(attribute.name);

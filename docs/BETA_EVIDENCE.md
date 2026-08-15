@@ -218,7 +218,11 @@ fall back to that message row. Close one transient panel with Escape and confirm
 focus returns to its invoking header control with the collapsed state announced.
 Open at least one disclosure with Enter and another with Space. Confirm the
 assistive technology announces each as an actionable control and reports the
-collapsed or expanded state after activation.
+collapsed or expanded state after activation. In channel creation, turn private
+mode on and then off; confirm **Private channel options** closes when its private
+fields no longer apply. Confirm profile, peer-import, channel-create, and
+role-create disclosures close after their successful commands, while unrelated
+user-expanded disclosures stay open across an ordinary refresh.
 
 Resize the supported desktop window to its narrowest practical width during one
 conversation path. Confirm the header actions, selected conversation, composer,

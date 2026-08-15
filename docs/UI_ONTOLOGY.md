@@ -218,6 +218,14 @@ toggle the same native disclosure. The shared presentation helper discovers
 its parent after insertion so hidden or conditional surfaces do not carry a
 second manually coordinated owner reference.
 
+Reconciliation distinguishes native user-owned disclosure state from
+product-controlled disclosure state. Uncontrolled details preserve a person's
+expanded choice across snapshot publication. Profile editing, peer import,
+channel creation and private options, role-member confirmation, and role
+creation explicitly synchronize `open`, so successful completion, cancellation,
+or an inapplicable option can close them. This marker controls presentation only;
+it does not admit a form or alter any semantic command.
+
 When a successful semantic command replaces its initiating surface, the
 coordinator rejects the document root as a meaningful origin and selects a
 causal fallback. Fresh creation, join, or identity restoration focuses recovery

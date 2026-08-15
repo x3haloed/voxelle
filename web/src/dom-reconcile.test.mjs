@@ -115,6 +115,25 @@ test("snapshot publication preserves open details and the active draft control",
   assert.equal(details.childNodes[1].childNodes[0].data, "online");
 });
 
+test("explicitly controlled details accept an authoritative close", () => {
+  const document = { activeElement: null };
+  const root = element(document, "main", "root");
+  const details = element(document, "details", "controlled");
+  details.setAttribute("open", "");
+  root.append(details);
+
+  const desired = element(document, "main", "desired-root");
+  const desiredDetails = element(document, "details", "controlled");
+  desiredDetails.setAttribute("data-sync-open", "true");
+  desired.append(desiredDetails);
+
+  reconcileChildren(root, desired);
+
+  assert.equal(root.childNodes[0], details);
+  assert.equal(details.open, false);
+  assert.equal(details.getAttribute("data-sync-open"), "true");
+});
+
 test("keyed workbench views move without losing their node identity", () => {
   const document = { activeElement: null };
   const root = element(document, "main", "root");

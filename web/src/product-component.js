@@ -1090,6 +1090,7 @@ function profileSummaryView(snapshot) {
   );
 
   const edit = element("details", "advanced-details profile-edit");
+  edit.dataset.syncOpen = "true";
   edit.open = uiState.profileEditOpen;
   edit.addEventListener("toggle", () => {
     uiState.profileEditOpen = edit.open;
@@ -1641,6 +1642,7 @@ function peerTargetView(snapshot, includeActions = false) {
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function peerImportDisclosure(snapshot) {
   const details = element("details", "advanced-details peer-import-disclosure");
+  details.dataset.syncOpen = "true";
   details.open = uiState.peerImportOpen
     || (snapshot.home?.peers.length ?? 0) === 0
     || uiState.peerRecordDraft.trim() !== "";
@@ -2091,6 +2093,7 @@ function channelListView(snapshot) {
 
 function channelCreateDisclosure(snapshot) {
   const create = element("details", "channel-create advanced-details");
+  create.dataset.syncOpen = "true";
   create.open = uiState.channelCreateOpen;
   create.addEventListener("toggle", () => {
     uiState.channelCreateOpen = create.open;
@@ -2111,6 +2114,7 @@ function channelCreateDisclosure(snapshot) {
     labeledInput("Topic", "What belongs here?", uiState.channelTopicDraft, (value) => { uiState.channelTopicDraft = value; }),
   );
   const privacy = element("details", "advanced-details");
+  privacy.dataset.syncOpen = "true";
   privacy.open = uiState.channelPrivateDraft;
   const privacySummary = disclosureSummary("Private channel options");
   const privateToggle = choiceCheckbox(
@@ -2337,7 +2341,9 @@ function roleListView(snapshot) {
     row.append(body);
     if (role.role_id !== "role:everyone") {
       const members = element("details", "advanced-details");
-      members.open = uiState.roleAssignmentDraft?.roleId === role.role_id;
+      const assignmentPending = uiState.roleAssignmentDraft?.roleId === role.role_id;
+      if (assignmentPending) members.dataset.syncOpen = "true";
+      members.open = assignmentPending;
       const memberSummary = disclosureSummary("Manage members");
       memberSummary.setAttribute("aria-label", `Manage members for role ${role.name}`);
       members.append(memberSummary);
@@ -2364,6 +2370,7 @@ function roleListView(snapshot) {
   }
   const create = element("details", "advanced-details");
   create.classList.add("role-create");
+  create.dataset.syncOpen = "true";
   create.open = uiState.roleCreateOpen;
   create.addEventListener("toggle", () => {
     uiState.roleCreateOpen = create.open;
