@@ -3051,7 +3051,12 @@ function roomTimelineView(snapshot) {
     const avatar = element("div", "profile-avatar small", profileInitials(author.display_name));
     const content = element("div", "message-content");
     const meta = element("div", "message-meta");
-    meta.append(element("strong", "", own ? `${author.display_name} · you` : author.display_name));
+    const authorLabel = own ? `${author.display_name} · you` : author.display_name;
+    meta.append(element("strong", "", authorLabel));
+    const via = factOriginViaLabel(message.origin);
+    if (via !== "") {
+      meta.append(element("small", "message-origin muted", `via ${via}`));
+    }
     const timestamp = messageTimestamp(message, snapshot.ui_ontology);
     if (timestamp !== null) {
       const time = element("time", "message-time", timestamp);
@@ -3070,12 +3075,13 @@ function roomTimelineView(snapshot) {
     if (message.reply_count > 0) annotations.append(element("small", "muted", `${message.reply_count} repl${message.reply_count === 1 ? "y" : "ies"}`));
     for (const acknowledgement of message.acknowledgements ?? []) {
       const acknowledgingProfile = profileForPeer(snapshot, acknowledgement.peer_id);
+      const acknowledgementVia = assertionOriginsLabel(acknowledgement.assertions ?? []);
       annotations.append(element(
         "small",
         acknowledgement.result_conflict ? "warning-text" : "muted",
         acknowledgement.result_conflict
           ? `${acknowledgingProfile.display_name} reported conflicting handling results`
-          : `${acknowledgingProfile.display_name} ${acknowledgement.state === "handled" ? "marked handled" : "observed"}`,
+          : `${acknowledgingProfile.display_name}${acknowledgementVia} ${acknowledgement.state === "handled" ? "marked handled" : "observed"}`,
       ));
       for (const resultEventId of acknowledgement.result_event_ids ?? []) {
         const result = snapshot.home?.room.messages.find(
@@ -3099,22 +3105,23 @@ function roomTimelineView(snapshot) {
           && acknowledgement.state === "handled",
       )) continue;
       const continuingProfile = profileForPeer(snapshot, continuation.peer_id);
+      const continuationVia = assertionOriginsLabel(continuation.heads ?? []);
       let label;
       switch (continuation.state) {
         case "continuing":
-          label = `${continuingProfile.display_name} intends to continue until ${formatRecoveryKitSavedTime(continuation.expires_ms)}`;
+          label = `${continuingProfile.display_name}${continuationVia} intends to continue until ${formatRecoveryKitSavedTime(continuation.expires_ms)}`;
           break;
         case "released":
-          label = `${continuingProfile.display_name} released this exchange`;
+          label = `${continuingProfile.display_name}${continuationVia} released this exchange`;
           break;
         case "declined":
-          label = `${continuingProfile.display_name} declined to continue`;
+          label = `${continuingProfile.display_name}${continuationVia} declined to continue`;
           break;
         case "conflict":
-          label = `${continuingProfile.display_name} has conflicting continuation updates`;
+          label = `${continuingProfile.display_name}${continuationVia} has conflicting continuation updates`;
           break;
         default:
-          label = `${continuingProfile.display_name}'s continuation window passed; current intent is unknown`;
+          label = `${continuingProfile.display_name}${continuationVia} has no recent continuation update; current intent is unknown`;
           break;
       }
       annotations.append(element(
@@ -3275,6 +3282,28 @@ function roomTimelineView(snapshot) {
   }
   fragment.append(context, list);
   return fragment;
+}
+
+function factOriginViaLabel(origin) {
+  if (!origin?.session_id) return "";
+  if (typeof origin.display_label === "string" && origin.display_label.trim() !== "") {
+    return origin.display_label.trim();
+  }
+  switch (origin.surface_protocol) {
+    case "native_webview": return "Desktop";
+    case "inhabitant": return "Inhabitant session";
+    case "cli": return "CLI session";
+    default: return "Certified session";
+  }
+}
+
+function assertionOriginsLabel(assertions) {
+  const labels = [...new Set(assertions
+    .map((assertion) => factOriginViaLabel(assertion.origin))
+    .filter((label) => label !== ""))];
+  if (labels.length === 0) return "";
+  if (labels.length === 1) return ` via ${labels[0]}`;
+  return ` via ${labels.length} sessions`;
 }
 
 function messageDeleteConfirmation(message, messageLabel, snapshot) {

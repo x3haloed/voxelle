@@ -261,6 +261,8 @@ An Event is a JSON object:
 - `ts` (number): Unix ms at author
 - `kind` (string): event type (see below)
 - `prev` (array of strings): zero or more parent event_ids (for partial order)
+- `origin` (object, optional): device-certified local surface route provenance
+  as specified below; this grants no membership or permission
 - `body` (object): kind-specific
 - `sig` (string): Base64 signature by the Device key
 
@@ -384,7 +386,30 @@ Netstrings, in order:
 9. `kind`
 10. `count(prev)`
 11. each `prev` entry, in order
-12. `body_jcs` (JCS bytes; `{}` if missing)
+12. `origin_jcs` (JCS bytes; JSON `null` if missing)
+13. `body_jcs` (JCS bytes; `{}` if missing)
+
+**Optional fact origin**
+
+`origin` contains `session_cert` and `request_id`. `request_id` is 8--128
+non-whitespace bytes and identifies one request within that certified route.
+The certificate contains:
+
+- `v`: `1`
+- `session_id`: `"os:" + base64url(sha256(random_32_byte_capability))`
+- `surface_protocol`: `native_webview` | `inhabitant` | `cli`
+- `display_label`: optional trimmed short text, at most 80 characters
+- `issuer_peer_id`, `issuer_device_id`
+- `issued_ms`, `expires_ms`
+- `device_sig`: the issuing device signature over the preceding fields in
+  their listed order under the domain `voxelle/origin-session-cert/v1`
+
+The capability itself is local authentication material and MUST NOT appear in
+the event or certificate. This origin proves only that the author device
+certified a local route and signed the resulting fact. It does not prove a
+natural person's identity, independently authenticate an actor, or grant any
+protocol authority. For private rooms, origin exists only inside the encrypted
+semantic inner event; an outer `ROOM_ENCRYPTED` carrier MUST omit it.
 
 **Peer record signature input**
 
@@ -597,6 +622,11 @@ Upon receiving an Event, peers **MUST**:
    - compute signature input (per §7.3.2) and verify `sig` under the Device public key corresponding to `author_device_pub`
 6. Validate `event_id`:
    - recompute `event_id` from the signature input bytes and require it matches
+7. If `origin` is present, validate its syntax and bounds, require certificate
+   issuer IDs to equal the Event author principal/device, verify `device_sig`
+   under `author_device_pub`, and require `ts` to fall within the certificate's
+   inclusive issuance/expiry interval. Successful origin validation MUST NOT
+   satisfy or bypass any membership, permission, delegation, or semantic rule.
 
 Peers **MUST** store valid Events even if some referenced ancestors in `prev` are missing.
 

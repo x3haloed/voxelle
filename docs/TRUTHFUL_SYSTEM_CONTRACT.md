@@ -839,6 +839,35 @@ acknowledgement, continuation, unread, and resident commit remained distinct.
 This is same-machine loopback evidence; excluded-retainer private paging,
 larger pagination, crash during multi-room commit, and external transport
 remain bounded gaps.
+
+Fact provenance now preserves four distinct identities. A principal owns
+membership and permissions; an authorized device signs and admits ordinary
+facts; an optional origin session identifies a device-certified local route;
+and a resident observation consumer names only local delivery progress. The
+origin certificate and enclosing event signature bind a stable secret-derived
+session ID, surface protocol (`native_webview`, `inhabitant`, or `cli`), bounded
+display label, device/principal issuer, validity window, and bounded request ID.
+Origin never grants membership, permissions, private keys, correctness, or
+task authority and does not prove a natural human, an AI, or the truth of its
+label. The certifying device can fabricate its own route assertions.
+
+The inhabitant surface opens a route with `resident.origin.open` using a stable
+client instance ID, label, and caller-held random 32-byte secret. Only a
+domain-separated secret hash is persisted in the owner-local registry; the
+plaintext secret is neither returned nor stored. Subsequent
+`message.send`, `message.acknowledge`, and `message.continuation.update`
+requests require the returned origin ID and original secret in dedicated
+headers. The native WebView uses the same Rust-owned certificate path with a
+`native_webview` route. Private-room provenance is serialized only inside the
+encrypted semantic event, never on its ciphertext carrier. Core, app, and
+sidecar tests establish these local and cryptographic mechanics. Source-blind
+rehearsals then carried two distinct inhabitant sessions on one principal and
+device through ordinary messages, a threaded result, continuation, handled
+assertion, remote public/private synchronization, simultaneous restart, and
+durable resident redelivery. Missing and invalid origin credentials retained
+one ActionResult error envelope. Raw private ciphertext is intentionally absent
+from the inhabitant API, so outer-envelope non-disclosure remains storage
+inspection evidence rather than a source-blind API claim.
 Episodic agent actions no longer require repository-source inspection to learn
 their payload shape. The same Rust-projected `UiCommand` records used by the
 WebView now name each shell command's request DTO, while empty-payload and

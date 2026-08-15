@@ -17,6 +17,7 @@ use futures_util::stream;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
     convert::Infallible,
     net::{IpAddr, SocketAddr},
@@ -35,9 +36,18 @@ use tokio::{
 };
 use tracing::info;
 use voxelle_app::{
-    resolve_home_root, shell_command_ids, shell_contract_typescript, ServiceActivityItem,
-    ShellError, ShellRecovery, ShellSnapshotView, ShellState,
+    resolve_home_root, shell_command_ids, shell_contract_typescript, OriginContext,
+    ServiceActivityItem, ShellError, ShellRecovery, ShellSnapshotView, ShellState,
 };
+
+const ORIGIN_ID_HEADER: &str = "voxelle-origin-id";
+const ORIGIN_SECRET_HEADER: &str = "voxelle-origin-secret";
+const ORIGIN_REGISTRY_FILE: &str = ".voxelle-inhabitant-origins.json";
+const ORIGIN_REQUIRED_COMMANDS: &[&str] = &[
+    "message.send",
+    "message.acknowledge",
+    "message.continuation.update",
+];
 
 #[derive(Debug, Parser)]
 #[command(
@@ -64,6 +74,7 @@ struct AppState {
     command_gate: Arc<Mutex<()>>,
     event_slots: Arc<Semaphore>,
     snapshot_changes: broadcast::Sender<u64>,
+    origin_registry_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +92,7 @@ struct DiscoveryView {
     authorization: String,
     capabilities: CapabilitiesView,
     command_transport: CommandTransportView,
+    origin_authentication: OriginAuthenticationView,
     command_semantics: Vec<CommandSemanticsView>,
     actionability_semantics: ActionabilitySemanticsView,
     resident_observation_semantics: ResidentObservationSemanticsView,
@@ -92,8 +104,52 @@ struct CommandTransportView {
     method: String,
     content_type: String,
     authorization_header: String,
+    origin_id_header: String,
+    origin_secret_header: String,
     request_body: String,
     response_body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OriginAuthenticationView {
+    meaning: String,
+    open_command: String,
+    secret_requirement: String,
+    retry: String,
+    required_commands: Vec<String>,
+    missing_or_invalid: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct OpenResidentOriginRequest {
+    client_instance_id: String,
+    secret: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ResidentOriginSessionView {
+    origin_id: String,
+    client_instance_id: String,
+    label: String,
+    device_id: String,
+    created_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct OriginRegistry {
+    v: u8,
+    sessions: Vec<OriginSessionRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OriginSessionRecord {
+    origin_id: String,
+    client_instance_id: String,
+    secret_hash: String,
+    label: String,
+    device_id: String,
+    created_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +214,7 @@ async fn main() -> Result<()> {
     let base_url = format!("http://{addr}");
     let bearer_token = new_bearer_token();
     let discovery_view = DiscoveryView::new(home.clone(), base_url, &bearer_token);
+    let origin_registry_path = home.join(ORIGIN_REGISTRY_FILE);
     write_discovery_file(cli.discovery_file.as_deref(), &home, &discovery_view)
         .context("write discovery file")?;
 
@@ -170,6 +227,7 @@ async fn main() -> Result<()> {
         command_gate: Arc::new(Mutex::new(())),
         event_slots: Arc::new(Semaphore::new(8)),
         snapshot_changes,
+        origin_registry_path,
     });
     let app = Router::new()
         .route("/inhabitant/v0/discovery", get(get_discovery))
@@ -210,7 +268,11 @@ impl DiscoveryView {
             pid: std::process::id(),
             started_at_unix_ms: unix_ms(),
             capabilities: CapabilitiesView {
-                commands: shell_command_ids(),
+                commands: {
+                    let mut commands = shell_command_ids();
+                    commands.push("resident.origin.open".to_string());
+                    commands
+                },
                 events: vec![
                     "service.ready".to_string(),
                     "snapshot.changed".to_string(),
@@ -221,10 +283,25 @@ impl DiscoveryView {
                 method: "POST".to_string(),
                 content_type: "application/json".to_string(),
                 authorization_header: "Authorization: Bearer <per-launch token>".to_string(),
+                origin_id_header: "Voxelle-Origin-Id: <origin_id>".to_string(),
+                origin_secret_header: "Voxelle-Origin-Secret: <caller secret>".to_string(),
                 request_body: "Direct JSON value matching the command payload_type; use {} for empty payloads".to_string(),
                 response_body: "ActionResult JSON with ok, command_id, snapshot, activity_items, error, and recovery; snapshot is the compact coordination projection for ordinary product commands and the command-specific consumer/page/commit DTO for resident.observation commands".to_string(),
             },
+            origin_authentication: OriginAuthenticationView {
+                meaning: "An origin session authenticates which local inhabitant session submitted a command through this authorized device; it is not a principal, member, device authority, role, or proof of a natural person or AI".to_string(),
+                open_command: "resident.origin.open".to_string(),
+                secret_requirement: "caller-generated 32 random bytes encoded as unpadded base64url; Voxelle never returns or persists the plaintext secret".to_string(),
+                retry: "reuse the identical client_instance_id, secret, and label to recover the same origin_id after response loss or process restart; a changed label is rejected and a wrong secret never identifies the existing session".to_string(),
+                required_commands: ORIGIN_REQUIRED_COMMANDS.iter().map(|value| (*value).to_string()).collect(),
+                missing_or_invalid: "missing credentials return origin_required; unknown origins and wrong secrets return the same origin_authentication_failed response".to_string(),
+            },
             command_semantics: vec![
+                CommandSemanticsView {
+                    command_id: "resident.origin.open".to_string(),
+                    retry: "idempotent only for the identical client_instance_id, caller-held 32-byte secret, and label; exact retry returns the same origin_id across response loss or sidecar restart".to_string(),
+                    observation: "creates or reopens a device-local authenticated inhabitant origin; the secret is never returned or persisted in plaintext, the session grants no protocol authority, and an incorrect secret receives the same failure as an unknown origin".to_string(),
+                },
                 CommandSemanticsView {
                     command_id: "message.send".to_string(),
                     retry: "client_request_id is 8 to 128 non-whitespace characters; reuse the same ID only for the identical principal, device, room, and payload; a conflicting reuse is rejected".to_string(),
@@ -376,6 +453,7 @@ async fn coordination_snapshot(State(state): State<Arc<AppState>>) -> impl IntoR
 async fn command(
     State(state): State<Arc<AppState>>,
     Path(command_id): Path<String>,
+    headers: HeaderMap,
     Json(payload): Json<Value>,
 ) -> impl IntoResponse {
     let Ok(Ok(_permit)) =
@@ -387,9 +465,124 @@ async fn command(
     else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
+    if command_id == "resident.origin.open" {
+        let Some(device_id) = state.shell.current_device_id().await else {
+            drop(command_guard);
+            return origin_error_response(
+                StatusCode::BAD_REQUEST,
+                &command_id,
+                "origin_unavailable",
+                "Voxelle cannot certify an origin session before this home has a device identity.",
+                "Initialize or restore the home, then retry the identical resident.origin.open request.",
+            );
+        };
+        let response = match serde_json::from_value::<OpenResidentOriginRequest>(payload) {
+            Ok(request) => match open_origin_session(&state.origin_registry_path, &device_id, request) {
+                Ok(session) => (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "ok": true,
+                        "command_id": command_id,
+                        "snapshot": session,
+                        "activity_items": [],
+                        "error": null,
+                        "recovery": null
+                    })),
+                )
+                    .into_response(),
+                Err(OriginOpenError::Input) => origin_error_response(
+                    StatusCode::BAD_REQUEST,
+                    &command_id,
+                    "origin_input_invalid",
+                    "The origin session request is invalid.",
+                    "Use an 8–128 character client_instance_id, a 1–80 character label, and a caller-generated 32-byte unpadded base64url secret.",
+                ),
+                Err(OriginOpenError::Authentication) => origin_authentication_failed(&command_id),
+                Err(OriginOpenError::Internal) => origin_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &command_id,
+                    "origin_registry_failed",
+                    "Voxelle could not access the local origin registry.",
+                    "Retry once; if it repeats, retain the service logs for diagnosis.",
+                ),
+            },
+            Err(_) => origin_error_response(
+                StatusCode::BAD_REQUEST,
+                &command_id,
+                "origin_input_invalid",
+                "The origin session request is invalid.",
+                "Send the exact OpenResidentOriginRequest contract.",
+            ),
+        };
+        drop(command_guard);
+        return response;
+    }
+    let origin = if ORIGIN_REQUIRED_COMMANDS.contains(&command_id.as_str()) {
+        let Some(device_id) = state.shell.current_device_id().await else {
+            drop(command_guard);
+            return origin_error_response(
+                StatusCode::BAD_REQUEST,
+                &command_id,
+                "origin_unavailable",
+                "Voxelle cannot authenticate an origin session before this home has a device identity.",
+                "Initialize or restore the home, then open an origin session.",
+            );
+        };
+        let (capability, label) = match authenticate_origin(
+            &state.origin_registry_path,
+            &device_id,
+            &headers,
+        ) {
+            Ok(value) => value,
+            Err(OriginAuthError::Missing) => {
+                drop(command_guard);
+                return origin_error_response(
+                    StatusCode::UNAUTHORIZED,
+                    &command_id,
+                    "origin_required",
+                    "This command requires an authenticated origin session.",
+                    "Call resident.origin.open, then send Voxelle-Origin-Id and Voxelle-Origin-Secret headers.",
+                );
+            }
+            Err(OriginAuthError::Failed) => {
+                drop(command_guard);
+                return origin_authentication_failed(&command_id);
+            }
+            Err(OriginAuthError::Internal) => {
+                drop(command_guard);
+                return origin_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    &command_id,
+                    "origin_registry_failed",
+                    "Voxelle could not access the local origin registry.",
+                    "Retry once; if it repeats, retain the service logs for diagnosis.",
+                );
+            }
+        };
+        let request_id = format!("inhabitant-{}", new_bearer_token());
+        match state
+            .shell
+            .issue_inhabitant_origin_context(&capability, label, request_id)
+            .await
+        {
+            Ok(origin) => Some(origin),
+            Err(_) => {
+                drop(command_guard);
+                return origin_error_response(
+                    StatusCode::BAD_REQUEST,
+                    &command_id,
+                    "origin_unavailable",
+                    "Voxelle could not certify this origin session for the current home.",
+                    "Initialize or restore the home, then retry with the same origin credentials.",
+                );
+            }
+        }
+    } else {
+        None
+    };
     let Ok(result) = time::timeout(
         Duration::from_secs(30),
-        run_command(&state.shell, &command_id, payload),
+        run_command(&state.shell, &command_id, payload, origin),
     )
     .await
     else {
@@ -407,7 +600,12 @@ async fn command(
     (status, Json(result)).into_response()
 }
 
-async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionResult {
+async fn run_command(
+    shell: &ShellState,
+    command_id: &str,
+    payload: Value,
+    origin: Option<OriginContext>,
+) -> ActionResult {
     let activity_cursor = shell.activity_cursor().await;
     if let Some(result) = shell
         .execute_resident_command(command_id, payload.clone())
@@ -433,7 +631,14 @@ async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> Ac
             },
         };
     }
-    let result = shell.execute_serialized_command(command_id, payload).await;
+    let result = match origin {
+        Some(origin) => {
+            shell
+                .execute_serialized_command_with_origin(command_id, payload, origin)
+                .await
+        }
+        None => shell.execute_serialized_command(command_id, payload).await,
+    };
     let activity_items = match &result {
         Ok(snapshot) => snapshot
             .service_activity
@@ -482,6 +687,232 @@ fn coordination_snapshot_value(snapshot: ShellSnapshotView, current_sequence: u6
         );
     }
     value
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OriginOpenError {
+    Input,
+    Authentication,
+    Internal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OriginAuthError {
+    Missing,
+    Failed,
+    Internal,
+}
+
+fn open_origin_session(
+    registry_path: &FsPath,
+    device_id: &str,
+    request: OpenResidentOriginRequest,
+) -> std::result::Result<ResidentOriginSessionView, OriginOpenError> {
+    if request.client_instance_id.len() < 8
+        || request.client_instance_id.len() > 128
+        || request.client_instance_id.chars().any(char::is_whitespace)
+        || request.label.trim() != request.label
+        || request.label.is_empty()
+        || request.label.chars().count() > 80
+    {
+        return Err(OriginOpenError::Input);
+    }
+    let capability = decode_origin_secret(&request.secret).ok_or(OriginOpenError::Input)?;
+    let secret_hash = origin_secret_hash(&capability);
+    let origin_id = origin_id(&capability);
+    let mut registry =
+        load_origin_registry(registry_path).map_err(|_| OriginOpenError::Internal)?;
+    if let Some(existing) = registry
+        .sessions
+        .iter()
+        .find(|session| session.client_instance_id == request.client_instance_id)
+    {
+        if existing.device_id != device_id
+            || !constant_time_eq(existing.secret_hash.as_bytes(), secret_hash.as_bytes())
+        {
+            return Err(OriginOpenError::Authentication);
+        }
+        if existing.label != request.label || existing.origin_id != origin_id {
+            return Err(OriginOpenError::Input);
+        }
+        return Ok(existing.view());
+    }
+    let record = OriginSessionRecord {
+        origin_id,
+        client_instance_id: request.client_instance_id,
+        secret_hash,
+        label: request.label,
+        device_id: device_id.to_string(),
+        created_ms: u64::try_from(unix_ms()).unwrap_or(u64::MAX),
+    };
+    let view = record.view();
+    registry.v = 1;
+    registry.sessions.push(record);
+    registry
+        .sessions
+        .sort_by(|left, right| left.client_instance_id.cmp(&right.client_instance_id));
+    write_origin_registry(registry_path, &registry).map_err(|_| OriginOpenError::Internal)?;
+    Ok(view)
+}
+
+impl OriginSessionRecord {
+    fn view(&self) -> ResidentOriginSessionView {
+        ResidentOriginSessionView {
+            origin_id: self.origin_id.clone(),
+            client_instance_id: self.client_instance_id.clone(),
+            label: self.label.clone(),
+            device_id: self.device_id.clone(),
+            created_ms: self.created_ms,
+        }
+    }
+}
+
+fn authenticate_origin(
+    registry_path: &FsPath,
+    device_id: &str,
+    headers: &HeaderMap,
+) -> std::result::Result<([u8; 32], String), OriginAuthError> {
+    let Some(origin_id) = headers
+        .get(ORIGIN_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Err(OriginAuthError::Missing);
+    };
+    let Some(secret) = headers
+        .get(ORIGIN_SECRET_HEADER)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return Err(OriginAuthError::Missing);
+    };
+    let capability = decode_origin_secret(secret).ok_or(OriginAuthError::Failed)?;
+    let secret_hash = origin_secret_hash(&capability);
+    let registry = load_origin_registry(registry_path).map_err(|_| OriginAuthError::Internal)?;
+    let record = registry
+        .sessions
+        .iter()
+        .find(|session| session.origin_id == origin_id && session.device_id == device_id)
+        .ok_or(OriginAuthError::Failed)?;
+    if !constant_time_eq(record.secret_hash.as_bytes(), secret_hash.as_bytes()) {
+        return Err(OriginAuthError::Failed);
+    }
+    Ok((capability, record.label.clone()))
+}
+
+fn decode_origin_secret(secret: &str) -> Option<[u8; 32]> {
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(secret)
+        .ok()?;
+    decoded.try_into().ok()
+}
+
+fn origin_secret_hash(capability: &[u8; 32]) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"voxelle-inhabitant-origin-secret-v1\0");
+    digest.update(capability);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest.finalize())
+}
+
+fn origin_id(capability: &[u8; 32]) -> String {
+    format!(
+        "os:{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(capability))
+    )
+}
+
+fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right)
+        .fold(0_u8, |difference, (left, right)| {
+            difference | (left ^ right)
+        })
+        == 0
+}
+
+fn load_origin_registry(path: &FsPath) -> Result<OriginRegistry> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).context("decode local origin registry"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(OriginRegistry {
+            v: 1,
+            sessions: Vec::new(),
+        }),
+        Err(error) => Err(error).context("read local origin registry"),
+    }
+}
+
+fn write_origin_registry(path: &FsPath, registry: &OriginRegistry) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create origin registry parent {}", parent.display()))?;
+    }
+    if std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        anyhow::bail!("refusing symlink origin registry {}", path.display());
+    }
+    let temporary = path.with_extension(format!(
+        "tmp-{}-{}",
+        std::process::id(),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 9]>())
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    use std::io::Write as _;
+    let mut file = options.open(&temporary).context("create origin registry")?;
+    file.write_all(&serde_json::to_vec_pretty(registry)?)
+        .context("write origin registry")?;
+    file.sync_all().context("sync origin registry")?;
+    #[cfg(windows)]
+    if path.exists() {
+        std::fs::remove_file(path).context("remove prior origin registry")?;
+    }
+    if let Err(error) = std::fs::rename(&temporary, path) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error).context("replace origin registry");
+    }
+    Ok(())
+}
+
+fn origin_error_response(
+    status: StatusCode,
+    command_id: &str,
+    code: &'static str,
+    message: &'static str,
+    recovery_message: &'static str,
+) -> axum::response::Response {
+    (
+        status,
+        Json(serde_json::json!({
+            "ok": false,
+            "command_id": command_id,
+            "snapshot": null,
+            "activity_items": [],
+            "error": {
+                "message": message,
+                "recovery": "needs_input",
+                "recovery_message": recovery_message,
+                "detail": code
+            },
+            "recovery": "needs_input",
+            "code": code
+        })),
+    )
+        .into_response()
+}
+
+fn origin_authentication_failed(command_id: &str) -> axum::response::Response {
+    origin_error_response(
+        StatusCode::FORBIDDEN,
+        command_id,
+        "origin_authentication_failed",
+        "The origin session credentials are invalid.",
+        "Use the original caller-held secret or open a distinct origin session with a new client_instance_id.",
+    )
 }
 
 async fn events(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -686,6 +1117,17 @@ async fn shutdown_signal() {
 mod tests {
     use super::*;
 
+    fn test_secret(byte: u8) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([byte; 32])
+    }
+
+    fn origin_headers(origin_id: &str, secret: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(ORIGIN_ID_HEADER, origin_id.parse().expect("origin id"));
+        headers.insert(ORIGIN_SECRET_HEADER, secret.parse().expect("origin secret"));
+        headers
+    }
+
     #[test]
     fn authorization_requires_exact_bearer_token() {
         let mut headers = HeaderMap::new();
@@ -718,11 +1160,227 @@ mod tests {
         assert_eq!(decoded.len(), 32);
     }
 
+    #[test]
+    fn origin_open_is_persistent_idempotent_and_never_stores_plaintext_secret() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(ORIGIN_REGISTRY_FILE);
+        let secret = test_secret(7);
+        let request = OpenResidentOriginRequest {
+            client_instance_id: "resident-instance-a".to_string(),
+            secret: secret.clone(),
+            label: "Resident A".to_string(),
+        };
+        let opened = open_origin_session(&path, "device:test", request.clone()).expect("open");
+        let retried = open_origin_session(&path, "device:test", request).expect("retry");
+        assert_eq!(opened, retried);
+        assert_eq!(opened.origin_id, origin_id(&[7; 32]));
+
+        let persisted = std::fs::read_to_string(&path).expect("registry");
+        assert!(!persisted.contains(&secret));
+        assert!(!persisted.contains("BwcHBwcH"));
+        assert!(persisted.contains("secret_hash"));
+
+        let headers = origin_headers(&opened.origin_id, &secret);
+        let (capability, label) =
+            authenticate_origin(&path, "device:test", &headers).expect("restart auth");
+        assert_eq!(capability, [7; 32]);
+        assert_eq!(label, "Resident A");
+    }
+
+    #[test]
+    fn origin_authentication_is_generic_for_wrong_or_unknown_credentials() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(ORIGIN_REGISTRY_FILE);
+        let secret = test_secret(8);
+        let opened = open_origin_session(
+            &path,
+            "device:test",
+            OpenResidentOriginRequest {
+                client_instance_id: "resident-instance-b".to_string(),
+                secret: secret.clone(),
+                label: "Build resident".to_string(),
+            },
+        )
+        .expect("open");
+        assert_eq!(
+            authenticate_origin(&path, "device:test", &HeaderMap::new()),
+            Err(OriginAuthError::Missing)
+        );
+        assert_eq!(
+            authenticate_origin(
+                &path,
+                "device:test",
+                &origin_headers(&opened.origin_id, &test_secret(9))
+            ),
+            Err(OriginAuthError::Failed)
+        );
+        assert_eq!(
+            authenticate_origin(&path, "device:test", &origin_headers("os:unknown", &secret)),
+            Err(OriginAuthError::Failed)
+        );
+        assert_eq!(
+            authenticate_origin(
+                &path,
+                "device:rotated",
+                &origin_headers(&opened.origin_id, &secret)
+            ),
+            Err(OriginAuthError::Failed)
+        );
+        assert_eq!(
+            open_origin_session(
+                &path,
+                "device:test",
+                OpenResidentOriginRequest {
+                    client_instance_id: "resident-instance-b".to_string(),
+                    secret: test_secret(9),
+                    label: "Build resident".to_string(),
+                }
+            ),
+            Err(OriginOpenError::Authentication)
+        );
+        assert!(ORIGIN_REQUIRED_COMMANDS.contains(&"message.send"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_origin_is_signed_and_projected_on_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let registry_path = home.join(ORIGIN_REGISTRY_FILE);
+        let shell = ShellState::new(&home);
+        let initialized = run_command(
+            &shell,
+            "home.init",
+            serde_json::json!({"default_room": null}),
+            None,
+        )
+        .await;
+        assert!(initialized.ok);
+        let secret = test_secret(10);
+        let opened = open_origin_session(
+            &registry_path,
+            &shell.current_device_id().await.expect("device"),
+            OpenResidentOriginRequest {
+                client_instance_id: "resident-projection".to_string(),
+                secret: secret.clone(),
+                label: "Projection resident".to_string(),
+            },
+        )
+        .expect("open");
+        let (capability, label) = authenticate_origin(
+            &registry_path,
+            &shell.current_device_id().await.expect("device"),
+            &origin_headers(&opened.origin_id, &secret),
+        )
+        .expect("authenticate");
+        let origin = shell
+            .issue_inhabitant_origin_context(
+                &capability,
+                label,
+                "projection-request-001".to_string(),
+            )
+            .await
+            .expect("certify");
+        let sent = run_command(
+            &shell,
+            "message.send",
+            serde_json::json!({
+                "text": "attributed",
+                "room": null,
+                "mentions": [],
+                "thread_root_event_id": null,
+                "client_request_id": "projection-message-001"
+            }),
+            Some(origin),
+        )
+        .await;
+        assert!(sent.ok);
+        let message = &sent.snapshot.expect("snapshot")["home"]["room"]["messages"][0];
+        assert_eq!(message["origin"]["session_id"], opened.origin_id);
+        assert_eq!(message["origin"]["surface_protocol"], "inhabitant");
+        assert_eq!(message["origin"]["display_label"], "Projection resident");
+        assert_eq!(message["origin"]["request_id"], "projection-request-001");
+    }
+
+    #[tokio::test]
+    async fn bearer_only_semantic_mutation_is_rejected_before_dispatch() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let bearer = "test-bearer";
+        let discovery = DiscoveryView::new(home.clone(), "http://127.0.0.1:1".to_string(), bearer);
+        let (snapshot_changes, snapshot_invalidated) = snapshot_change_channel();
+        let shell = Arc::new(ShellState::new_with_notifier(&home, snapshot_invalidated));
+        assert!(
+            run_command(
+                &shell,
+                "home.init",
+                serde_json::json!({"default_room": null}),
+                None,
+            )
+            .await
+            .ok
+        );
+        let state = Arc::new(AppState {
+            shell,
+            discovery,
+            bearer_token: Arc::from(bearer),
+            request_slots: Arc::new(Semaphore::new(8)),
+            command_gate: Arc::new(Mutex::new(())),
+            event_slots: Arc::new(Semaphore::new(8)),
+            snapshot_changes,
+            origin_registry_path: home.join(ORIGIN_REGISTRY_FILE),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer test-bearer".parse().expect("bearer"),
+        );
+        let response = command(
+            State(state),
+            Path("message.send".to_string()),
+            headers,
+            Json(serde_json::json!({
+                "text": "must not dispatch",
+                "room": null,
+                "mentions": [],
+                "thread_root_event_id": null,
+                "client_request_id": "missing-origin-001"
+            })),
+        )
+        .await
+        .into_response();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn discovery_names_origin_transport_and_required_commands_exactly() {
+        let view = DiscoveryView::new(
+            PathBuf::from("/tmp/example"),
+            "http://127.0.0.1:1".to_string(),
+            "bearer",
+        );
+        assert_eq!(
+            view.origin_authentication.required_commands,
+            ORIGIN_REQUIRED_COMMANDS
+        );
+        assert!(view
+            .capabilities
+            .commands
+            .contains(&"resident.origin.open".to_string()));
+        assert!(view
+            .command_transport
+            .origin_id_header
+            .starts_with("Voxelle-Origin-Id"));
+        assert!(view
+            .command_transport
+            .origin_secret_header
+            .starts_with("Voxelle-Origin-Secret"));
+    }
+
     #[tokio::test]
     async fn action_result_reuses_the_shell_recovery_classification() {
         let dir = tempfile::tempdir().expect("tempdir");
         let shell = ShellState::new(dir.path().join("home"));
-        let result = run_command(&shell, "not_a_command", serde_json::json!({})).await;
+        let result = run_command(&shell, "not_a_command", serde_json::json!({}), None).await;
         assert_eq!(result.recovery, Some(ShellRecovery::InternalError));
         assert_eq!(
             result.error.expect("structured error").recovery,
@@ -733,6 +1391,7 @@ mod tests {
             &shell,
             "home.init",
             serde_json::json!({ "default_room": null }),
+            None,
         )
         .await;
         assert!(initialized.ok);
@@ -750,7 +1409,7 @@ mod tests {
             .expect("initialization activity")
             .id;
 
-        let stopped = run_command(&shell, "runtime.goOffline", serde_json::json!({})).await;
+        let stopped = run_command(&shell, "runtime.goOffline", serde_json::json!({}), None).await;
         assert_eq!(stopped.activity_items.len(), 1);
         assert_eq!(stopped.activity_items[0].summary, "service stopped");
         assert!(stopped.activity_items[0].id > initialized_last_id);
@@ -759,6 +1418,7 @@ mod tests {
             &shell,
             "message.search",
             serde_json::json!({ "query": " ", "room": null, "limit": 10 }),
+            None,
         )
         .await;
         assert_eq!(input.recovery, Some(ShellRecovery::NeedsInput));

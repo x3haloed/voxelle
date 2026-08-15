@@ -544,6 +544,33 @@ pub struct DelegationCertV1 {
     pub sig: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OriginSurfaceProtocolV1 {
+    NativeWebview,
+    Inhabitant,
+    Cli,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OriginSessionCertV1 {
+    pub v: u8,
+    pub session_id: String,
+    pub surface_protocol: OriginSurfaceProtocolV1,
+    pub display_label: Option<String>,
+    pub issuer_peer_id: String,
+    pub issuer_device_id: String,
+    pub issued_ms: i64,
+    pub expires_ms: i64,
+    pub device_sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FactOriginV1 {
+    pub session_cert: OriginSessionCertV1,
+    pub request_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventV1 {
     pub v: u8,
@@ -556,6 +583,8 @@ pub struct EventV1 {
     pub created_ms: i64,
     pub kind: String,
     pub parents: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<FactOriginV1>,
     pub body: serde_json::Value,
     pub sig: String,
 }
@@ -1000,6 +1029,118 @@ pub fn validate_delegation_at(
     .context("delegation signature invalid")
 }
 
+const MAX_ORIGIN_DISPLAY_LABEL_CHARS: usize = 80;
+const MIN_ORIGIN_REQUEST_ID_BYTES: usize = 8;
+const MAX_ORIGIN_REQUEST_ID_BYTES: usize = 128;
+
+pub fn create_origin_session_cert(
+    identity: &PeerIdentity,
+    session_capability: &[u8; 32],
+    surface_protocol: OriginSurfaceProtocolV1,
+    display_label: Option<String>,
+    issued_ms: i64,
+    expires_ms: i64,
+) -> Result<OriginSessionCertV1> {
+    if issued_ms > expires_ms {
+        return Err(anyhow!(
+            "origin session certificate expires before issuance"
+        ));
+    }
+    validate_origin_display_label(display_label.as_deref())?;
+    let unsigned = OriginSessionCertUnsigned {
+        v: 1,
+        session_id: format!("os:{}", base64url_sha256(session_capability)),
+        surface_protocol,
+        display_label,
+        issuer_peer_id: identity.peer_id.clone(),
+        issuer_device_id: identity.device.id.clone(),
+        issued_ms,
+        expires_ms,
+    };
+    let device_sig = identity
+        .device
+        .sign(&origin_session_cert_signature_input(&unsigned)?);
+    Ok(OriginSessionCertV1 {
+        v: unsigned.v,
+        session_id: unsigned.session_id,
+        surface_protocol: unsigned.surface_protocol,
+        display_label: unsigned.display_label,
+        issuer_peer_id: unsigned.issuer_peer_id,
+        issuer_device_id: unsigned.issuer_device_id,
+        issued_ms: unsigned.issued_ms,
+        expires_ms: unsigned.expires_ms,
+        device_sig,
+    })
+}
+
+fn validate_fact_origin_at(
+    origin: &FactOriginV1,
+    event: &EventV1,
+    device_spki: &[u8],
+) -> Result<()> {
+    let cert = &origin.session_cert;
+    if cert.v != 1 {
+        return Err(anyhow!("origin session certificate v must be 1"));
+    }
+    if cert.issuer_peer_id != event.author_peer_id {
+        return Err(anyhow!("origin session issuer peer mismatch"));
+    }
+    if cert.issuer_device_id != event.author_device_id {
+        return Err(anyhow!("origin session issuer device mismatch"));
+    }
+    if cert.issued_ms > cert.expires_ms {
+        return Err(anyhow!(
+            "origin session certificate expires before issuance"
+        ));
+    }
+    if event.created_ms < cert.issued_ms || event.created_ms > cert.expires_ms {
+        return Err(anyhow!(
+            "origin session certificate is not valid at event creation"
+        ));
+    }
+    validate_origin_session_id(&cert.session_id)?;
+    validate_origin_display_label(cert.display_label.as_deref())?;
+    validate_origin_request_id(&origin.request_id)?;
+    let unsigned = OriginSessionCertUnsigned::from(cert);
+    verify_signature(
+        &ed25519_public_key_from_spki_der(device_spki)?,
+        &origin_session_cert_signature_input(&unsigned)?,
+        &cert.device_sig,
+    )
+    .context("origin session device signature invalid")
+}
+
+fn validate_origin_session_id(session_id: &str) -> Result<()> {
+    let encoded = session_id
+        .strip_prefix("os:")
+        .ok_or_else(|| anyhow!("origin session_id is invalid"))?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .context("decode origin session_id")?;
+    if decoded.len() != 32 {
+        return Err(anyhow!("origin session_id must contain a 32-byte digest"));
+    }
+    Ok(())
+}
+
+fn validate_origin_display_label(display_label: Option<&str>) -> Result<()> {
+    if display_label.is_some_and(|label| {
+        label.trim() != label || !valid_short_text(label, MAX_ORIGIN_DISPLAY_LABEL_CHARS)
+    }) {
+        return Err(anyhow!("origin display_label is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_origin_request_id(request_id: &str) -> Result<()> {
+    if !(MIN_ORIGIN_REQUEST_ID_BYTES..=MAX_ORIGIN_REQUEST_ID_BYTES).contains(&request_id.len())
+        || request_id.chars().any(char::is_whitespace)
+    {
+        return Err(anyhow!("origin request_id is invalid"));
+    }
+    Ok(())
+}
+
 pub fn create_event(
     identity: &PeerIdentity,
     delegation: DelegationCertV1,
@@ -1007,6 +1148,21 @@ pub fn create_event(
     created_ms: i64,
     kind: impl Into<String>,
     parents: Vec<String>,
+    body: serde_json::Value,
+) -> Result<EventV1> {
+    create_event_with_origin(
+        identity, delegation, room_id, created_ms, kind, parents, None, body,
+    )
+}
+
+pub fn create_event_with_origin(
+    identity: &PeerIdentity,
+    delegation: DelegationCertV1,
+    room_id: impl Into<String>,
+    created_ms: i64,
+    kind: impl Into<String>,
+    parents: Vec<String>,
+    origin: Option<FactOriginV1>,
     body: serde_json::Value,
 ) -> Result<EventV1> {
     let mut parents = parents;
@@ -1024,6 +1180,7 @@ pub fn create_event(
         created_ms,
         kind: kind.into(),
         parents,
+        origin,
         body,
     };
     let sig_input = event_signature_input(&unsigned)?;
@@ -1039,6 +1196,7 @@ pub fn create_event(
         created_ms: unsigned.created_ms,
         kind: unsigned.kind,
         parents: unsigned.parents,
+        origin: unsigned.origin,
         body: unsigned.body,
         sig: identity.device.sign(&sig_input),
     })
@@ -1065,6 +1223,9 @@ pub fn validate_event_at(event: &EventV1, required_scope: &str, now_ms: i64) -> 
     if event.delegation.device_pub != event.author_device_pub {
         return Err(anyhow!("event author_device_pub does not match delegation"));
     }
+    if let Some(origin) = &event.origin {
+        validate_fact_origin_at(origin, event, &device_spki)?;
+    }
 
     let mut parents = event.parents.clone();
     parents.sort();
@@ -1084,6 +1245,7 @@ pub fn validate_event_at(event: &EventV1, required_scope: &str, now_ms: i64) -> 
         created_ms: event.created_ms,
         kind: event.kind.clone(),
         parents: event.parents.clone(),
+        origin: event.origin.clone(),
         body: event.body.clone(),
     };
     let sig_input = event_signature_input(&unsigned)?;
@@ -2520,7 +2682,35 @@ struct EventUnsigned {
     created_ms: i64,
     kind: String,
     parents: Vec<String>,
+    origin: Option<FactOriginV1>,
     body: serde_json::Value,
+}
+
+#[derive(Debug)]
+struct OriginSessionCertUnsigned {
+    v: u8,
+    session_id: String,
+    surface_protocol: OriginSurfaceProtocolV1,
+    display_label: Option<String>,
+    issuer_peer_id: String,
+    issuer_device_id: String,
+    issued_ms: i64,
+    expires_ms: i64,
+}
+
+impl From<&OriginSessionCertV1> for OriginSessionCertUnsigned {
+    fn from(value: &OriginSessionCertV1) -> Self {
+        Self {
+            v: value.v,
+            session_id: value.session_id.clone(),
+            surface_protocol: value.surface_protocol,
+            display_label: value.display_label.clone(),
+            issuer_peer_id: value.issuer_peer_id.clone(),
+            issuer_device_id: value.issuer_device_id.clone(),
+            issued_ms: value.issued_ms,
+            expires_ms: value.expires_ms,
+        }
+    }
 }
 
 fn delegation_signature_input(unsigned: &DelegationUnsigned) -> Result<Vec<u8>> {
@@ -2538,6 +2728,20 @@ fn delegation_signature_input(unsigned: &DelegationUnsigned) -> Result<Vec<u8>> 
     for scope in &unsigned.scopes {
         w.write_str(scope)?;
     }
+    Ok(w.into_inner())
+}
+
+fn origin_session_cert_signature_input(unsigned: &OriginSessionCertUnsigned) -> Result<Vec<u8>> {
+    let mut w = NetstringWriter::new(Vec::new());
+    w.write_prefix("voxelle/origin-session-cert/v1\n")?;
+    w.write_int(unsigned.v.into())?;
+    w.write_str(&unsigned.session_id)?;
+    w.write_bytes(&jcs_bytes(&unsigned.surface_protocol)?)?;
+    w.write_bytes(&jcs_bytes(&unsigned.display_label)?)?;
+    w.write_str(&unsigned.issuer_peer_id)?;
+    w.write_str(&unsigned.issuer_device_id)?;
+    w.write_int(unsigned.issued_ms)?;
+    w.write_int(unsigned.expires_ms)?;
     Ok(w.into_inner())
 }
 
@@ -2583,6 +2787,7 @@ fn event_signature_input(unsigned: &EventUnsigned) -> Result<Vec<u8>> {
     for parent in &unsigned.parents {
         w.write_str(parent)?;
     }
+    w.write_bytes(&jcs_bytes(&unsigned.origin)?)?;
     w.write_bytes(&jcs_bytes(&unsigned.body)?)?;
     Ok(w.into_inner())
 }
@@ -2886,6 +3091,144 @@ mod tests {
             identity.device.id,
             id_from_spki_der(&identity.device.spki_der).expect("device id")
         );
+    }
+
+    fn origin_event(
+        identity: &PeerIdentity,
+        cert: OriginSessionCertV1,
+        created_ms: i64,
+        body: serde_json::Value,
+    ) -> EventV1 {
+        create_event_with_origin(
+            identity,
+            create_delegation(
+                identity,
+                created_ms - 100,
+                created_ms + 100,
+                vec!["room:post".to_string()],
+            )
+            .expect("delegation"),
+            "room:origin",
+            created_ms,
+            "MSG_POST",
+            vec![],
+            Some(FactOriginV1 {
+                session_cert: cert,
+                request_id: "request-origin-001".to_string(),
+            }),
+            body,
+        )
+        .expect("origin event")
+    }
+
+    #[test]
+    fn fact_origin_is_device_certified_bounded_and_signed_into_event() {
+        let identity = PeerIdentity::generate_at(1_000).expect("identity");
+        let cert = create_origin_session_cert(
+            &identity,
+            &[7; 32],
+            OriginSurfaceProtocolV1::Inhabitant,
+            Some("Resident alpha".to_string()),
+            1_000,
+            2_000,
+        )
+        .expect("origin cert");
+        assert!(cert.session_id.starts_with("os:"));
+        assert!(!cert
+            .session_id
+            .contains(&base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7; 32])));
+
+        let event = origin_event(&identity, cert, 1_500, json!({"text":"hello"}));
+        validate_event_at(&event, "room:post", 1_500).expect("origin validates");
+
+        let mut tampered_request = event.clone();
+        tampered_request.origin.as_mut().expect("origin").request_id =
+            "different-request".to_string();
+        assert!(validate_event_at(&tampered_request, "room:post", 1_500).is_err());
+    }
+
+    #[test]
+    fn fact_origin_rejects_wrong_device_expiry_and_bad_certificate_signature() {
+        let identity = PeerIdentity::generate_at(1_000).expect("identity");
+        let other = PeerIdentity::generate_at(1_000).expect("other identity");
+        let other_cert = create_origin_session_cert(
+            &other,
+            &[8; 32],
+            OriginSurfaceProtocolV1::Cli,
+            None,
+            1_000,
+            2_000,
+        )
+        .expect("other cert");
+        let wrong_device = origin_event(&identity, other_cert, 1_500, json!({"text":"hello"}));
+        assert!(validate_event_at(&wrong_device, "room:post", 1_500)
+            .expect_err("wrong issuer rejected")
+            .to_string()
+            .contains("issuer peer mismatch"));
+
+        let expired_cert = create_origin_session_cert(
+            &identity,
+            &[9; 32],
+            OriginSurfaceProtocolV1::NativeWebview,
+            None,
+            1_000,
+            1_400,
+        )
+        .expect("expired cert");
+        let expired = origin_event(&identity, expired_cert, 1_500, json!({"text":"hello"}));
+        assert!(validate_event_at(&expired, "room:post", 1_500)
+            .expect_err("expired at creation rejected")
+            .to_string()
+            .contains("not valid at event creation"));
+
+        let cert = create_origin_session_cert(
+            &identity,
+            &[10; 32],
+            OriginSurfaceProtocolV1::Inhabitant,
+            None,
+            1_000,
+            2_000,
+        )
+        .expect("cert");
+        let mut bad_signature = origin_event(&identity, cert, 1_500, json!({"text":"hello"}));
+        bad_signature
+            .origin
+            .as_mut()
+            .expect("origin")
+            .session_cert
+            .device_sig = "invalid".to_string();
+        assert!(validate_event_at(&bad_signature, "room:post", 1_500)
+            .expect_err("bad origin signature rejected")
+            .to_string()
+            .contains("origin session device signature invalid"));
+    }
+
+    #[test]
+    fn fact_origin_event_identity_is_independent_of_json_object_input_order() {
+        let identity = PeerIdentity::generate_at(1_000).expect("identity");
+        let cert = create_origin_session_cert(
+            &identity,
+            &[11; 32],
+            OriginSurfaceProtocolV1::Inhabitant,
+            Some("Stable route".to_string()),
+            1_000,
+            2_000,
+        )
+        .expect("cert");
+        let first = origin_event(
+            &identity,
+            cert.clone(),
+            1_500,
+            serde_json::from_str(r#"{"text":"hello","mentions":[]}"#).expect("first body"),
+        );
+        let second = origin_event(
+            &identity,
+            cert,
+            1_500,
+            serde_json::from_str(r#"{"mentions":[],"text":"hello"}"#).expect("second body"),
+        );
+        assert_eq!(first.event_id, second.event_id);
+        assert_eq!(first.sig, second.sig);
     }
 
     #[test]

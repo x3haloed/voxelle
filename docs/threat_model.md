@@ -199,6 +199,12 @@ Reviews should treat the following as repository-wide invariants:
 
 **Primary attacker stories.** A crafted attachment navigates the privileged WebView or invokes a native handler; a filename/MIME pair misleads the user; replicated HTML/script becomes XSS; a malicious link gains access to Tauri globals; an injected script invokes `execute_shell_command` to export capabilities, join a space, ban a member, or start networking; search or rendering creates CPU/memory denial; preview mode accidentally mutates fixture truth and is mistaken for the native app.
 
+The native WebView now emits a device-certified `native_webview` origin on the
+three attributed message/coordination commands. This distinguishes the route
+from inhabitant and CLI routes but does not prove user presence: compromised
+WebView code can still cause the device to certify fabricated Desktop-origin
+facts.
+
 **Existing controls.** The UI generally constructs DOM nodes and assigns untrusted values through `textContent`; Rust validates replicated bodies and attachment hashes/sizes. File selection remains a disposable frontend draft until a focused review names the file, size, type, destination, audience, and retained-copy limitation and the person invokes `attachment.add`. The timeline uses a download-named `data:` link and does not expose editing for standalone file facts. Attachment redaction passes through ordinary signed admission and changes projection without claiming remote erasure. Tauri exposes one serialized command entrypoint backed by a mutex and typed Serde requests, and its declared capability file only enables native snapshot event listening. Runtime truth stays in Rust. The human surface requires explicit modal review before product-package installation, staged-generation activation, rollback, or release-root transition, including when the semantic command starts in the palette; this is user-presence friction, not update authentication. Bounded previews label portable update and trust-transition metadata as untrusted while the native kernel remains the only signature, role, sequence, downgrade, compatibility, and trust-set authority.
 
 **Review focus.** The WebView is a high-privilege origin because a script that reaches the bridge can exercise the semantic command host. CSP, navigation policy, remote-content exclusion, `data:` attachment behavior, MIME handling, external opener behavior, and all DOM injection sinks deserve high scrutiny. Type-safe command parsing does not authenticate who called the bridge. Sensitive commands may need user-presence or explicit confirmation even when syntactically valid. Generated shell contracts must match Rust; fixture/preview clients cannot be security evidence.
@@ -211,7 +217,24 @@ Peer availability JSON is attacker-controlled routing input, not membership. The
 
 **Primary attacker stories.** A same-user process discovers the ephemeral port and executes privileged commands; an operator binds the unauthenticated service to LAN/global IPv4/IPv6; a malicious webpage reaches loopback through browser behavior; many SSE clients or slow HTTP requests consume resources; two automation clients race governance or UI actions; an agent acts on stale snapshot state without human visibility.
 
+Origin-specific attacker stories include a sibling resident guessing or
+reusing another session ID, stealing its plaintext secret, spoofing a trusted
+human/agent display label, or racing the same client instance across restart.
+The authorized device itself can fabricate any origin it certifies. A process
+that can read or replace `.voxelle-inhabitant-origins.json` may learn labels,
+IDs, client-instance names, and stored secret hashes, corrupt availability, or
+attempt offline secret guessing; the registry is not protocol authority and
+must never contain plaintext capabilities.
+
 **Existing controls.** The default bind is `127.0.0.1`; commands are serialized through the same `ShellState` mutex and typed command dispatch as the desktop; unknown commands fail closed; activity and returned snapshots expose effects. The sidecar is optional and separate from ordinary one-process desktop use.
+
+The owner-local origin registry rejects symlink targets, uses owner-only mode
+where supported, writes through a fresh temporary file, stores a
+domain-separated hash rather than the secret, binds records to the current
+device, and compares hashes without early exit. Wrong and unknown credentials
+share one response. Only message send, acknowledgement, and continuation
+updates require origin headers today; the launch bearer still authorizes every
+other command. Origin labels are presentation claims, not verified identities.
 
 **Review focus.** Loopback is a reachability restriction, not an authorization credential. Non-loopback binding should require an explicit security mode with authentication, origin protections, TLS as appropriate, and clear warnings; otherwise it should be refused. Discovery files should not contain secrets and should have safe permissions. Request/body/concurrency limits and cancellation must be explicit. Snapshot-before-action is a consistency aid, not authorization; high-impact commands need attribution and may need optimistic state/version checks.
 

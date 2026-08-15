@@ -5059,6 +5059,7 @@ dependencies = [
  "rand 0.8.5",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",
@@ -5125,6 +5126,7 @@ dependencies = [
 name = "voxelle-tauri-host"
 version = "0.1.0"
 dependencies = [
+ "rand 0.8.5",
  "rfd",
  "serde_json",
  "tauri",

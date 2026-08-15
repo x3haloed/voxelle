@@ -15,10 +15,11 @@ use std::sync::Arc;
 use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
-    accept_event, create_delegation, create_event, create_space, create_space_invite_event,
-    derive_governance_state, space_from_genesis, topo_sort_deterministic,
-    validate_room_event_semantics, validate_space_at, validate_space_invite_at, ChannelVisibility,
-    EventV1, IdentityProofV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
+    accept_event, create_delegation, create_event, create_event_with_origin,
+    create_origin_session_cert, create_space, create_space_invite_event, derive_governance_state,
+    space_from_genesis, topo_sort_deterministic, validate_room_event_semantics, validate_space_at,
+    validate_space_invite_at, ChannelVisibility, EventV1, FactOriginV1, IdentityProofV1,
+    OriginSurfaceProtocolV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
@@ -90,6 +91,23 @@ fn resolve_home_root_from(
 #[derive(Debug, Clone)]
 pub struct VoxelleHome {
     root: PathBuf,
+    default_origin_capability: [u8; 32],
+}
+
+/// Trusted caller provenance supplied beside, never inside, semantic command payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginContext {
+    fact_origin: FactOriginV1,
+}
+
+impl OriginContext {
+    pub fn new(fact_origin: FactOriginV1) -> Self {
+        Self { fact_origin }
+    }
+
+    fn fact_origin(&self) -> &FactOriginV1 {
+        &self.fact_origin
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -228,6 +246,7 @@ pub struct MessageView {
     #[ts(type = "number")]
     pub created_ms: i64,
     pub author_peer_id: String,
+    pub origin: FactOriginView,
     pub client_request_id: Option<String>,
     pub text: String,
     #[ts(type = "number | null")]
@@ -343,6 +362,36 @@ pub struct MessageContinuationView {
     pub expires_ms: Option<i64>,
     pub overdue: bool,
     pub head_event_ids: Vec<String>,
+    pub heads: Vec<MessageContinuationHeadView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageContinuationHeadView {
+    pub event_id: String,
+    pub state: MessageContinuationState,
+    #[ts(type = "number")]
+    pub asserted_ms: i64,
+    #[ts(type = "number | null")]
+    pub expires_ms: Option<i64>,
+    pub origin: FactOriginView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct FactOriginView {
+    pub principal_id: String,
+    pub device_id: String,
+    pub session_id: Option<String>,
+    pub surface_protocol: Option<OriginSurfaceProtocolView>,
+    pub display_label: Option<String>,
+    pub request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum OriginSurfaceProtocolView {
+    NativeWebview,
+    Inhabitant,
+    Cli,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -421,6 +470,8 @@ pub struct CoordinationAcknowledgementView {
     pub result_conflict: bool,
     #[ts(type = "number")]
     pub acknowledged_ms: i64,
+    pub assertions: Vec<MessageAcknowledgementAssertionView>,
+    pub assertions_omitted_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
@@ -456,6 +507,15 @@ pub struct MessageAcknowledgementView {
     pub result_conflict: bool,
     #[ts(type = "number")]
     pub acknowledged_ms: i64,
+    pub assertions: Vec<MessageAcknowledgementAssertionView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageAcknowledgementAssertionView {
+    pub event_id: String,
+    pub state: MessageAcknowledgementState,
+    pub result_event_id: Option<String>,
+    pub origin: FactOriginView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -590,6 +650,8 @@ struct RoomKeysV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct PrivateEventPlaintext {
     kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<FactOriginV1>,
     body: serde_json::Value,
 }
 
@@ -847,6 +909,9 @@ pub fn shell_contract_typescript() -> String {
         MessageView::decl(&cfg),
         MessageAcknowledgementView::decl(&cfg),
         MessageContinuationView::decl(&cfg),
+        MessageContinuationHeadView::decl(&cfg),
+        FactOriginView::decl(&cfg),
+        OriginSurfaceProtocolView::decl(&cfg),
         MessageContinuationProjectionState::decl(&cfg),
         MessageParticipantActionabilityView::decl(&cfg),
         MessageParticipantActionabilityReason::decl(&cfg),
@@ -856,6 +921,8 @@ pub fn shell_contract_typescript() -> String {
         CoordinationFrontierRelevance::decl(&cfg),
         CoordinationAcknowledgementView::decl(&cfg),
         ResidentObservationStartView::decl(&cfg),
+        OpenResidentOriginRequest::decl(&cfg),
+        ResidentOriginSessionView::decl(&cfg),
         OpenResidentObservationRequest::decl(&cfg),
         ReleaseResidentObservationRequest::decl(&cfg),
         ResidentChangedThreadsRequest::decl(&cfg),
@@ -899,6 +966,7 @@ pub fn shell_contract_typescript() -> String {
         SendMessageRequest::decl(&cfg),
         AcknowledgeMessageRequest::decl(&cfg),
         MessageAcknowledgementState::decl(&cfg),
+        MessageAcknowledgementAssertionView::decl(&cfg),
         UpdateMessageContinuationRequest::decl(&cfg),
         MessageContinuationState::decl(&cfg),
         SelectChannelRequest::decl(&cfg),
@@ -1206,6 +1274,23 @@ pub enum ServiceActivityLevel {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct InitHomeRequest {
     pub default_room: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct OpenResidentOriginRequest {
+    pub client_instance_id: String,
+    pub secret: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentOriginSessionView {
+    pub origin_id: String,
+    pub client_instance_id: String,
+    pub label: String,
+    pub device_id: String,
+    #[ts(type = "number")]
+    pub created_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1570,7 +1655,45 @@ pub struct RoomTimelineView {
 
 impl VoxelleHome {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self { root: root.into() }
+        Self {
+            root: root.into(),
+            default_origin_capability: rand::random(),
+        }
+    }
+
+    pub fn issue_origin_context(
+        &self,
+        session_capability: &[u8; 32],
+        surface_protocol: OriginSurfaceProtocolV1,
+        display_label: Option<String>,
+        request_id: String,
+    ) -> Result<OriginContext> {
+        let identity = self.load_identity()?;
+        let issued_ms = now_ms().saturating_sub(60_000);
+        let expires_ms = now_ms().saturating_add(30 * 24 * 60 * 60_000);
+        Ok(OriginContext::new(FactOriginV1 {
+            session_cert: create_origin_session_cert(
+                &identity,
+                session_capability,
+                surface_protocol,
+                display_label,
+                issued_ms,
+                expires_ms,
+            )?,
+            request_id,
+        }))
+    }
+
+    fn default_origin_context(&self) -> Result<OriginContext> {
+        self.issue_origin_context(
+            &self.default_origin_capability,
+            OriginSurfaceProtocolV1::Cli,
+            Some("Native/CLI session".to_string()),
+            format!(
+                "native-{}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 18]>())
+            ),
+        )
     }
 
     fn path(&self, name: &str) -> PathBuf {
@@ -2049,7 +2172,27 @@ impl VoxelleHome {
         thread_root_event_id: Option<String>,
         client_request_id: Option<String>,
     ) -> Result<EventV1> {
-        self.create_room_event(
+        let origin = self.default_origin_context()?;
+        self.send_message_with_metadata_and_origin(
+            text,
+            room,
+            mentions,
+            thread_root_event_id,
+            client_request_id,
+            Some(&origin),
+        )
+    }
+
+    pub fn send_message_with_metadata_and_origin(
+        &self,
+        text: &str,
+        room: Option<&str>,
+        mentions: Vec<String>,
+        thread_root_event_id: Option<String>,
+        client_request_id: Option<String>,
+        origin: Option<&OriginContext>,
+    ) -> Result<EventV1> {
+        self.create_room_event_with_origin(
             room,
             "MSG_POST",
             serde_json::json!({
@@ -2058,11 +2201,21 @@ impl VoxelleHome {
                 "thread_root_event_id": thread_root_event_id,
                 "client_request_id": client_request_id,
             }),
+            origin,
         )
     }
 
     pub fn acknowledge_message(&self, request: &AcknowledgeMessageRequest) -> Result<EventV1> {
-        self.create_room_event(
+        let origin = self.default_origin_context()?;
+        self.acknowledge_message_with_origin(request, Some(&origin))
+    }
+
+    pub fn acknowledge_message_with_origin(
+        &self,
+        request: &AcknowledgeMessageRequest,
+        origin: Option<&OriginContext>,
+    ) -> Result<EventV1> {
+        self.create_room_event_with_origin(
             request.room.as_deref(),
             "MSG_ACK",
             serde_json::json!({
@@ -2070,6 +2223,7 @@ impl VoxelleHome {
                 "state": request.state,
                 "result_event_id": request.result_event_id,
             }),
+            origin,
         )
     }
 
@@ -2077,7 +2231,16 @@ impl VoxelleHome {
         &self,
         request: &UpdateMessageContinuationRequest,
     ) -> Result<EventV1> {
-        self.create_room_event(
+        let origin = self.default_origin_context()?;
+        self.update_message_continuation_with_origin(request, Some(&origin))
+    }
+
+    pub fn update_message_continuation_with_origin(
+        &self,
+        request: &UpdateMessageContinuationRequest,
+        origin: Option<&OriginContext>,
+    ) -> Result<EventV1> {
+        self.create_room_event_with_origin(
             request.room.as_deref(),
             "MSG_CONTINUATION",
             serde_json::json!({
@@ -2087,6 +2250,7 @@ impl VoxelleHome {
                 "supersedes_event_ids": request.supersedes_event_ids,
                 "client_request_id": request.client_request_id,
             }),
+            origin,
         )
     }
 
@@ -2855,6 +3019,15 @@ impl VoxelleHome {
                                 .saturating_sub(MAX_COORDINATION_RESULT_IDS),
                             result_conflict: acknowledgement.result_conflict,
                             acknowledged_ms: acknowledgement.acknowledged_ms,
+                            assertions_omitted_count: acknowledgement
+                                .assertions
+                                .len()
+                                .saturating_sub(MAX_COORDINATION_RESULT_IDS),
+                            assertions: acknowledgement
+                                .assertions
+                                .into_iter()
+                                .take(MAX_COORDINATION_RESULT_IDS)
+                                .collect(),
                         }
                     })
                     .collect();
@@ -3240,6 +3413,16 @@ impl VoxelleHome {
         kind: &str,
         body: serde_json::Value,
     ) -> Result<EventV1> {
+        self.create_room_event_with_origin(room, kind, body, None)
+    }
+
+    fn create_room_event_with_origin(
+        &self,
+        room: Option<&str>,
+        kind: &str,
+        body: serde_json::Value,
+        origin: Option<&OriginContext>,
+    ) -> Result<EventV1> {
         let identity = self.load_identity()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
@@ -3251,7 +3434,7 @@ impl VoxelleHome {
         } else {
             "room:post"
         };
-        let semantic_event = create_event(
+        let semantic_event = create_event_with_origin(
             &identity,
             create_delegation(
                 &identity,
@@ -3263,6 +3446,7 @@ impl VoxelleHome {
             created_ms,
             kind,
             parents.clone(),
+            origin.map(|origin| origin.fact_origin().clone()),
             body.clone(),
         )?;
         let governance = store.room_events(&config.space.governance_room_id)?;
@@ -3288,6 +3472,7 @@ impl VoxelleHome {
             rand::rngs::OsRng.fill_bytes(&mut nonce);
             let plaintext = serde_json::to_vec(&PrivateEventPlaintext {
                 kind: kind.to_string(),
+                origin: semantic_event.origin.clone(),
                 body,
             })?;
             let aad = private_event_aad(room, channel.key_epoch, &identity.peer_id);
@@ -3412,6 +3597,7 @@ impl VoxelleHome {
             };
             let mut event = raw;
             event.kind = inner.kind;
+            event.origin = inner.origin;
             event.body = inner.body;
             if validate_room_event_semantics(
                 &event,
@@ -4392,6 +4578,35 @@ fn coordination_frontier_bucket(item: &CoordinationFrontierItemView) -> u8 {
     }
 }
 
+fn fact_origin_view(event: &EventV1) -> FactOriginView {
+    let (session_id, surface_protocol, display_label, request_id) = event
+        .origin
+        .as_ref()
+        .map(|origin| {
+            (
+                Some(origin.session_cert.session_id.clone()),
+                Some(match origin.session_cert.surface_protocol {
+                    OriginSurfaceProtocolV1::NativeWebview => {
+                        OriginSurfaceProtocolView::NativeWebview
+                    }
+                    OriginSurfaceProtocolV1::Inhabitant => OriginSurfaceProtocolView::Inhabitant,
+                    OriginSurfaceProtocolV1::Cli => OriginSurfaceProtocolView::Cli,
+                }),
+                origin.session_cert.display_label.clone(),
+                Some(origin.request_id.clone()),
+            )
+        })
+        .unwrap_or((None, None, None, None));
+    FactOriginView {
+        principal_id: event.author_peer_id.clone(),
+        device_id: event.author_device_id.clone(),
+        session_id,
+        surface_protocol,
+        display_label,
+        request_id,
+    }
+}
+
 fn finalize_coordination_frontier(
     mut items: Vec<CoordinationFrontierItemView>,
     next_projection_change_ms: Option<i64>,
@@ -4557,6 +4772,7 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                         event_id: event.event_id.clone(),
                         created_ms: event.created_ms,
                         author_peer_id: event.author_peer_id.clone(),
+                        origin: fact_origin_view(event),
                         client_request_id: event
                             .body
                             .get("client_request_id")
@@ -4607,6 +4823,7 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                         event_id: event.event_id.clone(),
                         created_ms: event.created_ms,
                         author_peer_id: event.author_peer_id.clone(),
+                        origin: fact_origin_view(event),
                         client_request_id: None,
                         text: String::new(),
                         edited_ms: None,
@@ -4696,7 +4913,23 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                             result_event_ids: Vec::new(),
                             result_conflict: false,
                             acknowledged_ms: event.created_ms,
+                            assertions: Vec::new(),
                         });
+                acknowledgement
+                    .assertions
+                    .push(MessageAcknowledgementAssertionView {
+                        event_id: event.event_id.clone(),
+                        state,
+                        result_event_id: event
+                            .body
+                            .get("result_event_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned),
+                        origin: fact_origin_view(event),
+                    });
+                acknowledgement
+                    .assertions
+                    .sort_by(|left, right| left.event_id.cmp(&right.event_id));
                 if state == MessageAcknowledgementState::Handled {
                     handled_events
                         .entry(target.clone())
@@ -4785,6 +5018,33 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                 continue;
             }
             let head_event_ids = heads.iter().map(|event| event.event_id.clone()).collect();
+            let head_views = heads
+                .iter()
+                .map(|event| {
+                    let state = match string_event_body(event, "state").as_str() {
+                        "continuing" => MessageContinuationState::Continuing,
+                        "released" => MessageContinuationState::Released,
+                        _ => MessageContinuationState::Declined,
+                    };
+                    let expires_ms = if state == MessageContinuationState::Continuing {
+                        event
+                            .body
+                            .get("lease_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|lease_ms| i64::try_from(lease_ms).ok())
+                            .and_then(|lease_ms| event.created_ms.checked_add(lease_ms))
+                    } else {
+                        None
+                    };
+                    MessageContinuationHeadView {
+                        event_id: event.event_id.clone(),
+                        state,
+                        asserted_ms: event.created_ms,
+                        expires_ms,
+                        origin: fact_origin_view(event),
+                    }
+                })
+                .collect();
             let asserted_ms = heads
                 .iter()
                 .map(|event| event.created_ms)
@@ -4825,6 +5085,7 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                 expires_ms,
                 overdue,
                 head_event_ids,
+                heads: head_views,
             });
         }
         message
@@ -5168,6 +5429,25 @@ impl VoxelleCommandHost {
             resident_page_progress: BTreeMap::new(),
             resident_commit_tokens: BTreeMap::new(),
         }
+    }
+
+    pub fn issue_origin_context(
+        &self,
+        session_capability: &[u8; 32],
+        surface_protocol: OriginSurfaceProtocolV1,
+        display_label: Option<String>,
+        request_id: String,
+    ) -> Result<OriginContext> {
+        self.home.issue_origin_context(
+            session_capability,
+            surface_protocol,
+            display_label,
+            request_id,
+        )
+    }
+
+    fn default_origin_context(&self) -> Result<OriginContext> {
+        self.home.default_origin_context()
     }
 
     pub fn update_transport_context(&self) -> (UpdateManager, u64) {
@@ -5747,6 +6027,15 @@ impl VoxelleCommandHost {
     }
 
     pub async fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
+        let origin = self.default_origin_context()?;
+        self.send_message_with_origin(request, &origin).await
+    }
+
+    pub async fn send_message_with_origin(
+        &mut self,
+        request: SendMessageRequest,
+        origin: &OriginContext,
+    ) -> Result<ShellSnapshotView> {
         let room = request.room.as_deref().or(self.selected_room_id.as_deref());
         if let Some(client_request_id) = request.client_request_id.as_deref() {
             if client_request_id.len() < 8
@@ -5782,12 +6071,13 @@ impl VoxelleCommandHost {
                 return self.snapshot();
             }
         }
-        let event = self.home.send_message_with_metadata(
+        let event = self.home.send_message_with_metadata_and_origin(
             &request.text,
             room,
             request.mentions,
             request.thread_root_event_id,
             request.client_request_id,
+            Some(origin),
         )?;
         self.push_activity(
             ServiceActivityLevel::Info,
@@ -5801,6 +6091,15 @@ impl VoxelleCommandHost {
     pub async fn acknowledge_message(
         &mut self,
         request: AcknowledgeMessageRequest,
+    ) -> Result<ShellSnapshotView> {
+        let origin = self.default_origin_context()?;
+        self.acknowledge_message_with_origin(request, &origin).await
+    }
+
+    pub async fn acknowledge_message_with_origin(
+        &mut self,
+        request: AcknowledgeMessageRequest,
+        origin: &OriginContext,
     ) -> Result<ShellSnapshotView> {
         let room = request.room.as_deref().or(self.selected_room_id.as_deref());
         let own_peer_id = self.home.load_identity()?.peer_id;
@@ -5842,10 +6141,13 @@ impl VoxelleCommandHost {
         }
         let target_event_id = request.target_event_id.clone();
         let result_event_id = request.result_event_id.clone();
-        self.home.acknowledge_message(&AcknowledgeMessageRequest {
-            room: room.map(ToOwned::to_owned),
-            ..request
-        })?;
+        self.home.acknowledge_message_with_origin(
+            &AcknowledgeMessageRequest {
+                room: room.map(ToOwned::to_owned),
+                ..request
+            },
+            Some(origin),
+        )?;
         let result = result_event_id
             .as_deref()
             .map(|event_id| format!(" with result {event_id}"))
@@ -5863,7 +6165,17 @@ impl VoxelleCommandHost {
 
     pub async fn update_message_continuation(
         &mut self,
+        request: UpdateMessageContinuationRequest,
+    ) -> Result<ShellSnapshotView> {
+        let origin = self.default_origin_context()?;
+        self.update_message_continuation_with_origin(request, &origin)
+            .await
+    }
+
+    pub async fn update_message_continuation_with_origin(
+        &mut self,
         mut request: UpdateMessageContinuationRequest,
+        origin: &OriginContext,
     ) -> Result<ShellSnapshotView> {
         let room = request.room.as_deref().or(self.selected_room_id.as_deref());
         if request.client_request_id.len() < 8
@@ -5930,12 +6242,13 @@ impl VoxelleCommandHost {
         }
         self.home
             .mark_read_through(room, &request.target_event_id)?;
-        let event = self
-            .home
-            .update_message_continuation(&UpdateMessageContinuationRequest {
+        let event = self.home.update_message_continuation_with_origin(
+            &UpdateMessageContinuationRequest {
                 room: room.map(ToOwned::to_owned),
                 ..request
-            })?;
+            },
+            Some(origin),
+        )?;
         self.push_activity(
             ServiceActivityLevel::Info,
             format!("updated message continuation {}", event.event_id),
@@ -11554,5 +11867,268 @@ mod tests {
 
     fn network_health_status(health: &NetworkHealthView, id: &str) -> NetworkHealthStatus {
         network_health_row(health, id).status
+    }
+
+    #[tokio::test]
+    async fn contextual_fact_origins_survive_retry_projection_and_restart() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let resident_a = host
+            .issue_origin_context(
+                &[31; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Resident A".to_string()),
+                "resident-a-request-001".to_string(),
+            )
+            .expect("resident A origin");
+        let resident_b = host
+            .issue_origin_context(
+                &[32; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Resident B".to_string()),
+                "resident-b-request-001".to_string(),
+            )
+            .expect("resident B origin");
+        let request = SendMessageRequest {
+            text: "origin-aware root".to_string(),
+            room: None,
+            mentions: Vec::new(),
+            thread_root_event_id: None,
+            client_request_id: Some("origin-root-001".to_string()),
+        };
+        let sent = host
+            .send_message_with_origin(request.clone(), &resident_a)
+            .await
+            .expect("send");
+        let root = sent
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.client_request_id.as_deref() == Some("origin-root-001"))
+            .expect("root");
+        assert_eq!(root.origin.display_label.as_deref(), Some("Resident A"));
+        assert_eq!(
+            root.origin.request_id.as_deref(),
+            Some("resident-a-request-001")
+        );
+
+        let retried = host
+            .send_message_with_origin(request, &resident_b)
+            .await
+            .expect("retry");
+        let retried_root = retried
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.event_id == root.event_id)
+            .expect("same root");
+        assert_eq!(retried_root.origin, root.origin);
+
+        let continuation = host
+            .issue_origin_context(
+                &[31; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Resident A".to_string()),
+                "resident-a-request-002".to_string(),
+            )
+            .expect("continuation origin");
+        host.update_message_continuation_with_origin(
+            UpdateMessageContinuationRequest {
+                target_event_id: root.event_id.clone(),
+                room: None,
+                state: MessageContinuationState::Continuing,
+                lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "origin-continuation-001".to_string(),
+            },
+            &continuation,
+        )
+        .await
+        .expect("continuation");
+        let acknowledgement = host
+            .issue_origin_context(
+                &[32; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Resident B".to_string()),
+                "resident-b-request-002".to_string(),
+            )
+            .expect("ack origin");
+        let snapshot = host
+            .acknowledge_message_with_origin(
+                AcknowledgeMessageRequest {
+                    target_event_id: root.event_id.clone(),
+                    room: None,
+                    state: MessageAcknowledgementState::Handled,
+                    result_event_id: None,
+                },
+                &acknowledgement,
+            )
+            .await
+            .expect("ack");
+        let projected = snapshot
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.event_id == root.event_id)
+            .expect("projected root");
+        assert_eq!(
+            projected.continuations[0].heads[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident A")
+        );
+        assert_eq!(
+            projected.acknowledgements[0].assertions[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident B")
+        );
+
+        let room_id = host
+            .home
+            .load_config()
+            .expect("config")
+            .space
+            .default_room_id;
+        let events = host.home.decrypted_room_events(&room_id).expect("events");
+        let forward = project_messages(events.clone(), now_ms());
+        let mut reversed_events = events;
+        reversed_events.reverse();
+        let reversed = project_messages(reversed_events, now_ms());
+        assert_eq!(forward, reversed);
+
+        host.open_resident_observation(OpenResidentObservationRequest {
+            consumer_id: "origin-resident-page".to_string(),
+            start: ResidentObservationStartView::FromBeginning,
+        })
+        .expect("open resident");
+        let page = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "origin-resident-page".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: Some(100),
+            })
+            .expect("resident page");
+        let page_root = page
+            .items
+            .into_iter()
+            .find(|item| item.root.event_id == root.event_id)
+            .expect("page root")
+            .root;
+        assert_eq!(page_root.origin, root.origin);
+        assert_eq!(
+            page_root.acknowledgements[0].assertions[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident B")
+        );
+
+        drop(host);
+        let restarted = VoxelleCommandHost::new(&home_root)
+            .snapshot()
+            .expect("restart")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.event_id == root.event_id)
+            .expect("restarted root");
+        assert_eq!(restarted.origin, root.origin);
+        assert_eq!(
+            restarted.continuations[0].heads[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident A")
+        );
+        assert_eq!(
+            restarted.acknowledgements[0].assertions[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident B")
+        );
+    }
+
+    #[tokio::test]
+    async fn private_fact_origin_is_projected_but_absent_from_outer_ciphertext() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        let initialized = host
+            .init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let peer_id = initialized.home.expect("home").profile.peer_id;
+        let room_id = host
+            .create_channel(CreateChannelRequest {
+                name: "private origin".to_string(),
+                topic: String::new(),
+                private_members: vec![peer_id],
+            })
+            .await
+            .expect("private room")
+            .home
+            .expect("home")
+            .room
+            .room_id;
+        let origin = host
+            .issue_origin_context(
+                &[41; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Secret Resident Label".to_string()),
+                "secret-origin-request-001".to_string(),
+            )
+            .expect("origin");
+        let snapshot = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "private attributed message".to_string(),
+                    room: Some(room_id.clone()),
+                    mentions: Vec::new(),
+                    thread_root_event_id: None,
+                    client_request_id: Some("private-origin-message-001".to_string()),
+                },
+                &origin,
+            )
+            .await
+            .expect("send");
+        let message = snapshot
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| {
+                message.client_request_id.as_deref() == Some("private-origin-message-001")
+            })
+            .expect("message");
+        assert_eq!(
+            message.origin.display_label.as_deref(),
+            Some("Secret Resident Label")
+        );
+        let raw = host
+            .home
+            .open_store()
+            .expect("store")
+            .room_events(&room_id)
+            .expect("raw");
+        let encoded = serde_json::to_string(&raw).expect("serialize raw");
+        assert!(raw.iter().all(|event| event.origin.is_none()));
+        assert!(!encoded.contains("Secret Resident Label"));
+        assert!(!encoded.contains("secret-origin-request-001"));
+        assert!(!encoded.contains(message.origin.session_id.as_deref().expect("session id")));
     }
 }

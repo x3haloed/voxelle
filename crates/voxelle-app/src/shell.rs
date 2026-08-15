@@ -1,8 +1,9 @@
-use crate::{ServiceActivityItem, ShellSnapshotView, VoxelleCommandHost};
+use crate::{OriginContext, ServiceActivityItem, ShellSnapshotView, VoxelleCommandHost};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use ts_rs::TS;
+use voxelle_core::OriginSurfaceProtocolV1;
 use voxelle_update::TrustedReleaseKey;
 
 pub struct ShellState {
@@ -72,6 +73,69 @@ pub fn shell_command_payload(command_id: &str) -> Option<ShellCommandPayload> {
 }
 
 impl ShellState {
+    pub async fn current_device_id(&self) -> Option<String> {
+        self.host
+            .lock()
+            .await
+            .snapshot()
+            .ok()?
+            .home
+            .map(|home| home.profile.device_id)
+    }
+
+    pub async fn issue_inhabitant_origin_context(
+        &self,
+        session_capability: &[u8; 32],
+        display_label: String,
+        request_id: String,
+    ) -> ShellResult<OriginContext> {
+        self.issue_origin_context(
+            session_capability,
+            OriginSurfaceProtocolV1::Inhabitant,
+            Some(display_label),
+            request_id,
+        )
+        .await
+    }
+
+    pub async fn issue_native_webview_origin_context(
+        &self,
+        session_capability: &[u8; 32],
+        request_id: String,
+    ) -> ShellResult<OriginContext> {
+        self.issue_origin_context(
+            session_capability,
+            OriginSurfaceProtocolV1::NativeWebview,
+            Some("Desktop".to_string()),
+            request_id,
+        )
+        .await
+    }
+
+    pub async fn issue_origin_context(
+        &self,
+        session_capability: &[u8; 32],
+        surface_protocol: OriginSurfaceProtocolV1,
+        display_label: Option<String>,
+        request_id: String,
+    ) -> ShellResult<OriginContext> {
+        self.host
+            .lock()
+            .await
+            .issue_origin_context(
+                session_capability,
+                surface_protocol,
+                display_label,
+                request_id,
+            )
+            .map_err(|error| {
+                ShellError::internal(
+                    "Voxelle could not certify this local session.",
+                    format!("{error:#}"),
+                )
+            })
+    }
+
     pub fn new(home_root: impl Into<PathBuf>) -> Self {
         Self {
             host: Mutex::new(VoxelleCommandHost::new(home_root)),
@@ -177,6 +241,26 @@ impl ShellState {
         command_id: &str,
         payload: serde_json::Value,
     ) -> ShellResult<ShellSnapshotView> {
+        self.execute_serialized_command_inner(command_id, payload, None)
+            .await
+    }
+
+    pub async fn execute_serialized_command_with_origin(
+        &self,
+        command_id: &str,
+        payload: serde_json::Value,
+        origin: OriginContext,
+    ) -> ShellResult<ShellSnapshotView> {
+        self.execute_serialized_command_inner(command_id, payload, Some(origin))
+            .await
+    }
+
+    async fn execute_serialized_command_inner(
+        &self,
+        command_id: &str,
+        payload: serde_json::Value,
+        origin: Option<OriginContext>,
+    ) -> ShellResult<ShellSnapshotView> {
         if command_id == "product.update.check" {
             let manager = {
                 let host = self.host.lock().await;
@@ -235,12 +319,33 @@ impl ShellState {
             "space.join" => host.join_space(parse_request(payload)?).await,
             "identity.recovery.export" => host.export_recovery_kit(parse_request(payload)?),
             "identity.recovery.restore" => host.restore_recovery_kit(parse_request(payload)?).await,
-            "message.send" => host.send_message(parse_request(payload)?).await,
-            "message.acknowledge" => host.acknowledge_message(parse_request(payload)?).await,
-            "message.continuation.update" => {
-                host.update_message_continuation(parse_request_for(command_id, payload)?)
+            "message.send" => match origin.as_ref() {
+                Some(origin) => {
+                    host.send_message_with_origin(parse_request(payload)?, origin)
+                        .await
+                }
+                None => host.send_message(parse_request(payload)?).await,
+            },
+            "message.acknowledge" => match origin.as_ref() {
+                Some(origin) => {
+                    host.acknowledge_message_with_origin(parse_request(payload)?, origin)
+                        .await
+                }
+                None => host.acknowledge_message(parse_request(payload)?).await,
+            },
+            "message.continuation.update" => match origin.as_ref() {
+                Some(origin) => {
+                    host.update_message_continuation_with_origin(
+                        parse_request_for(command_id, payload)?,
+                        origin,
+                    )
                     .await
-            }
+                }
+                None => {
+                    host.update_message_continuation(parse_request_for(command_id, payload)?)
+                        .await
+                }
+            },
             "channel.select" => host.select_channel(parse_request(payload)?),
             "message.open" => host.open_message(parse_request(payload)?),
             "channel.markRead" => host.mark_read(parse_request(payload)?),

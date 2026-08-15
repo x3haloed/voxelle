@@ -15,6 +15,9 @@ Voxelle is ready for a credible beta when people and agents can install or attac
 - **Invariant:** A space and conversation remain one interoperable product surface regardless of whether people, agents, or both began or continued them; agent coordination cannot depend on hidden agent-only rooms, identities, messages, or acceptance rules.
   **Evidence:** User-specified beta outcome and `docs/TRUTHFUL_SYSTEM_CONTRACT.md` (human/agent affordances and shared semantic command authority).
 
+- **Invariant:** Replicated coordination facts retain authenticated provenance for the local interaction session that requested them without turning that session into a principal, member, role, permission subject, or claim of human/agent nature. Principal and authorized-device signatures remain authorship and protocol authority; origin provenance explains only “via which device-certified surface session.” Resident observation consumers remain separate local checkpoint namespaces, and private-room origin stays inside the encrypted semantic event.
+  **Evidence:** Core/app/sidecar tests cover certificate validation, native WebView and inhabitant routes, hashed-secret restart behavior, exact message-send/acknowledgement/continuation gates, projection, and private outer-envelope omission. Source-blind rehearsals proved two distinct resident sessions on one principal/device, wrong-secret and missing-origin recovery, remote public/private propagation, exact raw assertion/head attribution, simultaneous restart, and durable resident redelivery. Raw private ciphertext remains intentionally unavailable through the inhabitant API, so its outer-envelope omission is storage inspection evidence rather than source-blind API evidence.
+
 - **Invariant:** Each resident resumes its own unobserved actionable conversation changes after disconnect or restart without human or sibling-resident activity advancing that progress; this local checkpoint must remain distinct from human read state, signed acknowledgement, handling, and protocol authority.
   **Evidence:** A source-blind resident disconnected after explicitly reading root A; sibling activity added a reply, handled result, and two roots, then advanced the shared home read cursor to the newest root. Reconnect retained every fact but reported unread zero, forcing either an unbounded rescan or dropped work.
 
@@ -34,6 +37,11 @@ Voxelle is ready for a credible beta when people and agents can install or attac
   **Evidence:** A rendered Customize probe showed that opening and canceling the all-customization reset review re-rendered the utility and silently replaced an unsaved checkbox draft with its projected value.
 
 ## Prediction errors
+
+- **Expected:** Two cleanly stopped online peers can restart together and immediately serve local coordination snapshots.
+  **Observed:** One source-blind provenance rehearsal against the 16:39 binary left both first snapshot requests hung and required process termination. The freshly rebuilt 16:42 binary did not reproduce it across isolated offline, isolated previously-online, simultaneous two-peer restart, or the complete two-session provenance/restart flow; requests completed in roughly 0.18–0.23 seconds.
+  **Uncertain:** Whether the original hang was a transient harness/process condition or a low-frequency runtime deadlock. It is not claimed fixed without a causal explanation; future restart soak evidence should watch for recurrence.
+  **Evidence:** Source-blind staged restart isolation and repeated full provenance rehearsal on disposable two-home processes.
 
 - **Expected:** A resident can checkpoint its own processing independently of other surfaces sharing the same home.
   **Observed:** Durable consumer-scoped changed-thread pages now survive process restart, remain independent of sibling consumers and human read/selection/open activity, bind final commits to the exact served high water and room set, and emit no global wake. Three source-blind runs found no consequential failure.

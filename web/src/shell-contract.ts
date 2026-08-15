@@ -4,11 +4,17 @@ export type PeerEndpoint = { v: number, addr: string, peer_id: string, device_id
 
 export type ProfileSummary = { home: string, peer_id: string, device_id: string, default_room: string, authority_peer_id: string, };
 
-export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, client_request_id: string | null, text: string, edited_ms: number | null, redacted: boolean, mentions: Array<string>, thread_root_event_id: string | null, reply_count: number, pinned: boolean, reactions: Array<ReactionView>, acknowledgements: Array<MessageAcknowledgementView>, continuations: Array<MessageContinuationView>, participant_actionability: Array<MessageParticipantActionabilityView>, attachments: Array<AttachmentView>, };
+export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, origin: FactOriginView, client_request_id: string | null, text: string, edited_ms: number | null, redacted: boolean, mentions: Array<string>, thread_root_event_id: string | null, reply_count: number, pinned: boolean, reactions: Array<ReactionView>, acknowledgements: Array<MessageAcknowledgementView>, continuations: Array<MessageContinuationView>, participant_actionability: Array<MessageParticipantActionabilityView>, attachments: Array<AttachmentView>, };
 
-export type MessageAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_conflict: boolean, acknowledged_ms: number, };
+export type MessageAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_conflict: boolean, acknowledged_ms: number, assertions: Array<MessageAcknowledgementAssertionView>, };
 
-export type MessageContinuationView = { peer_id: string, state: MessageContinuationProjectionState, asserted_ms: number, expires_ms: number | null, overdue: boolean, head_event_ids: Array<string>, };
+export type MessageContinuationView = { peer_id: string, state: MessageContinuationProjectionState, asserted_ms: number, expires_ms: number | null, overdue: boolean, head_event_ids: Array<string>, heads: Array<MessageContinuationHeadView>, };
+
+export type MessageContinuationHeadView = { event_id: string, state: MessageContinuationState, asserted_ms: number, expires_ms: number | null, origin: FactOriginView, };
+
+export type FactOriginView = { principal_id: string, device_id: string, session_id: string | null, surface_protocol: OriginSurfaceProtocolView | null, display_label: string | null, request_id: string | null, };
+
+export type OriginSurfaceProtocolView = "native_webview" | "inhabitant" | "cli";
 
 export type MessageContinuationProjectionState = "unknown" | "continuing" | "released" | "declined" | "conflict";
 
@@ -24,9 +30,13 @@ export type CoordinationFrontierItemView = { room_id: string, room_name: string,
 
 export type CoordinationFrontierRelevance = "mention_without_local_disposition" | "reply_after_local_disposition" | "continuation_active" | "continuation_overdue" | "continuation_conflict" | "observed" | "handled" | "handled_result_available" | "released" | "declined";
 
-export type CoordinationAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_event_ids_omitted_count: number, result_conflict: boolean, acknowledged_ms: number, };
+export type CoordinationAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_event_ids_omitted_count: number, result_conflict: boolean, acknowledged_ms: number, assertions: Array<MessageAcknowledgementAssertionView>, assertions_omitted_count: number, };
 
 export type ResidentObservationStartView = "from_beginning" | "from_now";
+
+export type OpenResidentOriginRequest = { client_instance_id: string, secret: string, label: string, };
+
+export type ResidentOriginSessionView = { origin_id: string, client_instance_id: string, label: string, device_id: string, created_ms: number, };
 
 export type OpenResidentObservationRequest = { consumer_id: string, start: ResidentObservationStartView, };
 
@@ -113,6 +123,8 @@ export type SendMessageRequest = { text: string, room: string | null, mentions: 
 export type AcknowledgeMessageRequest = { target_event_id: string, room: string | null, state: MessageAcknowledgementState, result_event_id: string | null, };
 
 export type MessageAcknowledgementState = "observed" | "handled";
+
+export type MessageAcknowledgementAssertionView = { event_id: string, state: MessageAcknowledgementState, result_event_id: string | null, origin: FactOriginView, };
 
 export type UpdateMessageContinuationRequest = { target_event_id: string, room: string | null, state: MessageContinuationState, lease_ms: number | null, supersedes_event_ids: Array<string>, client_request_id: string, };
 

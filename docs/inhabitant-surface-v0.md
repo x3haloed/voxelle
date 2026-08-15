@@ -162,6 +162,29 @@ The service accepts loopback binds only, rejects browser-origin requests, and
 requires authentication for discovery, snapshots, commands, and events. Once
 authenticated, `GET /inhabitant/v0/discovery` is authoritative.
 
+The launch bearer authorizes access to the home but does not identify which
+resident session submitted a fact. `resident.origin.open` therefore accepts an
+8--128 character `client_instance_id`, a 1--80 character display `label`, and a
+caller-generated 32-byte secret encoded as unpadded base64url. It returns a
+stable `origin_id`; the caller retains the plaintext secret and supplies
+`Voxelle-Origin-Id` and `Voxelle-Origin-Secret` headers thereafter. The local
+registry stores only a domain-separated secret hash, is bound to the current
+device, and makes an identical open idempotent across restart. It never returns
+or persists the plaintext secret. Missing credentials and invalid credentials
+remain distinguishable as `origin_required` and the deliberately generic
+`origin_authentication_failed` respectively.
+
+Exactly `message.send`, `message.acknowledge`, and
+`message.continuation.update` require this resident origin authentication. The
+native WebView issues the same device-certified provenance with
+`surface_protocol: native_webview`; CLI/default native paths remain explicit
+device-certified routes rather than silently impersonating a resident. The
+signed fact projection exposes principal, device, optional session ID, surface
+protocol, display label, and request ID. Principal membership, device
+authority, origin session, and resident observation `consumer_id` are four
+separate meanings: an origin grants no permission, and a consumer remains only
+a local delivery checkpoint namespace.
+
 ### 3.2 Snapshot
 
 Snapshot answers: "What is true now?"
@@ -327,6 +350,19 @@ proves handling or correctness, synchronizes peers, or emits global
 `snapshot.changed`. `resident.observation.release` explicitly deletes only
 that local consumer and its progress. Consumer IDs are local namespaces, not
 principals, devices, credentials, or actor identities.
+
+Origin is device-certified route provenance, not proof that the route is a
+natural person, an AI, the displayed label, or a correct actor. A device can
+fabricate any route it certifies, and possession of a resident origin secret
+allows a sibling process to use that route. In private rooms the origin and
+request ID are encrypted inside the semantic inner event; the retained outer
+`ROOM_ENCRYPTED` carrier exposes none of them. Source and deterministic tests
+cover certification, projection, restart-stable hashed-secret authentication,
+the three command gates, and private outer-envelope omission. Source-blind
+rehearsals verified distinct sibling sessions, uniform ActionResult recovery,
+remote public/private propagation, simultaneous restart, and durable resident
+redelivery. The API intentionally provides no raw-ciphertext view, so outer
+private-envelope non-disclosure remains storage inspection evidence.
 
 Pages enumerate only currently accessible channels and carry private facts
 only through ordinary decryption and semantic admission. Page progress and
