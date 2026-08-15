@@ -106,6 +106,12 @@ export function paletteCommandAvailability(commandId, context) {
   if (commandId === "runtime.goOffline" && !context.runtimeOnline) {
     return { available: false, reason: "The peer service is already offline" };
   }
+  if (commandId === "runtime.goOnline" && context.runtimeOnline) {
+    return {
+      available: false,
+      reason: "The peer service is already online; use Connection & sync to reconfigure it",
+    };
+  }
   if (commandId === "invite.copy" && !context.hasInvite) {
     return { available: false, reason: "Create a signed invite first" };
   }

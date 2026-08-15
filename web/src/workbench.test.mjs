@@ -111,6 +111,15 @@ test("palette availability explains causal prerequisites without changing comman
   );
   assert.equal(paletteCommandAvailability("peer.sync", active).available, true);
   assert.equal(paletteCommandAvailability("channel.create", active).available, true);
+  assert.deepEqual(paletteCommandAvailability("runtime.goOnline", active), {
+    available: false,
+    reason: "The peer service is already online; use Connection & sync to reconfigure it",
+  });
+  assert.equal(
+    paletteCommandAvailability("runtime.goOnline", { ...active, runtimeOnline: false }).available,
+    true,
+  );
+  assert.equal(paletteCommandAvailability("runtime.goOffline", active).available, true);
   assert.equal(paletteCommandAvailability("message.composer.focus", active).available, true);
   assert.equal(
     paletteCommandAvailability("call.microphone.toggle", active).reason,

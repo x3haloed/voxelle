@@ -226,6 +226,13 @@ service does not reconfigure. Correct it to a real bracketed IPv6 socket with a
 valid port and continue through the native connection path. Leaving both fields
 empty must retain automatic local setup.
 
+While the peer service is online, confirm the command palette disables **Go
+Online** with a direction to Connection & sync and keeps **Go Offline**
+available. Confirm the explicit **Go Online** action inside Connection & sync
+remains available for applying visible Bind or Advertise drafts. After going
+offline, confirm the palette exposes Go Online and disables Go Offline as
+already offline.
+
 Before sending conversation content, confirm **Send Message** is disabled for
 an empty or whitespace-only draft, becomes enabled for visible text or a member
 inserted through **Mention someone**, and disables again when the draft is

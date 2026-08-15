@@ -439,6 +439,12 @@ in both the command palette and re-entrant health rows with the prerequisite
 available and leads to the shared bounded review. This prevents a targetless
 frontend invocation without treating availability as membership or authority.
 
+The command palette exposes only the runtime transition that can presently
+complete: Go Offline while the service is online, or Go Online while it is
+offline. When already online, Go Online instead names Connection & sync as the
+place for explicit Bind or Advertise reconfiguration. The in-form action remains
+available there because it carries the visible drafts through the same command.
+
 `peer.import` requires visible draft context. Invoking it from the palette,
 Network Health, or Field Test with no draft opens and focuses one shared
 Connection & sync form instead of submitting empty state. The form bounds and

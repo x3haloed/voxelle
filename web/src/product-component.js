@@ -1730,7 +1730,9 @@ function healthRow(row, snapshot) {
       : selectedPeerTarget(snapshot);
     const payload = row.primary_action_payload
       ?? (isPeerOperation(row.primary_action) && target ? peerRequest(target) : undefined);
-    const action = availabilityButton(row.primary_action, snapshot, payload);
+    const action = isPeerOperation(row.primary_action)
+      ? availabilityButton(row.primary_action, snapshot, payload)
+      : commandButton(row.primary_action, payload);
     if (isPeerOperation(row.primary_action) && target) {
       action.textContent = `${peerOperationVerb(row.primary_action)} ${target.label}`;
       action.setAttribute(

@@ -628,6 +628,17 @@ accepted configuration. Deterministic helper, product-source, and native bundle
 tests cover this presentation path; this is not new rendered, packaged-native,
 non-loopback, or field evidence.
 
+Runtime palette actions now reflect the projected transition rather than
+offering contradictory Start and Stop choices. While online, context-free Go
+Online is disabled with a route to Connection & sync for explicit Bind or
+Advertise reconfiguration, while Go Offline remains available; the visible
+in-form Go Online action remains available to apply those drafts. Offline state
+reverses the palette availability. The semantic command and Rust service
+configuration authority are unchanged. Deterministic availability tests and a
+rendered online preview verified the disabled palette reason and the still-active
+Connection & sync action. This is rendered presentation evidence, not a service
+restart or external reachability claim.
+
 The member-ban affordance now requires an explicit confirmation that explains
 loss of participation authority, retained history, and the fresh-invite
 requirement before it invokes `member.ban`. Rendered-preview evidence exercises

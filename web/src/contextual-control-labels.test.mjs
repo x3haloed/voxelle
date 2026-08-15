@@ -16,7 +16,7 @@ test("message action disclosures expose author and bounded content context", () 
 });
 
 test("network health peer actions share target availability", () => {
-  assert.match(source, /availabilityButton\(row\.primary_action, snapshot, payload\)/);
+  assert.match(source, /isPeerOperation\(row\.primary_action\)[\s\S]*availabilityButton\(row\.primary_action, snapshot, payload\)/);
   assert.match(source, /hasKnownPeer: \(snapshot\.home\?\.peers\.length \?\? 0\) > 0/);
 });
 
