@@ -253,6 +253,15 @@ history; events more than five minutes in the future are rejected. Invite
 expiry therefore depends on signed participant clocks and is not claimed as a
 partition-proof lease.
 
+Active invitations are now reconstructed from accepted governance after
+restart and exposed through the Rust snapshot. Revocation uses the same signed
+governance admission and ordinary-peer synchronization path as other accepted
+facts. A focused two-home regression proves that a reachable ordinary peer can
+convey an admitted revocation during an ephemeral governance-only preflight,
+causing a stale bearer join to fail before any local identity or selected-space
+state is created. This does not make revocation instantaneous across a stale
+partition or provide strict single-use admission.
+
 An exported invite is a self-contained causal entry point: its governance
 event descends directly from the signed space genesis carried in the invite.
 It must not claim an unexported local governance head as a parent, because that
@@ -405,6 +414,17 @@ keyboard-reachable. Desktop and narrow viewport checks showed no horizontal
 overflow. This is rendered browser evidence for presentation and interaction,
 not a new native file-dialog or successful-admission claim; the preceding
 packaged gate remains the Rust-owned admission evidence.
+
+Invite lifecycle controls have crossed a rendered interaction and Rust
+operational gate. The People surface offers explicit one-hour, one-day,
+seven-day, and thirty-day expiries, truthfully states bearer reuse, and lists
+Rust-projected active governance invitations. Revocation opens an alert dialog,
+focuses the consequential action, names ordinary-peer propagation and the
+stale-partition limit, and returns focus to the exact invite row on cancel. A
+command-host regression proves the semantic action removes the active invite
+from the authoritative snapshot, clears the matching local handoff copy, and
+remains revoked after restart. This is not packaged-native or external-network
+evidence for the new controls.
 
 Customization has crossed a focused native macOS gate. The packaged workbench
 opens one human settings surface from More, presents everyday behavior before

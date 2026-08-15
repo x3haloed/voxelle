@@ -1039,6 +1039,11 @@ pub struct CreateSpaceInviteRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RevokeSpaceInviteRequest {
+    pub invite_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct JoinSpaceRequest {
     pub space_invite_json: String,
     pub max_events: Option<usize>,
@@ -1093,6 +1098,7 @@ pub struct HomeScreenView {
     pub recovery: RecoveryHealthView,
     pub runtime: RuntimeStatusView,
     pub invite: Option<InviteExchangeView>,
+    pub active_invites: Vec<ActiveInviteView>,
     pub peers: Vec<PeerListItemView>,
     pub channels: Vec<ChannelView>,
     pub roles: Vec<RoleView>,
@@ -1100,6 +1106,14 @@ pub struct HomeScreenView {
     pub notifications: Vec<NotificationView>,
     pub call: CallView,
     pub room: RoomTimelineView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ActiveInviteView {
+    pub invite_id: String,
+    pub created_ms: i64,
+    pub expires_ms: i64,
+    pub author_peer_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1330,6 +1344,7 @@ impl VoxelleHome {
             recovery: self.recovery_health()?,
             runtime,
             invite,
+            active_invites: self.active_invites()?,
             peers: self
                 .known_peers()?
                 .into_iter()
@@ -1891,6 +1906,20 @@ impl VoxelleHome {
         )
     }
 
+    pub fn revoke_space_invite(&self, request: &RevokeSpaceInviteRequest) -> Result<EventV1> {
+        if !self
+            .active_invites()?
+            .iter()
+            .any(|invite| invite.invite_id == request.invite_id)
+        {
+            anyhow::bail!("invite is not currently active");
+        }
+        self.create_governance_event(
+            "INVITE_REVOKE",
+            serde_json::json!({ "invite_id": request.invite_id }),
+        )
+    }
+
     pub fn read_messages(&self, room: Option<&str>) -> Result<Vec<MessageView>> {
         let config = self.load_config()?;
         let room = room.unwrap_or(&config.space.default_room_id);
@@ -2016,6 +2045,31 @@ impl VoxelleHome {
         }
         notifications.sort_by_key(|item| std::cmp::Reverse(item.created_ms));
         Ok(notifications)
+    }
+
+    pub fn active_invites(&self) -> Result<Vec<ActiveInviteView>> {
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let mut invites: Vec<ActiveInviteView> = governance
+            .into_iter()
+            .filter_map(|event| {
+                let expires_ms = state.active_invites.get(&event.event_id)?;
+                Some(ActiveInviteView {
+                    invite_id: event.event_id,
+                    created_ms: event.created_ms,
+                    expires_ms: *expires_ms,
+                    author_peer_id: event.author_peer_id,
+                })
+            })
+            .collect();
+        invites.sort_by(|left, right| {
+            left.expires_ms
+                .cmp(&right.expires_ms)
+                .then(left.invite_id.cmp(&right.invite_id))
+        });
+        Ok(invites)
     }
 
     pub fn roles(&self) -> Result<Vec<RoleView>> {
@@ -2961,6 +3015,8 @@ impl VoxelleHome {
         }
         validate_space_invite_at(&invite.space, &invite.invite_event, now_ms())?;
         let peers = invite.bootstrap_peers()?;
+        self.preflight_space_invite(invite, &peers, max_events_per_peer)
+            .await?;
 
         ensure_private_dir(&self.root)?;
         let identity = PeerIdentity::generate_at(now_ms())?;
@@ -3028,6 +3084,61 @@ impl VoxelleHome {
             events_pushed,
             peer_errors,
         })
+    }
+
+    async fn preflight_space_invite(
+        &self,
+        invite: &SpaceInviteFileV1,
+        peers: &[PeerRecord],
+        max_events_per_peer: usize,
+    ) -> Result<()> {
+        let config = HomeConfig {
+            space: invite.space.clone(),
+        };
+        let mut store = Store::open_in_memory()?;
+        self.ensure_space_genesis(&store, &config)?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let accepted_invite = accept_event(
+            &invite.invite_event,
+            &governance,
+            &config.room_context(),
+            now_ms(),
+        )
+        .map_err(|error| anyhow::anyhow!("space invite rejected locally: {error:?}"))?;
+        store.insert_accepted_event(accepted_invite, now_ms())?;
+
+        let node = QuicNode::bind_ipv6_loopback(PeerIdentity::generate_at(now_ms())?)?;
+        let context = config.room_context();
+        for peer in peers {
+            let result = node
+                .sync_room_once(
+                    &mut store,
+                    RoomSync {
+                        remote: &peer.endpoint,
+                        room_id: &config.space.governance_room_id,
+                        context: &context,
+                        now_ms: now_ms(),
+                        limits: SyncLimits {
+                            max_events_per_batch: max_events_per_peer,
+                        },
+                    },
+                )
+                .await;
+            if result.is_err() {
+                continue;
+            }
+            let governance = store.room_events(&config.space.governance_room_id)?;
+            let state = derive_governance_state(&governance, &context, now_ms());
+            if !state
+                .active_invites
+                .contains_key(&invite.invite_event.event_id)
+            {
+                anyhow::bail!(
+                    "space invite was revoked by a reachable ordinary peer; no local home was created"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn ui_ontology(&self) -> Result<UiOntologyView> {
@@ -3961,6 +4072,27 @@ impl VoxelleCommandHost {
                 invite.invite_event.event_id, bootstrap_count
             ),
         );
+        self.snapshot()
+    }
+
+    pub async fn revoke_space_invite(
+        &mut self,
+        request: RevokeSpaceInviteRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.revoke_space_invite(&request)?;
+        if self
+            .last_space_invite_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<SpaceInviteFileV1>(json).ok())
+            .is_some_and(|invite| invite.invite_event.event_id == request.invite_id)
+        {
+            self.last_space_invite_json = None;
+        }
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("revoked signed space invite {}", request.invite_id),
+        );
+        self.sync_known_peers(256).await?;
         self.snapshot()
     }
 
@@ -5466,6 +5598,13 @@ fn default_commands() -> Vec<UiCommand> {
             "Create a signed expiring invite for the current space",
             None,
             true,
+        ),
+        shell_command(
+            "space.invite.revoke",
+            "Revoke Space Invite",
+            "Revoke an active signed invite through space governance",
+            None,
+            false,
         ),
         shell_command(
             "space.join",
@@ -7770,6 +7909,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn command_host_projects_and_revokes_active_invites() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        host.start_service(StartServiceRequest {
+            bind: None,
+            advertise: None,
+        })
+        .expect("online");
+
+        let created = host
+            .create_space_invite(CreateSpaceInviteRequest {
+                expires_minutes: Some(7 * 24 * 60),
+            })
+            .expect("create invite");
+        let invite = created.home.expect("home").active_invites;
+        assert_eq!(invite.len(), 1);
+        let invite_id = invite[0].invite_id.clone();
+        assert!(host.last_space_invite_json.is_some());
+
+        let revoked = host
+            .revoke_space_invite(RevokeSpaceInviteRequest {
+                invite_id: invite_id.clone(),
+            })
+            .await
+            .expect("revoke invite");
+        assert!(revoked.home.expect("home").active_invites.is_empty());
+        assert!(host.last_space_invite_json.is_none());
+        assert!(host
+            .activity
+            .iter()
+            .any(|item| { item.summary == format!("revoked signed space invite {invite_id}") }));
+        assert!(VoxelleHome::new(&home_root)
+            .active_invites()
+            .expect("restart projection")
+            .is_empty());
+        host.stop_service().expect("stop");
+    }
+
+    #[tokio::test]
     async fn go_online_reconfigures_an_online_service_when_addresses_are_supplied() {
         let dir = tempdir().expect("tempdir");
         let mut host = VoxelleCommandHost::new(dir.path().join("home"));
@@ -8066,6 +8247,57 @@ mod tests {
         };
         assert!(matches!(event, VoxelleServiceEvent::Served(_)));
         assert!(event.summary().starts_with("served "));
+        service.stop().expect("stop service");
+    }
+
+    #[tokio::test]
+    async fn invite_revocation_is_durable_and_blocks_membership_at_an_informed_peer() {
+        let dir = tempdir().expect("tempdir");
+        let alice_root = dir.path().join("alice");
+        let alice = VoxelleHome::new(&alice_root);
+        let charlie = VoxelleHome::new(dir.path().join("charlie"));
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("service");
+        let invite = alice
+            .create_space_invite(service.online(), now_ms() + 60_000)
+            .expect("invite");
+        let invite_id = invite.invite_event.event_id.clone();
+        assert_eq!(alice.active_invites().expect("active invites").len(), 1);
+
+        alice
+            .revoke_space_invite(&RevokeSpaceInviteRequest {
+                invite_id: invite_id.clone(),
+            })
+            .expect("revoke");
+        assert!(alice
+            .active_invites()
+            .expect("revoked projection")
+            .is_empty());
+        assert!(VoxelleHome::new(&alice_root)
+            .active_invites()
+            .expect("restart projection")
+            .is_empty());
+        assert!(alice
+            .revoke_space_invite(&RevokeSpaceInviteRequest {
+                invite_id: invite_id.clone(),
+            })
+            .expect_err("cannot revoke twice")
+            .to_string()
+            .contains("not currently active"));
+
+        let error = charlie
+            .join_space_from_invite(&invite, 64)
+            .await
+            .expect_err("informed peer reports revocation before local home creation");
+        assert!(error
+            .to_string()
+            .contains("revoked by a reachable ordinary peer"));
+        assert!(!charlie.path("identity.json").exists());
+        assert!(!charlie
+            .local_state_exists(HOME_SELECTION_STATE)
+            .expect("fresh home"));
         service.stop().expect("stop service");
     }
 

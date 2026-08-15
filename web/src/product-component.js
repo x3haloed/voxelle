@@ -25,6 +25,8 @@ const uiState = {
   status: "",
   peerRecordDraft: "",
   spaceInviteDraft: "",
+  inviteExpiryMinutes: 1440,
+  revokingInviteId: "",
   messageDraft: "",
   messageMentionsDraft: new Set(),
   replyTargetEventId: "",
@@ -1512,22 +1514,31 @@ function inviteExchangeView(snapshot) {
   const invite = snapshot.home?.invite?.space_invite_json ?? "";
   const inviteGroup = element("div", "invite-flow");
   if (invite) {
+    const preview = inviteClaimPreview(invite);
+    const expiry = preview.state === "claims" && preview.expiresMs !== null
+      ? new Date(preview.expiresMs).toLocaleString()
+      : "the signed expiry";
     inviteGroup.append(
       element("p", "success-label", "Invite ready"),
       element(
         "p",
         "summary",
-        "Send this signed membership invite to one person. It is valid for 24 hours and includes ordinary peers Voxelle can try automatically.",
+        `Share this bearer invite privately with its intended recipient. It expires ${expiry}; anyone holding an unbound copy may attempt to join more than once before expiry or an admitted revocation.`,
       ),
       commandButton("invite.copy"),
-      commandButton("space.invite.create"),
     );
     const details = element("details", "advanced-details");
     details.append(
       element("summary", "", "Signed invite details"),
       element("pre", "invite-json", invite),
     );
-    inviteGroup.append(details);
+    const replacement = element("details", "advanced-details");
+    replacement.append(
+      element("summary", "", "Create another invite"),
+      element("p", "summary", "Creating another invite does not revoke existing active invites."),
+      inviteCreationForm(),
+    );
+    inviteGroup.append(details, replacement);
   } else {
     inviteGroup.append(
       element("h3", "", "Invite someone to this space"),
@@ -1539,9 +1550,29 @@ function inviteExchangeView(snapshot) {
           : "Go online first so the invite can include reachable ordinary peers.",
       ),
       snapshot.home?.runtime.state === "online"
-        ? commandButton("space.invite.create")
+        ? inviteCreationForm()
         : commandButton("runtime.goOnline"),
     );
+  }
+
+  const activeInvites = snapshot.home?.active_invites ?? [];
+  const active = element("section", "active-invites");
+  active.append(
+    element("h3", "", "Active invitations"),
+    element(
+      "p",
+      "summary",
+      activeInvites.length > 0
+        ? "These accepted governance facts can still authorize join attempts until expiry or an admitted revocation."
+        : "No accepted invite is currently active.",
+    ),
+  );
+  if (activeInvites.length > 0) {
+    const list = element("ol", "peer-list");
+    for (const activeInvite of activeInvites) {
+      list.append(activeInviteRow(activeInvite));
+    }
+    active.append(list);
   }
 
   const manual = element("details", "advanced-details");
@@ -1568,8 +1599,90 @@ function inviteExchangeView(snapshot) {
   );
   manual.append(importGroup);
 
-  fragment.append(inviteGroup, manual);
+  fragment.append(inviteGroup, active, manual);
   return fragment;
+}
+
+function inviteCreationForm() {
+  const form = element("form", "field-stack invite-create-form");
+  const label = element("label", "field");
+  label.append(element("span", "", "Invite expires after"));
+  const select = element("select", "");
+  select.setAttribute("aria-label", "Invite expiry");
+  for (const [minutes, text] of [
+    [60, "1 hour"],
+    [1440, "24 hours"],
+    [10080, "7 days"],
+    [43200, "30 days"],
+  ]) {
+    const option = element("option", "", text);
+    option.value = String(minutes);
+    option.selected = minutes === uiState.inviteExpiryMinutes;
+    select.append(option);
+  }
+  select.addEventListener("change", () => {
+    uiState.inviteExpiryMinutes = Number(select.value);
+  });
+  label.append(select);
+  form.append(
+    label,
+    element("p", "recovery-note", "This is not strictly single-use. Share it privately and revoke it if the copy may have leaked."),
+    submitButton("space.invite.create"),
+  );
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("space.invite.create").catch(reportError);
+  });
+  return form;
+}
+
+function activeInviteRow(invite) {
+  const row = element("li", "peer-row active-invite-row");
+  row.dataset.inviteId = invite.invite_id;
+  row.tabIndex = -1;
+  row.append(definitionGrid([
+    ["Expires", new Date(invite.expires_ms).toLocaleString()],
+    ["Created", new Date(invite.created_ms).toLocaleString()],
+    ["Invite ID", invite.invite_id],
+  ]));
+  if (uiState.revokingInviteId === invite.invite_id) {
+    const confirmation = element("section", "invite-revoke-confirmation");
+    confirmation.setAttribute("role", "alertdialog");
+    confirmation.setAttribute("aria-label", "Revoke invite confirmation");
+    confirmation.append(
+      element("strong", "", "Revoke this invite?"),
+      element(
+        "p",
+        "summary",
+        "Voxelle will admit a signed governance revocation locally and synchronize it through ordinary peers. A stale partition may still accept the bearer invite until it learns that governance fact.",
+      ),
+    );
+    const controls = element("div", "row-actions");
+    const confirm = commandButton("space.invite.revoke", { invite_id: invite.invite_id });
+    confirm.textContent = "Revoke this invite";
+    controls.append(confirm, actionButton("Cancel revocation", () => cancelInviteRevocation(invite.invite_id)));
+    confirmation.append(controls);
+    row.append(confirmation);
+  } else {
+    row.append(actionButton("Revoke invite…", () => beginInviteRevocation(invite.invite_id)));
+  }
+  return row;
+}
+
+function beginInviteRevocation(inviteId) {
+  uiState.revokingInviteId = inviteId;
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".invite-revoke-confirmation .command-button")?.focus());
+}
+
+function cancelInviteRevocation(inviteId) {
+  uiState.revokingInviteId = "";
+  render();
+  window.requestAnimationFrame(() => {
+    [...app.querySelectorAll(".active-invite-row")]
+      .find((row) => row.dataset.inviteId === inviteId)
+      ?.focus();
+  });
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -2775,7 +2888,13 @@ async function runCommand(command, payload) {
         currentSnapshot = await shell.execute(command);
         return;
       case "space.invite.create":
-        currentSnapshot = await shell.execute(command, { expires_minutes: 1440 });
+        currentSnapshot = await shell.execute(command, {
+          expires_minutes: uiState.inviteExpiryMinutes,
+        });
+        return;
+      case "space.invite.revoke":
+        currentSnapshot = await shell.execute(command, payload);
+        uiState.revokingInviteId = "";
         return;
       case "space.join":
         currentSnapshot = await shell.execute(command, {

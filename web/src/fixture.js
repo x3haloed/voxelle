@@ -42,6 +42,12 @@ export const fixtureSnapshot = {
         },
       },
     },
+    active_invites: [{
+      invite_id: "evt:preview-active-invite",
+      created_ms: 1760000000000,
+      expires_ms: 2000000000000,
+      author_peer_id: "ed25519:alice000000000000000000000000000000000000000000000000",
+    }],
     peers: [
       {
         label: "Peer 5b2a91c840e2",

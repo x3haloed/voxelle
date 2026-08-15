@@ -241,6 +241,15 @@ expiry or envelope conflicts. The preview neither admits nor rejects anything;
 `space.join` still sends the original bytes to Rust for signature, genesis,
 governance, expiry, and bootstrap validation.
 
+Invite creation offers bounded one-hour, one-day, seven-day, and thirty-day
+expiry choices and states that an unbound bearer is not strictly single-use.
+The People surface projects active invitations from Rust's admitted governance
+state rather than remembering frontend actions. `space.invite.revoke` carries
+the stable invite event ID through the ordinary signed-governance admission and
+peer-sync path. Revocation requires an explicit alert-dialog confirmation that
+names the stale-partition limitation; cancel returns focus to the originating
+invite row.
+
 An existing but unreadable local home is not presented as fresh onboarding.
 Rust reports a structured `home_error`; the shell explains the damage, keeps
 technical detail disclosure explicit, and requires confirmation before
@@ -268,7 +277,8 @@ Current command families:
 - shell/home/runtime: `shell.refresh`, `home.init`,
   `home.archiveForRecovery`, `runtime.goOnline`,
   `runtime.goOffline`;
-- admission: `space.invite.create`, `space.join`, `invite.copy`;
+- admission: `space.invite.create`, `space.invite.revoke`, `space.join`,
+  `invite.copy`;
 - identity recovery: `identity.recovery.export`, `identity.recovery.restore`;
 - channels and attention: `channel.create`, `channel.select`,
   `channel.markRead`, `channel.rotateKey`;

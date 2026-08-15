@@ -53,8 +53,9 @@ The important thing is that each running host has its own home root.
 Use the ordinary human surfaces first:
 
 - **People** in the header shows the local profile and members, creates and
-  copies a signed membership invite, and progressively discloses identity and
-  manual peer details.
+  copies a signed membership invite with an explicit expiry, lists active
+  governance invitations, confirms revocation, and progressively discloses
+  identity and manual peer details.
 - **Online / Offline** in the header opens Connection & Sync health. It shows
   automatic service, reachability, and synchronization state without requiring
   topology on the ordinary success path.
@@ -82,9 +83,18 @@ membership or protocol authority.
 4. In `Runtime Status`, confirm:
    - `Runtime` is `online`.
    - `Advertise` is not a loopback address unless this is a same-machine test.
-5. In `Invite Exchange`, create a signed, expiring space invite and copy its
-   complete JSON.
+5. In `Invite Exchange`, choose an expiry, create a signed space invite, and
+   copy its complete JSON. Confirm the invite appears under **Active
+   invitations**.
 6. Send A's signed space invite to Peer B out-of-band.
+
+As a separate revocation check, create another invite, choose **Revoke
+invite…**, review the stale-partition limitation, and confirm. Verify it leaves
+**Active invitations** and stays absent after restarting A. While an ordinary
+bootstrap peer that has learned the revocation is reachable, verify a fresh
+home refuses that stale `.voxinvite` without creating a local identity. Do not
+interpret acceptance by an isolated stale partition as strict-single-use or
+instantaneous-revocation behavior; neither is claimed.
 
 ### Peer B
 

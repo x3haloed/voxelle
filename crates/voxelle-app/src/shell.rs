@@ -100,6 +100,7 @@ impl ShellState {
             "runtime.goOnline" => host.start_service(parse_request(payload)?),
             "runtime.goOffline" => host.stop_service(),
             "space.invite.create" => host.create_space_invite(parse_request(payload)?),
+            "space.invite.revoke" => host.revoke_space_invite(parse_request(payload)?).await,
             "space.join" => host.join_space(parse_request(payload)?).await,
             "identity.recovery.export" => host.export_recovery_kit(parse_request(payload)?),
             "identity.recovery.restore" => host.restore_recovery_kit(parse_request(payload)?).await,
