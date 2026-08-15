@@ -63,6 +63,8 @@ const uiState = {
   productUpdateDraft: "",
   trustTransitionDraft: "",
   productConfirmationCommand: "",
+  preferencesResetConfirming: false,
+  preferenceDrafts: new Map(),
   draggedViewId: "",
   layoutEditing: false,
   connectionOpen: false,
@@ -214,6 +216,9 @@ function render() {
     ...(uiState.productConfirmationCommand
       ? [productUpdateConfirmation(currentSnapshot)]
       : []),
+    ...(uiState.preferencesResetConfirming
+      ? [preferencesResetConfirmation()]
+      : []),
     currentSnapshot.home
       ? workbenchShell(currentSnapshot)
       : onboardingExperience(currentSnapshot),
@@ -254,6 +259,16 @@ function recoverySetupPrompt() {
 }
 
 function handleKeydown(event) {
+  if (event.key === "Tab" && uiState.preferencesResetConfirming) {
+    const confirmation = app.querySelector(".preferences-reset-confirmation");
+    if (confirmation) trapModalTab(event, confirmation);
+    return;
+  }
+  if (event.key === "Escape" && uiState.preferencesResetConfirming) {
+    event.preventDefault();
+    cancelPreferencesResetConfirmation();
+    return;
+  }
   if (event.key === "Tab" && uiState.productConfirmationCommand) {
     const confirmation = app.querySelector(".product-update-confirmation");
     if (confirmation) trapModalTab(event, confirmation);
@@ -791,6 +806,55 @@ function customizationEditor(snapshot) {
   return fragment;
 }
 
+function preferencesResetConfirmation() {
+  const backdrop = element("div", "command-palette-backdrop preferences-reset-backdrop");
+  const dialog = element("section", "command-palette preferences-reset-confirmation");
+  dialog.setAttribute("role", "alertdialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-labelledby", "preferences-reset-title");
+  const title = element("h2", "", "Reset all customization?");
+  title.id = "preferences-reset-title";
+  const confirm = commandButton("ui.preferences.reset", { confirmed: true });
+  confirm.textContent = "Reset appearance, behavior, and layout";
+  confirm.dataset.dialogInitialFocus = "true";
+  const controls = element("div", "row-actions");
+  controls.append(confirm, actionButton("Keep my customization", cancelPreferencesResetConfirmation));
+  dialog.append(
+    title,
+    element(
+      "p",
+      "summary",
+      "This restores every appearance, spacing, and behavior preference and returns every docked view to its default placement and visibility.",
+    ),
+    element(
+      "p",
+      "summary",
+      "Your identity, conversations, membership, retained facts, and protocol settings are not changed.",
+    ),
+    controls,
+  );
+  backdrop.append(dialog);
+  return backdrop;
+}
+
+function beginPreferencesResetConfirmation() {
+  rememberFocusReturn();
+  uiState.paletteOpen = false;
+  uiState.paletteQuery = "";
+  uiState.connectionOpen = false;
+  uiState.utilityOpen = "settings";
+  uiState.preferencesResetConfirming = true;
+  render();
+}
+
+function cancelPreferencesResetConfirmation() {
+  uiState.preferencesResetConfirming = false;
+  render();
+  window.requestAnimationFrame(() => {
+    app.querySelector('[data-command="ui.preferences.reset"]')?.focus();
+  });
+}
+
 function preferenceGroup(title, preferences, renderer) {
   const group = element("section", "preference-group");
   group.append(element("h3", "", title));
@@ -802,38 +866,55 @@ function preferenceGroup(title, preferences, renderer) {
 
 /** @param {import("./shell-contract").SemanticToken} token */
 function semanticTokenEditor(token) {
-  const input = preferenceInput(token, "text", token.current_value);
+  const draft = uiState.preferenceDrafts.get(token.id);
+  const input = preferenceInput(
+    token,
+    "text",
+    typeof draft === "string" ? draft : token.current_value,
+  );
   return preferenceForm(token, input, () => ({
     kind: "semantic_token",
     id: token.id,
     value: input.value,
-  }), true);
+  }), () => input.value !== token.current_value, () => input.value, true);
 }
 
 /** @param {import("./shell-contract").UiMetric} metric */
 function metricEditor(metric) {
-  const input = preferenceInput(metric, "number", String(metric.current_value));
+  const draft = uiState.preferenceDrafts.get(metric.id);
+  const input = preferenceInput(
+    metric,
+    "number",
+    typeof draft === "string" ? draft : String(metric.current_value),
+  );
   input.min = "0";
   input.step = metric.unit === "count" ? "1" : "0.5";
   return preferenceForm(metric, input, () => ({
     kind: "metric",
     id: metric.id,
     value: input.valueAsNumber,
-  }), true);
+  }), () => input.valueAsNumber !== metric.current_value, () => input.value, true);
 }
 
 /** @param {import("./shell-contract").UiBehavior} behavior */
 function behaviorEditor(behavior) {
   const value = behavior.current_value;
+  const draft = uiState.preferenceDrafts.get(behavior.id);
   const input = behavior.id === "timestamps.style"
-    ? timestampStyleInput(value.type === "text" ? value.value : "relative")
+    ? timestampStyleInput(
+      typeof draft === "string"
+        ? draft
+        : value.type === "text" ? value.value : "relative",
+    )
     : preferenceInput(
       behavior,
       value.type === "bool" ? "checkbox" : "text",
-      value.type === "text" ? value.value : "",
+      typeof draft === "string"
+        ? draft
+        : value.type === "text" ? value.value : "",
     );
   if (value.type === "bool") {
-    input.checked = value.value;
+    input.checked = typeof draft === "boolean" ? draft : value.value;
   }
   return preferenceForm(behavior, input, () => ({
     kind: "behavior",
@@ -841,7 +922,9 @@ function behaviorEditor(behavior) {
     value: value.type === "bool"
       ? { type: "bool", value: input.checked }
       : { type: "text", value: input.value },
-  }), false);
+  }), () => value.type === "bool"
+    ? input.checked !== value.value
+    : input.value !== value.value, () => value.type === "bool" ? input.checked : input.value, false);
 }
 
 function timestampStyleInput(value) {
@@ -863,11 +946,12 @@ function preferenceInput(preference, type, value) {
   return input;
 }
 
-function preferenceForm(preference, input, request, showId) {
+function preferenceForm(preference, input, request, isChanged, readDraft, showId) {
   const form = element("form", "preference-form");
   form.dataset.preferenceId = preference.id;
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!isChanged()) return;
     runCommand("ui.preference.set", request()).catch(reportError);
   });
   const label = element("label", "preference-label");
@@ -876,7 +960,27 @@ function preferenceForm(preference, input, request, showId) {
   label.append(input);
   const save = submitButton("ui.preference.set");
   save.setAttribute("aria-label", `Save ${preference.label}`);
-  form.append(label, save);
+  const draftStatus = element("span", "visually-hidden");
+  const updateDraftState = () => {
+    const changed = isChanged();
+    if (changed) {
+      uiState.preferenceDrafts.set(preference.id, readDraft());
+    } else {
+      uiState.preferenceDrafts.delete(preference.id);
+    }
+    save.disabled = uiState.busyCommand !== "" || !changed;
+    if (changed) {
+      draftStatus.setAttribute("role", "status");
+      draftStatus.textContent = `${preference.label} has unsaved changes.`;
+    } else {
+      draftStatus.textContent = "";
+      draftStatus.removeAttribute("role");
+    }
+  };
+  input.addEventListener("input", updateDraftState);
+  input.addEventListener("change", updateDraftState);
+  updateDraftState();
+  form.append(label, save, draftStatus);
   return form;
 }
 
@@ -3635,6 +3739,10 @@ async function runCommand(command, payload) {
     beginProductConfirmation(command);
     return;
   }
+  if (command === "ui.preferences.reset" && payload?.confirmed !== true) {
+    beginPreferencesResetConfirmation();
+    return;
+  }
   const commandReturnElement = focusCoordinator.currentElement();
   const messageFocusKey = commandReturnElement?.dataset?.messageFocusKey ?? "";
   rememberNoticeReturn(commandReturnElement);
@@ -3952,9 +4060,12 @@ async function runCommand(command, payload) {
           command,
           /** @type {import("./shell-contract").SetUiPreferenceRequest} */ (payload),
         );
+        uiState.preferenceDrafts.delete(payload.id);
         return;
       case "ui.preferences.reset":
         currentSnapshot = await shell.execute(command, {});
+        uiState.preferenceDrafts.clear();
+        uiState.preferencesResetConfirming = false;
         return;
       case "workbench.layout.save":
         currentSnapshot = await shell.execute(
@@ -4160,7 +4271,7 @@ function focusAfterNoticeDismissal(returnElement, returnActionKey, validationTar
         .find((candidate) => candidate.dataset.validationTarget === validationTarget)
       : null;
     const activeSurface = app.querySelector(
-      ".utility-center, .connection-center, .command-palette, .product-update-confirmation",
+      ".utility-center, .connection-center, .command-palette, .product-update-confirmation, .preferences-reset-confirmation",
     );
     const restoredAction = returnActionKey
       ? [...app.querySelectorAll("[data-action-key]")]
@@ -4182,7 +4293,9 @@ function focusAfterNoticeDismissal(returnElement, returnActionKey, validationTar
 }
 
 function synchronizeTransientFocus() {
-  const surface = uiState.productConfirmationCommand
+  const surface = uiState.preferencesResetConfirming
+    ? "preferences-reset-confirmation"
+    : uiState.productConfirmationCommand
     ? `product-confirmation:${uiState.productConfirmationCommand}`
     : uiState.paletteOpen
     ? "palette"
@@ -4194,6 +4307,8 @@ function synchronizeTransientFocus() {
   focusCoordinator.synchronize(surface, () => {
     const target = surface === "palette"
       ? app.querySelector(".command-palette-input")
+      : surface === "preferences-reset-confirmation"
+        ? app.querySelector(".preferences-reset-confirmation [data-dialog-initial-focus='true']")
       : surface.startsWith("product-confirmation:")
         ? app.querySelector(".product-update-confirmation [data-dialog-initial-focus='true']")
         : surface.startsWith("utility:") && uiState.utilityFocusSelector

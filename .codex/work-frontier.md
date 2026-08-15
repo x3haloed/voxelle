@@ -15,4 +15,7 @@ Voxelle is ready for a credible beta when a person can install the native app an
 - **Invariant:** A beta claim requires completed causal paths and proportional evidence from native and physical environments; preview fixtures and polished pixels are not substitutes.
   **Evidence:** `docs/TRUTHFUL_SYSTEM_CONTRACT.md` (Causal Claims, Evidence Horizon, Construction And Verification Order) and `docs/BETA_EVIDENCE.md`.
 
+- **Invariant:** In-progress human input survives ordinary refreshes, focused reviews, and cancellation until the person explicitly saves, submits, clears, or abandons it.
+  **Evidence:** A rendered Customize probe showed that opening and canceling the all-customization reset review re-rendered the utility and silently replaced an unsaved checkbox draft with its projected value.
+
 ## Prediction errors

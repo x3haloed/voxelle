@@ -674,10 +674,15 @@ The command palette and layout editor now exist. The workbench's focused
 Customize surface presents everyday behavior first, with bounded choices for
 values such as timestamp style. Advanced appearance and spacing remain
 discoverable in the same surface with their stable semantic IDs. Token, metric,
-and behavior values are persisted through the Rust preference authority, and
-`ui.preferences.reset` restores the complete customization and workbench layout
-defaults through that same authority. Renderer replacement remains a named
-future editing surface rather than a claimed implementation.
+and behavior drafts enable their contextual Save action only after diverging
+from the projected value. In-progress values remain frontend draft state across
+ordinary refreshes and focused review/cancellation until the person saves,
+reverts, or abandons the surface, then persist through the Rust preference authority.
+`ui.preferences.reset` first reviews that appearance, spacing, behavior, and
+workbench placement or visibility will all return to defaults while protocol
+state remains untouched; only its explicit confirmation reaches that same Rust
+authority. Renderer replacement remains a named future editing surface rather
+than a claimed implementation.
 
 ## 4. Primitive Record Shape
 

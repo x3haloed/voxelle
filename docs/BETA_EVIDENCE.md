@@ -180,6 +180,16 @@ With that technology active and without using a pointer, complete and record:
   document-level horizontal scrolling; and
 - entering, operating, and leaving the direct-media surface.
 
+In Customize, confirm every unchanged preference begins with its contextual
+Save action disabled, changing the associated control enables only that Save
+action, and accepting it returns the action to disabled with the projected
+value retained. Invoke **Reset All Customization** and confirm a focused modal
+review names appearance, spacing, behavior, and dock placement or visibility,
+states that protocol state is untouched, traps Tab and Shift+Tab, and returns
+to the reset action after Escape or **Keep my customization** without changing
+the current customization. Confirm the reviewed reset through the ordinary
+native command only when the test intends to restore all defaults.
+
 Before creating an invite, change among the bounded expiry choices and confirm
 the live review names the selected signed bearer-capability window and the
 button says **Create signed invite**. After creation, confirm the projected

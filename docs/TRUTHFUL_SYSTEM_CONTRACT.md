@@ -500,6 +500,21 @@ listener instead of pairing a new label with stale behavior. This remains
 packaged-debug macOS evidence, not an external assistive-technology or release
 artifact gate.
 
+The customization frontend now distinguishes projected values from in-progress
+human drafts: unchanged fields expose disabled contextual Save actions, edits
+enable only their associated Save action, and drafts survive ordinary refreshes
+and reset-review cancellation without becoming a second persistence authority.
+Reset All Customization opens a modal review that names appearance, spacing,
+behavior, and workbench placement or visibility, states which protocol state is
+untouched, focuses the consequential action, traps keyboard navigation, and
+returns to Reset after button or Escape cancellation. Only explicit confirmation
+invokes the existing Rust-owned reset command; accepted preference or reset
+commands clear their matching disposable drafts. A rendered preview probe
+verified unchanged/changed/reverted Save states, draft survival across Refresh,
+the reset review and initial focus, both cancellation paths, retained draft on
+cancel, and focus return without invoking reset. This is rendered presentation
+evidence, not a new packaged-native or assistive-technology claim.
+
 The public Discord families have crossed their operational gate. Space
 governance now carries channel definitions, profiles, roles, permissions,
 bans, and invites. Signed room events carry posts, edits, redaction tombstones,
