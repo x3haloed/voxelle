@@ -104,6 +104,7 @@ impl ShellState {
             "identity.recovery.restore" => host.restore_recovery_kit(parse_request(payload)?).await,
             "message.send" => host.send_message(parse_request(payload)?).await,
             "channel.select" => host.select_channel(parse_request(payload)?),
+            "message.open" => host.open_message(parse_request(payload)?),
             "channel.markRead" => host.mark_read(parse_request(payload)?),
             "channel.create" => host.create_channel(parse_request(payload)?).await,
             "channel.rotateKey" => host.rotate_channel_key(parse_request(payload)?).await,
@@ -1345,6 +1346,24 @@ mod tests {
             .await
             .expect("local search");
         assert_eq!(search.search_results.len(), 1);
+        let search_event_id = search.search_results[0].message.event_id.clone();
+        let opened = alice
+            .execute_serialized_command(
+                "message.open",
+                serde_json::json!({
+                    "room_id": channel_id,
+                    "event_id": search_event_id
+                }),
+            )
+            .await
+            .expect("open retained search result");
+        let opened_home = opened.home.expect("home after opening search result");
+        assert_eq!(opened_home.room.room_id, channel_id);
+        assert!(opened_home
+            .room
+            .messages
+            .iter()
+            .any(|message| message.event_id == search_event_id));
 
         alice
             .execute_serialized_command("runtime.goOffline", serde_json::json!({}))

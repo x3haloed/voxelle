@@ -1567,10 +1567,14 @@ function messageSearchView(snapshot) {
     const row = element("li", "message remote");
     row.dataset.renderKey = `search:${result.message.event_id}`;
     const author = profileForPeer(snapshot, result.message.author_peer_id);
+    const channel = channelName(snapshot, result.room_id);
     row.append(
       element("strong", "", author.display_name),
-      element("span", "muted", channelName(snapshot, result.room_id)),
+      element("span", "muted", channel),
       element("p", "", result.message.text),
+      actionButton(`Open result in ${channel}`, () => {
+        openRetainedMessage(result.room_id, result.message.event_id).catch(reportError);
+      }),
     );
     results.append(row);
   }
@@ -1606,11 +1610,15 @@ function notificationCenterView(snapshot) {
 }
 
 async function openNotification(notification) {
+  await openRetainedMessage(notification.room_id, notification.event_id);
+}
+
+async function openRetainedMessage(roomId, eventId) {
   uiState.utilityOpen = "";
-  await runCommand("channel.select", { room_id: notification.room_id });
+  await runCommand("message.open", { room_id: roomId, event_id: eventId });
   window.requestAnimationFrame(() => {
     const message = [...app.querySelectorAll("[data-message-event-id]")]
-      .find((candidate) => candidate.dataset.messageEventId === notification.event_id);
+      .find((candidate) => candidate.dataset.messageEventId === eventId);
     message?.scrollIntoView?.({ block: "center" });
     message?.focus();
   });
@@ -2356,6 +2364,9 @@ async function runCommand(command, payload) {
         return;
       }
       case "channel.select":
+        currentSnapshot = await shell.execute(command, payload);
+        return;
+      case "message.open":
         currentSnapshot = await shell.execute(command, payload);
         return;
       case "channel.markRead":

@@ -332,6 +332,14 @@ retains the accepted facts; multi-room QUIC anti-entropy forwards them through
 ordinary peers; the app projects unread cursors, mention notifications, and
 local full-text search. A serialized two-home test exercises those commands
 through the same host used by the native shell. That serialized path now also
+opens a retained search result through `message.open`, where Rust validates its
+channel membership and returns a bounded projection anchored on the exact
+event. The same path serves mention notifications, so older results do not
+silently disappear behind the ordinary latest-500 projection and the frontend
+does not reconstruct retained history. Rendered-preview evidence confirms that
+the notification affordance routes through `message.open` and refuses to
+simulate acceptance. This is semantic and rendered evidence, not a new
+packaged-native search claim. The serialized path also
 projects admitted role assignments and ban state, proves that a banned member
 loses current membership and role assignment, and proves that unbanning only
 permits a future invited rejoin. The packaged macOS People surface presents

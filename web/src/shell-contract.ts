@@ -70,6 +70,8 @@ export type SendMessageRequest = { text: string, room: string | null, mentions: 
 
 export type SelectChannelRequest = { room_id: string, };
 
+export type OpenMessageRequest = { room_id: string, event_id: string, };
+
 export type MarkReadRequest = { room_id: string | null, };
 
 export type CreateChannelRequest = { name: string, topic: string, private_members: Array<string>, };

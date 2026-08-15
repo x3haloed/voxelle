@@ -627,6 +627,7 @@ pub fn shell_contract_typescript() -> String {
         StartServiceRequest::decl(&cfg),
         SendMessageRequest::decl(&cfg),
         SelectChannelRequest::decl(&cfg),
+        OpenMessageRequest::decl(&cfg),
         MarkReadRequest::decl(&cfg),
         CreateChannelRequest::decl(&cfg),
         RotateChannelKeyRequest::decl(&cfg),
@@ -756,6 +757,7 @@ pub struct VoxelleCommandHost {
     next_activity_id: u64,
     last_space_invite_json: Option<String>,
     selected_room_id: Option<String>,
+    selected_message_event_id: Option<String>,
     search_results: Vec<SearchResultView>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
     update_manager: UpdateManager,
@@ -886,6 +888,12 @@ pub struct SendMessageRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct SelectChannelRequest {
     pub room_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct OpenMessageRequest {
+    pub room_id: String,
+    pub event_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1217,6 +1225,15 @@ impl VoxelleHome {
         online: Option<&OnlineHome>,
         selected_room: Option<&str>,
     ) -> Result<HomeScreenView> {
+        self.home_screen_view_for_room_and_message(online, selected_room, None)
+    }
+
+    pub fn home_screen_view_for_room_and_message(
+        &self,
+        online: Option<&OnlineHome>,
+        selected_room: Option<&str>,
+        selected_message_event_id: Option<&str>,
+    ) -> Result<HomeScreenView> {
         let config = self.load_config()?;
         let invite = online
             .map(|online| online.invite_view(None, None))
@@ -1231,7 +1248,18 @@ impl VoxelleHome {
             .map(|channel| channel.room_id.clone())
             .unwrap_or_else(|| config.space.default_room_id.clone());
         let mut projected_messages = self.read_messages(Some(&selected_room))?;
-        retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
+        if let Some(event_id) = selected_message_event_id {
+            if let Some(index) = projected_messages
+                .iter()
+                .position(|message| message.event_id == event_id)
+            {
+                retain_window_around_index(&mut projected_messages, index, MAX_PROJECTED_MESSAGES);
+            } else {
+                retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
+            }
+        } else {
+            retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
+        }
         Ok(HomeScreenView {
             profile: self.profile_summary()?,
             recovery: self.recovery_health()?,
@@ -3532,6 +3560,7 @@ impl VoxelleCommandHost {
             next_activity_id: 1,
             last_space_invite_json: None,
             selected_room_id: None,
+            selected_message_event_id: None,
             search_results: Vec::new(),
             snapshot_invalidated,
             update_manager,
@@ -3945,6 +3974,7 @@ impl VoxelleCommandHost {
             format!("sent message {}", event.event_id),
         );
         self.sync_known_peers(256).await?;
+        self.selected_message_event_id = None;
         self.snapshot()
     }
 
@@ -3959,6 +3989,30 @@ impl VoxelleCommandHost {
         }
         self.home.mark_read(Some(&request.room_id))?;
         self.selected_room_id = Some(request.room_id);
+        self.selected_message_event_id = None;
+        self.snapshot()
+    }
+
+    pub fn open_message(&mut self, request: OpenMessageRequest) -> Result<ShellSnapshotView> {
+        if !self
+            .home
+            .channels(Some(&request.room_id))?
+            .iter()
+            .any(|channel| channel.room_id == request.room_id)
+        {
+            anyhow::bail!("channel is unknown or inaccessible");
+        }
+        if !self
+            .home
+            .read_messages(Some(&request.room_id))?
+            .iter()
+            .any(|message| message.event_id == request.event_id)
+        {
+            anyhow::bail!("message is unknown or inaccessible in this channel");
+        }
+        self.home.mark_read(Some(&request.room_id))?;
+        self.selected_room_id = Some(request.room_id);
+        self.selected_message_event_id = Some(request.event_id);
         self.snapshot()
     }
 
@@ -3981,6 +4035,7 @@ impl VoxelleCommandHost {
             .get("room_id")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
+        self.selected_message_event_id = None;
         self.sync_known_peers(256).await?;
         self.snapshot()
     }
@@ -4271,10 +4326,11 @@ impl VoxelleCommandHost {
 
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
         let online = self.service.as_ref().map(VoxelleService::online);
-        let (home, home_error) = match self
-            .home
-            .home_screen_view_for_room(online, self.selected_room_id.as_deref())
-        {
+        let (home, home_error) = match self.home.home_screen_view_for_room_and_message(
+            online,
+            self.selected_room_id.as_deref(),
+            self.selected_message_event_id.as_deref(),
+        ) {
             Ok(mut home) => {
                 if let Some(invite) = home.invite.as_mut() {
                     invite.space_invite_json = self.last_space_invite_json.clone();
@@ -5258,6 +5314,13 @@ fn default_commands() -> Vec<UiCommand> {
             "channel.select",
             "Select Channel",
             "Open an accessible channel",
+            None,
+            false,
+        ),
+        shell_command(
+            "message.open",
+            "Open Message",
+            "Open an accessible retained message in its channel",
             None,
             false,
         ),
@@ -6484,6 +6547,19 @@ fn retain_latest<T>(items: &mut Vec<T>, limit: usize) {
     }
 }
 
+fn retain_window_around_index<T>(items: &mut Vec<T>, index: usize, limit: usize) {
+    if limit == 0 {
+        items.clear();
+        return;
+    }
+    if items.len() <= limit {
+        return;
+    }
+    let start = index.saturating_sub(limit / 2).min(items.len() - limit);
+    items.drain(start + limit..);
+    items.drain(..start);
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -6503,6 +6579,21 @@ mod tests {
         let mut items = vec![1, 2, 3, 4];
         retain_latest(&mut items, 2);
         assert_eq!(items, vec![3, 4]);
+    }
+
+    #[test]
+    fn anchored_projection_retains_an_old_selected_item_within_the_bound() {
+        let mut items: Vec<usize> = (0..1_000).collect();
+        retain_window_around_index(&mut items, 10, 100);
+        assert_eq!(items.len(), 100);
+        assert!(items.contains(&10));
+        assert_eq!(items.first(), Some(&0));
+
+        let mut middle: Vec<usize> = (0..1_000).collect();
+        retain_window_around_index(&mut middle, 600, 100);
+        assert_eq!(middle.len(), 100);
+        assert!(middle.contains(&600));
+        assert_eq!(middle.first(), Some(&550));
     }
 
     #[cfg(unix)]

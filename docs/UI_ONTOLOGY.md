@@ -208,7 +208,8 @@ Current command families:
   `channel.markRead`, `channel.rotateKey`;
 - messages: `message.send`, `message.edit`, `message.redact`,
   `reaction.add`, `reaction.remove`, `pin.add`, `pin.remove`,
-  `attachment.add`, `message.search`, `message.composer.focus`;
+  `attachment.add`, `message.search`, `message.open`,
+  `message.composer.focus`;
 - people and governance: `profile.update`, `role.create`, `role.grant`,
   `role.revoke`, `member.ban`, `member.unban`;
 - calls: `call.join`, `call.signal`, `call.heartbeat`, `call.leave`;
@@ -238,11 +239,13 @@ through `message.send` or `message.edit`. A typed name resolves automatically
 only when unambiguous; duplicate display names require the member picker, which
 disambiguates the choice without making raw IDs the ordinary interaction.
 
-Each projected mention notification is an affordance over `channel.select`.
-Opening it closes the notification surface, selects and marks the authoritative
-channel read through Rust, and then focuses the retained message as disposable
-presentation behavior. The frontend does not maintain a separate read state or
-infer notification validity.
+Each projected search result and mention notification is an affordance over
+`message.open`. Rust validates that the retained event belongs to an accessible
+channel, marks that channel read, and returns a bounded conversation projection
+anchored on the selected event—even when it predates the ordinary latest-message
+window. The frontend closes the transient surface and focuses the returned
+message; it does not maintain read state, reconstruct history, or infer result
+validity.
 
 Banning a member requires an explicit focused confirmation that states the
 authority loss, retained-history behavior, and fresh-invite requirement before
