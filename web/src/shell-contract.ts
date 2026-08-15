@@ -128,7 +128,7 @@ export type InstallTrustTransitionRequest = { transition_json: string, };
 
 export type RecoveryHealthView = { kit_exported: boolean, last_exported_ms: bigint | null, };
 
-export type HomeScreenView = { profile: ProfileSummary, recovery: RecoveryHealthView, runtime: RuntimeStatusView, invite: InviteExchangeView | null, active_invites: Array<ActiveInviteView>, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, call: CallView, room: RoomTimelineView, };
+export type HomeScreenView = { space: SpaceSummaryView, profile: ProfileSummary, recovery: RecoveryHealthView, runtime: RuntimeStatusView, invite: InviteExchangeView | null, active_invites: Array<ActiveInviteView>, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, call: CallView, room: RoomTimelineView, };
 
 export type NetworkHealthView = { rows: Array<NetworkHealthRow>, };
 

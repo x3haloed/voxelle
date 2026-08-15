@@ -1,15 +1,25 @@
 const MAX_PREVIEW_CHARACTERS = 1024 * 1024;
+const HANDOFF_MARKER = "SIGNED VOXELLE INVITE JSON";
+
+export function signedInviteJsonFromText(text) {
+  if (typeof text !== "string") return "";
+  const markerIndex = text.indexOf(HANDOFF_MARKER);
+  return (markerIndex >= 0
+    ? text.slice(markerIndex + HANDOFF_MARKER.length)
+    : text).trim();
+}
 
 export function inviteClaimPreview(text, nowMs = Date.now()) {
-  if (typeof text !== "string" || !text.trim()) return { state: "empty" };
+  const signedInvite = signedInviteJsonFromText(text);
+  if (!signedInvite) return { state: "empty" };
   if (text.length > MAX_PREVIEW_CHARACTERS) {
     return { state: "unavailable", reason: "Invite text is too large to preview safely." };
   }
   let value;
   try {
-    value = JSON.parse(text);
+    value = JSON.parse(signedInvite);
   } catch {
-    return { state: "unavailable", reason: "Invite text is not complete JSON yet." };
+    return { state: "unavailable", reason: "This does not contain a complete Voxelle invitation yet." };
   }
   if (!value || typeof value !== "object") {
     return { state: "unavailable", reason: "Invite JSON does not contain an object." };

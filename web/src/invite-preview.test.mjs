@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { inviteClaimPreview } from "./invite-preview.mjs";
+import { inviteClaimPreview, signedInviteJsonFromText } from "./invite-preview.mjs";
 
 function invite(overrides = {}) {
   return JSON.stringify({
@@ -49,4 +49,11 @@ test("expired and conflicting claims are visible before Rust validation", () => 
 test("partial and oversized text cannot consume the review surface", () => {
   assert.equal(inviteClaimPreview("{").state, "unavailable");
   assert.match(inviteClaimPreview("x".repeat(1024 * 1024 + 1)).reason, /too large/);
+});
+
+test("friend-facing handoff yields the exact signed JSON for review and admission", () => {
+  const signedInvite = invite();
+  const handoff = `Join me on Voxelle\n\nSIGNED VOXELLE INVITE JSON\n${signedInvite}`;
+  assert.equal(signedInviteJsonFromText(handoff), signedInvite);
+  assert.equal(inviteClaimPreview(handoff, 1_000).spaceName, "Friends");
 });

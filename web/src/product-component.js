@@ -365,7 +365,7 @@ function header(snapshot) {
     "p",
     "header-context",
     selectedChannel
-      ? `${selectedChannel.visibility === "private" ? "Private · " : "# "}${selectedChannelLabel}`
+      ? `${snapshot.home?.space.name ?? "Space"} · ${selectedChannel.visibility === "private" ? "Private · " : "# "}${selectedChannelLabel}`
       : "Private communication, owned by its members",
   ));
 
@@ -589,13 +589,13 @@ function onboardingExperience(snapshot) {
 
   const join = onboardingChoice(
     "Join with an invite",
-    "A signed invite grants membership and includes several ordinary peers Voxelle can try automatically—even when the inviter is offline.",
+    "Paste the invitation message your friend sent you. Voxelle will verify it before joining.",
   );
   const joinForm = element("form", "field-stack");
   joinForm.addEventListener("submit", (event) => {
     event.preventDefault();
     runCommand("space.join", {
-      space_invite_json: uiState.spaceInviteDraft,
+      space_invite_json: signedInviteJsonFromText(uiState.spaceInviteDraft),
       max_events: 4096,
     }).catch(reportError);
   });
@@ -611,56 +611,56 @@ function onboardingExperience(snapshot) {
     try {
       uiState.spaceInviteDraft = await file.text();
       inviteText.value = uiState.spaceInviteDraft;
-      manualInvite.open = false;
+      const preview = inviteClaimPreview(uiState.spaceInviteDraft);
       inviteSource.textContent = uiState.spaceInviteDraft.trim()
-        ? `Selected ${file.name}. Review its claims below before joining.`
+        ? `Selected ${file.name}. Review the invitation below before joining.`
         : `${file.name} is empty. Choose a complete signed invite file.`;
       inviteSource.classList.remove("muted");
       inviteSource.classList.toggle("invite-review-warning", !uiState.spaceInviteDraft.trim());
       updateInviteReview(inviteReview, uiState.spaceInviteDraft);
-      joinButton.disabled = !uiState.spaceInviteDraft.trim();
+      joinButton.disabled = preview.state !== "claims";
     } catch (error) {
       uiState.spaceInviteDraft = "";
       inviteText.value = "";
-      inviteSource.textContent = "Voxelle could not read that invite file. Choose it again or paste the complete invite JSON.";
+      inviteSource.textContent = "Voxelle could not read that invitation file. Choose it again or paste the message your friend sent.";
       inviteSource.classList.remove("muted");
       inviteSource.classList.add("invite-review-warning");
       updateInviteReview(inviteReview, "");
       joinButton.disabled = true;
     }
   });
-  const chooseInvite = actionButton("Choose invite file…", () => inviteFile.click());
+  const chooseInvite = actionButton("Choose invitation file…", () => inviteFile.click());
   chooseInvite.classList.add("invite-file-button");
   const inviteText = element("textarea", "invite-input");
   inviteText.rows = 5;
-  inviteText.placeholder = "Paste complete signed .voxinvite JSON";
-  inviteText.setAttribute("aria-label", "Signed Voxelle invite");
+  inviteText.placeholder = "Paste the complete invitation message here";
+  inviteText.setAttribute("aria-label", "Invitation message from your friend");
   inviteText.value = uiState.spaceInviteDraft;
   inviteText.addEventListener("input", () => {
     uiState.spaceInviteDraft = inviteText.value;
+    const preview = inviteClaimPreview(inviteText.value);
     inviteSource.textContent = inviteText.value.trim()
-      ? "Using manually pasted invite JSON. Review its claims below before joining."
+      ? preview.state === "claims"
+        ? "Invitation recognized. Review it below before joining."
+        : "Voxelle has not recognized a complete invitation yet."
       : "No invite selected yet.";
     inviteSource.classList.toggle("muted", !inviteText.value.trim());
     inviteSource.classList.remove("invite-review-warning");
     updateInviteReview(inviteReview, uiState.spaceInviteDraft);
-    joinButton.disabled = !inviteText.value.trim();
+    joinButton.disabled = preview.state !== "claims";
   });
-  const manualInvite = element("details", "advanced-details invite-manual");
-  manualInvite.append(
-    disclosureSummary("Paste invite JSON instead"),
-    element(
-      "p",
-      "summary",
-      "Use this when someone sent the complete signed invite as text instead of a .voxinvite file.",
-    ),
-    inviteText,
-  );
+  const pasteLabel = element("label", "field");
+  pasteLabel.append(element("span", "", "Invitation message"), inviteText);
   const inviteReview = element("div", "invite-review");
   updateInviteReview(inviteReview, uiState.spaceInviteDraft);
   const joinButton = submitButton("space.join");
-  joinButton.disabled = !uiState.spaceInviteDraft.trim();
-  joinForm.append(inviteFile, chooseInvite, inviteSource, manualInvite, inviteReview, joinButton);
+  joinButton.disabled = inviteClaimPreview(uiState.spaceInviteDraft).state !== "claims";
+  const fileChoice = element("details", "advanced-details invite-manual");
+  fileChoice.append(
+    disclosureSummary("Use an invitation file instead"),
+    chooseInvite,
+  );
+  joinForm.append(inviteFile, pasteLabel, inviteSource, inviteReview, joinButton, fileChoice);
   join.append(joinForm);
 
   const recover = onboardingChoice(
@@ -687,7 +687,7 @@ function updateInviteReview(container, text) {
 
 function inviteReviewContent(preview) {
   if (preview.state === "empty") {
-    return element("p", "muted", "Choose or paste an invite to review its claims before joining.");
+    return element("p", "muted", "Paste the invitation message from your friend to review it before joining.");
   }
   if (preview.state === "unavailable") {
     const message = element("p", "invite-review-warning", preview.reason);
@@ -695,30 +695,37 @@ function inviteReviewContent(preview) {
     return message;
   }
   const review = element("section", "invite-review-claims");
-  review.setAttribute("aria-label", "Untrusted invite claims");
+  review.setAttribute("aria-label", "Invitation details");
   const expires = preview.expiresMs === null
     ? "Missing or unrecognized"
     : new Date(preview.expiresMs).toLocaleString();
   review.append(
-    element("strong", "", "Review before joining"),
+    element("strong", "", `Join ${preview.spaceName}?`),
     definitionGrid([
       ["Space", preview.spaceName],
-      ["Space ID", preview.spaceId],
-      ["Authority", preview.authorityPeerId],
       ["Expires", expires],
-      ["Included peers", preview.bootstrapCount === null ? "Unrecognized" : String(preview.bootstrapCount)],
     ]),
     element(
       "p",
       "recovery-note",
-      "This is a bearer invite. Anyone holding an unbound copy may attempt to join more than once until it expires or members revoke it.",
+      "Keep this invitation private. It may allow more than one join while active; members can revoke it if it was exposed or sent to the wrong person.",
     ),
     element(
       "p",
       "summary",
-      "These are untrusted claims for review. Rust verifies the space genesis, authority signature, expiry, governance history, and peer records when you choose Join Space.",
+      "Voxelle will verify the sender, expiration, and membership rules before joining.",
     ),
   );
+  const technical = element("details", "advanced-details");
+  technical.append(
+    disclosureSummary("Technical verification details"),
+    definitionGrid([
+      ["Space ID", preview.spaceId],
+      ["Signing authority", preview.authorityPeerId],
+      ["Included peers", preview.bootstrapCount === null ? "Unrecognized" : String(preview.bootstrapCount)],
+    ]),
+  );
+  review.append(technical);
   if (preview.expiredClaim || !preview.claimsConsistent) {
     const warning = element(
       "p",
@@ -1269,19 +1276,19 @@ function profileSummaryView(snapshot) {
     joinForm.addEventListener("submit", (event) => {
       event.preventDefault();
       runCommand("space.join", {
-        space_invite_json: uiState.spaceInviteDraft,
+        space_invite_json: signedInviteJsonFromText(uiState.spaceInviteDraft),
         max_events: 4096,
       }).catch(reportError);
     });
     const inviteInput = element("textarea", "peer-record-input");
-    inviteInput.placeholder = "Paste signed .voxinvite JSON";
+    inviteInput.placeholder = "Paste the invitation message from your friend";
     inviteInput.value = uiState.spaceInviteDraft;
     inviteInput.addEventListener("input", () => {
       uiState.spaceInviteDraft = inviteInput.value;
     });
     joinForm.append(
       element("h3", "", "Or join a space"),
-      element("p", "summary", "Paste the signed invite; Voxelle will create your identity, join, sync, and go online."),
+      element("p", "summary", "Paste your friend's invitation message; Voxelle will verify it, create your identity, join, synchronize, and go online."),
       inviteInput,
       submitButton("space.join"),
     );
@@ -3985,13 +3992,16 @@ async function runCommand(command, payload) {
         currentSnapshot = await shell.execute(command, payload);
         uiState.revokingInviteId = "";
         return;
-      case "space.join":
+      case "space.join": {
+        const joiningPreview = inviteClaimPreview(payload.space_invite_json);
         currentSnapshot = await shell.execute(command, {
-          space_invite_json: payload.space_invite_json,
+          space_invite_json: signedInviteJsonFromText(payload.space_invite_json),
           max_events: payload.max_events ?? 4096,
         });
         uiState.spaceInviteDraft = "";
+        uiState.status = `Joined ${currentSnapshot.home?.space.name ?? joiningPreview.spaceName ?? "the space"}. You are now connected as a member.`;
         return;
+      }
       case "identity.recovery.export": {
         if (!currentSnapshot.home) {
           throw new Error("Create or join a space before saving a recovery kit.");

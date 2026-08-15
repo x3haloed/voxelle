@@ -1114,6 +1114,7 @@ pub struct InstallTrustTransitionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct HomeScreenView {
+    pub space: SpaceSummaryView,
     pub profile: ProfileSummary,
     pub recovery: RecoveryHealthView,
     pub runtime: RuntimeStatusView,
@@ -1126,6 +1127,13 @@ pub struct HomeScreenView {
     pub notifications: Vec<NotificationView>,
     pub call: CallView,
     pub room: RoomTimelineView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SpaceSummaryView {
+    pub space_id: String,
+    pub name: String,
+    pub authority_peer_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1360,6 +1368,11 @@ impl VoxelleHome {
             retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
         }
         Ok(HomeScreenView {
+            space: SpaceSummaryView {
+                space_id: config.space.space_id.clone(),
+                name: config.space.name.clone(),
+                authority_peer_id: config.space.authority_peer_id.clone(),
+            },
             profile: self.profile_summary()?,
             recovery: self.recovery_health()?,
             runtime,
