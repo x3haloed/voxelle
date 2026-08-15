@@ -2732,22 +2732,29 @@ function focusMessageControl(eventId, focusKey) {
 
 function messageEditForm(message, snapshot) {
   const form = element("form", "message-edit-form");
+  const input = element("textarea", "message-edit-input");
+  input.dataset.syncFocusedValue = "true";
+  input.rows = 2;
+  input.value = uiState.messageEditDraft;
+  input.setAttribute("aria-label", "Edit message");
+  const save = submitButton("message.edit");
+  save.textContent = "Save changes";
+  const updateSaveAvailability = () => {
+    save.disabled = Boolean(uiState.busyCommand) || !messageDraftCanSend(input.value);
+  };
+  updateSaveAvailability();
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!uiState.messageEditDraft.trim()) return;
+    if (!messageDraftCanSend(input.value)) return;
     runCommand("message.edit", {
       target_event_id: message.event_id,
       text: uiState.messageEditDraft,
       room: snapshot.home?.room.room_id ?? null,
     }).catch(reportError);
   });
-  const input = element("textarea", "message-edit-input");
-  input.dataset.syncFocusedValue = "true";
-  input.rows = 2;
-  input.value = uiState.messageEditDraft;
-  input.setAttribute("aria-label", "Edit message");
   input.addEventListener("input", () => {
     uiState.messageEditDraft = input.value;
+    updateSaveAvailability();
   });
   input.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
@@ -2755,18 +2762,17 @@ function messageEditForm(message, snapshot) {
       cancelMessageEdit();
     } else if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      if (input.value.trim()) form.requestSubmit();
+      if (messageDraftCanSend(input.value)) form.requestSubmit();
     }
   });
   const controls = element("div", "row-actions");
-  const save = submitButton("message.edit");
-  save.textContent = "Save changes";
   controls.append(save, actionButton("Cancel edit", cancelMessageEdit));
   form.append(
     input,
     mentionPicker(input, snapshot, (value, peerId) => {
       uiState.messageEditDraft = value;
       uiState.messageEditMentionsDraft.add(peerId);
+      updateSaveAvailability();
     }),
     element("span", "composer-hint", "Enter to save · Escape to cancel"),
     controls,
@@ -2808,10 +2814,6 @@ function cancelReply() {
 
 function messageComposerView(snapshot) {
   const form = element("form", "message-form");
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    runCommand("message.send").catch(reportError);
-  });
   const channel = snapshot.home?.channels.find((candidate) => candidate.selected);
   const input = element("textarea", "message-input");
   input.dataset.syncFocusedValue = "true";
@@ -2820,14 +2822,25 @@ function messageComposerView(snapshot) {
   input.setAttribute("aria-label", input.placeholder);
   input.value = uiState.messageDraft;
   const count = element("span", "composer-count", `${uiState.messageDraft.length}`);
+  const send = submitButton("message.send");
+  const updateSendAvailability = () => {
+    send.disabled = Boolean(uiState.busyCommand) || !messageDraftCanSend(input.value);
+  };
+  updateSendAvailability();
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    if (!messageDraftCanSend(input.value)) return;
+    runCommand("message.send").catch(reportError);
+  });
   input.addEventListener("input", () => {
     uiState.messageDraft = input.value;
     count.textContent = String(input.value.length);
+    updateSendAvailability();
   });
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      if (input.value.trim()) form.requestSubmit();
+      if (messageDraftCanSend(input.value)) form.requestSubmit();
     }
   });
   const fileInput = element("input", "");
@@ -2873,11 +2886,12 @@ function messageComposerView(snapshot) {
       uiState.messageDraft = value;
       uiState.messageMentionsDraft.add(peerId);
       count.textContent = String(value.length);
+      updateSendAvailability();
     }),
     attach,
     element("span", "composer-hint", "Enter to send · Shift+Enter for a new line"),
     count,
-    submitButton("message.send"),
+    send,
   );
   if (uiState.replyTargetEventId && uiState.replyPreview) {
     const replyContext = element("div", "reply-context");

@@ -612,6 +612,15 @@ thread reply survived a full restart of the exact same artifact. Existing
 serialized two-home evidence continues to prove convergence through those same
 commands; this lived run is local packaged-debug evidence.
 
+The ordinary composer and inline editor now prevent a locally knowable empty
+submission before invoking authority. One shared predicate disables **Send
+Message** or **Save changes** for empty and whitespace-only drafts and is reused
+by typing, Enter, member-picker insertion, and form submission. Rendered probes
+observed disabled empty and whitespace states, enabled visible text and `@Bob`
+insertion, and keyboard clearing back to disabled in both paths. Rust still owns
+message length, authorization, mention, and semantic admission; this is
+presentation evidence, not accepted-message evidence.
+
 The human composer and inline editor now expose a named member picker for
 mentions. Rendered-preview evidence proves that selecting a member inserts the
 visible name and returns focus to the text control; deterministic composition

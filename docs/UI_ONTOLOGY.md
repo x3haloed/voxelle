@@ -411,6 +411,14 @@ authority mismatch. After admission, the imported principal/device tuple
 becomes the explicit manual target; optional auto-sync therefore cannot drift
 to an older stored peer.
 
+Message composition and inline editing expose one locally knowable admission
+prerequisite before invocation: Send or Save remains disabled while its draft is
+empty or whitespace-only. Typing visible content or inserting a named mention
+enables it; clearing the draft disables it again. Enter, the visible buttons,
+and form submission use the same shared predicate, while Rust remains
+authoritative for message bounds, membership, permissions, mentions, and
+creation-time validity.
+
 Message reply and edit affordances remain inside the conversation surface.
 Selecting Reply establishes local composer context, but the accepted action is
 still `message.send` with the root event ID in its payload. Inline editing and

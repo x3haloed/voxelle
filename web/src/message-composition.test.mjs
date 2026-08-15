@@ -1,12 +1,30 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { insertMentionText, mentionedPeerIds } from "./message-composition.mjs";
+import {
+  insertMentionText,
+  mentionedPeerIds,
+  messageDraftCanSend,
+} from "./message-composition.mjs";
 
 const profiles = [
   { peer_id: "peer:alice", display_name: "Alice" },
   { peer_id: "peer:bob", display_name: "Bob Stone" },
 ];
+const productSource = readFileSync(new URL("./product-component.js", import.meta.url), "utf8");
+
+test("message submission requires visible content", () => {
+  assert.equal(messageDraftCanSend(""), false);
+  assert.equal(messageDraftCanSend("  \n\t"), false);
+  assert.equal(messageDraftCanSend("hello"), true);
+  assert.equal(messageDraftCanSend("  hello  "), true);
+});
+
+test("composer and inline editor share the visible-content predicate", () => {
+  assert.match(productSource, /send\.disabled = Boolean\(uiState\.busyCommand\) \|\| !messageDraftCanSend\(input\.value\)/);
+  assert.match(productSource, /save\.disabled = Boolean\(uiState\.busyCommand\) \|\| !messageDraftCanSend\(input\.value\)/);
+});
 
 test("visible names resolve to stable peer IDs without prefix false positives", () => {
   assert.deepEqual(

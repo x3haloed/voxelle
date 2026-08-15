@@ -180,6 +180,13 @@ With that technology active and without using a pointer, complete and record:
   document-level horizontal scrolling; and
 - entering, operating, and leaving the direct-media surface.
 
+Before sending conversation content, confirm **Send Message** is disabled for
+an empty or whitespace-only draft, becomes enabled for visible text or a member
+inserted through **Mention someone**, and disables again when the draft is
+cleared. Open inline editing and confirm **Save changes** follows the same
+empty, whitespace, visible-content, and cleared states. Then send and edit
+through the ordinary admitted paths.
+
 After restoring identity on the fresh device, confirm the success status states
 that authority from previous devices was revoked and directs the person to save
 a fresh offline recovery kit. Keyboard focus must land on that fresh-kit action,

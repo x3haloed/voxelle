@@ -1,5 +1,10 @@
 const MENTION_BOUNDARY = /[\s.,!?;:()[\]{}'"-]/;
 
+/** @param {string} text */
+export function messageDraftCanSend(text) {
+  return text.trim().length > 0;
+}
+
 /**
  * Resolve visible @names to the stable peer IDs carried by the command.
  * @param {string} text
