@@ -173,6 +173,12 @@ and are reachable through Edit layout. A compact Connection surface projects the
 same Rust-owned network-health rows when topology or synchronization needs
 attention; it does not create a second health model in the frontend.
 
+Transient panels and modal command surfaces preserve keyboard location: focus
+moves into a newly opened surface, modal Tab navigation remains contained, and
+closing returns focus to the invoking control when it still exists. Snapshot
+refreshes do not make the entire application a live region; only bounded status
+and alert surfaces announce changes to assistive technology.
+
 Until a recovery-kit export succeeds, the ordinary shell shows a compact
 recovery setup prompt. The durable health marker records only completion time,
 never recovery bytes or their filesystem location. After export, the prompt

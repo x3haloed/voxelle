@@ -48,6 +48,7 @@ if (!initialSnapshot.product_component && shell.mode === "preview") {
     "./src/call-media.mjs",
     "./src/connection-status.mjs",
     "./src/dom-reconcile.mjs",
+    "./src/focus-management.mjs",
     "./src/ui-ontology.mjs",
     "./src/workbench.mjs",
   ].map((url) => fetch(url, { cache: "no-store" }).then((response) => response.text())));

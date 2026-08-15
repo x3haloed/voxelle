@@ -60,6 +60,10 @@ const uiState = {
   mediaNotice: null,
   lastCallHeartbeatMs: 0,
 };
+const focusCoordinator = new FocusSurfaceCoordinator(
+  document,
+  (callback) => window.requestAnimationFrame(callback),
+);
 
 const viewRenderers = {
   "profile.summary": profileSummaryView,
@@ -184,16 +188,10 @@ function render() {
     ...(uiState.paletteOpen ? [commandPalette(currentSnapshot)] : []),
   );
   reconcileChildren(app, desired);
+  synchronizeTransientFocus();
   if (presentation.activityAutoScroll) {
     const activity = app.querySelector(".activity-list");
     activity?.scrollTo?.({ top: activity.scrollHeight });
-  }
-  if (uiState.paletteOpen) {
-    window.requestAnimationFrame(() => {
-      const input = app.querySelector(".command-palette-input");
-      input?.focus();
-      input?.setSelectionRange?.(input.value.length, input.value.length);
-    });
   }
   attachCallMedia();
   processCallSignals().catch(reportError);
@@ -224,6 +222,11 @@ function recoverySetupPrompt() {
 }
 
 function handleKeydown(event) {
+  if (event.key === "Tab" && uiState.paletteOpen) {
+    const palette = app.querySelector(".command-palette");
+    if (palette) trapModalTab(event, palette);
+    return;
+  }
   if (event.key === "Escape" && uiState.paletteOpen) {
     event.preventDefault();
     uiState.paletteOpen = false;
@@ -284,6 +287,7 @@ function header(snapshot) {
 function connectionCenterButton(snapshot) {
   const status = connectionHeaderState(snapshot);
   const button = actionButton(status.label, () => {
+    if (!uiState.connectionOpen) rememberFocusReturn();
     uiState.utilityOpen = "";
     uiState.connectionOpen = !uiState.connectionOpen;
     render();
@@ -302,6 +306,7 @@ function headerMore(snapshot) {
   if (snapshot.home) {
     menu.append(
       actionButton("Customize", () => {
+        rememberFocusReturn();
         uiState.connectionOpen = false;
         uiState.utilityOpen = "settings";
         render();
@@ -319,6 +324,7 @@ function headerMore(snapshot) {
 
 function utilityButton(kind, label) {
   const button = actionButton(label, () => {
+    if (uiState.utilityOpen !== kind) rememberFocusReturn();
     uiState.connectionOpen = false;
     uiState.utilityOpen = uiState.utilityOpen === kind ? "" : kind;
     render();
@@ -371,10 +377,12 @@ function utilityCenter(snapshot, kind) {
   const title = element("h2", "", definition.title);
   title.id = "utility-center-title";
   copy.append(title, element("p", "summary", definition.summary));
-  heading.append(copy, actionButton("Close", () => {
+  const close = actionButton("Close", () => {
     uiState.utilityOpen = "";
     render();
-  }));
+  });
+  close.dataset.dialogInitialFocus = "true";
+  heading.append(copy, close);
   const body = element("div", "connection-center-body");
   body.append(definition.render());
   aside.append(heading, body);
@@ -405,13 +413,12 @@ function connectionCenter(snapshot) {
       "Voxelle tries ordinary peers automatically. Change addresses here when intervention is needed; setup checks stay distinct from broken states.",
     ),
   );
-  heading.append(
-    copy,
-    actionButton("Close", () => {
-      uiState.connectionOpen = false;
-      render();
-    }),
-  );
+  const close = actionButton("Close", () => {
+    uiState.connectionOpen = false;
+    render();
+  });
+  close.dataset.dialogInitialFocus = "true";
+  heading.append(copy, close);
   const body = element("div", "connection-center-body");
   body.append(serviceOptions(), networkHealthView(snapshot));
   aside.append(heading, body);
@@ -2156,6 +2163,9 @@ function submitButton(command) {
  * @param {unknown} [payload]
  */
 async function runCommand(command, payload) {
+  // Capture before the busy render disables the focused command button; browsers
+  // may blur a control as soon as it becomes disabled.
+  if (command === "workbench.commandPalette.open") rememberFocusReturn();
   uiState.busyCommand = command;
   uiState.error = "";
   render();
@@ -2486,6 +2496,29 @@ function globalErrorBanner() {
     }),
   );
   return banner;
+}
+
+function rememberFocusReturn() {
+  focusCoordinator.rememberReturnElement();
+}
+
+function synchronizeTransientFocus() {
+  const surface = uiState.paletteOpen
+    ? "palette"
+    : uiState.connectionOpen
+      ? "connection"
+      : uiState.utilityOpen
+        ? `utility:${uiState.utilityOpen}`
+        : "";
+  focusCoordinator.synchronize(surface, () => {
+    const target = surface === "palette"
+      ? app.querySelector(".command-palette-input")
+      : app.querySelector("[data-dialog-initial-focus='true']");
+    if (surface === "palette") {
+      target?.setSelectionRange?.(target.value.length, target.value.length);
+    }
+    return target;
+  });
 }
 
 function firstPeerRequest() {
