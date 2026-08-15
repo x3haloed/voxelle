@@ -734,6 +734,20 @@ controls, then carried the selected marker and its distinct permission summary
 through the assignment review without invoking governance. This is not
 admitted-governance, packaged-native, or assistive-technology evidence.
 
+Channels now preserve that distinction across navigation and conversation when
+case-insensitive names collide. One helper leaves unique names uncluttered and
+appends the shortest unique room-ID suffix of at least eight characters to the
+channel card, Select and private-key rotation paths, selected header, timeline,
+composer target, retained-search results, and notification actions. Commands
+and projections still carry complete room IDs, and the frontend does not infer
+room authority from the label. Deterministic helper, product-source, and native
+bundle tests cover the mapping. A rendered public/private case-insensitive
+duplicate-name fixture probe observed distinct channel cards, selected header,
+timeline, composer target, private Select and key-rotation controls, the focused
+rotation review, and the notification action; it did not invoke either room
+command. This is not admitted-channel, packaged-native, or
+assistive-technology evidence.
+
 Accepted reaction and pin toggles also preserve causal keyboard location
 without preserving a stale command listener. Reconciliation replaces the
 control when the Rust-projected action changes from add to remove or back; a

@@ -257,7 +257,11 @@ confirm their cards, mention choices, Ban/Unban controls, and role-assignment
 controls retain distinct matching member markers through confirmation. Create
 two roles with the same name but different permissions; confirm their cards,
 Manage members controls, assignment actions, and reviews retain distinct
-matching role markers and permission descriptions. Select a different channel
+matching role markers and permission descriptions. Create two channels with the
+same name, including one private channel; confirm their cards, Select and key
+rotation controls, header, conversation, composer, search results, and
+notification actions retain distinct matching channel markers. Select a
+different channel
 and confirm the accepted selected row is
 announced as the current location and receives focus after its Select button
 disappears. Add and remove a reaction, then pin and unpin a message. Confirm the

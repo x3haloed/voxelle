@@ -133,3 +133,28 @@ export function disambiguatedRoleLabel(role, roles) {
     ? `${role.name} · role ${stableId.slice(-markerLength)}`
     : role.name;
 }
+
+/**
+ * Keep ordinary channel names primary while making duplicate-name rooms stable.
+ * @param {{room_id: string, name: string}} channel
+ * @param {Array<{room_id: string, name: string}>} channels
+ */
+export function disambiguatedChannelLabel(channel, channels) {
+  const name = channel.name.trim().toLocaleLowerCase();
+  const duplicates = channels.filter((candidate) => (
+    candidate.name.trim().toLocaleLowerCase() === name
+  ));
+  const stableId = channel.room_id.slice(channel.room_id.lastIndexOf(":") + 1);
+  let markerLength = Math.min(8, stableId.length);
+  while (
+    markerLength < stableId.length
+    && duplicates.some((candidate) => (
+      candidate.room_id !== channel.room_id
+      && candidate.room_id.slice(candidate.room_id.lastIndexOf(":") + 1)
+        .endsWith(stableId.slice(-markerLength))
+    ))
+  ) markerLength += 1;
+  return duplicates.length > 1
+    ? `${channel.name} · channel ${stableId.slice(-markerLength)}`
+    : channel.name;
+}

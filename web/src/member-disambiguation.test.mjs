@@ -12,3 +12,10 @@ test("duplicate member and role names keep bounded stable markers on authority-c
   assert.match(source, /roleAssignmentConfirmation\(\s*role,\s*roleLabel,\s*profile,\s*memberLabel,/);
   assert.match(source, /`Mention \$\{disambiguatedMemberLabel\(profile, currentProfiles\)\}`/);
 });
+
+test("duplicate channel names retain one stable label across causal surfaces", () => {
+  assert.match(source, /const channelLabel = disambiguatedChannelLabel\(channel, channels\)/);
+  assert.match(source, /channelKeyRotationConfirmation\(channel, channelLabel\)/);
+  assert.match(source, /Message \$\{channel \? `#\$\{channelLabel\}` : "this room"\}/);
+  assert.match(source, /disambiguatedChannelLabel\(channel, snapshot\.home\?\.channels \?\? \[\]\)/);
+});

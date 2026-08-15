@@ -318,11 +318,14 @@ function header(snapshot) {
   const titleGroup = element("div", "title-group");
   titleGroup.append(element("h1", "", "Voxelle"));
   const selectedChannel = snapshot.home?.channels.find((channel) => channel.selected);
+  const selectedChannelLabel = selectedChannel
+    ? disambiguatedChannelLabel(selectedChannel, snapshot.home?.channels ?? [])
+    : "";
   titleGroup.append(element(
     "p",
     "header-context",
     selectedChannel
-      ? `${selectedChannel.visibility === "private" ? "Private · " : "# "}${selectedChannel.name}`
+      ? `${selectedChannel.visibility === "private" ? "Private · " : "# "}${selectedChannelLabel}`
       : "Private communication, owned by its members",
   ));
 
@@ -2085,14 +2088,16 @@ function peerListView(snapshot) {
 function channelListView(snapshot) {
   const fragment = document.createDocumentFragment();
   const list = element("ol", "peer-list");
-  for (const channel of snapshot.home?.channels ?? []) {
+  const channels = snapshot.home?.channels ?? [];
+  for (const channel of channels) {
+    const channelLabel = disambiguatedChannelLabel(channel, channels);
     const row = element("li", channel.selected ? "peer-row selected" : "peer-row");
     row.dataset.renderKey = `channel:${channel.room_id}`;
     row.tabIndex = -1;
     if (channel.selected) row.setAttribute("aria-current", "page");
     const body = element("div", "peer-body");
     body.append(
-      element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channel.name}${channel.unread_count > 0 ? ` (${channel.unread_count})` : ""}`),
+      element("strong", "", `${channel.visibility === "private" ? "🔒" : "#"} ${channelLabel}${channel.unread_count > 0 ? ` (${channel.unread_count})` : ""}`),
       element("span", "muted", channel.topic),
     );
     if (channel.visibility === "private") {
@@ -2107,18 +2112,18 @@ function channelListView(snapshot) {
       const select = commandButton("channel.select", { room_id: channel.room_id });
       select.setAttribute(
         "aria-label",
-        `Select ${channel.visibility === "private" ? "private " : ""}channel ${channel.name}`,
+        `Select ${channel.visibility === "private" ? "private " : ""}channel ${channelLabel}`,
       );
       actions.append(select);
     }
     if (channel.visibility === "private") {
       if (uiState.rotatingChannelId === channel.room_id) {
-        row.append(body, channelKeyRotationConfirmation(channel));
+        row.append(body, channelKeyRotationConfirmation(channel, channelLabel));
         list.append(row);
         continue;
       }
       const rotate = actionButton("Rotate key…", () => beginChannelKeyRotation(channel.room_id));
-      rotate.setAttribute("aria-label", `Rotate encryption key for private channel ${channel.name}`);
+      rotate.setAttribute("aria-label", `Rotate encryption key for private channel ${channelLabel}`);
       actions.append(rotate);
     }
     row.append(body);
@@ -2226,12 +2231,12 @@ function channelCreatePayload(snapshot) {
   };
 }
 
-function channelKeyRotationConfirmation(channel) {
+function channelKeyRotationConfirmation(channel, channelLabel) {
   const confirmation = element("section", "channel-key-confirmation");
   confirmation.setAttribute("role", "alertdialog");
-  confirmation.setAttribute("aria-label", `Rotate key for ${channel.name}`);
+  confirmation.setAttribute("aria-label", `Rotate key for ${channelLabel}`);
   confirmation.append(
-    element("strong", "", `Rotate the key for #${channel.name}?`),
+    element("strong", "", `Rotate the key for #${channelLabel}?`),
     element(
       "p",
       "summary",
@@ -2641,10 +2646,13 @@ async function openRetainedMessage(roomId, eventId) {
 function roomTimelineView(snapshot) {
   const fragment = document.createDocumentFragment();
   const channel = snapshot.home?.channels.find((candidate) => candidate.selected);
+  const channelLabel = channel
+    ? disambiguatedChannelLabel(channel, snapshot.home?.channels ?? [])
+    : "";
   const context = element("div", "conversation-context");
   context.append(
     element("h3", "", channel
-      ? `${channel.visibility === "private" ? "🔒 " : "# "}${channel.name}`
+      ? `${channel.visibility === "private" ? "🔒 " : "# "}${channelLabel}`
       : "Conversation"),
     element("p", "summary", channel?.topic || "Messages retained and synchronized by space members."),
   );
@@ -2653,7 +2661,7 @@ function roomTimelineView(snapshot) {
   if (messages.length === 0) {
     const empty = element("li", "conversation-empty");
     empty.append(
-      element("strong", "", `Start ${channel ? `#${channel.name}` : "the conversation"}`),
+      element("strong", "", `Start ${channel ? `#${channelLabel}` : "the conversation"}`),
       element("p", "summary", "The first accepted message will appear here and synchronize through ordinary retaining peers."),
     );
     list.append(empty);
@@ -2909,10 +2917,13 @@ function cancelReply() {
 function messageComposerView(snapshot) {
   const form = element("form", "message-form");
   const channel = snapshot.home?.channels.find((candidate) => candidate.selected);
+  const channelLabel = channel
+    ? disambiguatedChannelLabel(channel, snapshot.home?.channels ?? [])
+    : "";
   const input = element("textarea", "message-input");
   input.dataset.syncFocusedValue = "true";
   input.rows = 2;
-  input.placeholder = `Message ${channel ? `#${channel.name}` : "this room"}`;
+  input.placeholder = `Message ${channel ? `#${channelLabel}` : "this room"}`;
   input.setAttribute("aria-label", input.placeholder);
   input.value = uiState.messageDraft;
   const count = element("span", "composer-count");
@@ -4434,7 +4445,9 @@ function profileForPeer(snapshot, peerId) {
 
 function channelName(snapshot, roomId) {
   const channel = snapshot.home?.channels.find((candidate) => candidate.room_id === roomId);
-  return channel ? `# ${channel.name}` : roomId;
+  return channel
+    ? `# ${disambiguatedChannelLabel(channel, snapshot.home?.channels ?? [])}`
+    : roomId;
 }
 
 function profileInitials(displayName) {

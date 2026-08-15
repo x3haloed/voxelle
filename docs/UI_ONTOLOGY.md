@@ -124,6 +124,12 @@ than reconstructing authorization. Removing a ban is described precisely: it
 permits a principal to use a valid invite again, but does not itself restore
 membership.
 
+Duplicate channel names follow the same stable-target rule. A shortest unique
+room-ID suffix appears only for case-insensitive collisions and remains
+consistent across the channel card, Select and key-rotation controls, header,
+timeline, composer target, retained-search results, and notification actions.
+Complete room IDs remain the command and projection authority.
+
 The initialized default is a conversation workspace rather than a dashboard of
 all registered views. Channels, the selected conversation, its composer, and
 direct media remain in the workbench. Focused header surfaces expose people and

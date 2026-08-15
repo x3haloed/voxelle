@@ -5,8 +5,8 @@ import test from "node:test";
 const source = await readFile(new URL("./product-component.js", import.meta.url), "utf8");
 
 test("channel actions expose their visible channel context", () => {
-  assert.match(source, /Select \$\{channel\.visibility === "private" \? "private " : ""\}channel \$\{channel\.name\}/);
-  assert.match(source, /Rotate encryption key for private channel \$\{channel\.name\}/);
+  assert.match(source, /Select \$\{channel\.visibility === "private" \? "private " : ""\}channel \$\{channelLabel\}/);
+  assert.match(source, /Rotate encryption key for private channel \$\{channelLabel\}/);
 });
 
 test("message action disclosures expose author and bounded content context", () => {

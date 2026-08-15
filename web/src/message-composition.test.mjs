@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  disambiguatedChannelLabel,
   disambiguatedMemberLabel,
   disambiguatedRoleLabel,
   insertMentionText,
@@ -117,5 +118,27 @@ test("duplicate role names receive stable bounded disambiguators", () => {
   assert.equal(
     disambiguatedRoleLabel(collidingSuffixes[1], collidingSuffixes),
     "helper · role b12345678",
+  );
+});
+
+test("duplicate channel names receive stable bounded disambiguators", () => {
+  const channels = [
+    { room_id: "space:channel:general-aaa11111", name: "General" },
+    { room_id: "space:channel:general-bbb22222", name: "general" },
+  ];
+  assert.equal(disambiguatedChannelLabel(channels[0], channels), "General · channel aaa11111");
+  assert.equal(disambiguatedChannelLabel(channels[1], channels), "general · channel bbb22222");
+  assert.equal(disambiguatedChannelLabel(channels[0], [channels[0]]), "General");
+  const collidingSuffixes = [
+    { room_id: "space:channel:first-a12345678", name: "Plans" },
+    { room_id: "space:channel:second-b12345678", name: "plans" },
+  ];
+  assert.equal(
+    disambiguatedChannelLabel(collidingSuffixes[0], collidingSuffixes),
+    "Plans · channel a12345678",
+  );
+  assert.equal(
+    disambiguatedChannelLabel(collidingSuffixes[1], collidingSuffixes),
+    "plans · channel b12345678",
   );
 });
