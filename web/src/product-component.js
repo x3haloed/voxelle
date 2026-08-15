@@ -1866,25 +1866,37 @@ function inviteCreationForm() {
   label.append(element("span", "", "Invite expires after"));
   const select = element("select", "");
   select.setAttribute("aria-label", "Invite expiry");
-  for (const [minutes, text] of [
+  const expiryChoices = [
     [60, "1 hour"],
     [1440, "24 hours"],
     [10080, "7 days"],
     [43200, "30 days"],
-  ]) {
+  ];
+  for (const [minutes, text] of expiryChoices) {
     const option = element("option", "", text);
     option.value = String(minutes);
     option.selected = minutes === uiState.inviteExpiryMinutes;
     select.append(option);
   }
+  const expiryReview = element("p", "summary");
+  expiryReview.setAttribute("aria-live", "polite");
+  const updateExpiryReview = () => {
+    const choice = expiryChoices.find(([minutes]) => minutes === uiState.inviteExpiryMinutes);
+    expiryReview.textContent = `This signed bearer capability can authorize joins for ${choice?.[1] ?? "the selected time"} after creation unless members revoke it.`;
+  };
   select.addEventListener("change", () => {
     uiState.inviteExpiryMinutes = Number(select.value);
+    updateExpiryReview();
   });
+  updateExpiryReview();
   label.append(select);
+  const create = submitButton("space.invite.create");
+  create.textContent = "Create signed invite";
   form.append(
     label,
+    expiryReview,
     element("p", "recovery-note", "This is not strictly single-use. Share it privately and revoke it if the copy may have leaked."),
-    submitButton("space.invite.create"),
+    create,
   );
   form.addEventListener("submit", (event) => {
     event.preventDefault();

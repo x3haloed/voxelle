@@ -624,6 +624,20 @@ failure remains internal rather than being mislabeled as reachability. A
 serialized revoked-invite test proves both the human recovery copy and that the
 refused join leaves the destination genuinely fresh.
 
+Signed invite creation no longer silently clamps a semantic caller's requested
+authority window. Rust accepts the documented finite envelope of 1 minute
+through 30 days and returns correctable-input recovery outside it before
+creating the signed governance fact. The human form retains its bounded
+one-hour, one-day, seven-day, and thirty-day choices, now reviews the selected
+bearer-capability window in a live region, and labels the action **Create signed
+invite**. Serialized semantic-command tests cover refusal on both sides of the
+range and prove no active invite was admitted; a deterministic product-source
+regression covers the review copy. A rendered
+active-home probe changed the choice from 24 hours to 7 days and observed the
+exact live 7-day review with the named creation action still available; it did
+not simulate command acceptance. This is not new packaged-native, admitted
+governance, multi-peer, or assistive-technology evidence.
+
 The packaged macOS conversation surface has crossed a lived reply/edit gate. A
 person selected Reply on a retained message, received named composer context,
 posted through `message.send` with the authoritative thread root, and observed

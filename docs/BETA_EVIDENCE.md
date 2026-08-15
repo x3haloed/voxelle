@@ -180,6 +180,11 @@ With that technology active and without using a pointer, complete and record:
   document-level horizontal scrolling; and
 - entering, operating, and leaving the direct-media surface.
 
+Before creating an invite, change among the bounded expiry choices and confirm
+the live review names the selected signed bearer-capability window and the
+button says **Create signed invite**. After creation, confirm the projected
+absolute expiry matches that choice.
+
 Before sending conversation content, confirm **Send Message** is disabled for
 an empty or whitespace-only draft, becomes enabled for visible text or a member
 inserted through **Mention someone**, and disables again when the draft is

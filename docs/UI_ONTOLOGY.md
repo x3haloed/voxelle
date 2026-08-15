@@ -307,7 +307,10 @@ expiry or envelope conflicts. The preview neither admits nor rejects anything;
 governance, expiry, and bootstrap validation.
 
 Invite creation offers bounded one-hour, one-day, seven-day, and thirty-day
-expiry choices and states that an unbound bearer is not strictly single-use.
+expiry choices, states the selected signed bearer-capability window before
+creation, and names that an unbound bearer is not strictly single-use. The
+shared Rust command accepts only 1 minute through 30 days and refuses rather
+than silently changing an out-of-range caller request.
 The People surface projects active invitations from Rust's admitted governance
 state rather than remembering frontend actions. `space.invite.revoke` carries
 the stable invite event ID through the ordinary signed-governance admission and

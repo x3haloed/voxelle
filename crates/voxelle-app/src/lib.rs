@@ -49,6 +49,7 @@ const MAX_KNOWN_PEERS: usize = 128;
 const MAX_PROJECTED_MESSAGES: usize = 500;
 const MAX_PROJECTED_CALL_SIGNALS: usize = 256;
 const MAX_SEARCH_QUERY_CHARACTERS: usize = 1024;
+const MAX_INVITE_EXPIRY_MINUTES: u64 = 30 * 24 * 60;
 const LOCAL_HOME_STATE_FILES: [&str; 5] = [
     "identity.json",
     "quic-cert.json",
@@ -4099,8 +4100,10 @@ impl VoxelleCommandHost {
             .ok_or_else(|| anyhow::anyhow!("go online before creating a space invite"))?;
         let minutes = request
             .expires_minutes
-            .unwrap_or(24 * 60)
-            .clamp(1, 30 * 24 * 60);
+            .unwrap_or(24 * 60);
+        if !(1..=MAX_INVITE_EXPIRY_MINUTES).contains(&minutes) {
+            anyhow::bail!("invite expiry must be between 1 minute and 30 days");
+        }
         let expires_ms = now_ms().saturating_add((minutes as i64).saturating_mul(60_000));
         let additional_bootstraps = self
             .home

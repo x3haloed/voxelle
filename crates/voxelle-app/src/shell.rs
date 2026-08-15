@@ -398,6 +398,9 @@ fn correctable_input_presentation(
             detail.contains("role name must contain a letter or number")
                 || detail.contains("invalid role definition")
         }
+        "space.invite.create" => {
+            detail.contains("invite expiry must be between 1 minute and 30 days")
+        }
         "message.search" => {
             detail.starts_with("search query is ")
                 || detail.starts_with("search query exceeds ")
@@ -433,6 +436,10 @@ fn correctable_input_presentation(
             "That role cannot be created as entered.",
             "Use a name containing a letter or number and choose at least one supported permission.",
         ),
+        "space.invite.create" => (
+            "That invite expiry is not valid.",
+            "Choose an expiry from 1 minute through 30 days, then create the signed invite again.",
+        ),
         "message.search" if detail.contains("search query is empty") => (
             "Enter something to search for.",
             "Type one or more words from a message or attachment name, then search again.",
@@ -451,7 +458,7 @@ mod tests {
     use crate::{
         builtin_product_generation, default_ui_ontology, shell_contract_typescript,
         NetworkHealthStatus, ProductGenerationV1, UiPreferences, DEFAULT_ROOM_ID,
-        MAX_SEARCH_QUERY_CHARACTERS,
+        MAX_INVITE_EXPIRY_MINUTES, MAX_SEARCH_QUERY_CHARACTERS,
     };
     use std::collections::BTreeMap;
     use voxelle_core::Keypair;
@@ -1906,6 +1913,36 @@ mod tests {
             .recovery_message
             .contains("control characters"));
         assert!(control_search.detail.contains("search query contains"));
+
+        shell
+            .execute_serialized_command(
+                "runtime.goOnline",
+                serde_json::json!({ "bind": null, "advertise": null }),
+            )
+            .await
+            .expect("service online for invite validation");
+        for invalid_minutes in [0, MAX_INVITE_EXPIRY_MINUTES + 1] {
+            let invalid_invite = shell
+                .execute_serialized_command(
+                    "space.invite.create",
+                    serde_json::json!({ "expires_minutes": invalid_minutes }),
+                )
+                .await
+                .expect_err("out-of-range invite expiry rejected");
+            assert_eq!(invalid_invite.recovery, ShellRecovery::NeedsInput);
+            assert_eq!(invalid_invite.message, "That invite expiry is not valid.");
+            assert!(invalid_invite.recovery_message.contains("1 minute through 30 days"));
+            assert!(invalid_invite.detail.contains("invite expiry must be between"));
+        }
+        let after_invalid_invites = shell
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("snapshot after invalid invites");
+        assert!(after_invalid_invites
+            .home
+            .expect("home")
+            .active_invites
+            .is_empty());
     }
 
     #[test]
