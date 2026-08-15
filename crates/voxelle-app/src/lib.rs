@@ -7000,6 +7000,9 @@ mod tests {
         assert!(source.contains("searchDraftError(uiState.searchDraft"));
         assert!(source.contains("optionalIpv6SocketDraftError(uiState.bindDraft"));
         assert!(source.contains("optionalIpv6SocketDraftError(uiState.advertiseDraft"));
+        assert!(source.contains("function disambiguatedMemberLabel"));
+        assert!(source.contains("memberBanConfirmation(profile, memberLabel)"));
+        assert!(source.contains("roleAssignmentConfirmation(role, profile, memberLabel"));
     }
 
     #[test]

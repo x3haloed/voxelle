@@ -78,3 +78,31 @@ export function insertMentionText(text, selectionStart, selectionEnd, displayNam
     caret: before.length + inserted.length,
   };
 }
+
+/**
+ * Keep ordinary names primary while making duplicate-name choices stable.
+ * @param {{peer_id: string, display_name: string}} profile
+ * @param {Array<{peer_id: string, display_name: string}>} profiles
+ */
+export function disambiguatedMemberLabel(profile, profiles) {
+  const name = profile.display_name.trim().toLocaleLowerCase();
+  const duplicates = profiles.filter((candidate) => (
+    candidate.display_name.trim().toLocaleLowerCase() === name
+  ));
+  const stableId = memberStableId(profile.peer_id);
+  let markerLength = Math.min(12, stableId.length);
+  while (
+    markerLength < stableId.length
+    && duplicates.some((candidate) => (
+      candidate.peer_id !== profile.peer_id
+      && memberStableId(candidate.peer_id).startsWith(stableId.slice(0, markerLength))
+    ))
+  ) markerLength += 1;
+  return duplicates.length > 1
+    ? `${profile.display_name} · member ${stableId.slice(0, markerLength)}`
+    : profile.display_name;
+}
+
+function memberStableId(peerId) {
+  return peerId.startsWith("ed25519:") ? peerId.slice(8) : peerId;
+}

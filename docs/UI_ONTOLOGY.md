@@ -113,6 +113,10 @@ authority for accepted network configuration and reachability.
 Governance follows the same rule. Role creation exposes named, bounded
 permission choices; role assignment, ban, and unban controls lead with member
 and role names while stable principal and role IDs remain command payloads.
+When current members share a display name case-insensitively, member cards,
+mention choices, Ban/Unban, and role assignment append the same bounded stable
+member marker so the person can follow the intended principal through review
+and confirmation. Unique names remain uncluttered.
 The UI projects assignments and bans from the admitted governance state rather
 than reconstructing authorization. Removing a ban is described precisely: it
 permits a principal to use a valid invite again, but does not itself restore

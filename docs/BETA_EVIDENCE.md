@@ -252,7 +252,10 @@ space first** instead of closing without moving focus.
 In the channel list, conversation, and People surface, navigate repeated
 channel, message, reaction, member, role, and invitation controls. Confirm each
 announced name identifies the visible target rather than relying on position
-alone. Select a different channel and confirm the accepted selected row is
+alone. Have two current members use the same display name with different case;
+confirm their cards, mention choices, Ban/Unban controls, and role-assignment
+controls retain distinct matching member markers through confirmation. Select a
+different channel and confirm the accepted selected row is
 announced as the current location and receives focus after its Select button
 disappears. Add and remove a reaction, then pin and unpin a message. Confirm the
 replacement control keeps focus, names its message target, and exposes the

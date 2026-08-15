@@ -708,6 +708,20 @@ collapsed state. Deterministic source regressions preserve the contextual
 labels and preview bound. This reduces nonvisual navigation ambiguity but is
 not the actual assistive-technology beta gate.
 
+Duplicate member display names no longer collapse those governance targets back
+into position-dependent labels. One case-insensitive helper leaves unique names
+unchanged and appends a bounded principal-derived member marker of at least 12
+characters only when names collide. When 12 characters still collide, the
+marker expands to the shortest unique principal prefix. The same label appears
+on the member card, mention
+choice, Ban/Unban affordance and confirmation, and role assignment affordance
+and confirmation, while each command still carries the complete stable peer ID
+to Rust. Deterministic helper, product-source, and native bundle tests cover the
+mapping. A rendered case-insensitive duplicate-name fixture probe observed
+distinct matching member markers on both cards, the mention choice, Ban review,
+and role-assignment review, and did not invoke either governance command. This
+is not admitted-governance, packaged-native, or assistive-technology evidence.
+
 Accepted reaction and pin toggles also preserve causal keyboard location
 without preserving a stale command listener. Reconciliation replaces the
 control when the Rust-projected action changes from add to remove or back; a

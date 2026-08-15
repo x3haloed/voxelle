@@ -2278,16 +2278,18 @@ function focusChannelRow(roomId) {
 function memberProfilesView(snapshot) {
   const fragment = document.createDocumentFragment();
   const list = element("ol", "peer-list");
-  for (const profile of snapshot.home?.profiles ?? []) {
+  const profiles = snapshot.home?.profiles ?? [];
+  for (const profile of profiles) {
     const row = element("li", "peer-row");
     row.dataset.renderKey = `profile:${profile.peer_id}`;
     row.dataset.profilePeerId = profile.peer_id;
     row.tabIndex = -1;
     const body = element("div", "member-card");
     const isOwn = profile.peer_id === snapshot.home?.profile.peer_id;
+    const memberLabel = disambiguatedMemberLabel(profile, profiles);
     const copy = element("div", "member-copy");
     copy.append(
-      element("strong", "", `${profile.display_name}${isOwn ? " · you" : ""}`),
+      element("strong", "", `${memberLabel}${isOwn ? " · you" : ""}`),
       element("span", "muted", profile.about),
     );
     const roleNames = profile.role_ids
@@ -2306,26 +2308,26 @@ function memberProfilesView(snapshot) {
     if (!isOwn) {
       const actions = element("details", "advanced-details member-actions");
       const memberSummary = disclosureSummary("Member actions");
-      memberSummary.setAttribute("aria-label", `Actions for member ${profile.display_name}`);
+      memberSummary.setAttribute("aria-label", `Actions for member ${memberLabel}`);
       actions.append(
         memberSummary,
         element(
           "p",
           "summary",
           profile.banned
-            ? "This removes the ban. They still need a valid invite to become a member again."
-            : "Banning removes this principal's authority to participate; retained history remains authoritative.",
+            ? `This removes the ban for ${memberLabel}. They still need a valid invite to become a member again.`
+            : `Banning ${memberLabel} removes this principal's authority to participate; retained history remains authoritative.`,
         ),
       );
       if (profile.banned) {
         const allow = commandButton("member.unban", { peer_id: profile.peer_id, reason: "" });
-        allow.textContent = `Allow ${profile.display_name} to rejoin`;
+        allow.textContent = `Allow ${memberLabel} to rejoin`;
         actions.append(allow);
       } else if (uiState.banningPeerId === profile.peer_id) {
         actions.open = true;
-        actions.append(memberBanConfirmation(profile));
+        actions.append(memberBanConfirmation(profile, memberLabel));
       } else {
-        actions.append(actionButton(`Ban ${profile.display_name} from this space…`, () => {
+        actions.append(actionButton(`Ban ${memberLabel} from this space…`, () => {
           beginMemberBan(profile.peer_id);
         }));
       }
@@ -2337,12 +2339,12 @@ function memberProfilesView(snapshot) {
   return fragment;
 }
 
-function memberBanConfirmation(profile) {
+function memberBanConfirmation(profile, memberLabel) {
   const confirmation = element("section", "member-ban-confirmation");
   confirmation.setAttribute("role", "alertdialog");
-  confirmation.setAttribute("aria-label", `Ban ${profile.display_name} confirmation`);
+  confirmation.setAttribute("aria-label", `Ban ${memberLabel} confirmation`);
   confirmation.append(
-    element("strong", "", `Ban ${profile.display_name}?`),
+    element("strong", "", `Ban ${memberLabel}?`),
     element(
       "p",
       "summary",
@@ -2354,7 +2356,7 @@ function memberBanConfirmation(profile) {
     peer_id: profile.peer_id,
     reason: "Removed by a space administrator",
   });
-  confirm.textContent = `Ban ${profile.display_name}`;
+  confirm.textContent = `Ban ${memberLabel}`;
   controls.append(confirm, actionButton("Cancel ban", () => cancelMemberBan(profile.peer_id)));
   confirmation.append(controls);
   return confirmation;
@@ -2384,6 +2386,7 @@ function focusProfileRow(peerId) {
 function roleListView(snapshot) {
   const fragment = document.createDocumentFragment();
   const list = element("ol", "peer-list");
+  const assignableProfiles = (snapshot.home?.profiles ?? []).filter((profile) => !profile.banned);
   for (const role of snapshot.home?.roles ?? []) {
     const row = element("li", "peer-row");
     row.dataset.renderKey = `role:${role.role_id}`;
@@ -2405,17 +2408,17 @@ function roleListView(snapshot) {
       memberSummary.setAttribute("aria-label", `Manage members for role ${role.name}`);
       members.append(memberSummary);
       const memberList = element("div", "choice-list");
-      for (const profile of snapshot.home?.profiles ?? []) {
-        if (profile.banned) continue;
+      for (const profile of assignableProfiles) {
+        const memberLabel = disambiguatedMemberLabel(profile, assignableProfiles);
         const assigned = profile.role_ids.includes(role.role_id);
         const draft = uiState.roleAssignmentDraft;
         if (draft?.roleId === role.role_id && draft.peerId === profile.peer_id) {
-          memberList.append(roleAssignmentConfirmation(role, profile, draft.grant));
+          memberList.append(roleAssignmentConfirmation(role, profile, memberLabel, draft.grant));
         } else {
           memberList.append(actionButton(
             assigned
-              ? `Remove ${profile.display_name} from ${role.name}…`
-              : `Give ${role.name} to ${profile.display_name}…`,
+              ? `Remove ${memberLabel} from ${role.name}…`
+              : `Give ${role.name} to ${memberLabel}…`,
             () => beginRoleAssignment(role.role_id, profile.peer_id, !assigned),
           ));
         }
@@ -2477,27 +2480,27 @@ function roleListView(snapshot) {
   return fragment;
 }
 
-function roleAssignmentConfirmation(role, profile, grant) {
+function roleAssignmentConfirmation(role, profile, memberLabel, grant) {
   const verb = grant ? "Give" : "Remove";
   const confirmation = element("section", "role-assignment-confirmation");
   confirmation.setAttribute("role", "alertdialog");
   confirmation.setAttribute(
     "aria-label",
-    `${grant ? "Give" : "Remove"} ${role.name} ${grant ? "to" : "from"} ${profile.display_name} confirmation`,
+    `${grant ? "Give" : "Remove"} ${role.name} ${grant ? "to" : "from"} ${memberLabel} confirmation`,
   );
   const permissions = role.permissions.map(permissionLabel).join(", ") || "no additional permissions";
   confirmation.append(
     element(
       "strong",
       "",
-      `${verb} ${role.name} ${grant ? "to" : "from"} ${profile.display_name}?`,
+      `${verb} ${role.name} ${grant ? "to" : "from"} ${memberLabel}?`,
     ),
     element(
       "p",
       "summary",
       grant
-        ? `${profile.display_name} will gain this role's authority: ${permissions}. Their other roles are unchanged.`
-        : `${profile.display_name} will lose this role's authority: ${permissions}. Authority from their other roles is unchanged.`,
+        ? `${memberLabel} will gain this role's authority: ${permissions}. Their other roles are unchanged.`
+        : `${memberLabel} will lose this role's authority: ${permissions}. Authority from their other roles is unchanged.`,
     ),
   );
   const controls = element("div", "row-actions");
@@ -2506,8 +2509,8 @@ function roleAssignmentConfirmation(role, profile, grant) {
     role_id: role.role_id,
   });
   confirm.textContent = grant
-    ? `Give ${role.name} to ${profile.display_name}`
-    : `Remove ${role.name} from ${profile.display_name}`;
+    ? `Give ${role.name} to ${memberLabel}`
+    : `Remove ${role.name} from ${memberLabel}`;
   controls.append(confirm, actionButton("Cancel role change", () => cancelRoleAssignment(role.role_id)));
   confirmation.append(controls);
   return confirmation;
@@ -4266,21 +4269,14 @@ function mentionPicker(input, snapshot, onChange) {
   const details = element("details", "mention-picker");
   details.append(disclosureSummary("Mention someone", "command-button"));
   const choices = element("div", "mention-choices");
-  const profiles = (snapshot.home?.profiles ?? []).filter((profile) =>
-    !profile.banned && profile.peer_id !== snapshot.home?.profile.peer_id);
-  const nameCounts = new Map();
-  for (const profile of profiles) {
-    const name = profile.display_name.trim().toLocaleLowerCase();
-    nameCounts.set(name, (nameCounts.get(name) ?? 0) + 1);
-  }
+  const currentProfiles = (snapshot.home?.profiles ?? []).filter((profile) => !profile.banned);
+  const profiles = currentProfiles.filter((profile) =>
+    profile.peer_id !== snapshot.home?.profile.peer_id);
   if (profiles.length === 0) {
     choices.append(element("p", "summary", "No other current members to mention."));
   }
   for (const profile of profiles) {
-    const duplicate = nameCounts.get(profile.display_name.trim().toLocaleLowerCase()) > 1;
-    const label = duplicate
-      ? `Mention ${profile.display_name} · member ${shortId(profile.peer_id)}`
-      : `Mention ${profile.display_name}`;
+    const label = `Mention ${disambiguatedMemberLabel(profile, currentProfiles)}`;
     choices.append(actionButton(label, () => {
       const insertion = insertMentionText(
         input.value,

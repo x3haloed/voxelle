@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
+  disambiguatedMemberLabel,
   insertMentionText,
   MESSAGE_MAX_CHARACTERS,
   mentionedPeerIds,
@@ -72,4 +73,26 @@ test("mention insertion preserves surrounding text and returns the next caret", 
     text: "hello @Alice ",
     caret: 13,
   });
+});
+
+test("duplicate member names receive stable bounded disambiguators", () => {
+  const duplicates = [
+    { peer_id: "ed25519:aaaaaaaaaaaa1111", display_name: "Alice" },
+    { peer_id: "ed25519:bbbbbbbbbbbb2222", display_name: "alice" },
+  ];
+  assert.equal(disambiguatedMemberLabel(duplicates[0], duplicates), "Alice · member aaaaaaaaaaaa");
+  assert.equal(disambiguatedMemberLabel(duplicates[1], duplicates), "alice · member bbbbbbbbbbbb");
+  assert.equal(disambiguatedMemberLabel(profiles[0], profiles), "Alice");
+  const collidingPrefixes = [
+    { peer_id: "ed25519:aaaaaaaaaaaa1-first", display_name: "Sam" },
+    { peer_id: "ed25519:aaaaaaaaaaaa2-second", display_name: "SAM" },
+  ];
+  assert.equal(
+    disambiguatedMemberLabel(collidingPrefixes[0], collidingPrefixes),
+    "Sam · member aaaaaaaaaaaa1",
+  );
+  assert.equal(
+    disambiguatedMemberLabel(collidingPrefixes[1], collidingPrefixes),
+    "SAM · member aaaaaaaaaaaa2",
+  );
 });
