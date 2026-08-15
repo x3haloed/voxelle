@@ -1057,9 +1057,9 @@ Rust, and projected it in Conversation. The app then exited cleanly and the
 disposable home was removed. This is current packaged-WebView and local
 admission evidence, not production Keychain, restart, invite, recovery,
 multi-peer, physical-media, beta.4, or release-receipt evidence. The authenticated
-beta.3 manifest and its three artifacts remain internally valid but are 91
-commits behind this rehearsal branch, so they cannot evidence these later human
-UX changes.
+beta.3 manifest and its three artifacts remain internally valid but are more
+than ninety commits behind this rehearsal branch, so they cannot evidence these
+later human UX changes.
 
 The locally natural compression point is therefore the current authority
 topology, not the smallest imaginable byte count. The remaining separations
