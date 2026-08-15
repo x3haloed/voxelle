@@ -200,7 +200,9 @@ For a beta-gate run, begin with the release-bound evidence template and follow
 `docs/BETA_EVIDENCE.md`. The completed receipt is required in addition to these
 human-readable notes; it rejects loopback endpoints, duplicate machines, a
 non-offline inviter, missing bidirectional checks, and incomplete message
-convergence.
+convergence. Use `record-field-beta-evidence` immediately after the run to copy
+the recorded A/B/C identities, endpoints, markers, and explicit observations
+into a new staged receipt without hand-editing its nested JSON.
 
 For each peer, write down:
 

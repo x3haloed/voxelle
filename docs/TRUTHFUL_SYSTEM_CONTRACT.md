@@ -703,3 +703,12 @@ field roles, preserves other evidence sections, and refuses output overwrite.
 An end-to-end disposable receipt proves successful recording and fail-closed
 omission without claiming the synthetic values as lived evidence. The command
 records operator attestations; it does not observe or strengthen them.
+
+The three-machine field gate has the same staged recording boundary. Its
+release command requires distinct A/B/C machine, principal, and device values;
+real IPv6 listen and advertised sockets; exact per-author markers;
+bidirectional A/B diagnosis and synchronization; offline-inviter forwarding;
+retained history; and three-way message visibility. Existing field validation
+runs before the section is replaced, so loopback or otherwise invalid topology
+cannot create an output receipt. Successful disposable recording is tooling
+evidence only, not a non-loopback network claim.

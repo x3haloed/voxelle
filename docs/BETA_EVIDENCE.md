@@ -91,6 +91,54 @@ incomplete JSON cannot be submitted. These are untrusted presentation claims:
 only the native kernel stores a validated record, and synchronization still
 refuses a record whose authority does not match the active home.
 
+After the three-machine observations are complete, record the field section
+from the latest partial receipt. Substitute the exact values copied from each
+role; quote bracketed IPv6 sockets in shells that interpret brackets:
+
+```sh
+cargo run -q -p voxelle-release -- record-field-beta-evidence \
+  --input CURRENT_RECEIPT.json \
+  --output beta-evidence.field.json \
+  --executed-utc 2026-08-14T21:00:00Z \
+  --operator "OPERATOR NAME" \
+  --machine-a-fingerprint A_FINGERPRINT \
+  --machine-a-principal A_PRINCIPAL_ID \
+  --machine-a-device A_DEVICE_ID \
+  --machine-a-listen '[::]:47000' \
+  --machine-a-advertise '[REAL_A_IPV6]:47000' \
+  --machine-b-fingerprint B_FINGERPRINT \
+  --machine-b-principal B_PRINCIPAL_ID \
+  --machine-b-device B_DEVICE_ID \
+  --machine-b-listen '[::]:47001' \
+  --machine-b-advertise '[REAL_B_IPV6]:47001' \
+  --machine-c-fingerprint C_FINGERPRINT \
+  --machine-c-principal C_PRINCIPAL_ID \
+  --machine-c-device C_DEVICE_ID \
+  --machine-c-listen '[::]:47002' \
+  --machine-c-advertise '[REAL_C_IPV6]:47002' \
+  --message-a-marker A_UNIQUE_MARKER \
+  --message-b-marker B_UNIQUE_MARKER \
+  --message-c-marker C_UNIQUE_MARKER \
+  --attest-a-to-b-diagnose \
+  --attest-b-to-a-diagnose \
+  --attest-a-to-b-sync \
+  --attest-b-to-a-sync \
+  --attest-inviter-a-offline \
+  --attest-c-joined-through-b \
+  --attest-c-retained-history-visible \
+  --attest-a-message-visible-on-all \
+  --attest-b-message-visible-on-all \
+  --attest-c-message-visible-on-all
+```
+
+The recorder rejects duplicate machine, principal, or device identities;
+IPv4, loopback, multicast, unspecified advertised, and documentation-only IPv6
+addresses; incomplete bidirectional checks; a non-offline inviter; and missing
+three-way message convergence. It validates before replacing the field section,
+preserves all other sections, and refuses to overwrite an output. As with the
+human recorder, flags are operator attestations rather than automated network
+observations.
+
 ## 4. Record human causal-path evidence
 
 Use an actual supported desktop and name the assistive technology in the

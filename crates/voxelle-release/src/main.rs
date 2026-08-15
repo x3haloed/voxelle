@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -121,54 +121,8 @@ enum Command {
         #[arg(long)]
         source_commit: String,
     },
-    RecordHumanBetaEvidence {
-        #[arg(long)]
-        input: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-        #[arg(long)]
-        executed_utc: String,
-        #[arg(long)]
-        operator: String,
-        #[arg(long, value_parser = ["macOS", "Windows"])]
-        platform: String,
-        #[arg(long)]
-        technology: String,
-        #[arg(long = "media-role", required = true, num_args = 2..=3, value_parser = ["A", "B", "C"])]
-        media_roles: Vec<String>,
-        #[arg(long, required = true)]
-        attest_keyboard_only: bool,
-        #[arg(long, required = true)]
-        attest_fresh_setup: bool,
-        #[arg(long, required = true)]
-        attest_invite_join: bool,
-        #[arg(long, required = true)]
-        attest_conversation: bool,
-        #[arg(long, required = true)]
-        attest_recovery: bool,
-        #[arg(long, required = true)]
-        attest_customization: bool,
-        #[arg(long, required = true)]
-        attest_degraded_connection: bool,
-        #[arg(long, required = true)]
-        attest_media_controls: bool,
-        #[arg(long, required = true)]
-        attest_physical_microphone_capture: bool,
-        #[arg(long, required = true)]
-        attest_physical_camera_capture: bool,
-        #[arg(long, required = true)]
-        attest_permission_denial_recovery: bool,
-        #[arg(long, required = true)]
-        attest_direct_audio_observed_by_all: bool,
-        #[arg(long, required = true)]
-        attest_direct_video_observed_by_all: bool,
-        #[arg(long, required = true)]
-        attest_direct_connection_state_visible: bool,
-        #[arg(long, required = true)]
-        attest_leave_stopped_capture: bool,
-        #[arg(long, required = true)]
-        attest_missing_peer_state_visible: bool,
-    },
+    RecordHumanBetaEvidence(Box<RecordHumanBetaEvidenceArgs>),
+    RecordFieldBetaEvidence(Box<RecordFieldBetaEvidenceArgs>),
     VerifyBetaEvidence {
         #[arg(long)]
         trust_roots: PathBuf,
@@ -187,6 +141,124 @@ enum Command {
         #[arg(long)]
         role: String,
     },
+}
+
+#[derive(Debug, Args)]
+struct RecordHumanBetaEvidenceArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    executed_utc: String,
+    #[arg(long)]
+    operator: String,
+    #[arg(long, value_parser = ["macOS", "Windows"])]
+    platform: String,
+    #[arg(long)]
+    technology: String,
+    #[arg(long = "media-role", required = true, num_args = 2..=3, value_parser = ["A", "B", "C"])]
+    media_roles: Vec<String>,
+    #[arg(long, required = true)]
+    attest_keyboard_only: bool,
+    #[arg(long, required = true)]
+    attest_fresh_setup: bool,
+    #[arg(long, required = true)]
+    attest_invite_join: bool,
+    #[arg(long, required = true)]
+    attest_conversation: bool,
+    #[arg(long, required = true)]
+    attest_recovery: bool,
+    #[arg(long, required = true)]
+    attest_customization: bool,
+    #[arg(long, required = true)]
+    attest_degraded_connection: bool,
+    #[arg(long, required = true)]
+    attest_media_controls: bool,
+    #[arg(long, required = true)]
+    attest_physical_microphone_capture: bool,
+    #[arg(long, required = true)]
+    attest_physical_camera_capture: bool,
+    #[arg(long, required = true)]
+    attest_permission_denial_recovery: bool,
+    #[arg(long, required = true)]
+    attest_direct_audio_observed_by_all: bool,
+    #[arg(long, required = true)]
+    attest_direct_video_observed_by_all: bool,
+    #[arg(long, required = true)]
+    attest_direct_connection_state_visible: bool,
+    #[arg(long, required = true)]
+    attest_leave_stopped_capture: bool,
+    #[arg(long, required = true)]
+    attest_missing_peer_state_visible: bool,
+}
+
+#[derive(Debug, Args)]
+struct RecordFieldBetaEvidenceArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    executed_utc: String,
+    #[arg(long)]
+    operator: String,
+    #[arg(long)]
+    machine_a_fingerprint: String,
+    #[arg(long)]
+    machine_a_principal: String,
+    #[arg(long)]
+    machine_a_device: String,
+    #[arg(long)]
+    machine_a_listen: String,
+    #[arg(long)]
+    machine_a_advertise: String,
+    #[arg(long)]
+    machine_b_fingerprint: String,
+    #[arg(long)]
+    machine_b_principal: String,
+    #[arg(long)]
+    machine_b_device: String,
+    #[arg(long)]
+    machine_b_listen: String,
+    #[arg(long)]
+    machine_b_advertise: String,
+    #[arg(long)]
+    machine_c_fingerprint: String,
+    #[arg(long)]
+    machine_c_principal: String,
+    #[arg(long)]
+    machine_c_device: String,
+    #[arg(long)]
+    machine_c_listen: String,
+    #[arg(long)]
+    machine_c_advertise: String,
+    #[arg(long)]
+    message_a_marker: String,
+    #[arg(long)]
+    message_b_marker: String,
+    #[arg(long)]
+    message_c_marker: String,
+    #[arg(long, required = true)]
+    attest_a_to_b_diagnose: bool,
+    #[arg(long, required = true)]
+    attest_b_to_a_diagnose: bool,
+    #[arg(long, required = true)]
+    attest_a_to_b_sync: bool,
+    #[arg(long, required = true)]
+    attest_b_to_a_sync: bool,
+    #[arg(long, required = true)]
+    attest_inviter_a_offline: bool,
+    #[arg(long, required = true)]
+    attest_c_joined_through_b: bool,
+    #[arg(long, required = true)]
+    attest_c_retained_history_visible: bool,
+    #[arg(long, required = true)]
+    attest_a_message_visible_on_all: bool,
+    #[arg(long, required = true)]
+    attest_b_message_visible_on_all: bool,
+    #[arg(long, required = true)]
+    attest_c_message_visible_on_all: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -301,31 +373,32 @@ fn main() -> Result<()> {
             println!("wrote beta evidence template {}", output.display());
             Ok(())
         }
-        Command::RecordHumanBetaEvidence {
-            input,
-            output,
-            executed_utc,
-            operator,
-            platform,
-            technology,
-            media_roles,
-            attest_keyboard_only,
-            attest_fresh_setup,
-            attest_invite_join,
-            attest_conversation,
-            attest_recovery,
-            attest_customization,
-            attest_degraded_connection,
-            attest_media_controls,
-            attest_physical_microphone_capture,
-            attest_physical_camera_capture,
-            attest_permission_denial_recovery,
-            attest_direct_audio_observed_by_all,
-            attest_direct_video_observed_by_all,
-            attest_direct_connection_state_visible,
-            attest_leave_stopped_capture,
-            attest_missing_peer_state_visible,
-        } => {
+        Command::RecordHumanBetaEvidence(args) => {
+            let RecordHumanBetaEvidenceArgs {
+                input,
+                output,
+                executed_utc,
+                operator,
+                platform,
+                technology,
+                media_roles,
+                attest_keyboard_only,
+                attest_fresh_setup,
+                attest_invite_join,
+                attest_conversation,
+                attest_recovery,
+                attest_customization,
+                attest_degraded_connection,
+                attest_media_controls,
+                attest_physical_microphone_capture,
+                attest_physical_camera_capture,
+                attest_permission_denial_recovery,
+                attest_direct_audio_observed_by_all,
+                attest_direct_video_observed_by_all,
+                attest_direct_connection_state_visible,
+                attest_leave_stopped_capture,
+                attest_missing_peer_state_visible,
+            } = *args;
             let mut receipt: evidence::BetaEvidenceV1 =
                 serde_json::from_slice(&fs::read(&input).context("read beta evidence receipt")?)
                     .context("parse beta evidence receipt")?;
@@ -359,6 +432,124 @@ fn main() -> Result<()> {
             evidence::record_human(&mut receipt, human)?;
             write_new_json(&output, &receipt)?;
             println!("recorded human beta evidence in {}", output.display());
+            Ok(())
+        }
+        Command::RecordFieldBetaEvidence(args) => {
+            let RecordFieldBetaEvidenceArgs {
+                input,
+                output,
+                executed_utc,
+                operator,
+                machine_a_fingerprint,
+                machine_a_principal,
+                machine_a_device,
+                machine_a_listen,
+                machine_a_advertise,
+                machine_b_fingerprint,
+                machine_b_principal,
+                machine_b_device,
+                machine_b_listen,
+                machine_b_advertise,
+                machine_c_fingerprint,
+                machine_c_principal,
+                machine_c_device,
+                machine_c_listen,
+                machine_c_advertise,
+                message_a_marker,
+                message_b_marker,
+                message_c_marker,
+                attest_a_to_b_diagnose,
+                attest_b_to_a_diagnose,
+                attest_a_to_b_sync,
+                attest_b_to_a_sync,
+                attest_inviter_a_offline,
+                attest_c_joined_through_b,
+                attest_c_retained_history_visible,
+                attest_a_message_visible_on_all,
+                attest_b_message_visible_on_all,
+                attest_c_message_visible_on_all,
+            } = *args;
+            let mut receipt: evidence::BetaEvidenceV1 =
+                serde_json::from_slice(&fs::read(&input).context("read beta evidence receipt")?)
+                    .context("parse beta evidence receipt")?;
+            let machine =
+                |role: &str,
+                 machine_fingerprint: String,
+                 principal_id: String,
+                 device_id: String,
+                 listen_addr: String,
+                 advertise_addr: String| evidence::FieldMachineV1 {
+                    role: role.to_string(),
+                    machine_fingerprint,
+                    principal_id,
+                    device_id,
+                    listen_addr,
+                    advertise_addr,
+                };
+            let visible_on_all = vec!["A".to_string(), "B".to_string(), "C".to_string()];
+            let message = |author_role: &str, message_marker: String| evidence::MessageReceiptV1 {
+                author_role: author_role.to_string(),
+                message_marker,
+                visible_on_roles: visible_on_all.clone(),
+            };
+            let field = evidence::FieldEvidenceV1 {
+                executed_utc,
+                operator,
+                machines: vec![
+                    machine(
+                        "A",
+                        machine_a_fingerprint,
+                        machine_a_principal,
+                        machine_a_device,
+                        machine_a_listen,
+                        machine_a_advertise,
+                    ),
+                    machine(
+                        "B",
+                        machine_b_fingerprint,
+                        machine_b_principal,
+                        machine_b_device,
+                        machine_b_listen,
+                        machine_b_advertise,
+                    ),
+                    machine(
+                        "C",
+                        machine_c_fingerprint,
+                        machine_c_principal,
+                        machine_c_device,
+                        machine_c_listen,
+                        machine_c_advertise,
+                    ),
+                ],
+                a_to_b_diagnose: attest_a_to_b_diagnose,
+                b_to_a_diagnose: attest_b_to_a_diagnose,
+                a_to_b_sync: attest_a_to_b_sync,
+                b_to_a_sync: attest_b_to_a_sync,
+                offline_inviter: evidence::OfflineInviterEvidenceV1 {
+                    inviter_role: "A".to_string(),
+                    forwarder_role: "B".to_string(),
+                    joiner_role: "C".to_string(),
+                    inviter_offline: attest_inviter_a_offline,
+                    joined_through_forwarder: attest_c_joined_through_b,
+                    retained_history_visible: attest_c_retained_history_visible,
+                },
+                message_receipts: vec![
+                    message("A", message_a_marker),
+                    message("B", message_b_marker),
+                    message("C", message_c_marker),
+                ],
+            };
+            if !(attest_a_message_visible_on_all
+                && attest_b_message_visible_on_all
+                && attest_c_message_visible_on_all)
+            {
+                return Err(anyhow!(
+                    "every field message visibility attestation is required"
+                ));
+            }
+            evidence::record_field(&mut receipt, field)?;
+            write_new_json(&output, &receipt)?;
+            println!("recorded field beta evidence in {}", output.display());
             Ok(())
         }
         Command::VerifyBetaEvidence {

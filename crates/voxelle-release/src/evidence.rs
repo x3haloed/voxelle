@@ -306,6 +306,18 @@ pub fn record_human(evidence: &mut BetaEvidenceV1, human: HumanEvidenceV1) -> Re
     Ok(())
 }
 
+pub fn record_field(evidence: &mut BetaEvidenceV1, field: FieldEvidenceV1) -> Result<()> {
+    if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
+        return Err(anyhow!(
+            "unsupported beta evidence format {}",
+            evidence.format
+        ));
+    }
+    validate_field(&field)?;
+    evidence.field = field;
+    Ok(())
+}
+
 fn validate_distribution(
     distribution: &DistributionEvidenceV1,
     manifest: &ReleaseManifestV1,
@@ -812,6 +824,27 @@ mod tests {
         assert!(record_human(&mut receipt, refused).is_err());
         assert_eq!(receipt.human.operator, retained_operator);
         assert!(receipt.human.media.physical_camera_capture);
+    }
+
+    #[test]
+    fn field_recorder_validates_before_replacing_the_template_section() {
+        let complete = valid();
+        let observed = complete.field.clone();
+        let mut receipt = complete.clone();
+        receipt.field.operator.clear();
+        receipt.field.a_to_b_sync = false;
+
+        record_field(&mut receipt, observed.clone()).expect("record valid field evidence");
+        assert_eq!(receipt.field.operator, "operator");
+        assert!(receipt.field.a_to_b_sync);
+        assert_eq!(receipt.field.machines[2].role, "C");
+
+        let mut refused = observed;
+        refused.machines[2].advertise_addr = "[::1]:47000".to_string();
+        let retained_operator = receipt.field.operator.clone();
+        assert!(record_field(&mut receipt, refused).is_err());
+        assert_eq!(receipt.field.operator, retained_operator);
+        assert_ne!(receipt.field.machines[2].advertise_addr, "[::1]:47000");
     }
 
     #[test]
