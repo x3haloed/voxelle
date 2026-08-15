@@ -240,6 +240,7 @@ pub struct MessageView {
     pub reactions: Vec<ReactionView>,
     pub acknowledgements: Vec<MessageAcknowledgementView>,
     pub continuations: Vec<MessageContinuationView>,
+    pub participant_actionability: Vec<MessageParticipantActionabilityView>,
     pub attachments: Vec<AttachmentView>,
 }
 
@@ -345,6 +346,35 @@ pub struct MessageContinuationView {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageParticipantActionabilityView {
+    pub peer_id: String,
+    pub state: MessageParticipantActionabilityState,
+    pub actionable: bool,
+    pub actionable_reasons: Vec<MessageParticipantActionabilityReason>,
+    pub basis_event_ids: Vec<String>,
+    pub uncovered_reply_event_ids: Vec<String>,
+    pub uncovered_reply_event_ids_omitted_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageParticipantActionabilityReason {
+    Continuing,
+    ReplyNotCoveredByDisposition,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageParticipantActionabilityState {
+    Unknown,
+    Continuing,
+    Released,
+    Declined,
+    Handled,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct CoordinationFrontierView {
     pub items: Vec<CoordinationFrontierItemView>,
     pub matching_count: usize,
@@ -377,6 +407,7 @@ pub struct CoordinationFrontierItemView {
     pub acknowledgements_omitted_count: usize,
     pub continuations: Vec<MessageContinuationView>,
     pub continuations_omitted_count: usize,
+    pub local_actionability: Option<MessageParticipantActionabilityView>,
     #[ts(type = "number")]
     pub latest_fact_ms: i64,
 }
@@ -817,6 +848,9 @@ pub fn shell_contract_typescript() -> String {
         MessageAcknowledgementView::decl(&cfg),
         MessageContinuationView::decl(&cfg),
         MessageContinuationProjectionState::decl(&cfg),
+        MessageParticipantActionabilityView::decl(&cfg),
+        MessageParticipantActionabilityReason::decl(&cfg),
+        MessageParticipantActionabilityState::decl(&cfg),
         CoordinationFrontierView::decl(&cfg),
         CoordinationFrontierItemView::decl(&cfg),
         CoordinationFrontierRelevance::decl(&cfg),
@@ -2687,6 +2721,11 @@ impl VoxelleHome {
                     .continuations
                     .iter()
                     .find(|continuation| continuation.peer_id == local_peer_id);
+                let local_actionability = message
+                    .participant_actionability
+                    .iter()
+                    .find(|actionability| actionability.peer_id == local_peer_id)
+                    .cloned();
                 let locally_relevant = local_principal_mentioned
                     || local_acknowledgement.is_some()
                     || local_continuation.is_some()
@@ -2704,15 +2743,11 @@ impl VoxelleHome {
                 {
                     relevance.push(CoordinationFrontierRelevance::MentionWithoutLocalDisposition);
                 }
-                let latest_local_disposition_ms = local_acknowledgement
-                    .map(|acknowledgement| acknowledgement.acknowledged_ms)
-                    .into_iter()
-                    .chain(local_continuation.map(|continuation| continuation.asserted_ms))
-                    .max();
                 let latest_reply_ms = latest_reply_by_root.get(&message.event_id).copied();
-                if latest_reply_ms.is_some_and(|reply_ms| {
-                    latest_local_disposition_ms
-                        .is_some_and(|disposition_ms| reply_ms > disposition_ms)
+                if local_actionability.as_ref().is_some_and(|actionability| {
+                    actionability.actionable_reasons.contains(
+                        &MessageParticipantActionabilityReason::ReplyNotCoveredByDisposition,
+                    )
                 }) {
                     relevance.push(CoordinationFrontierRelevance::ReplyAfterLocalDisposition);
                 }
@@ -2730,30 +2765,40 @@ impl VoxelleHome {
                         }
                     }
                 }
-                for continuation in &message.continuations {
-                    match continuation.state {
-                        MessageContinuationProjectionState::Continuing => {
+                for actionability in &message.participant_actionability {
+                    match actionability.state {
+                        MessageParticipantActionabilityState::Continuing => {
                             relevance.push(CoordinationFrontierRelevance::ContinuationActive);
-                            if let Some(expires_ms) = continuation.expires_ms {
+                            if let Some(expires_ms) = message
+                                .continuations
+                                .iter()
+                                .find(|continuation| continuation.peer_id == actionability.peer_id)
+                                .and_then(|continuation| continuation.expires_ms)
+                            {
                                 next_projection_change_ms = Some(
                                     next_projection_change_ms
                                         .map_or(expires_ms, |current| current.min(expires_ms)),
                                 );
                             }
                         }
-                        MessageContinuationProjectionState::Unknown if continuation.overdue => {
-                            relevance.push(CoordinationFrontierRelevance::ContinuationOverdue);
+                        MessageParticipantActionabilityState::Unknown => {
+                            if message.continuations.iter().any(|continuation| {
+                                continuation.peer_id == actionability.peer_id
+                                    && continuation.overdue
+                            }) {
+                                relevance.push(CoordinationFrontierRelevance::ContinuationOverdue);
+                            }
                         }
-                        MessageContinuationProjectionState::Conflict => {
+                        MessageParticipantActionabilityState::Conflict => {
                             relevance.push(CoordinationFrontierRelevance::ContinuationConflict);
                         }
-                        MessageContinuationProjectionState::Released => {
+                        MessageParticipantActionabilityState::Released => {
                             relevance.push(CoordinationFrontierRelevance::Released);
                         }
-                        MessageContinuationProjectionState::Declined => {
+                        MessageParticipantActionabilityState::Declined => {
                             relevance.push(CoordinationFrontierRelevance::Declined);
                         }
-                        MessageContinuationProjectionState::Unknown => {}
+                        MessageParticipantActionabilityState::Handled => {}
                     }
                 }
                 relevance.sort();
@@ -2841,6 +2886,7 @@ impl VoxelleHome {
                     continuations,
                     continuations_omitted_count: continuation_count
                         .saturating_sub(MAX_COORDINATION_PARTICIPANTS),
+                    local_actionability,
                     latest_fact_ms,
                 });
             }
@@ -4497,6 +4543,7 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
         BTreeMap::new();
     let mut acknowledgements: BTreeMap<String, BTreeMap<String, MessageAcknowledgementView>> =
         BTreeMap::new();
+    let mut handled_events: BTreeMap<String, BTreeMap<String, Vec<EventV1>>> = BTreeMap::new();
     let mut continuations: BTreeMap<String, BTreeMap<String, Vec<EventV1>>> = BTreeMap::new();
     for event in &events {
         match event.kind.as_str() {
@@ -4546,6 +4593,7 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                         reactions: Vec::new(),
                         acknowledgements: Vec::new(),
                         continuations: Vec::new(),
+                        participant_actionability: Vec::new(),
                         attachments: Vec::new(),
                     },
                 );
@@ -4570,6 +4618,7 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                         reactions: Vec::new(),
                         acknowledgements: Vec::new(),
                         continuations: Vec::new(),
+                        participant_actionability: Vec::new(),
                         attachments: vec![{
                             let data_b64 = string_event_body(event, "data_b64");
                             AttachmentView {
@@ -4637,7 +4686,7 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                     "handled" => MessageAcknowledgementState::Handled,
                     _ => MessageAcknowledgementState::Observed,
                 };
-                let by_peer = acknowledgements.entry(target).or_default();
+                let by_peer = acknowledgements.entry(target.clone()).or_default();
                 let acknowledgement =
                     by_peer
                         .entry(event.author_peer_id.clone())
@@ -4649,6 +4698,12 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                             acknowledged_ms: event.created_ms,
                         });
                 if state == MessageAcknowledgementState::Handled {
+                    handled_events
+                        .entry(target.clone())
+                        .or_default()
+                        .entry(event.author_peer_id.clone())
+                        .or_default()
+                        .push(event.clone());
                     acknowledgement.state = state;
                     acknowledgement.acknowledged_ms = event.created_ms;
                     if let Some(result_event_id) = event
@@ -4776,10 +4831,254 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
             .continuations
             .sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
     }
+    let by_id: BTreeMap<String, &EventV1> = events
+        .iter()
+        .map(|event| (event.event_id.clone(), event))
+        .collect();
+    let mut actionability_targets: BTreeSet<String> = handled_events.keys().cloned().collect();
+    actionability_targets.extend(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind.as_str(), "MSG_ACK" | "MSG_CONTINUATION"))
+            .map(|event| string_event_body(event, "target_event_id")),
+    );
+    for target in actionability_targets {
+        let Some(message) = messages.get_mut(&target) else {
+            continue;
+        };
+        let mut peers: BTreeSet<String> = handled_events
+            .get(&target)
+            .into_iter()
+            .flat_map(|by_peer| by_peer.keys().cloned())
+            .collect();
+        peers.extend(
+            message
+                .continuations
+                .iter()
+                .map(|view| view.peer_id.clone()),
+        );
+        peers.extend(
+            events
+                .iter()
+                .filter(|event| {
+                    event.kind == "MSG_ACK" && string_event_body(event, "target_event_id") == target
+                })
+                .map(|event| event.author_peer_id.clone()),
+        );
+        for peer_id in peers {
+            let mut candidates: Vec<&EventV1> = handled_events
+                .get(&target)
+                .and_then(|by_peer| by_peer.get(&peer_id))
+                .into_iter()
+                .flatten()
+                .collect();
+            let continuation_head_ids: BTreeSet<String> = message
+                .continuations
+                .iter()
+                .find(|view| view.peer_id == peer_id)
+                .into_iter()
+                .flat_map(|view| view.head_event_ids.iter().cloned())
+                .collect();
+            candidates.extend(
+                continuation_head_ids
+                    .iter()
+                    .filter_map(|event_id| by_id.get(event_id).copied()),
+            );
+            let maxima = causal_maxima(candidates, &by_id);
+            let mut basis_event_ids = maxima
+                .iter()
+                .map(|event| event.event_id.clone())
+                .collect::<Vec<_>>();
+            let handled_count = maxima
+                .iter()
+                .filter(|event| event.kind == "MSG_ACK")
+                .count();
+            let continuation_maxima = maxima
+                .iter()
+                .filter(|event| event.kind == "MSG_CONTINUATION")
+                .copied()
+                .collect::<Vec<_>>();
+            let state = if handled_count > 0 && continuation_maxima.is_empty() {
+                MessageParticipantActionabilityState::Handled
+            } else if handled_count > 0 || continuation_maxima.len() > 1 {
+                MessageParticipantActionabilityState::Conflict
+            } else if let Some(head) = continuation_maxima.first() {
+                match string_event_body(head, "state").as_str() {
+                    "continuing" => {
+                        let expires_ms = head
+                            .body
+                            .get("lease_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|lease_ms| i64::try_from(lease_ms).ok())
+                            .and_then(|lease_ms| head.created_ms.checked_add(lease_ms));
+                        if expires_ms.is_some_and(|expires_ms| projection_ms < expires_ms) {
+                            MessageParticipantActionabilityState::Continuing
+                        } else {
+                            MessageParticipantActionabilityState::Unknown
+                        }
+                    }
+                    "released" => MessageParticipantActionabilityState::Released,
+                    "declined" => MessageParticipantActionabilityState::Declined,
+                    _ => MessageParticipantActionabilityState::Unknown,
+                }
+            } else {
+                MessageParticipantActionabilityState::Unknown
+            };
+            let mut disposition_candidates = events
+                .iter()
+                .filter(|event| {
+                    event.kind == "MSG_ACK"
+                        && event.author_peer_id == peer_id
+                        && string_event_body(event, "target_event_id") == target
+                })
+                .collect::<Vec<_>>();
+            disposition_candidates.extend(
+                continuation_head_ids
+                    .iter()
+                    .filter_map(|event_id| by_id.get(event_id).copied()),
+            );
+            let disposition_heads = causal_maxima(disposition_candidates, &by_id);
+            basis_event_ids.extend(disposition_heads.iter().map(|event| event.event_id.clone()));
+            let uncovered_reply_event_ids =
+                uncovered_reply_event_ids(&events, &target, &peer_id, &by_id, &disposition_heads);
+            let uncovered_reply_event_ids_omitted_count = uncovered_reply_event_ids
+                .len()
+                .saturating_sub(MAX_COORDINATION_RESULT_IDS);
+            let uncovered_reply_event_ids = uncovered_reply_event_ids
+                .into_iter()
+                .take(MAX_COORDINATION_RESULT_IDS)
+                .collect::<Vec<_>>();
+            basis_event_ids.extend(uncovered_reply_event_ids.iter().cloned());
+            basis_event_ids.sort();
+            basis_event_ids.dedup();
+            let mut actionable_reasons = Vec::new();
+            if state == MessageParticipantActionabilityState::Continuing {
+                actionable_reasons.push(MessageParticipantActionabilityReason::Continuing);
+            }
+            if !uncovered_reply_event_ids.is_empty() || uncovered_reply_event_ids_omitted_count > 0
+            {
+                actionable_reasons
+                    .push(MessageParticipantActionabilityReason::ReplyNotCoveredByDisposition);
+            }
+            message
+                .participant_actionability
+                .push(MessageParticipantActionabilityView {
+                    peer_id,
+                    state,
+                    actionable: !actionable_reasons.is_empty(),
+                    actionable_reasons,
+                    basis_event_ids,
+                    uncovered_reply_event_ids,
+                    uncovered_reply_event_ids_omitted_count,
+                });
+        }
+        message
+            .participant_actionability
+            .sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+    }
     order
         .into_iter()
         .filter_map(|event_id| messages.remove(&event_id))
         .collect()
+}
+
+fn causal_maxima<'a>(
+    mut candidates: Vec<&'a EventV1>,
+    by_id: &BTreeMap<String, &'a EventV1>,
+) -> Vec<&'a EventV1> {
+    candidates.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+    candidates.dedup_by(|left, right| left.event_id == right.event_id);
+    candidates
+        .iter()
+        .copied()
+        .filter(|candidate| {
+            !candidates.iter().any(|other| {
+                candidate.event_id != other.event_id
+                    && event_is_ancestor(&candidate.event_id, other, by_id)
+            })
+        })
+        .collect()
+}
+
+fn uncovered_reply_event_ids(
+    events: &[EventV1],
+    target_event_id: &str,
+    peer_id: &str,
+    by_id: &BTreeMap<String, &EventV1>,
+    disposition_heads: &[&EventV1],
+) -> Vec<String> {
+    let acknowledgements = events.iter().filter(|event| {
+        event.kind == "MSG_ACK"
+            && event.author_peer_id == peer_id
+            && string_event_body(event, "target_event_id") == target_event_id
+    });
+    let bound_result_ids: BTreeSet<String> = acknowledgements
+        .clone()
+        .filter_map(|event| {
+            event
+                .body
+                .get("result_event_id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect();
+    if disposition_heads.is_empty() {
+        return Vec::new();
+    }
+    let mut reply_ids = events
+        .iter()
+        .filter(|reply| {
+            reply.kind == "MSG_POST"
+                && string_event_body(reply, "thread_root_event_id") == target_event_id
+                && !bound_result_ids.contains(&reply.event_id)
+                && !disposition_heads
+                    .iter()
+                    .all(|head| event_is_ancestor(&reply.event_id, head, by_id))
+        })
+        .map(|reply| reply.event_id.clone())
+        .collect::<Vec<_>>();
+    reply_ids.sort();
+    reply_ids.dedup();
+    reply_ids
+}
+
+#[cfg(test)]
+fn has_uncovered_reply(events: &[EventV1], target_event_id: &str, peer_id: &str) -> bool {
+    let by_id: BTreeMap<String, &EventV1> = events
+        .iter()
+        .map(|event| (event.event_id.clone(), event))
+        .collect();
+    let disposition_candidates = events
+        .iter()
+        .filter(|event| {
+            matches!(event.kind.as_str(), "MSG_ACK" | "MSG_CONTINUATION")
+                && event.author_peer_id == peer_id
+                && string_event_body(event, "target_event_id") == target_event_id
+        })
+        .collect::<Vec<_>>();
+    let disposition_heads = causal_maxima(disposition_candidates, &by_id);
+    !uncovered_reply_event_ids(events, target_event_id, peer_id, &by_id, &disposition_heads)
+        .is_empty()
+}
+
+fn event_is_ancestor(
+    ancestor_event_id: &str,
+    descendant: &EventV1,
+    by_id: &BTreeMap<String, &EventV1>,
+) -> bool {
+    let mut pending = descendant.parents.clone();
+    let mut visited = BTreeSet::new();
+    while let Some(event_id) = pending.pop() {
+        if event_id == ancestor_event_id {
+            return true;
+        }
+        if visited.insert(event_id.clone()) {
+            if let Some(event) = by_id.get(&event_id) {
+                pending.extend(event.parents.iter().cloned());
+            }
+        }
+    }
+    false
 }
 
 fn event_target_message<'a>(
@@ -8854,6 +9153,209 @@ mod tests {
     }
 
     #[test]
+    fn participant_actionability_uses_causality_not_time_or_input_order() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let delegation = || {
+            create_delegation(&identity, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("delegation")
+        };
+        let target = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            100,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"work","mentions":[]}),
+        )
+        .expect("target");
+        let continuing = create_event(&identity, delegation(), "room:test", 500, "MSG_CONTINUATION", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"continuing","lease_ms":60_000,"supersedes_event_ids":[],"client_request_id":"causal-continuing"})).expect("continuing");
+        let handled = create_event(&identity, delegation(), "room:test", 200, "MSG_ACK", vec![continuing.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":null})).expect("handled");
+
+        let forward = project_messages(
+            vec![target.clone(), continuing.clone(), handled.clone()],
+            1_000,
+        );
+        let reverse = project_messages(
+            vec![handled.clone(), continuing.clone(), target.clone()],
+            1_000,
+        );
+        assert_eq!(forward, reverse);
+        for permutation in [
+            vec![target.clone(), handled.clone(), continuing.clone()],
+            vec![continuing.clone(), target.clone(), handled.clone()],
+            vec![continuing.clone(), handled.clone(), target.clone()],
+            vec![handled.clone(), target.clone(), continuing.clone()],
+        ] {
+            assert_eq!(forward, project_messages(permutation, 1_000));
+        }
+        assert_eq!(
+            forward[0].participant_actionability[0].state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(!forward[0].participant_actionability[0].actionable);
+
+        let resumed = create_event(&identity, delegation(), "room:test", 150, "MSG_CONTINUATION", vec![handled.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"continuing","lease_ms":60_000,"supersedes_event_ids":[continuing.event_id],"client_request_id":"causal-resumed"})).expect("resumed");
+        let resumed_projection = project_messages(
+            vec![target.clone(), handled.clone(), resumed, continuing.clone()],
+            1_000,
+        );
+        assert_eq!(
+            resumed_projection[0].participant_actionability[0].state,
+            MessageParticipantActionabilityState::Continuing
+        );
+        assert!(resumed_projection[0].participant_actionability[0].actionable);
+
+        let concurrent_handled = create_event(&identity, delegation(), "room:test", 50, "MSG_ACK", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":null})).expect("concurrent handled");
+        let conflict = project_messages(vec![target, continuing, concurrent_handled], 1_000);
+        assert_eq!(
+            conflict[0].participant_actionability[0].state,
+            MessageParticipantActionabilityState::Conflict
+        );
+        assert!(!conflict[0].participant_actionability[0].actionable);
+    }
+
+    #[test]
+    fn reply_coverage_is_causal_and_bound_results_are_covered() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let delegation = || {
+            create_delegation(&identity, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("delegation")
+        };
+        let target = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            100,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"work","mentions":[]}),
+        )
+        .expect("target");
+        let reply = create_event(&identity, delegation(), "room:test", 500, "MSG_POST", vec![target.event_id.clone()], serde_json::json!({"text":"reply","mentions":[],"thread_root_event_id":target.event_id})).expect("reply");
+        let covered = create_event(&identity, delegation(), "room:test", 200, "MSG_ACK", vec![reply.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"observed","result_event_id":null})).expect("covered");
+        assert!(!has_uncovered_reply(
+            &[covered.clone(), reply.clone(), target.clone()],
+            &target.event_id,
+            &identity.peer_id
+        ));
+        let covered_projection =
+            project_messages(vec![covered.clone(), reply.clone(), target.clone()], 1_000);
+        let covered_actionability = &covered_projection[0].participant_actionability[0];
+        assert_eq!(
+            covered_actionability.state,
+            MessageParticipantActionabilityState::Unknown
+        );
+        assert!(!covered_actionability.actionable);
+        assert!(covered_actionability.uncovered_reply_event_ids.is_empty());
+
+        let concurrent = create_event(&identity, delegation(), "room:test", 50, "MSG_ACK", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"observed","result_event_id":null})).expect("concurrent");
+        assert!(has_uncovered_reply(
+            &[target.clone(), concurrent.clone(), reply.clone()],
+            &target.event_id,
+            &identity.peer_id
+        ));
+        let concurrent_input = vec![target.clone(), concurrent.clone(), reply.clone()];
+        let concurrent_projection = project_messages(concurrent_input.clone(), 1_000);
+        for mut permutation in [
+            concurrent_input.clone(),
+            vec![reply.clone(), target.clone(), concurrent.clone()],
+            vec![concurrent.clone(), reply.clone(), target.clone()],
+        ] {
+            permutation.reverse();
+            assert_eq!(concurrent_projection, project_messages(permutation, 1_000));
+        }
+        let concurrent_actionability = &concurrent_projection[0].participant_actionability[0];
+        assert_eq!(
+            concurrent_actionability.state,
+            MessageParticipantActionabilityState::Unknown
+        );
+        assert!(concurrent_actionability.actionable);
+        assert_eq!(
+            concurrent_actionability.actionable_reasons,
+            vec![MessageParticipantActionabilityReason::ReplyNotCoveredByDisposition]
+        );
+        assert_eq!(
+            concurrent_actionability.uncovered_reply_event_ids,
+            vec![reply.event_id.clone()]
+        );
+        assert_eq!(
+            concurrent_actionability.uncovered_reply_event_ids_omitted_count,
+            0
+        );
+
+        let bound = create_event(&identity, delegation(), "room:test", 50, "MSG_ACK", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":reply.event_id})).expect("bound");
+        assert!(!has_uncovered_reply(
+            &[target.clone(), reply.clone(), bound.clone()],
+            &target.event_id,
+            &identity.peer_id
+        ));
+        let bound_projection = project_messages(vec![target.clone(), reply.clone(), bound], 1_000);
+        let bound_actionability = &bound_projection[0].participant_actionability[0];
+        assert_eq!(
+            bound_actionability.state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(!bound_actionability.actionable);
+        assert!(bound_actionability.uncovered_reply_event_ids.is_empty());
+
+        let covering_handled = create_event(&identity, delegation(), "room:test", 25, "MSG_ACK", vec![concurrent.event_id.clone(), reply.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":null})).expect("covering handled");
+        let covered_later =
+            project_messages(vec![target, concurrent, reply, covering_handled], 1_000);
+        let covered_later_actionability = &covered_later[0].participant_actionability[0];
+        assert_eq!(
+            covered_later_actionability.state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(!covered_later_actionability.actionable);
+        assert!(covered_later_actionability
+            .uncovered_reply_event_ids
+            .is_empty());
+
+        let bounded_target = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            1_000,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"bounded work","mentions":[]}),
+        )
+        .expect("bounded target");
+        let bounded_disposition = create_event(&identity, delegation(), "room:test", 2_000, "MSG_ACK", vec![bounded_target.event_id.clone()], serde_json::json!({"target_event_id":bounded_target.event_id,"state":"observed","result_event_id":null})).expect("bounded disposition");
+        let mut bounded_events = vec![bounded_target, bounded_disposition];
+        for index in 0..(MAX_COORDINATION_RESULT_IDS + 2) {
+            let target_event_id = bounded_events[0].event_id.clone();
+            bounded_events.push(
+                create_event(
+                    &identity,
+                    delegation(),
+                    "room:test",
+                    3_000 + index as i64,
+                    "MSG_POST",
+                    vec![target_event_id.clone()],
+                    serde_json::json!({
+                        "text": format!("follow-up {index}"),
+                        "mentions": [],
+                        "thread_root_event_id": target_event_id
+                    }),
+                )
+                .expect("bounded reply"),
+            );
+        }
+        let bounded_projection = project_messages(bounded_events, 10_000);
+        let bounded_actionability = &bounded_projection[0].participant_actionability[0];
+        assert_eq!(
+            bounded_actionability.uncovered_reply_event_ids.len(),
+            MAX_COORDINATION_RESULT_IDS
+        );
+        assert_eq!(
+            bounded_actionability.uncovered_reply_event_ids_omitted_count,
+            2
+        );
+    }
+
+    #[test]
     fn home_init_is_idempotent_and_preserves_identity() {
         let dir = tempdir().expect("tempdir");
         let home = VoxelleHome::new(dir.path().join("alice"));
@@ -9971,6 +10473,24 @@ mod tests {
         })
         .await
         .expect("handled general");
+        let follow_up_event_id = host
+            .send_message(SendMessageRequest {
+                text: "human follow-up after handled".to_string(),
+                room: Some(general_room.clone()),
+                mentions: Vec::new(),
+                thread_root_event_id: Some(general_target.clone()),
+                client_request_id: Some("frontier-general-follow-up-001".to_string()),
+            })
+            .await
+            .expect("follow-up after handled")
+            .home
+            .expect("follow-up home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.text == "human follow-up after handled")
+            .expect("follow-up message")
+            .event_id;
         let general_snapshot = host
             .mark_read(MarkReadRequest {
                 room_id: Some(general_room.clone()),
@@ -9981,19 +10501,47 @@ mod tests {
             .expect("general home")
             .coordination_frontier;
         assert_eq!(general_frontier.matching_count, 2);
-        assert_eq!(general_frontier.items[0].target_event_id, ops_target);
-        assert!(general_frontier.items[0]
+        let ops_item = general_frontier
+            .items
+            .iter()
+            .find(|item| item.target_event_id == ops_target)
+            .expect("ops frontier item");
+        assert!(ops_item
             .relevance
             .contains(&CoordinationFrontierRelevance::ContinuationActive));
-        assert!(general_frontier.items[0]
+        assert!(ops_item
             .relevance
             .contains(&CoordinationFrontierRelevance::ReplyAfterLocalDisposition));
-        assert_eq!(general_frontier.items[0].reply_count, 1);
-        assert!(general_frontier.items[0].latest_reply_ms.is_some());
-        assert_eq!(general_frontier.items[1].target_event_id, general_target);
-        assert!(general_frontier.items[1]
+        assert_eq!(ops_item.reply_count, 1);
+        assert!(ops_item.latest_reply_ms.is_some());
+        let general_item = general_frontier
+            .items
+            .iter()
+            .find(|item| item.target_event_id == general_target)
+            .expect("general frontier item");
+        assert!(general_item
             .relevance
             .contains(&CoordinationFrontierRelevance::HandledResultAvailable));
+        assert!(general_item
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ReplyAfterLocalDisposition));
+        let general_actionability = general_item
+            .local_actionability
+            .as_ref()
+            .expect("handled actionability with follow-up");
+        assert_eq!(
+            general_actionability.state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(general_actionability.actionable);
+        assert_eq!(
+            general_actionability.actionable_reasons,
+            vec![MessageParticipantActionabilityReason::ReplyNotCoveredByDisposition]
+        );
+        assert_eq!(
+            general_actionability.uncovered_reply_event_ids,
+            vec![follow_up_event_id]
+        );
         assert!(general_frontier
             .items
             .iter()
@@ -10053,7 +10601,7 @@ mod tests {
             .clone();
         let snapshot = host
             .update_message_continuation(UpdateMessageContinuationRequest {
-                target_event_id,
+                target_event_id: target_event_id.clone(),
                 room: Some(room_id.clone()),
                 state: MessageContinuationState::Continuing,
                 lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
@@ -10069,6 +10617,48 @@ mod tests {
         assert!(frontier.items[0].target_summary.ends_with('…'));
         assert!(frontier.items[0].target_summary_truncated);
         assert_eq!(frontier.items[0].target_summary_original_chars, 188);
+
+        let result_event_id = host
+            .send_message(SendMessageRequest {
+                text: "private result".to_string(),
+                room: Some(room_id.clone()),
+                mentions: Vec::new(),
+                thread_root_event_id: Some(target_event_id.clone()),
+                client_request_id: Some("frontier-private-result-001".to_string()),
+            })
+            .await
+            .expect("private result")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.text == "private result")
+            .expect("result message")
+            .event_id;
+        let handled = host
+            .acknowledge_message(AcknowledgeMessageRequest {
+                target_event_id,
+                room: Some(room_id),
+                state: MessageAcknowledgementState::Handled,
+                result_event_id: Some(result_event_id),
+            })
+            .await
+            .expect("private handled")
+            .home
+            .expect("home")
+            .coordination_frontier;
+        assert_eq!(
+            handled.items[0]
+                .local_actionability
+                .as_ref()
+                .expect("local actionability")
+                .state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(!handled.items[0]
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ContinuationActive));
     }
 
     #[test]
@@ -10094,6 +10684,7 @@ mod tests {
                 acknowledgements_omitted_count: 0,
                 continuations: Vec::new(),
                 continuations_omitted_count: 0,
+                local_actionability: None,
                 latest_fact_ms: index as i64,
             };
         let mut input: Vec<_> = (0..257)

@@ -480,6 +480,25 @@ as conflict. A new fact may reconcile conflict only by causally naming all
 known heads; arrival order and timestamps never choose a winner. Future-dated
 continuation facts are rejected even within the general event skew allowance.
 
+For each participant and target, implementations MUST derive effective
+actionability from the causal maxima spanning that participant's handled
+acknowledgements and continuation heads. Admitted source facts MUST be retained
+even when another fact dominates them in projection. A single causal maximum
+projects its literal handled, continuing, released, or declined disposition;
+multiple incomparable maxima MUST project conflict. A causally later
+`continuing` fact MAY resume after handled, released, or declined. Receipt
+order, wall-clock timestamps, local database sequence numbers, and local
+first-admission ordinals MUST NOT choose a winner. Implementations MUST expose
+these results per participant and MUST NOT synthesize a room-global task,
+assignment, correctness, presence, or abandonment state from them.
+An ordinary threaded reply is covered by a participant's disposition only when
+it is the explicitly bound handled result or is an ancestor of every maximal
+disposition head. A causally later or concurrent reply MUST remain exposed as
+uncovered attention evidence until a later disposition causally covers it.
+The disposition state remains literal while actionability and its reason expose
+the uncovered reply; implementations MUST NOT use reply timestamps as causal
+coverage evidence.
+
 `ATTACHMENT_ADD` body:
 - `filename` (string): human-visible filename, 1--255 characters
 - `mime` (string): claimed media type, 1--127 characters

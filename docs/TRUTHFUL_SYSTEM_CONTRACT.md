@@ -781,6 +781,24 @@ coordination snapshot GET; repeated post-fix reads preserved sync evidence and
 sequence while only `projected_at_ms` advanced. This remains same-machine
 loopback evidence, not external reachability, crash, or long-partition proof.
 
+Effective actionability is a per-participant, per-target projection over the
+causal maxima of handled acknowledgements and continuation heads. The admitted
+facts remain intact: projection does not erase handled, declined, released, or
+continuing assertions. A single maximum exposes its literal disposition;
+incomparable maxima expose conflict; and a causally later continuing assertion
+may explicitly resume participation. Wall-clock timestamps and home-local
+first-admission ordinals are evidence/display mechanisms only and must never
+resolve these semantic heads. No participant projection is a room-global task,
+assignment, correctness, presence, or stopping authority. This rule is now in
+the preservation envelope. Replies are covered only by an explicit handled
+result binding or causal ancestry beneath every maximal disposition head;
+concurrent and causally later replies remain bounded actionable evidence rather
+than being guessed from timestamps. Three source-blind built-surface rehearsals
+verified handled-after-continuing, later explicit resumption, bound-result
+coverage, later-follow-up attention, durable redelivery, and restart. Concurrent
+causal maxima remain deterministic projection evidence rather than a
+source-blind multi-device rehearsal.
+
 Cross-room coordination is projected through one bounded factual frontier
 derived from the same admitted room messages. It remains independent of the
 selected room and local read cursor, prioritizes live/conflicting/overdue

@@ -4,7 +4,7 @@ export type PeerEndpoint = { v: number, addr: string, peer_id: string, device_id
 
 export type ProfileSummary = { home: string, peer_id: string, device_id: string, default_room: string, authority_peer_id: string, };
 
-export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, client_request_id: string | null, text: string, edited_ms: number | null, redacted: boolean, mentions: Array<string>, thread_root_event_id: string | null, reply_count: number, pinned: boolean, reactions: Array<ReactionView>, acknowledgements: Array<MessageAcknowledgementView>, continuations: Array<MessageContinuationView>, attachments: Array<AttachmentView>, };
+export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, client_request_id: string | null, text: string, edited_ms: number | null, redacted: boolean, mentions: Array<string>, thread_root_event_id: string | null, reply_count: number, pinned: boolean, reactions: Array<ReactionView>, acknowledgements: Array<MessageAcknowledgementView>, continuations: Array<MessageContinuationView>, participant_actionability: Array<MessageParticipantActionabilityView>, attachments: Array<AttachmentView>, };
 
 export type MessageAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_conflict: boolean, acknowledged_ms: number, };
 
@@ -12,9 +12,15 @@ export type MessageContinuationView = { peer_id: string, state: MessageContinuat
 
 export type MessageContinuationProjectionState = "unknown" | "continuing" | "released" | "declined" | "conflict";
 
+export type MessageParticipantActionabilityView = { peer_id: string, state: MessageParticipantActionabilityState, actionable: boolean, actionable_reasons: Array<MessageParticipantActionabilityReason>, basis_event_ids: Array<string>, uncovered_reply_event_ids: Array<string>, uncovered_reply_event_ids_omitted_count: number, };
+
+export type MessageParticipantActionabilityReason = "continuing" | "reply_not_covered_by_disposition";
+
+export type MessageParticipantActionabilityState = "unknown" | "continuing" | "released" | "declined" | "handled" | "conflict";
+
 export type CoordinationFrontierView = { items: Array<CoordinationFrontierItemView>, matching_count: number, omitted_count: number, truncated: boolean, next_projection_change_ms: number | null, };
 
-export type CoordinationFrontierItemView = { room_id: string, room_name: string, room_visibility: string, target_event_id: string, target_created_ms: number, target_author_peer_id: string, target_redacted: boolean, target_summary: string, target_summary_truncated: boolean, target_summary_original_chars: number, local_principal_mentioned: boolean, target_after_local_read_cursor: boolean, reply_count: number, latest_reply_ms: number | null, relevance: Array<CoordinationFrontierRelevance>, acknowledgements: Array<CoordinationAcknowledgementView>, acknowledgements_omitted_count: number, continuations: Array<MessageContinuationView>, continuations_omitted_count: number, latest_fact_ms: number, };
+export type CoordinationFrontierItemView = { room_id: string, room_name: string, room_visibility: string, target_event_id: string, target_created_ms: number, target_author_peer_id: string, target_redacted: boolean, target_summary: string, target_summary_truncated: boolean, target_summary_original_chars: number, local_principal_mentioned: boolean, target_after_local_read_cursor: boolean, reply_count: number, latest_reply_ms: number | null, relevance: Array<CoordinationFrontierRelevance>, acknowledgements: Array<CoordinationAcknowledgementView>, acknowledgements_omitted_count: number, continuations: Array<MessageContinuationView>, continuations_omitted_count: number, local_actionability: MessageParticipantActionabilityView | null, latest_fact_ms: number, };
 
 export type CoordinationFrontierRelevance = "mention_without_local_disposition" | "reply_after_local_disposition" | "continuation_active" | "continuation_overdue" | "continuation_conflict" | "observed" | "handled" | "handled_result_available" | "released" | "declined";
 

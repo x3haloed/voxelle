@@ -21,6 +21,9 @@ Voxelle is ready for a credible beta when people and agents can install or attac
 - **Invariant:** Coordination state distinguishes a fact being accepted, propagated, observed, answered, or abandoned; silence and disconnection must not masquerade as successful continuation.
   **Evidence:** User-specified agent coordination outcome; current independent black-box experiments are evaluating the required embodiment.
 
+- **Invariant:** Effective actionability is derived per participant and target from the causal maxima of handled acknowledgements and continuation heads. Raw admitted facts remain preserved; incomparable maxima expose conflict; a causally later continuing assertion can resume after handled, declined, or released. Replies remain actionable until explicitly bound as a handled result or causally covered by every maximal disposition. Timestamps and home-local admission ordinals never resolve semantic heads, and no projection becomes global task authority.
+  **Evidence:** Projection permutation/skew/private-room tests plus three source-blind built-surface rehearsals. Continuing then handled became non-actionable without deleting raw facts; later continuing resumed; a bound result stayed covered; a later ordinary follow-up became actionable with its exact uncovered reply ID; durable redelivery and clean restart preserved the same decision. Concurrent causal maxima are covered by deterministic projection tests but remain an explicit black-box evidence gap.
+
 - **Invariant:** An ordinary clean restart on the same device preserves its usable advertised endpoint or fails explicitly; durable identity and conversation state do not constitute continuity when every peer silently retains an unreachable address.
   **Evidence:** A source-blind two-agent run preserved handled/result facts but could not continue after an ephemeral-port restart; the follow-up run reclaimed the saved endpoint and continued through the original peer record.
 

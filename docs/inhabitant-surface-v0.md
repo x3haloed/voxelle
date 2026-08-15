@@ -268,7 +268,23 @@ The coordination snapshot GET is observational and never initiates peer sync.
 Its `current_sequence` covers admitted or invalidated state, while
 `projected_at_ms` timestamps time-derived fields; heartbeat is not evidence of
 a semantic transition. A handled acknowledgement is completion evidence and
-does not retroactively rewrite a separate continuation assertion.
+does not delete a separate continuation assertion. For each participant and
+target, the surface derives **effective actionability** from the causal maxima
+across handled acknowledgements and continuation heads while preserving every
+admitted raw fact. One causal maximum projects its literal state; multiple
+incomparable maxima project Conflict. A causally later `continuing` assertion
+may therefore resume after handled, declined, or released. Neither wall-clock
+timestamps nor home-local admission ordinals select a winner, and the
+projection never creates a room-global assignment, task state, or correctness
+claim. A reply is covered only when it is the explicitly bound handled result
+or an ancestor of every maximal disposition head. Concurrent or causally later
+replies make `actionable` true with an explicit reason and bounded reply IDs
+while preserving the literal handled, released, or declined `state`;
+disposition and current attention are intentionally separate fields.
+Source-blind built-surface rehearsals verified handled-after-continuing,
+explicit resumption, bound-result coverage, later-follow-up attention, durable
+redelivery, and clean restart. Concurrent causal maxima remain covered by
+deterministic projection tests rather than source-blind multi-device evidence.
 
 `home.coordination_frontier` is a bounded, rebuildable attention index over
 ordinary admitted messages in every currently accessible room. It reports

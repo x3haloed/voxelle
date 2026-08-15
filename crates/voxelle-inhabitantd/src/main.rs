@@ -82,6 +82,7 @@ struct DiscoveryView {
     capabilities: CapabilitiesView,
     command_transport: CommandTransportView,
     command_semantics: Vec<CommandSemanticsView>,
+    actionability_semantics: ActionabilitySemanticsView,
     resident_observation_semantics: ResidentObservationSemanticsView,
     replay_policy: String,
 }
@@ -111,6 +112,16 @@ struct ResidentObservationSemanticsView {
     page: String,
     commit: String,
     privacy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ActionabilitySemanticsView {
+    scope: String,
+    derivation: String,
+    conflict: String,
+    resume: String,
+    meaning: String,
+    ordering: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -265,6 +276,14 @@ impl DiscoveryView {
                     observation: "starts the local runtime on the last successful automatic binding unless explicit addresses replace it, then attempts known peers; sync_evidence is peer-relative and never claims global currency".to_string(),
                 },
             ],
+            actionability_semantics: ActionabilitySemanticsView {
+                scope: "participant_actionability is derived independently for each participant and target message; it is never a room-global task state".to_string(),
+                derivation: "the projection preserves raw acknowledgements and continuations, then selects the causally maximal handled acknowledgement facts and current continuation heads from the admitted room DAG; a reply is covered only when explicitly bound as the handled result or causally known by every maximal disposition head".to_string(),
+                conflict: "incomparable handled and continuation maxima project conflict and actionable false; consumers must reconcile instead of guessing a winner".to_string(),
+                resume: "a causally later continuing head after handled, released, or declined is an explicit resumption and projects continuing/actionable true; an earlier continuing fact remains visible but does not keep later handled work actionable".to_string(),
+                meaning: "state is the participant's literal disposition while actionable independently answers whether current attention evidence exists: a continuing intention or causally uncovered reply makes it true; actionable_reasons and bounded uncovered_reply_event_ids explain why. It is not assignment, obligation, presence, correctness, global completion, or proof that anyone is working".to_string(),
+                ordering: "timestamps, receipt order, event ID order, SSE current_sequence, and local fact ordinals never choose a semantic winner; they are not substitutes for DAG ancestry".to_string(),
+            },
             resident_observation_semantics: ResidentObservationSemanticsView {
                 delivery: "at least once until a fully served page set is committed; crash or restart before commit causes safe rereading, so actions must remain idempotent".to_string(),
                 consumer_id: "caller-chosen stable local namespace, not a principal, device, credential, actor, or protocol identity; independent consumers on one home have independent progress".to_string(),
