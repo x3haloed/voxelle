@@ -289,6 +289,11 @@ action. Rust-owned recovery categories travel with the same serialized command
 result used by every consumer; implementation paths and error chains remain
 available only under explicit technical details and never become the recovery
 authority.
+Before the product component loads, an initial snapshot failure uses the same
+structured explanation and technical-detail separation. It focuses a **Try
+Again** action that retries the unchanged native snapshot request in place and
+states that retry does not delete, archive, or replace local state. Technical
+details remain an Enter/Space-operable disclosure with explicit expanded state.
 Dismissal keeps keyboard location causal: validation returns to its repaired
 control, a surviving initiating command regains focus inside the current
 transient surface, and a removed origin falls back within that surface or to the

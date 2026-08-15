@@ -195,6 +195,12 @@ With that technology active and without using a pointer, complete and record:
   document-level horizontal scrolling; and
 - entering, operating, and leaving the direct-media surface.
 
+If the initial native snapshot fails during this run, confirm the startup alert
+keeps technical details behind an actionable disclosure, focuses **Try Again**,
+states that retry does not delete, archive, or replace local state, and reaches
+the ordinary product after the underlying issue is corrected. Do not induce a
+credential or storage failure solely to satisfy this conditional observation.
+
 In Customize, confirm every unchanged preference begins with its contextual
 Save action disabled, changing the associated control enables only that Save
 action, and accepting it returns the action to disabled with the projected

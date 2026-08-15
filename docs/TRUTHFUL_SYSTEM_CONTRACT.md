@@ -672,6 +672,17 @@ schemas and unsupported commands remain internal integration errors. The Rust
 classifier narrowly covers authoritative validation outcomes for message text
 and mentions, reactions, attachments, profiles, channel and role creation, and
 search; it does not reclassify permission failures or infrastructure faults.
+Initial snapshot failure no longer ends in a static dead-end screen after
+advising the person to retry. The pre-component shell renders the same bounded
+structured explanation, states that retry does not delete, archive, or replace
+local state, focuses **Try Again**, and repeats only the native `shell.refresh`
+request after explicit activation. Technical details remain keyboard-operable
+and report expanded state. A deterministic retry-loop test covers repeated
+failure before first success; a temporary clean-origin preview failure verified
+the focused error, recovery description, Enter-opened details, explicit retry,
+and eventual ordinary product load. This is rendered startup recovery evidence,
+not damaged-home archival, packaged-native credential, or identity-recovery
+evidence.
 The profile, channel, and role forms now make their narrower frontend
 prerequisite checks causally usable: empty profile display name, empty channel
 name, empty role name, and missing role permissions each mark and describe the
