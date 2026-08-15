@@ -115,6 +115,9 @@ its missing prerequisite rather than allowing an avoidable failing action.
 In the channel list and conversation, navigate repeated channel and message
 controls and confirm each announced name identifies the visible target rather
 than relying on position alone.
+Open at least one disclosure with Enter and another with Space. Confirm the
+assistive technology announces each as an actionable control and reports the
+collapsed or expanded state after activation.
 
 Resize the supported desktop window to its narrowest practical width during one
 conversation path. Confirm the header actions, selected conversation, composer,

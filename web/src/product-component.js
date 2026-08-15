@@ -343,7 +343,7 @@ function connectionCenterButton(snapshot) {
 
 function headerMore(snapshot) {
   const details = element("details", "header-more");
-  details.append(element("summary", "command-button", "More"));
+  details.append(disclosureSummary("More", "command-button"));
   const menu = element("div", "header-more-menu");
   const closeAfterActivation = (button) => {
     button.addEventListener("click", () => {
@@ -582,7 +582,7 @@ function onboardingExperience(snapshot) {
   });
   const manualInvite = element("details", "advanced-details invite-manual");
   manualInvite.append(
-    element("summary", "", "Paste invite JSON instead"),
+    disclosureSummary("Paste invite JSON instead"),
     element(
       "p",
       "summary",
@@ -680,7 +680,7 @@ function damagedHomeExperience(homeError) {
   panel.querySelector("h2").id = "damaged-home-title";
   const details = element("details", "technical-details");
   details.append(
-    element("summary", "", "Technical details"),
+    disclosureSummary("Technical details"),
     element("pre", "", homeError.detail),
   );
   panel.append(details);
@@ -754,7 +754,7 @@ function customizationEditor(snapshot) {
     preferenceGroup("Everyday behavior", snapshot.ui_ontology.behaviors, behaviorEditor),
   );
   const advanced = element("details", "settings-advanced");
-  advanced.append(element("summary", "command-button", "Advanced appearance and spacing"));
+  advanced.append(disclosureSummary("Advanced appearance and spacing", "command-button"));
   const editor = element("div", "customization-editor");
   editor.append(
     preferenceGroup("Appearance", snapshot.ui_ontology.semantic_tokens, semanticTokenEditor),
@@ -1070,7 +1070,7 @@ function profileSummaryView(snapshot) {
   edit.addEventListener("toggle", () => {
     uiState.profileEditOpen = edit.open;
   });
-  edit.append(element("summary", "", "Edit your profile"));
+  edit.append(disclosureSummary("Edit your profile"));
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -1098,7 +1098,7 @@ function profileSummaryView(snapshot) {
 
   const advanced = element("details", "advanced-details");
   advanced.append(
-    element("summary", "", "Identity details"),
+    disclosureSummary("Identity details"),
     definitionGrid([
       ["Principal", profile.peer_id],
       ["This device", profile.device_id],
@@ -1312,7 +1312,7 @@ function signedArtifactField(options) {
   textarea.dataset.productUpdateInput = options.inputKind;
   const manual = element("details", "advanced-details artifact-manual");
   manual.append(
-    element("summary", "", options.manualLabel),
+    disclosureSummary(options.manualLabel),
     element("p", "summary", options.manualHelp),
     textarea,
   );
@@ -1609,7 +1609,7 @@ function peerImportDisclosure(snapshot) {
     uiState.peerImportOpen = details.open;
   });
   details.append(
-    element("summary", "", (snapshot.home?.peers.length ?? 0) === 0
+    disclosureSummary((snapshot.home?.peers.length ?? 0) === 0
       ? "Add peer availability"
       : "Add another peer"),
     peerImportForm(snapshot),
@@ -1746,12 +1746,12 @@ function inviteExchangeView(snapshot) {
     );
     const details = element("details", "advanced-details");
     details.append(
-      element("summary", "", "Signed invite details"),
+      disclosureSummary("Signed invite details"),
       element("pre", "invite-json", invite),
     );
     const replacement = element("details", "advanced-details");
     replacement.append(
-      element("summary", "", "Create another invite"),
+      disclosureSummary("Create another invite"),
       element("p", "summary", "Creating another invite does not revoke existing active invites."),
       inviteCreationForm(),
     );
@@ -1793,7 +1793,7 @@ function inviteExchangeView(snapshot) {
   }
 
   const manual = element("details", "advanced-details");
-  manual.append(element("summary", "", "Manual peer setup"), peerImportForm(snapshot));
+  manual.append(disclosureSummary("Manual peer setup"), peerImportForm(snapshot));
 
   fragment.append(inviteGroup, active, manual);
   return fragment;
@@ -1985,7 +1985,7 @@ function peerListView(snapshot) {
       commandButton("peer.sync", peerRequest(peer)),
     );
     details.append(
-      element("summary", "", "Connection details"),
+      disclosureSummary("Connection details"),
       definitionGrid([
         ["Address", peer.addr],
         ["Principal", peer.peer_id],
@@ -2052,7 +2052,7 @@ function channelCreateDisclosure(snapshot) {
   create.addEventListener("toggle", () => {
     uiState.channelCreateOpen = create.open;
   });
-  create.append(element("summary", "", "Create a channel"));
+  create.append(disclosureSummary("Create a channel"));
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2070,7 +2070,7 @@ function channelCreateDisclosure(snapshot) {
   );
   const privacy = element("details", "advanced-details");
   privacy.open = uiState.channelPrivateDraft;
-  const privacySummary = element("summary", "", "Private channel options");
+  const privacySummary = disclosureSummary("Private channel options");
   const privateToggle = choiceCheckbox(
     "Only selected members can read this channel",
     uiState.channelPrivateDraft,
@@ -2203,7 +2203,7 @@ function memberProfilesView(snapshot) {
     if (!isOwn) {
       const actions = element("details", "advanced-details member-actions");
       actions.append(
-        element("summary", "", "Member actions"),
+        disclosureSummary("Member actions"),
         element(
           "p",
           "summary",
@@ -2294,7 +2294,7 @@ function roleListView(snapshot) {
     if (role.role_id !== "role:everyone") {
       const members = element("details", "advanced-details");
       members.open = uiState.roleAssignmentDraft?.roleId === role.role_id;
-      members.append(element("summary", "", "Manage members"));
+      members.append(disclosureSummary("Manage members"));
       const memberList = element("div", "choice-list");
       for (const profile of snapshot.home?.profiles ?? []) {
         if (profile.banned) continue;
@@ -2322,7 +2322,7 @@ function roleListView(snapshot) {
   create.addEventListener("toggle", () => {
     uiState.roleCreateOpen = create.open;
   });
-  create.append(element("summary", "", "Create a role"));
+  create.append(disclosureSummary("Create a role"));
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2561,7 +2561,7 @@ function roomTimelineView(snapshot) {
       content.append(link);
     }
     const actionDetails = element("details", "message-actions");
-    const actionSummary = element("summary", "", "Message actions");
+    const actionSummary = disclosureSummary("Message actions");
     actionSummary.setAttribute("aria-label", messageActionsLabel(message, author.display_name));
     actionDetails.append(actionSummary);
     const actions = element("div", "row-actions");
@@ -3700,7 +3700,7 @@ function globalErrorBanner() {
   if (uiState.errorDetail) {
     const details = element("details", "advanced-details");
     details.append(
-      element("summary", "", "Technical details"),
+      disclosureSummary("Technical details"),
       element("pre", "error-detail", uiState.errorDetail),
     );
     copy.append(details);
@@ -3823,7 +3823,7 @@ function choiceCheckbox(label, checked, onChange) {
 
 function mentionPicker(input, snapshot, onChange) {
   const details = element("details", "mention-picker");
-  details.append(element("summary", "command-button", "Mention someone"));
+  details.append(disclosureSummary("Mention someone", "command-button"));
   const choices = element("div", "mention-choices");
   const profiles = (snapshot.home?.profiles ?? []).filter((profile) =>
     !profile.banned && profile.peer_id !== snapshot.home?.profile.peer_id);
@@ -4006,6 +4006,29 @@ function messageActionsLabel(message, authorName) {
       || "message";
   const preview = text.length > 48 ? `${text.slice(0, 47)}…` : text;
   return `Actions for message from ${authorName}: ${preview}`;
+}
+
+function disclosureSummary(label, className = "") {
+  const summary = element("summary", className, label);
+  summary.setAttribute("role", "button");
+  summary.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const details = summary.parentElement;
+    if (!(details instanceof HTMLDetailsElement)) return;
+    event.preventDefault();
+    details.open = !details.open;
+  });
+  summary.setAttribute("aria-expanded", "false");
+  queueMicrotask(() => {
+    const details = summary.parentElement;
+    if (!(details instanceof HTMLDetailsElement)) return;
+    const synchronizeExpandedState = () => {
+      summary.setAttribute("aria-expanded", String(details.open));
+    };
+    synchronizeExpandedState();
+    details.addEventListener("toggle", synchronizeExpandedState);
+  });
+  return summary;
 }
 
 /**

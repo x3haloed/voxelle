@@ -584,6 +584,17 @@ Deterministic source regressions preserve the contextual labels and preview
 bound. This reduces nonvisual navigation ambiguity but is not the actual
 assistive-technology beta gate.
 
+Disclosure controls have crossed a broader rendered accessibility gate. More,
+onboarding fallbacks, profile and identity details, customization, signed
+artifact entry, peer setup, invitations, channel creation, member and role
+management, message actions, error details, and the mention picker all use one
+owner-independent presentation helper. It exposes a button role, synchronizes
+`aria-expanded` with the native `details` state, and preserves both Enter and
+Space activation. Rendered traversal covers the default workbench plus People,
+Customize, and Product Updates, including expanded-state changes. This remains
+browser accessibility-tree and keyboard evidence, not an actual VoiceOver,
+Narrator, or NVDA claim.
+
 The same packaged surface now derives reaction and pin actions from projected
 accepted state: a native run added and removed the local reaction and pinned
 and unpinned the message through their distinct semantic commands. Deletion no

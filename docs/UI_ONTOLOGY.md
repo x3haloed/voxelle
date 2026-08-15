@@ -196,6 +196,12 @@ disclosures include the author and a bounded content or attachment preview.
 This naming changes presentation only: stable command IDs and payloads remain
 the semantic authority.
 
+Every native disclosure summary exposes a button role and an `aria-expanded`
+value synchronized with its owning `details` element. Enter and Space both
+toggle the same native disclosure. The shared presentation helper discovers
+its parent after insertion so hidden or conditional surfaces do not carry a
+second manually coordinated owner reference.
+
 When a successful semantic command replaces its initiating surface, the
 coordinator rejects the document root as a meaningful origin and selects a
 causal fallback. Fresh creation or join focuses recovery setup; successful
