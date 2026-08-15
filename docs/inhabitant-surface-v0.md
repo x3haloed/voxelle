@@ -174,6 +174,12 @@ Suggested `agent_hints`:
 - `ambient_items`: changes safe to leave for quiet soundings
 - `human_action_required`: true when progress needs a person
 
+Network-health rows may carry `primary_action_payload` together with their
+stable `primary_action`. This lets both human and agent affordances retry the
+exact failed ordinary peer without selecting a different endpoint or parsing
+human prose. Peer-operation failures are availability observations, never
+membership or governance authority.
+
 ### 3.3 Action
 
 Actions answer: "What may I do, through the same authority path as the UI?"

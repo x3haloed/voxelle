@@ -195,6 +195,14 @@ message content, attachments, profile fields, reactions, and empty searches do
 not masquerade as product defects. Authority, connectivity, home, and internal
 failures retain their distinct recovery meanings.
 
+Failed peer diagnosis and synchronization remain current-session observations
+in the Rust command host rather than disappearing with an error banner. They
+replace the corresponding health row with `broken`, name the affected ordinary
+peer, and carry the exact stable command plus peer/device payload needed to
+retry. The ordinary header counts the broken row; a successful operation against
+that same peer clears it. These observations report availability only and do
+not alter membership, authority, or retained facts.
+
 An existing but unreadable local home is not presented as fresh onboarding.
 Rust reports a structured `home_error`; the shell explains the damage, keeps
 technical detail disclosure explicit, and requires confirmation before

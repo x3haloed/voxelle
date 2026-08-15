@@ -126,7 +126,7 @@ export type HomeScreenView = { profile: ProfileSummary, recovery: RecoveryHealth
 
 export type NetworkHealthView = { rows: Array<NetworkHealthRow>, };
 
-export type NetworkHealthRow = { id: string, label: string, status: NetworkHealthStatus, summary: string, primary_action: string | null, details: Array<string>, related_views: Array<string>, related_commands: Array<string>, };
+export type NetworkHealthRow = { id: string, label: string, status: NetworkHealthStatus, summary: string, primary_action: string | null, primary_action_payload: unknown, details: Array<string>, related_views: Array<string>, related_commands: Array<string>, };
 
 export type NetworkHealthStatus = "unknown" | "working" | "needs_attention" | "broken";
 

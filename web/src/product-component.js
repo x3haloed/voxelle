@@ -1155,7 +1155,7 @@ function healthRow(row) {
 
   item.append(indicator, body);
   if (row.primary_action) {
-    item.append(commandButton(row.primary_action));
+    item.append(commandButton(row.primary_action, row.primary_action_payload ?? undefined));
   }
   return item;
 }

@@ -772,6 +772,18 @@ pub struct VoxelleCommandHost {
     product_generation_notice: Option<String>,
     available_product_update: Option<AvailableProductUpdate>,
     update_phase: String,
+    peer_health_failures: BTreeMap<(String, String, PeerHealthOperation), PeerHealthFailure>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PeerHealthOperation {
+    Diagnose,
+    Sync,
+}
+
+#[derive(Debug, Clone)]
+struct PeerHealthFailure {
+    label: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1110,6 +1122,8 @@ pub struct NetworkHealthRow {
     pub status: NetworkHealthStatus,
     pub summary: String,
     pub primary_action: Option<String>,
+    #[ts(type = "unknown")]
+    pub primary_action_payload: Option<serde_json::Value>,
     pub details: Vec<String>,
     pub related_views: Vec<String>,
     pub related_commands: Vec<String>,
@@ -3615,6 +3629,7 @@ impl VoxelleCommandHost {
             product_generation_notice,
             available_product_update: None,
             update_phase,
+            peer_health_failures: BTreeMap::new(),
         }
     }
 
@@ -4312,22 +4327,36 @@ impl VoxelleCommandHost {
             .label
             .clone()
             .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
-        let report = self.home.diagnose_peer(&peer).await?;
-        if report.reachable {
-            self.push_activity(
-                ServiceActivityLevel::Info,
-                format!("diagnostic reached {label}"),
-            );
-        } else {
-            self.push_activity(
-                ServiceActivityLevel::Error,
-                format!(
-                    "diagnostic failed for {label}: {}",
-                    report.error.as_deref().unwrap_or("no error detail")
-                ),
-            );
+        match self.home.diagnose_peer(&peer).await {
+            Ok(report) if report.reachable => {
+                self.clear_peer_health_failure(&peer, PeerHealthOperation::Diagnose);
+                self.push_activity(
+                    ServiceActivityLevel::Info,
+                    format!("diagnostic reached {label}"),
+                );
+                self.snapshot()
+            }
+            Ok(report) => {
+                self.record_peer_health_failure(&peer, PeerHealthOperation::Diagnose);
+                self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!(
+                        "diagnostic failed for {label}: {}",
+                        report.error.as_deref().unwrap_or("no error detail")
+                    ),
+                );
+                self.snapshot()
+            }
+            Err(error) => {
+                self.record_peer_health_failure(&peer, PeerHealthOperation::Diagnose);
+                self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!("diagnostic could not reach {label}: {error:#}"),
+                );
+                (self.snapshot_invalidated)();
+                Err(error)
+            }
         }
-        self.snapshot()
     }
 
     pub async fn sync_peer(&mut self, request: PeerCommandRequest) -> Result<ShellSnapshotView> {
@@ -4337,7 +4366,19 @@ impl VoxelleCommandHost {
             .clone()
             .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
         let max_events = request.max_events.unwrap_or(64);
-        let report = self.home.sync_peer(&peer, max_events).await?;
+        let report = match self.home.sync_peer(&peer, max_events).await {
+            Ok(report) => report,
+            Err(error) => {
+                self.record_peer_health_failure(&peer, PeerHealthOperation::Sync);
+                self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!("sync could not reach {label}: {error:#}"),
+                );
+                (self.snapshot_invalidated)();
+                return Err(error);
+            }
+        };
+        self.clear_peer_health_failure(&peer, PeerHealthOperation::Sync);
         self.push_activity(
             ServiceActivityLevel::Info,
             format!(
@@ -4370,6 +4411,7 @@ impl VoxelleCommandHost {
                 .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
             match sync {
                 Ok(report) => {
+                    self.clear_peer_health_failure(&peer, PeerHealthOperation::Sync);
                     let received = report.governance.accepted + report.room.accepted;
                     let pushed = report.governance.remote_accepted + report.room.remote_accepted;
                     if received > 0 || pushed > 0 {
@@ -4381,10 +4423,13 @@ impl VoxelleCommandHost {
                         );
                     }
                 }
-                Err(error) => self.push_activity(
-                    ServiceActivityLevel::Error,
-                    format!("automatic sync could not reach {label}: {error}"),
-                ),
+                Err(error) => {
+                    self.record_peer_health_failure(&peer, PeerHealthOperation::Sync);
+                    self.push_activity(
+                        ServiceActivityLevel::Error,
+                        format!("automatic sync could not reach {label}: {error}"),
+                    );
+                }
             }
         }
         Ok(())
@@ -4409,6 +4454,8 @@ impl VoxelleCommandHost {
             ),
             Err(_) => (None, None),
         };
+        let mut network_health = self.home.network_health_view(online)?;
+        self.apply_peer_health_failures(&mut network_health);
         let preferences = self.home.ui_preferences()?;
         let ui_ontology = match &self.product_generation {
             Some(active) => apply_ui_preferences(active.generation.ontology.clone(), preferences),
@@ -4435,7 +4482,7 @@ impl VoxelleCommandHost {
             home_root: self.home.root.clone(),
             home,
             home_error,
-            network_health: self.home.network_health_view(online)?,
+            network_health,
             ui_ontology,
             product_generation,
             product_component,
@@ -4515,6 +4562,62 @@ impl VoxelleCommandHost {
         if self.activity.len() > 200 {
             let overflow = self.activity.len() - 200;
             self.activity.drain(0..overflow);
+        }
+    }
+
+    fn record_peer_health_failure(&mut self, peer: &PeerRecord, operation: PeerHealthOperation) {
+        self.peer_health_failures.insert(
+            (
+                peer.endpoint.peer_id.clone(),
+                peer.endpoint.device_id.clone(),
+                operation,
+            ),
+            PeerHealthFailure {
+                label: peer
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id)),
+            },
+        );
+    }
+
+    fn clear_peer_health_failure(&mut self, peer: &PeerRecord, operation: PeerHealthOperation) {
+        self.peer_health_failures.remove(&(
+            peer.endpoint.peer_id.clone(),
+            peer.endpoint.device_id.clone(),
+            operation,
+        ));
+    }
+
+    fn apply_peer_health_failures(&self, health: &mut NetworkHealthView) {
+        for (operation, row_id, command, noun) in [
+            (PeerHealthOperation::Diagnose, "reachability", "peer.diagnose", "reachability check"),
+            (PeerHealthOperation::Sync, "sync", "peer.sync", "synchronization"),
+        ] {
+            let failures = self
+                .peer_health_failures
+                .iter()
+                .filter(|((_, _, candidate), _)| *candidate == operation)
+                .collect::<Vec<_>>();
+            let Some(((peer_id, device_id, _), first)) = failures.first() else {
+                continue;
+            };
+            let summary = if failures.len() == 1 {
+                format!("Voxelle could not complete {noun} with {}.", first.label)
+            } else {
+                format!("Voxelle could not complete {noun} with {} peers.", failures.len())
+            };
+            if let Some(row) = health.rows.iter_mut().find(|row| row.id == row_id) {
+                row.status = NetworkHealthStatus::Broken;
+                row.summary = summary;
+                row.primary_action = Some(command.to_string());
+                row.primary_action_payload = Some(serde_json::json!({
+                    "peer_id": peer_id,
+                    "device_id": device_id,
+                    "max_events": 64,
+                }));
+                row.details = vec!["Try again now, or confirm that another authorized member is online and reachable.".to_string()];
+            }
         }
     }
 
@@ -4723,6 +4826,7 @@ impl NetworkHealthRow {
             status,
             summary: summary.into(),
             primary_action: primary_action.map(ToOwned::to_owned),
+            primary_action_payload: None,
             details: Vec::new(),
             related_views: Vec::new(),
             related_commands: primary_action
@@ -7611,6 +7715,54 @@ mod tests {
             .iter()
             .any(|item| item.summary.starts_with("served sync:")));
         alice.stop_service().expect("stop");
+
+        let degraded = bob
+            .diagnose_peer(request)
+            .await
+            .expect("unreachable diagnostic remains a snapshot observation");
+        let reachability = network_health_row(&degraded.network_health, "reachability");
+        assert_eq!(reachability.status, NetworkHealthStatus::Broken);
+        assert!(reachability.summary.contains("could not complete"));
+        assert_eq!(
+            reachability.primary_action.as_deref(),
+            Some("peer.diagnose")
+        );
+        assert!(reachability.primary_action_payload.is_some());
+
+        let alice_restarted = alice
+            .start_service(StartServiceRequest {
+                bind: None,
+                advertise: None,
+            })
+            .expect("restart alice");
+        let fresh_record = alice_restarted
+            .home
+            .as_ref()
+            .expect("alice home")
+            .invite
+            .as_ref()
+            .expect("alice invite")
+            .peer_record_json
+            .clone();
+        let imported = bob
+            .import_peer_record(ImportPeerRecordRequest {
+                peer_record_json: fresh_record,
+            })
+            .expect("replace stale endpoint");
+        let fresh_peer = &imported.home.as_ref().expect("bob home").peers[0];
+        let recovered = bob
+            .diagnose_peer(PeerCommandRequest {
+                peer_id: fresh_peer.peer_id.clone(),
+                device_id: fresh_peer.device_id.clone(),
+                max_events: Some(64),
+            })
+            .await
+            .expect("retry fresh endpoint");
+        assert_eq!(
+            network_health_status(&recovered.network_health, "reachability"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        alice.stop_service().expect("stop restarted alice");
     }
 
     #[tokio::test]

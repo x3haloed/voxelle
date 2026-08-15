@@ -339,6 +339,18 @@ prompt, focus moved to **Message #general**. Deterministic tests cover both a
 disconnected origin and a document-root origin. This is lived local macOS focus
 evidence, not an assistive-technology claim.
 
+The degraded-connection human path has crossed a focused local macOS gate. Two
+separately identified ad-hoc-signed native bundles joined through a real signed
+invite. After the inviter exited, an explicit refresh retained the failed
+ordinary-peer synchronization as a Rust-owned health observation: the joiner
+header changed from **Online** to **Online · 1 problem**, Connection & sync named
+the unavailable inviter, and its retry button carried that exact peer/device
+command payload. Restarting the inviter on its previously advertised endpoint
+and invoking the retry cleared the broken row and restored **Online** without
+changing membership or local conversation availability. This is local
+loopback lived evidence, not the external IPv6 field, physical-machine, or
+assistive-technology gate.
+
 Customization has crossed a focused native macOS gate. The packaged workbench
 opens one human settings surface from More, presents everyday behavior before
 advanced semantic-token and metric controls, and exposes contextual accessible
