@@ -205,7 +205,10 @@ evidence, but they do not satisfy this actual assistive-technology gate.
 During those keyboard-only paths, invoke at least one form-backed action from
 the command palette and confirm focus lands in the required visible input. Also
 inspect one unavailable command and confirm the assistive technology announces
-its missing prerequisite rather than allowing an avoidable failing action.
+its missing prerequisite rather than allowing an avoidable failing action. On a
+fresh home, invoke the **Focus Message Composer** shortcut and confirm the
+palette keeps the command visible but disabled with **Create, join, or recover a
+space first** instead of closing without moving focus.
 In the channel list, conversation, and People surface, navigate repeated
 channel, message, reaction, member, role, and invitation controls. Confirm each
 announced name identifies the visible target rather than relying on position

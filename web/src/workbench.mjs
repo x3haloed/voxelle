@@ -71,6 +71,7 @@ const HOME_COMMANDS = new Set([
   "profile.update",
   "role.create",
   "message.search",
+  "message.composer.focus",
   "call.join",
   "call.leave",
   "call.microphone.toggle",

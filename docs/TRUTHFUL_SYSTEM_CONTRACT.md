@@ -344,7 +344,12 @@ The human palette now projects causal availability without narrowing that
 registry or creating another command vocabulary. Unavailable commands remain
 discoverable but disabled with the missing prerequisite; active-home join and
 restore, fresh-home channel/profile/role/search, offline leave, and invite copy
-without an invite no longer fall through to avoidable command errors.
+without an invite no longer fall through to avoidable command errors. A
+rendered fresh-home probe exposed that `message.composer.focus` was the remaining
+context-only exception: it closed the palette and found no composer. The shared
+availability decision now classifies it with the other home-dependent commands;
+both palette search and its direct shortcut keep it visible, disabled, and
+described as requiring create, join, or recovery first.
 Form-backed commands route to the same invite, channel, profile, role, search,
 peer-import, update-package, or trust-transition surface and focus the required
 input; only explicit form submission supplies the semantic payload. A rendered

@@ -383,7 +383,9 @@ The command ID is the durable concept. The button is only one affordance.
 The human command palette remains a projection of the complete Rust-owned
 registry, but invocation is contextual. Commands whose causal prerequisite is
 absent stay visible and disabled with a concrete reason—for example, channel
-creation before a home exists or identity restoration on an active home.
+creation or composer focus before a home exists, or identity restoration on an
+active home. A direct shortcut reaches this same disabled palette result instead
+of closing the palette and silently targeting a surface that does not exist.
 Commands requiring human draft context do not submit empty retained frontend
 state: Join Space focuses invite selection, Create Channel opens and focuses
 the channel form, Update Profile and Create Role open their exact People

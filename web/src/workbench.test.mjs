@@ -67,6 +67,10 @@ test("palette availability explains causal prerequisites without changing comman
     available: false,
     reason: "Create, join, or recover a space first",
   });
+  assert.deepEqual(paletteCommandAvailability("message.composer.focus", fresh), {
+    available: false,
+    reason: "Create, join, or recover a space first",
+  });
   assert.equal(paletteCommandAvailability("space.join", fresh).available, true);
 
   const active = {
@@ -80,6 +84,7 @@ test("palette availability explains causal prerequisites without changing comman
   assert.equal(paletteCommandAvailability("identity.recovery.restore", active).available, false);
   assert.equal(paletteCommandAvailability("invite.copy", active).reason, "Create a signed invite first");
   assert.equal(paletteCommandAvailability("channel.create", active).available, true);
+  assert.equal(paletteCommandAvailability("message.composer.focus", active).available, true);
   assert.equal(
     paletteCommandAvailability("call.microphone.toggle", active).reason,
     "Join this room's call first",
