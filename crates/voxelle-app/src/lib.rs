@@ -6984,6 +6984,8 @@ mod tests {
         assert!(source.contains("shortTextDraftError(uiState.profileNameDraft"));
         assert!(source.contains("shortTextDraftError(uiState.channelNameDraft"));
         assert!(source.contains("shortTextDraftError(uiState.roleNameDraft"));
+        assert!(source.contains("optionalTextDraftError(uiState.profileAboutDraft"));
+        assert!(source.contains("optionalTextDraftError(uiState.channelTopicDraft"));
     }
 
     #[test]

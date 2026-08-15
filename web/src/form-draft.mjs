@@ -18,3 +18,18 @@ export function shortTextDraftError(value, options) {
   }
   return "";
 }
+
+/**
+ * @param {string} value
+ * @param {{ fieldName: string, maxCharacters: number }} options
+ */
+export function optionalTextDraftError(value, options) {
+  if (/\p{Cc}/u.test(value)) {
+    return `${options.fieldName} cannot contain control characters.`;
+  }
+  if ([...value].length > options.maxCharacters) {
+    const maximum = options.maxCharacters.toLocaleString();
+    return `${options.fieldName} must be ${maximum} characters or fewer.`;
+  }
+  return "";
+}

@@ -1,8 +1,28 @@
 const MENTION_BOUNDARY = /[\s.,!?;:()[\]{}'"-]/;
 
+export const MESSAGE_MAX_CHARACTERS = 4000;
+
+/** @param {string} text */
+export function unicodeCharacterCount(text) {
+  return [...text].length;
+}
+
+/** @param {string} text */
+export function messageDraftGuidance(text) {
+  if (!text.trim()) return "";
+  if (text !== text.trim()) {
+    return "Remove spaces or blank lines at the beginning or end.";
+  }
+  if (text.includes("\0")) return "Remove the unsupported null character.";
+  if (unicodeCharacterCount(text) > MESSAGE_MAX_CHARACTERS) {
+    return `Shorten this message to ${MESSAGE_MAX_CHARACTERS.toLocaleString()} characters or fewer.`;
+  }
+  return "";
+}
+
 /** @param {string} text */
 export function messageDraftCanSend(text) {
-  return text.trim().length > 0;
+  return Boolean(text.trim()) && !messageDraftGuidance(text);
 }
 
 /**

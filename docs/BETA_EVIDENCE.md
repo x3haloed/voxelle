@@ -185,7 +185,9 @@ an empty or whitespace-only draft, becomes enabled for visible text or a member
 inserted through **Mention someone**, and disables again when the draft is
 cleared. Open inline editing and confirm **Save changes** follows the same
 empty, whitespace, visible-content, and cleared states. Then send and edit
-through the ordinary admitted paths.
+through the ordinary admitted paths. Confirm two emoji count as 2 rather than 4,
+leading or trailing whitespace produces corrective guidance, and a 4,001
+character draft stays visible but cannot be sent until shortened.
 
 Open retained search and confirm **Search Messages** follows the same disabled
 empty, whitespace, visible-term, and cleared states. In profile editing, submit
@@ -194,6 +196,9 @@ focus with **Enter a display name**, and clears that stale error when corrected.
 Also exercise a leading-space profile name, an 81-character channel name, and a
 trailing-space role name; confirm each form names and focuses its own correction
 without claiming the command was admitted.
+Enter 513 Unicode characters in profile About and 1,025 in channel Topic;
+confirm each optional field names its own limit and receives focus, while an
+empty optional field remains valid.
 
 After restoring identity on the fresh device, confirm the success status states
 that authority from previous devices was revoked and directs the person to save

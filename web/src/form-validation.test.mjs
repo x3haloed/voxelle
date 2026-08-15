@@ -8,6 +8,8 @@ test("correctable form errors identify their failing controls", () => {
   assert.match(source, /setUserError\(nameError, "profile-name"\)/);
   assert.match(source, /setUserError\(nameError, "channel-name"\)/);
   assert.match(source, /setUserError\(nameError, "role-name"\)/);
+  assert.match(source, /setUserError\(aboutError, "profile-about"\)/);
+  assert.match(source, /setUserError\(topicError, "channel-topic"\)/);
   assert.match(source, /setUserError\("Choose at least one permission for this role\.", "role-permissions"\)/);
 });
 

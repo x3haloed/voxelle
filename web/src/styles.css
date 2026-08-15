@@ -1114,6 +1114,19 @@ textarea {
   font-variant-numeric: tabular-nums;
 }
 
+.composer-validation {
+  color: var(--activity-error);
+  font-size: 0.78rem;
+}
+
+.composer-validation:empty {
+  display: none;
+}
+
+.composer-validation:not(:empty) {
+  grid-column: 1 / -1;
+}
+
 .visually-hidden {
   position: absolute !important;
   width: 1px !important;

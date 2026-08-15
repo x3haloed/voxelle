@@ -605,6 +605,10 @@ trailing-space role name. The helper is included in both preview and builtin
 product-component assembly, with a Rust bundle regression proving the native
 source contains the helper and all three consumers. This remains corrective
 presentation; Rust independently decides admission and protects replay paths.
+The optional profile About and channel Topic fields use the same helper family
+for their admitted 512- and 1,024-Unicode-character bounds and control-character
+exclusion. Rendered probes focused and described 513- and 1,025-character emoji
+or text drafts respectively; empty optional values remain permitted.
 Invite joining now preserves the same distinction: an observed revocation,
 expiry, or malformed signed invite asks for corrected input; an already-used
 home names the separate-fresh-home requirement; and an unexplained local join
@@ -624,10 +628,13 @@ commands; this lived run is local packaged-debug evidence.
 
 The ordinary composer and inline editor now prevent a locally knowable empty
 submission before invoking authority. One shared predicate disables **Send
-Message** or **Save changes** for empty and whitespace-only drafts and is reused
-by typing, Enter, member-picker insertion, and form submission. Rendered probes
-observed disabled empty and whitespace states, enabled visible text and `@Bob`
-insertion, and keyboard clearing back to disabled in both paths. Rust still owns
+Message** or **Save changes** for empty drafts, leading or trailing whitespace,
+null characters, and more than 4,000 Unicode characters; it is reused by typing,
+Enter, member-picker insertion, and form submission. The displayed counter uses
+Unicode code points rather than UTF-16 units. Rendered probes observed `2 / 4,000`
+for two emoji, inline edge-whitespace guidance, retained over-limit text with
+`4,001 / 4,000`, enabled visible text and `@Bob` insertion, and keyboard clearing
+back to disabled in both paths. Rust still owns
 message length, authorization, mention, and semantic admission; this is
 presentation evidence, not accepted-message evidence.
 

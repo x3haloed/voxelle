@@ -413,9 +413,11 @@ to an older stored peer.
 
 Message composition and inline editing expose one locally knowable admission
 prerequisite before invocation: Send or Save remains disabled while its draft is
-empty or whitespace-only. Typing visible content or inserting a named mention
-enables it; clearing the draft disables it again. Enter, the visible buttons,
-and form submission use the same shared predicate, while Rust remains
+empty, edge-whitespace, null-containing, or longer than 4,000 Unicode
+characters. A visible Unicode-aware counter and inline guidance explain the
+current draft; typing valid content or inserting a named mention enables it,
+while clearing the draft disables it again. Enter, the visible buttons, and form
+submission use the same shared predicate, while Rust remains
 authoritative for message bounds, membership, permissions, mentions, and
 creation-time validity.
 
@@ -429,7 +431,9 @@ validation presentation. Profile, channel, and role names share one advisory
 draft check for the Rust-admitted name shape: nonempty, no leading or trailing
 space, no control characters, and at most 80 Unicode characters. Each form
 names and focuses its own correction; Rust still independently validates the
-submitted fact.
+submitted fact. Optional About and Topic fields use the same correction path
+for their respective Rust bounds of 512 and 1,024 Unicode characters and for
+control-character exclusion; empty optional values remain valid.
 
 Message reply and edit affordances remain inside the conversation surface.
 Selecting Reply establishes local composer context, but the accepted action is

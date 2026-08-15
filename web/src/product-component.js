@@ -1108,6 +1108,15 @@ function profileSummaryView(snapshot) {
       render();
       return;
     }
+    const aboutError = optionalTextDraftError(uiState.profileAboutDraft, {
+      fieldName: "About",
+      maxCharacters: 512,
+    });
+    if (aboutError) {
+      setUserError(aboutError, "profile-about");
+      render();
+      return;
+    }
     runCommand("profile.update", {
       display_name: uiState.profileNameDraft,
       about: uiState.profileAboutDraft,
@@ -1126,6 +1135,7 @@ function profileSummaryView(snapshot) {
       "A short profile",
       uiState.profileAboutDraft,
       (value) => { uiState.profileAboutDraft = value; },
+      "profile-about",
     ),
     submitButton("profile.update"),
   );
@@ -2121,11 +2131,26 @@ function channelCreateDisclosure(snapshot) {
       render();
       return;
     }
+    const topicError = optionalTextDraftError(uiState.channelTopicDraft, {
+      fieldName: "Topic",
+      maxCharacters: 1024,
+    });
+    if (topicError) {
+      setUserError(topicError, "channel-topic");
+      render();
+      return;
+    }
     runCommand("channel.create", channelCreatePayload(snapshot)).catch(reportError);
   });
   form.append(
     labeledInput("Name", "For example, announcements", uiState.channelNameDraft, (value) => { uiState.channelNameDraft = value; }, "channel-name"),
-    labeledInput("Topic", "What belongs here?", uiState.channelTopicDraft, (value) => { uiState.channelTopicDraft = value; }),
+    labeledInput(
+      "Topic",
+      "What belongs here?",
+      uiState.channelTopicDraft,
+      (value) => { uiState.channelTopicDraft = value; },
+      "channel-topic",
+    ),
   );
   const privacy = element("details", "advanced-details");
   privacy.dataset.syncOpen = "true";
@@ -2771,8 +2796,11 @@ function messageEditForm(message, snapshot) {
   input.setAttribute("aria-label", "Edit message");
   const save = submitButton("message.edit");
   save.textContent = "Save changes";
+  const guidance = element("span", "composer-validation");
+  guidance.setAttribute("aria-live", "polite");
   const updateSaveAvailability = () => {
     save.disabled = Boolean(uiState.busyCommand) || !messageDraftCanSend(input.value);
+    guidance.textContent = messageDraftGuidance(input.value);
   };
   updateSaveAvailability();
   form.addEventListener("submit", (event) => {
@@ -2807,6 +2835,7 @@ function messageEditForm(message, snapshot) {
       updateSaveAvailability();
     }),
     element("span", "composer-hint", "Enter to save · Escape to cancel"),
+    guidance,
     controls,
   );
   return form;
@@ -2853,10 +2882,15 @@ function messageComposerView(snapshot) {
   input.placeholder = `Message ${channel ? `#${channel.name}` : "this room"}`;
   input.setAttribute("aria-label", input.placeholder);
   input.value = uiState.messageDraft;
-  const count = element("span", "composer-count", `${uiState.messageDraft.length}`);
+  const count = element("span", "composer-count");
+  const guidance = element("span", "composer-validation");
+  guidance.setAttribute("aria-live", "polite");
   const send = submitButton("message.send");
   const updateSendAvailability = () => {
     send.disabled = Boolean(uiState.busyCommand) || !messageDraftCanSend(input.value);
+    const characterCount = unicodeCharacterCount(input.value).toLocaleString();
+    count.textContent = `${characterCount} / ${MESSAGE_MAX_CHARACTERS.toLocaleString()}`;
+    guidance.textContent = messageDraftGuidance(input.value);
   };
   updateSendAvailability();
   form.addEventListener("submit", (event) => {
@@ -2866,7 +2900,6 @@ function messageComposerView(snapshot) {
   });
   input.addEventListener("input", () => {
     uiState.messageDraft = input.value;
-    count.textContent = String(input.value.length);
     updateSendAvailability();
   });
   input.addEventListener("keydown", (event) => {
@@ -2917,11 +2950,11 @@ function messageComposerView(snapshot) {
     mentionPicker(input, snapshot, (value, peerId) => {
       uiState.messageDraft = value;
       uiState.messageMentionsDraft.add(peerId);
-      count.textContent = String(value.length);
       updateSendAvailability();
     }),
     attach,
     element("span", "composer-hint", "Enter to send · Shift+Enter for a new line"),
+    guidance,
     count,
     send,
   );

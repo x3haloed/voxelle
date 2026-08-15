@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { shortTextDraftError } from "./form-draft.mjs";
+import { optionalTextDraftError, shortTextDraftError } from "./form-draft.mjs";
 
 const options = {
   fieldName: "Display name",
@@ -24,4 +24,16 @@ test("short human names expose Rust-shaped local corrections", () => {
   );
   assert.equal(shortTextDraftError("😀".repeat(80), options), "");
   assert.equal(shortTextDraftError("Alice", options), "");
+});
+
+test("optional human text exposes bounded local corrections", () => {
+  assert.equal(optionalTextDraftError("", { fieldName: "About", maxCharacters: 512 }), "");
+  assert.equal(
+    optionalTextDraftError("hello\n", { fieldName: "About", maxCharacters: 512 }),
+    "About cannot contain control characters.",
+  );
+  assert.equal(
+    optionalTextDraftError("😀".repeat(513), { fieldName: "About", maxCharacters: 512 }),
+    "About must be 512 characters or fewer.",
+  );
 });

@@ -4,8 +4,11 @@ import test from "node:test";
 
 import {
   insertMentionText,
+  MESSAGE_MAX_CHARACTERS,
   mentionedPeerIds,
   messageDraftCanSend,
+  messageDraftGuidance,
+  unicodeCharacterCount,
 } from "./message-composition.mjs";
 
 const profiles = [
@@ -18,7 +21,20 @@ test("message submission requires visible content", () => {
   assert.equal(messageDraftCanSend(""), false);
   assert.equal(messageDraftCanSend("  \n\t"), false);
   assert.equal(messageDraftCanSend("hello"), true);
-  assert.equal(messageDraftCanSend("  hello  "), true);
+  assert.equal(messageDraftCanSend("  hello  "), false);
+  assert.equal(messageDraftCanSend("hello\n"), false);
+  assert.equal(messageDraftCanSend("hello\0"), false);
+  assert.equal(messageDraftCanSend("a".repeat(MESSAGE_MAX_CHARACTERS + 1)), false);
+  assert.equal(messageDraftCanSend("😀".repeat(MESSAGE_MAX_CHARACTERS)), true);
+  assert.equal(unicodeCharacterCount("😀😀"), 2);
+  assert.equal(
+    messageDraftGuidance(" hello"),
+    "Remove spaces or blank lines at the beginning or end.",
+  );
+  assert.equal(
+    messageDraftGuidance("a".repeat(MESSAGE_MAX_CHARACTERS + 1)),
+    "Shorten this message to 4,000 characters or fewer.",
+  );
 });
 
 test("composer and inline editor share the visible-content predicate", () => {
