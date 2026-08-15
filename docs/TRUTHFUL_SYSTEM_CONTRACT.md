@@ -1089,6 +1089,12 @@ The release verifier accepted all three exact bytes. `hdiutil verify` accepted
 the DMG; inspection of its mounted app reported `x86_64` and `arm64`, a valid
 ad-hoc signature, and hardened runtime. The cross-built Windows executable is
 COFF x86-64 with the Windows GUI subsystem, but has not run on Windows.
+An independent local readback copied only the signed manifest and its three
+named artifacts into a fresh directory and authenticated the complete set.
+Read-only secret verification also confirmed that the mode-`0600` development
+copies match the distinct trusted release and recovery-only capability roles.
+That is key-identity evidence, not offline custody, separate protection,
+restore testing, or authorization to remove either development copy.
 
 From the exact candidate DMG, an isolated native rehearsal using the documented
 test-file vault displayed only Create, signed-invite Join, and Recover; accepted
