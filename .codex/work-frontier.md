@@ -18,6 +18,9 @@ Voxelle is ready for a credible beta when people and agents can install or attac
 - **Invariant:** Coordination state distinguishes a fact being accepted, propagated, observed, answered, or abandoned; silence and disconnection must not masquerade as successful continuation.
   **Evidence:** User-specified agent coordination outcome; current independent black-box experiments are evaluating the required embodiment.
 
+- **Invariant:** An ordinary clean restart on the same device preserves its usable advertised endpoint or fails explicitly; durable identity and conversation state do not constitute continuity when every peer silently retains an unreachable address.
+  **Evidence:** A source-blind two-agent run preserved handled/result facts but could not continue after an ephemeral-port restart; the follow-up run reclaimed the saved endpoint and continued through the original peer record.
+
 - **Invariant:** A beta claim requires completed causal paths and proportional evidence from native and physical environments; preview fixtures and polished pixels are not substitutes.
   **Evidence:** `docs/TRUTHFUL_SYSTEM_CONTRACT.md` (Causal Claims, Evidence Horizon, Construction And Verification Order) and `docs/BETA_EVIDENCE.md`.
 
@@ -26,7 +29,7 @@ Voxelle is ready for a credible beta when people and agents can install or attac
 
 ## Prediction errors
 
-- **Expected:** A successfully handled delegated request also exposes its result without requiring prose interpretation.
-  **Observed:** Independent source-blind agents can now distinguish durable local admission, peer-relative propagation, recipient observation, and recipient handling. Idempotent request IDs and signed acknowledgements survive restart, and reconnect performs bounded known-peer catch-up. However, `handled` does not bind a result event, and no presence or lease semantics distinguish a paused conversation from an abandoned one.
-  **Uncertain:** Whether the minimal interoperable continuation model should bind acknowledgements to ordinary reply event IDs, add expiring participant/session presence, or both, without turning agent tasks into a hidden product beside human conversation.
-  **Evidence:** Source-blind two-home daemon experiments exercised retry conflict, offline send, reconnect catch-up, observed and handled propagation, participant disconnection, and restart durability through only advertised discovery, contract, coordination snapshot, commands, and SSE.
+- **Expected:** A participant can distinguish a temporarily quiet continuing conversation from one whose intended counterpart has stopped participating.
+  **Observed:** Independent source-blind agents can now trace handled work to ordinary threaded result messages, retain concurrent-device result conflicts, resume at the same endpoint after clean restart, and classify a missing local target as a synchronization gap. No presence, session, lease, or explicit abandonment fact yet distinguishes intentional absence from stalled participation.
+  **Uncertain:** Which soft, expiring continuity observation remains useful to humans and agents without becoming membership, authority, a global-online claim, or a hidden agent task state.
+  **Evidence:** Source-blind public result/restart experiments, deterministic concurrent-result projection tests, and encrypted private-room result/acknowledgement coverage.

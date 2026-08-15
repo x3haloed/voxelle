@@ -731,9 +731,36 @@ Independent source-blind two-home rehearsals proved duplicate suppression,
 offline retained-message catch-up on `runtime.goOnline`, acknowledgement
 propagation, handled-state durability while the participant was offline, and
 honest `unreachable` sync evidence when the known peer could not be contacted.
-`handled` remains a participant assertion rather than proof of correct work;
-it does not yet bind a structured result event. Sync evidence is peer-relative,
+`handled` remains a participant assertion rather than proof of correct work. It
+may bind the handler's visible admitted ordinary reply in the same room, making
+the result traceable without parsing prose while preserving the human
+conversation. Concurrent authorized-device bindings retain a deterministic
+result set and expose conflict rather than selecting by arrival time. Sync evidence is peer-relative,
 never a claim of global currency or live conversation presence.
+Two independent source-blind inhabitant rehearsals carried a normal readable
+thread reply into a handled result binding, reconciled it after restart while
+the handler was offline, and let the sender locate and validate the result using
+only structured IDs. Exact retry was inert; observed-with-result, missing,
+self, unrelated, and terminal-rebinding attempts were non-mutating failures.
+Deterministic projection tests cover concurrent result conflict in opposite
+input orders, while private-room evidence shows result and acknowledgement
+bodies remain inside the existing encrypted envelope and survive key rotation
+and recovery. This proves traceable participant assertions, not result
+correctness, audit-grade acknowledgement provenance, or live presence.
+Automatic runtime startup now persists the last successful concrete listen and
+advertised sockets and attempts them again after clean restart. The QUIC
+endpoint is created and destroyed on the service runtime that owns its socket,
+so a clean in-process stop releases the binding before restart. This preserves
+ordinary same-device reachability for already distributed peer hints without
+turning endpoints into identity or authority; explicit address configuration
+replaces the saved binding, and a bind conflict remains an explicit failure.
+An independent source-blind two-home process rehearsal confirmed that a peer
+reclaimed its exact loopback QUIC socket after clean restart and that the other
+home received a new message using its original retained peer record. The same
+run showed an acknowledgement attempted before local message admission now
+returns `needs_sync`; after ordinary peer sync, the identical acknowledgement
+was admitted. This is same-machine continuity evidence, not external IPv6
+endpoint refresh, crash recovery, or global reachability evidence.
 Episodic agent actions no longer require repository-source inspection to learn
 their payload shape. The same Rust-projected `UiCommand` records used by the
 WebView now name each shell command's request DTO, while empty-payload and

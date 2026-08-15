@@ -368,6 +368,17 @@ fn command_error_presentation(
             "Confirm the peer is reachable and still authorized, then retry synchronization.",
         );
     }
+    if command_id == "message.acknowledge"
+        && detail
+            .to_ascii_lowercase()
+            .contains("acknowledgement target is unavailable")
+    {
+        return (
+            "That message is not available on this device yet.",
+            ShellRecovery::NeedsSync,
+            "Refresh and synchronize with a known peer, then retry. If it remains unavailable, verify the target event ID.",
+        );
+    }
     if command_id.starts_with("product.update.") {
         return (
             "Voxelle could not complete the signed product update.",
@@ -456,6 +467,12 @@ fn correctable_input_presentation(
                 || detail.contains("client_request_id was already used")
                 || detail.contains("client_request_id must be")
         }
+        "message.acknowledge" => {
+            detail.contains("observed msg_ack cannot name a result")
+                || detail.contains("msg_ack result must be")
+                || detail.contains("msg_ack result does not exist")
+                || detail.contains("handled acknowledgement is terminal")
+        }
         "reaction.add" | "reaction.remove" => detail.contains("reaction emoji is invalid"),
         "attachment.add" => {
             detail.contains("decode attachment")
@@ -493,6 +510,10 @@ fn correctable_input_presentation(
         "message.send" | "message.edit" => (
             "That message needs editing.",
             "Correct the message payload. For a retry, reuse a client request ID only with its identical original message; otherwise generate a new ID.",
+        ),
+        "message.acknowledge" => (
+            "That acknowledgement cannot use this result.",
+            "Use no result for Observed. For Handled, choose your own visible message in this room that replies to the target; an existing handled result cannot be rebound.",
         ),
         "reaction.add" | "reaction.remove" => (
             "That reaction is not valid.",
@@ -2121,6 +2142,11 @@ mod tests {
         assert!(correctable_input_presentation(
             "message.send",
             "client_request_id was already used for a different message payload"
+        )
+        .is_some());
+        assert!(correctable_input_presentation(
+            "message.acknowledge",
+            "event rejected: Invalid(\"observed MSG_ACK cannot name a result\")"
         )
         .is_some());
         assert!(correctable_input_presentation("member.ban", "not authorized").is_none());

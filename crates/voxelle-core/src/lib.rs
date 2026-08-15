@@ -1867,11 +1867,42 @@ fn validate_room_event_body(
                     "MSG_ACK target is not a message".to_string(),
                 ));
             }
-            if !matches!(
-                string_body_field(event, "state").as_deref(),
-                Some("observed" | "handled")
-            ) {
+            let state = string_body_field(event, "state");
+            if !matches!(state.as_deref(), Some("observed" | "handled")) {
                 return Err(AcceptError::Invalid("MSG_ACK state is invalid".to_string()));
+            }
+            let result_event_id = string_body_field(event, "result_event_id");
+            if state.as_deref() == Some("observed") && result_event_id.is_some() {
+                return Err(AcceptError::Invalid(
+                    "observed MSG_ACK cannot name a result".to_string(),
+                ));
+            }
+            if let Some(result_event_id) = result_event_id {
+                let result = accepted_events
+                    .iter()
+                    .find(|candidate| {
+                        candidate.room_id == event.room_id && candidate.event_id == result_event_id
+                    })
+                    .ok_or_else(|| {
+                        AcceptError::Invalid("MSG_ACK result does not exist".to_string())
+                    })?;
+                if state.as_deref() != Some("handled")
+                    || result.kind != "MSG_POST"
+                    || result.author_peer_id != event.author_peer_id
+                    || string_body_field(result, "thread_root_event_id")
+                        != Some(acknowledged.event_id.clone())
+                    || accepted_events.iter().any(|candidate| {
+                        candidate.room_id == event.room_id
+                            && candidate.kind == "MSG_REDACT"
+                            && string_body_field(candidate, "target_event_id")
+                                == Some(result.event_id.clone())
+                    })
+                {
+                    return Err(AcceptError::Invalid(
+                        "MSG_ACK result must be the handler's visible admitted threaded reply"
+                            .to_string(),
+                    ));
+                }
             }
         }
         "REACTION_ADD" | "REACTION_REMOVE" => {

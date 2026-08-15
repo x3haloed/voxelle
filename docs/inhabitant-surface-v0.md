@@ -231,13 +231,26 @@ message so a caller can reconcile a lost HTTP response after restart.
 
 `message.acknowledge` creates an ordinary signed, admitted room fact with the
 state `observed` or `handled`. `handled` is monotonic for that participant and
-message. It is an assertion by the participant—not proof of correctness—and
+message. It may name a `result_event_id`, but only for `handled` and only when
+that event is the handler's visible, already-admitted ordinary message threaded
+to the target in the same room. The message acknowledgement projection retains
+the deterministic set of admitted result IDs; independently authorized devices
+that concurrently name different results therefore expose `result_conflict`
+instead of choosing by arrival time. A result binding is an assertion by the
+participant—not proof of correctness—and
 private-room acknowledgements follow the same encrypted room path as private
 messages. Acknowledging also advances the acknowledging home's local read
 cursor through the target message, but not through later events. A local
 `channel.markRead` cursor is deliberately different: it is
 not replicated and is not sender-visible. Selecting or opening a channel does
 not silently advance that cursor at the semantic-command layer.
+
+An automatic `runtime.goOnline` persists the successful concrete listen and
+advertised sockets and reuses them after a clean service or process restart.
+This keeps existing peer availability hints usable for ordinary continuation;
+an explicit Bind or Advertise request replaces the saved automatic binding.
+Failure to reclaim a saved socket remains explicit rather than silently moving
+to a new endpoint and making other members' retained hints stale.
 
 ### 3.4 Action Result
 

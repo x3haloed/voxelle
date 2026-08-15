@@ -2983,9 +2983,26 @@ function roomTimelineView(snapshot) {
       const acknowledgingProfile = profileForPeer(snapshot, acknowledgement.peer_id);
       annotations.append(element(
         "small",
-        "muted",
-        `${acknowledgingProfile.display_name} ${acknowledgement.state === "handled" ? "marked handled" : "observed"}`,
+        acknowledgement.result_conflict ? "warning-text" : "muted",
+        acknowledgement.result_conflict
+          ? `${acknowledgingProfile.display_name} reported conflicting handling results`
+          : `${acknowledgingProfile.display_name} ${acknowledgement.state === "handled" ? "marked handled" : "observed"}`,
       ));
+      for (const resultEventId of acknowledgement.result_event_ids ?? []) {
+        const result = snapshot.home?.room.messages.find(
+          (candidate) => candidate.event_id === resultEventId,
+        );
+        const openResult = commandButton("message.open", {
+          room_id: snapshot.home?.room.room_id,
+          event_id: resultEventId,
+        });
+        openResult.textContent = result?.redacted ? "View removed result" : "View result";
+        openResult.setAttribute(
+          "aria-label",
+          `View ${acknowledgingProfile.display_name}'s handling result`,
+        );
+        annotations.append(openResult);
+      }
     }
     if (annotations.children.length > 0) content.append(annotations);
     const reactions = element("div", "message-reactions");
@@ -3055,6 +3072,7 @@ function roomTimelineView(snapshot) {
           target_event_id: message.event_id,
           room: snapshot.home?.room.room_id ?? null,
           state: "observed",
+          result_event_id: null,
         });
         observed.textContent = "Acknowledge";
         actions.append(observed);
@@ -3064,6 +3082,7 @@ function roomTimelineView(snapshot) {
           target_event_id: message.event_id,
           room: snapshot.home?.room.room_id ?? null,
           state: "handled",
+          result_event_id: null,
         });
         handled.textContent = "Mark handled";
         actions.append(handled);

@@ -6,7 +6,7 @@ export type ProfileSummary = { home: string, peer_id: string, device_id: string,
 
 export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, client_request_id: string | null, text: string, edited_ms: number | null, redacted: boolean, mentions: Array<string>, thread_root_event_id: string | null, reply_count: number, pinned: boolean, reactions: Array<ReactionView>, acknowledgements: Array<MessageAcknowledgementView>, attachments: Array<AttachmentView>, };
 
-export type MessageAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, acknowledged_ms: number, };
+export type MessageAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_conflict: boolean, acknowledged_ms: number, };
 
 export type ReactionView = { emoji: string, peer_ids: Array<string>, };
 
@@ -74,7 +74,7 @@ export type StartServiceRequest = { bind: string | null, advertise: string | nul
 
 export type SendMessageRequest = { text: string, room: string | null, mentions: Array<string>, thread_root_event_id: string | null, client_request_id: string | null, };
 
-export type AcknowledgeMessageRequest = { target_event_id: string, room: string | null, state: MessageAcknowledgementState, };
+export type AcknowledgeMessageRequest = { target_event_id: string, room: string | null, state: MessageAcknowledgementState, result_event_id: string | null, };
 
 export type MessageAcknowledgementState = "observed" | "handled";
 

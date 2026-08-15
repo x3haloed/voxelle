@@ -209,8 +209,8 @@ impl DiscoveryView {
                 },
                 CommandSemanticsView {
                     command_id: "message.acknowledge".to_string(),
-                    retry: "semantic idempotent; handled is monotonic and a later observed request cannot lower it".to_string(),
-                    observation: "the signed acknowledgement is an admitted participant assertion, not proof that the work was correct".to_string(),
+                    retry: "semantic idempotent for the same state and result_event_id; handled is monotonic, and rebinding a locally known handled result is rejected".to_string(),
+                    observation: "the signed acknowledgement is an admitted participant assertion, not proof that the work was correct; optional handled result_event_id must name the handler's visible admitted reply threaded to the target, while observed must omit it; concurrent device results are retained and projected as a conflict".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "channel.select".to_string(),
@@ -225,7 +225,7 @@ impl DiscoveryView {
                 CommandSemanticsView {
                     command_id: "runtime.goOnline".to_string(),
                     retry: "safe to reconcile again".to_string(),
-                    observation: "starts the local runtime and attempts known peers; sync_evidence is peer-relative and never claims global currency".to_string(),
+                    observation: "starts the local runtime on the last successful automatic binding unless explicit addresses replace it, then attempts known peers; sync_evidence is peer-relative and never claims global currency".to_string(),
                 },
             ],
             replay_policy: "none; on every connect or reconnect, use service.ready.current_sequence and fetch coordination_snapshot_url until its current_sequence is at least that value".to_string(),
