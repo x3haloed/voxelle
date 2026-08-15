@@ -9,6 +9,62 @@ pub struct ShellState {
     host: Mutex<VoxelleCommandHost>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellCommandPayload {
+    Empty,
+    Typed(&'static str),
+}
+
+pub fn shell_command_payload(command_id: &str) -> Option<ShellCommandPayload> {
+    use ShellCommandPayload::{Empty, Typed};
+
+    Some(match command_id {
+        "shell.refresh"
+        | "home.archiveForRecovery"
+        | "runtime.goOffline"
+        | "ui.preferences.reset"
+        | "workbench.layout.reset"
+        | "product.update.check"
+        | "product.update.stageAvailable"
+        | "product.update.activateStaged"
+        | "product.update.discardStaged"
+        | "product.update.rollback" => Empty,
+        "home.init" => Typed("InitHomeRequest"),
+        "runtime.goOnline" => Typed("StartServiceRequest"),
+        "space.invite.create" => Typed("CreateSpaceInviteRequest"),
+        "space.invite.revoke" => Typed("RevokeSpaceInviteRequest"),
+        "space.join" => Typed("JoinSpaceRequest"),
+        "identity.recovery.export" => Typed("ExportRecoveryKitRequest"),
+        "identity.recovery.restore" => Typed("RestoreRecoveryKitRequest"),
+        "message.send" => Typed("SendMessageRequest"),
+        "channel.select" => Typed("SelectChannelRequest"),
+        "message.open" => Typed("OpenMessageRequest"),
+        "channel.markRead" => Typed("MarkReadRequest"),
+        "channel.create" => Typed("CreateChannelRequest"),
+        "channel.rotateKey" => Typed("RotateChannelKeyRequest"),
+        "call.join" => Typed("CallJoinRequest"),
+        "call.signal" => Typed("CallSignalRequest"),
+        "call.media" => Typed("CallMediaRequest"),
+        "call.heartbeat" | "call.leave" => Typed("CallLeaveRequest"),
+        "message.edit" => Typed("EditMessageRequest"),
+        "message.redact" | "pin.add" | "pin.remove" => Typed("MessageTargetRequest"),
+        "reaction.add" | "reaction.remove" => Typed("ReactionRequest"),
+        "attachment.add" => Typed("AttachmentRequest"),
+        "profile.update" => Typed("ProfileUpdateRequest"),
+        "role.create" => Typed("CreateRoleRequest"),
+        "role.grant" | "role.revoke" => Typed("AssignRoleRequest"),
+        "member.ban" | "member.unban" => Typed("BanMemberRequest"),
+        "message.search" => Typed("SearchMessagesRequest"),
+        "peer.import" => Typed("ImportPeerRecordRequest"),
+        "peer.diagnose" | "peer.sync" => Typed("PeerCommandRequest"),
+        "ui.preference.set" => Typed("SetUiPreferenceRequest"),
+        "workbench.layout.save" => Typed("SetWorkbenchLayoutRequest"),
+        "product.update.install" => Typed("InstallProductUpdateRequest"),
+        "product.update.rotateTrust" => Typed("InstallTrustTransitionRequest"),
+        _ => return None,
+    })
+}
+
 impl ShellState {
     pub fn new(home_root: impl Into<PathBuf>) -> Self {
         Self {
@@ -2003,6 +2059,22 @@ mod tests {
             .unwrap_or_else(|error| panic!("read {}: {error}", contract_path.display()));
 
         assert_eq!(checked_in, shell_contract_typescript());
+    }
+
+    #[test]
+    fn every_shell_command_names_an_exported_or_empty_payload_contract() {
+        let contract = shell_contract_typescript();
+        for command_id in crate::shell_command_ids() {
+            let payload = shell_command_payload(&command_id)
+                .unwrap_or_else(|| panic!("missing payload contract for {command_id}"));
+            if let ShellCommandPayload::Typed(name) = payload {
+                assert!(
+                    contract.contains(&format!("export type {name} =")),
+                    "{command_id} references missing request type {name}"
+                );
+            }
+        }
+        assert_eq!(shell_command_payload("frontend-only"), None);
     }
 
     fn health_status(snapshot: &ShellSnapshotView, id: &str) -> NetworkHealthStatus {

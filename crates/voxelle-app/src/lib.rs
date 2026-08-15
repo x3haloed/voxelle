@@ -503,6 +503,7 @@ pub struct UiCommand {
     pub scope: UiCommandScope,
     pub shortcut: Option<String>,
     pub palette: bool,
+    pub payload_type: Option<String>,
     pub editable: bool,
     pub editing_surface: String,
 }
@@ -660,6 +661,7 @@ pub fn shell_contract_typescript() -> String {
         SearchMessagesRequest::decl(&cfg),
         ImportPeerRecordRequest::decl(&cfg),
         CreateSpaceInviteRequest::decl(&cfg),
+        RevokeSpaceInviteRequest::decl(&cfg),
         JoinSpaceRequest::decl(&cfg),
         ExportRecoveryKitRequest::decl(&cfg),
         RestoreRecoveryKitRequest::decl(&cfg),
@@ -667,6 +669,7 @@ pub fn shell_contract_typescript() -> String {
         SetUiPreferenceRequest::decl(&cfg),
         SetWorkbenchLayoutRequest::decl(&cfg),
         InstallProductUpdateRequest::decl(&cfg),
+        InstallTrustTransitionRequest::decl(&cfg),
         RecoveryHealthView::decl(&cfg),
         HomeScreenView::decl(&cfg),
         NetworkHealthView::decl(&cfg),
@@ -6258,14 +6261,21 @@ fn shell_command(
     shortcut: Option<&str>,
     palette: bool,
 ) -> UiCommand {
-    ui_command(
+    let payload = shell::shell_command_payload(id)
+        .unwrap_or_else(|| panic!("shell command {id} is missing its payload contract"));
+    let mut command = ui_command(
         id,
         label,
         description,
         UiCommandScope::Shell,
         shortcut,
         palette,
-    )
+    );
+    command.payload_type = match payload {
+        shell::ShellCommandPayload::Empty => None,
+        shell::ShellCommandPayload::Typed(name) => Some(name.to_string()),
+    };
+    command
 }
 
 fn frontend_command(
@@ -6300,6 +6310,7 @@ fn ui_command(
         scope,
         shortcut: shortcut.map(ToOwned::to_owned),
         palette,
+        payload_type: None,
         editable: false,
         editing_surface: "command palette".to_string(),
     }

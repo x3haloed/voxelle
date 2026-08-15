@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use axum::{
     body::Body,
     extract::{DefaultBodyLimit, Path, State},
-    http::{header, HeaderMap, Request, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Request, StatusCode},
     middleware::{self, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -35,7 +35,8 @@ use tokio::{
 };
 use tracing::info;
 use voxelle_app::{
-    resolve_home_root, shell_command_ids, ShellError, ShellRecovery, ShellSnapshotView, ShellState,
+    resolve_home_root, shell_command_ids, shell_contract_typescript, ShellError, ShellRecovery,
+    ShellSnapshotView, ShellState,
 };
 
 #[derive(Debug, Parser)]
@@ -74,6 +75,7 @@ struct DiscoveryView {
     snapshot_url: String,
     events_url: String,
     commands_url: String,
+    contract_url: String,
     authorization: String,
     capabilities: CapabilitiesView,
 }
@@ -127,6 +129,7 @@ async fn main() -> Result<()> {
         .route("/inhabitant/v0/discovery", get(get_discovery))
         .route("/inhabitant/v0/snapshot", get(snapshot))
         .route("/inhabitant/v0/commands/:command_id", post(command))
+        .route("/inhabitant/v0/contract.ts", get(contract))
         .route("/inhabitant/v0/events", get(events))
         .layer(DefaultBodyLimit::max(128 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), authenticate))
@@ -148,6 +151,7 @@ impl DiscoveryView {
             snapshot_url: format!("{base_url}/inhabitant/v0/snapshot"),
             events_url: format!("{base_url}/inhabitant/v0/events"),
             commands_url: format!("{base_url}/inhabitant/v0/commands/{{command_id}}"),
+            contract_url: format!("{base_url}/inhabitant/v0/contract.ts"),
             authorization: format!("Bearer {bearer_token}"),
             base_url,
             pid: std::process::id(),
@@ -166,6 +170,16 @@ impl DiscoveryView {
 
 async fn get_discovery(State(state): State<Arc<AppState>>) -> Json<DiscoveryView> {
     Json(state.discovery.clone())
+}
+
+async fn contract() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("text/plain; charset=utf-8"),
+        )],
+        shell_contract_typescript(),
+    )
 }
 
 async fn snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {

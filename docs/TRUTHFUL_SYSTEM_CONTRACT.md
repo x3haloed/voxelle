@@ -711,6 +711,17 @@ an isolated live HTTP/SSE rehearsal carried `home.init` from an authenticated
 command response showing initialized identity to sequence 1 on an already-open
 event stream. This is local loopback agent-surface evidence, not a resident
 Watch/WFB integration or autonomous-agent claim.
+Episodic agent actions no longer require repository-source inspection to learn
+their payload shape. The same Rust-projected `UiCommand` records used by the
+WebView now name each shell command's request DTO, while empty-payload and
+frontend-only commands remain explicit through scope and a null payload type.
+Authenticated inhabitant discovery exposes the TypeScript contract generated
+from those Rust DTOs. Contract equality plus command-to-type completeness tests
+prevent the WebView and inhabitant descriptions from drifting. An isolated live
+rehearsal discovered `home.init` as `InitHomeRequest`, retrieved that declaration
+from the advertised contract URL, submitted the typed payload, and received an
+initialized authoritative snapshot. Payload declarations are affordances, not
+validation or protocol authority.
 Initial snapshot failure no longer ends in a static dead-end screen after
 advising the person to retry. The pre-component shell renders the same bounded
 structured explanation, states that retry does not delete, archive, or replace
@@ -1046,7 +1057,7 @@ and palette tests cover this path; physical camera behavior remains an external
 human evidence gate.
 
 The current local verification pass is green for the changed system
-authorities: 120 Rust workspace tests, 135 frontend behavior tests, strict
+authorities: 121 Rust workspace tests, 135 frontend behavior tests, strict
 `voxelle-app` lint, generated-contract equality, IPv6 QUIC startup, retained
 artifact inspection, and the authority-specific recovery, invitation,
 governance, private-room, media, update, release-evidence, CLI, inhabitant, and

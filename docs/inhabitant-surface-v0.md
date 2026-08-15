@@ -134,6 +134,7 @@ Minimum fields:
 - `capabilities`: command IDs and event streams available through HTTP/SSE
 - `snapshot_url`
 - `events_url`
+- `contract_url`
 - `skill_root` or docs index, if available
 
 Discovery may start as a local file or command result. It should not require an
@@ -199,6 +200,15 @@ The v0 action set uses the same stable semantic command IDs as the UI:
 
 Routes and buttons are affordances over these IDs; adapters do not invent a
 second command vocabulary.
+
+Every shell-scoped command in the snapshot's shared `ui_ontology.commands`
+also names its Rust request DTO in `payload_type`, or carries `null` when its
+payload is empty. Discovery exposes an authenticated `contract_url` serving the
+generated TypeScript declarations for those DTOs. The checked-in WebView
+contract and the served agent contract are generated from the same Rust types,
+and a completeness test refuses a command whose named request type is absent.
+These declarations make payload construction legible; authoritative bounds and
+permissions are still enforced only when the semantic command reaches Rust.
 
 ### 3.4 Action Result
 

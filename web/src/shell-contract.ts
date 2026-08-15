@@ -40,7 +40,7 @@ export type UiPlace = { id: string, label: string, description: string, editable
 
 export type UiView = { id: string, label: string, default_place_id: string, place_id: string, order: number, visible: boolean, description: string, editable: boolean, editing_surface: string, };
 
-export type UiCommand = { id: string, label: string, description: string, scope: UiCommandScope, shortcut: string | null, palette: boolean, editable: boolean, editing_surface: string, };
+export type UiCommand = { id: string, label: string, description: string, scope: UiCommandScope, shortcut: string | null, palette: boolean, payload_type: string | null, editable: boolean, editing_surface: string, };
 
 export type UiCommandScope = "shell" | "frontend";
 
@@ -108,6 +108,8 @@ export type ImportPeerRecordRequest = { peer_record_json: string, };
 
 export type CreateSpaceInviteRequest = { expires_minutes: number | null, };
 
+export type RevokeSpaceInviteRequest = { invite_id: string, };
+
 export type JoinSpaceRequest = { space_invite_json: string, max_events: number | null, };
 
 export type ExportRecoveryKitRequest = { path: string, };
@@ -121,6 +123,8 @@ export type SetUiPreferenceRequest = { "kind": "semantic_token", id: string, val
 export type SetWorkbenchLayoutRequest = { placements: Array<UiViewPlacement>, };
 
 export type InstallProductUpdateRequest = { package_json: string, };
+
+export type InstallTrustTransitionRequest = { transition_json: string, };
 
 export type RecoveryHealthView = { kit_exported: boolean, last_exported_ms: bigint | null, };
 
