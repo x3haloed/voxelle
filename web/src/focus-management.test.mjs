@@ -109,3 +109,28 @@ test("switching surfaces does not restore focus behind the new surface", () => {
   assert.equal(origin.focusCount, 0);
   assert.equal(next.focusCount, 1);
 });
+
+test("command completion restores its surviving origin unless a surface opened", () => {
+  const frames = [];
+  const origin = { isConnected: true, focusCount: 0, focus() { this.focusCount += 1; } };
+  const coordinator = new FocusSurfaceCoordinator(
+    { activeElement: origin },
+    (callback) => frames.push(callback),
+  );
+  assert.equal(coordinator.currentElement(), origin);
+  coordinator.restoreWhenNoSurface(origin);
+  frames.shift()();
+  assert.equal(origin.focusCount, 1);
+
+  coordinator.synchronize("utility", () => null);
+  frames.shift()();
+  coordinator.restoreWhenNoSurface(origin);
+  frames.shift()();
+  assert.equal(origin.focusCount, 1);
+
+  coordinator.synchronize("", () => null);
+  origin.isConnected = false;
+  coordinator.restoreWhenNoSurface(origin);
+  frames.shift()();
+  assert.equal(origin.focusCount, 1);
+});

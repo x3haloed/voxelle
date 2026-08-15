@@ -49,6 +49,20 @@ export class FocusSurfaceCoordinator {
     }
   }
 
+  currentElement() {
+    return this.document.activeElement?.focus
+      ? this.document.activeElement
+      : null;
+  }
+
+  /** @param {HTMLElement | null} target */
+  restoreWhenNoSurface(target) {
+    if (!target) return;
+    this.schedule(() => {
+      if (!this.surface && target.isConnected) target.focus();
+    });
+  }
+
   /** @param {string} surface @param {() => HTMLElement | null} initialTarget */
   synchronize(surface, initialTarget) {
     if (surface === this.surface) return;

@@ -2163,6 +2163,7 @@ function submitButton(command) {
  * @param {unknown} [payload]
  */
 async function runCommand(command, payload) {
+  const commandReturnElement = focusCoordinator.currentElement();
   // Capture before the busy render disables the focused command button; browsers
   // may blur a control as soon as it becomes disabled.
   if (command === "workbench.commandPalette.open") rememberFocusReturn();
@@ -2459,6 +2460,7 @@ async function runCommand(command, payload) {
   } finally {
     uiState.busyCommand = "";
     render();
+    focusCoordinator.restoreWhenNoSurface(commandReturnElement);
     if (refreshQueued) queueMicrotask(() => publishRefresh().catch(reportError));
   }
 }
