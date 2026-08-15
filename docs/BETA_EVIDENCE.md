@@ -254,8 +254,11 @@ channel, message, reaction, member, role, and invitation controls. Confirm each
 announced name identifies the visible target rather than relying on position
 alone. Have two current members use the same display name with different case;
 confirm their cards, mention choices, Ban/Unban controls, and role-assignment
-controls retain distinct matching member markers through confirmation. Select a
-different channel and confirm the accepted selected row is
+controls retain distinct matching member markers through confirmation. Create
+two roles with the same name but different permissions; confirm their cards,
+Manage members controls, assignment actions, and reviews retain distinct
+matching role markers and permission descriptions. Select a different channel
+and confirm the accepted selected row is
 announced as the current location and receives focus after its Select button
 disappears. Add and remove a reaction, then pin and unpin a message. Confirm the
 replacement control keeps focus, names its message target, and exposes the

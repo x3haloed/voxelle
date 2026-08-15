@@ -4,6 +4,7 @@ import test from "node:test";
 
 import {
   disambiguatedMemberLabel,
+  disambiguatedRoleLabel,
   insertMentionText,
   MESSAGE_MAX_CHARACTERS,
   mentionedPeerIds,
@@ -94,5 +95,27 @@ test("duplicate member names receive stable bounded disambiguators", () => {
   assert.equal(
     disambiguatedMemberLabel(collidingPrefixes[1], collidingPrefixes),
     "SAM · member aaaaaaaaaaaa2",
+  );
+});
+
+test("duplicate role names receive stable bounded disambiguators", () => {
+  const roles = [
+    { role_id: "role:moderator-aaa11111", name: "Moderator" },
+    { role_id: "role:moderator-bbb22222", name: "moderator" },
+  ];
+  assert.equal(disambiguatedRoleLabel(roles[0], roles), "Moderator · role aaa11111");
+  assert.equal(disambiguatedRoleLabel(roles[1], roles), "moderator · role bbb22222");
+  assert.equal(disambiguatedRoleLabel(roles[0], [roles[0]]), "Moderator");
+  const collidingSuffixes = [
+    { role_id: "role:first-a12345678", name: "Helper" },
+    { role_id: "role:second-b12345678", name: "helper" },
+  ];
+  assert.equal(
+    disambiguatedRoleLabel(collidingSuffixes[0], collidingSuffixes),
+    "Helper · role a12345678",
+  );
+  assert.equal(
+    disambiguatedRoleLabel(collidingSuffixes[1], collidingSuffixes),
+    "helper · role b12345678",
   );
 });

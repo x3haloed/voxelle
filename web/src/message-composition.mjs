@@ -106,3 +106,30 @@ export function disambiguatedMemberLabel(profile, profiles) {
 function memberStableId(peerId) {
   return peerId.startsWith("ed25519:") ? peerId.slice(8) : peerId;
 }
+
+/**
+ * Keep ordinary role names primary while making duplicate-name authority stable.
+ * @param {{role_id: string, name: string}} role
+ * @param {Array<{role_id: string, name: string}>} roles
+ */
+export function disambiguatedRoleLabel(role, roles) {
+  const name = role.name.trim().toLocaleLowerCase();
+  const duplicates = roles.filter((candidate) => (
+    candidate.name.trim().toLocaleLowerCase() === name
+  ));
+  const stableId = role.role_id.startsWith("role:") ? role.role_id.slice(5) : role.role_id;
+  let markerLength = Math.min(8, stableId.length);
+  while (
+    markerLength < stableId.length
+    && duplicates.some((candidate) => {
+      const candidateId = candidate.role_id.startsWith("role:")
+        ? candidate.role_id.slice(5)
+        : candidate.role_id;
+      return candidate.role_id !== role.role_id
+        && candidateId.endsWith(stableId.slice(-markerLength));
+    })
+  ) markerLength += 1;
+  return duplicates.length > 1
+    ? `${role.name} · role ${stableId.slice(-markerLength)}`
+    : role.name;
+}

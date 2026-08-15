@@ -722,6 +722,18 @@ distinct matching member markers on both cards, the mention choice, Ban review,
 and role-assignment review, and did not invoke either governance command. This
 is not admitted-governance, packaged-native, or assistive-technology evidence.
 
+Roles now retain the parallel distinction allowed by governance: duplicate
+case-insensitive names leave unique names uncluttered but append the shortest
+unique stable role-ID suffix of at least eight characters when names collide.
+The marker persists from the role card through Manage members, Grant/Revoke,
+and the focused assignment review, while Rust still receives the complete role
+ID and independently decides authority. Deterministic helper, product-source,
+and native bundle tests cover the mapping. A rendered case-insensitive
+duplicate-role fixture probe observed distinct role cards and Manage members
+controls, then carried the selected marker and its distinct permission summary
+through the assignment review without invoking governance. This is not
+admitted-governance, packaged-native, or assistive-technology evidence.
+
 Accepted reaction and pin toggles also preserve causal keyboard location
 without preserving a stale command listener. Reconciliation replaces the
 control when the Rust-projected action changes from add to remove or back; a

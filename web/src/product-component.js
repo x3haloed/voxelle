@@ -2387,14 +2387,16 @@ function roleListView(snapshot) {
   const fragment = document.createDocumentFragment();
   const list = element("ol", "peer-list");
   const assignableProfiles = (snapshot.home?.profiles ?? []).filter((profile) => !profile.banned);
-  for (const role of snapshot.home?.roles ?? []) {
+  const roles = snapshot.home?.roles ?? [];
+  for (const role of roles) {
+    const roleLabel = disambiguatedRoleLabel(role, roles);
     const row = element("li", "peer-row");
     row.dataset.renderKey = `role:${role.role_id}`;
     row.dataset.roleId = role.role_id;
     row.tabIndex = -1;
     const body = element("div", "peer-body");
     body.append(
-      element("strong", "", role.name),
+      element("strong", "", roleLabel),
       element("span", "muted", `${role.member_count} ${role.member_count === 1 ? "member" : "members"}`),
       element("span", "muted", role.permissions.map(permissionLabel).join(", ") || "No additional permissions"),
     );
@@ -2405,7 +2407,7 @@ function roleListView(snapshot) {
       if (assignmentPending) members.dataset.syncOpen = "true";
       members.open = assignmentPending;
       const memberSummary = disclosureSummary("Manage members");
-      memberSummary.setAttribute("aria-label", `Manage members for role ${role.name}`);
+      memberSummary.setAttribute("aria-label", `Manage members for role ${roleLabel}`);
       members.append(memberSummary);
       const memberList = element("div", "choice-list");
       for (const profile of assignableProfiles) {
@@ -2413,12 +2415,18 @@ function roleListView(snapshot) {
         const assigned = profile.role_ids.includes(role.role_id);
         const draft = uiState.roleAssignmentDraft;
         if (draft?.roleId === role.role_id && draft.peerId === profile.peer_id) {
-          memberList.append(roleAssignmentConfirmation(role, profile, memberLabel, draft.grant));
+          memberList.append(roleAssignmentConfirmation(
+            role,
+            roleLabel,
+            profile,
+            memberLabel,
+            draft.grant,
+          ));
         } else {
           memberList.append(actionButton(
             assigned
-              ? `Remove ${memberLabel} from ${role.name}…`
-              : `Give ${role.name} to ${memberLabel}…`,
+              ? `Remove ${memberLabel} from ${roleLabel}…`
+              : `Give ${roleLabel} to ${memberLabel}…`,
             () => beginRoleAssignment(role.role_id, profile.peer_id, !assigned),
           ));
         }
@@ -2480,20 +2488,20 @@ function roleListView(snapshot) {
   return fragment;
 }
 
-function roleAssignmentConfirmation(role, profile, memberLabel, grant) {
+function roleAssignmentConfirmation(role, roleLabel, profile, memberLabel, grant) {
   const verb = grant ? "Give" : "Remove";
   const confirmation = element("section", "role-assignment-confirmation");
   confirmation.setAttribute("role", "alertdialog");
   confirmation.setAttribute(
     "aria-label",
-    `${grant ? "Give" : "Remove"} ${role.name} ${grant ? "to" : "from"} ${memberLabel} confirmation`,
+    `${grant ? "Give" : "Remove"} ${roleLabel} ${grant ? "to" : "from"} ${memberLabel} confirmation`,
   );
   const permissions = role.permissions.map(permissionLabel).join(", ") || "no additional permissions";
   confirmation.append(
     element(
       "strong",
       "",
-      `${verb} ${role.name} ${grant ? "to" : "from"} ${memberLabel}?`,
+      `${verb} ${roleLabel} ${grant ? "to" : "from"} ${memberLabel}?`,
     ),
     element(
       "p",
@@ -2509,8 +2517,8 @@ function roleAssignmentConfirmation(role, profile, memberLabel, grant) {
     role_id: role.role_id,
   });
   confirm.textContent = grant
-    ? `Give ${role.name} to ${memberLabel}`
-    : `Remove ${role.name} from ${memberLabel}`;
+    ? `Give ${roleLabel} to ${memberLabel}`
+    : `Remove ${roleLabel} from ${memberLabel}`;
   controls.append(confirm, actionButton("Cancel role change", () => cancelRoleAssignment(role.role_id)));
   confirmation.append(controls);
   return confirmation;
