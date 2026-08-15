@@ -340,7 +340,8 @@ Current command families:
   `message.composer.focus`;
 - people and governance: `profile.update`, `role.create`, `role.grant`,
   `role.revoke`, `member.ban`, `member.unban`;
-- calls: `call.join`, `call.signal`, `call.heartbeat`, `call.leave`;
+- calls: `call.join`, `call.signal`, `call.heartbeat`, `call.leave`,
+  `call.microphone.toggle`;
 - peers: `peer.import`, `peer.diagnose`, `peer.sync`;
 - workbench/preferences: `ui.preference.set`, `ui.preferences.reset`, `workbench.layout.save`,
   `workbench.layout.reset`, `workbench.commandPalette.open`.
@@ -431,6 +432,12 @@ voice tile and accessible label rather than an empty video element; camera
 participants retain direct-video tiles. Connection wording remains separately
 derived from the local direct WebRTC state, and neither presentation grants
 room participation or signaling authority.
+Once joined, `call.microphone.toggle` changes only the enabled state of the
+WebView's local audio tracks. The in-call button and command palette invoke that
+same frontend command ID, and the local tile names **Microphone on** or
+**Microphone muted**. A missing track remains explicit and directs the person
+to leave and rejoin; muting never writes a room fact, changes participation, or
+claims anything about a remote connection.
 
 Projected reaction and pin state determines whether the visible action invokes
 the add or remove command; the frontend does not guess a toggle result. Message

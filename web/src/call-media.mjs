@@ -65,6 +65,18 @@ export function participantMediaPresentation(video, connectionState) {
   };
 }
 
+export function localMicrophoneEnabled(stream) {
+  return Boolean(stream?.getAudioTracks().some((track) => track.enabled));
+}
+
+export function toggleLocalMicrophone(stream) {
+  const tracks = stream?.getAudioTracks() ?? [];
+  if (tracks.length === 0) return { changed: false, enabled: false };
+  const enabled = !tracks.some((track) => track.enabled);
+  for (const track of tracks) track.enabled = enabled;
+  return { changed: true, enabled };
+}
+
 export async function leaveCall(executeLeave, stopMedia) {
   try {
     return await executeLeave();

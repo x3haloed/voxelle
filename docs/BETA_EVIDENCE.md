@@ -178,6 +178,12 @@ With that technology active and without using a pointer, complete and record:
 - understanding and acting on a degraded connection state; and
 - entering, operating, and leaving the direct-media surface.
 
+While operating that surface, mute and unmute the local microphone through the
+named call control and through the command palette. Confirm the assistive
+technology announces the resulting **Microphone muted** and **Microphone on**
+states. If the captured track disappears, confirm the unavailable state directs
+the person to leave and rejoin rather than claiming that audio resumed.
+
 Do not enter `none`, `unknown`, or a generic claim. Accessibility-tree tests,
 keyboard automation, and deterministic media mocks are valuable development
 evidence, but they do not satisfy this actual assistive-technology gate.

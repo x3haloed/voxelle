@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -7,10 +8,14 @@ import {
   disconnectedParticipantIds,
   isCameraUnavailable,
   leaveCall,
+  localMicrophoneEnabled,
   mediaCaptureErrorMessage,
   participantConnectionLabel,
   participantMediaPresentation,
+  toggleLocalMicrophone,
 } from "./call-media.mjs";
+
+const productSource = readFileSync(new URL("./product-component.js", import.meta.url), "utf8");
 
 test("camera capture requests audio and video together", async () => {
   const stream = { id: "camera" };
@@ -96,6 +101,27 @@ test("remote voice-only participation never renders as an empty video", () => {
     connectionLabel: "Connecting directly",
     showVideo: true,
   });
+});
+
+test("microphone toggling controls every local audio track and reports missing capture", () => {
+  const audioTracks = [{ enabled: true }, { enabled: true }];
+  const stream = { getAudioTracks: () => audioTracks };
+
+  assert.equal(localMicrophoneEnabled(stream), true);
+  assert.deepEqual(toggleLocalMicrophone(stream), { changed: true, enabled: false });
+  assert.deepEqual(audioTracks.map((track) => track.enabled), [false, false]);
+  assert.equal(localMicrophoneEnabled(stream), false);
+  assert.deepEqual(toggleLocalMicrophone(stream), { changed: true, enabled: true });
+  assert.deepEqual(toggleLocalMicrophone({ getAudioTracks: () => [] }), {
+    changed: false,
+    enabled: false,
+  });
+});
+
+test("the active call and palette share the microphone semantic command", () => {
+  assert.match(productSource, /commandButton\("call\.microphone\.toggle"\)/);
+  assert.match(productSource, /case "call\.microphone\.toggle":/);
+  assert.match(productSource, /No microphone track is available\. Leave and rejoin/);
 });
 
 test("local media stops even when durable leave fails", async () => {

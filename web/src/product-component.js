@@ -2885,7 +2885,13 @@ function callMeshView(snapshot) {
   const joined = Boolean(localPeerId && call?.participants.includes(localPeerId));
   const controls = element("div", "control-row");
   if (joined) {
-    controls.append(commandButton("call.leave"));
+    const microphoneEnabled = localMicrophoneEnabled(uiState.localMediaStream);
+    const microphone = commandButton("call.microphone.toggle");
+    microphone.textContent = microphoneEnabled ? "Mute microphone" : "Unmute microphone";
+    microphone.title = microphoneEnabled
+      ? "Stop sending your microphone audio to this direct call"
+      : "Resume sending your microphone audio to this direct call";
+    controls.append(microphone, commandButton("call.leave"));
   } else {
     controls.append(
       commandButton("call.join", { video: false }),
@@ -2906,10 +2912,16 @@ function callMeshView(snapshot) {
   status.setAttribute("aria-live", "polite");
   const videos = element("div", "call-grid");
   if (joined) {
+    const microphoneLabel = localMicrophoneEnabled(uiState.localMediaStream)
+      ? "Microphone on"
+      : "Microphone muted";
     const localMedia = uiState.localMediaMode === "video"
       ? callVideo("local", true)
-      : element("div", "call-media-placeholder", "Microphone on");
-    videos.append(callTile(`You · ${uiState.localMediaMode === "video" ? "Camera on" : "Voice only"}`, localMedia));
+      : element("div", "call-media-placeholder", microphoneLabel);
+    videos.append(callTile(
+      `You · ${uiState.localMediaMode === "video" ? "Camera on" : "Voice only"} · ${microphoneLabel}`,
+      localMedia,
+    ));
     for (const peerId of call?.participants ?? []) {
       if (peerId === localPeerId) continue;
       const presentation = participantMediaPresentation(
@@ -3596,6 +3608,13 @@ async function runCommand(command, payload) {
           },
         );
         return;
+      case "call.microphone.toggle": {
+        const microphone = toggleLocalMicrophone(uiState.localMediaStream);
+        uiState.mediaNotice = microphone.changed
+          ? microphone.enabled ? "Microphone on." : "Microphone muted."
+          : "No microphone track is available. Leave and rejoin the call to try again.";
+        return;
+      }
       case "call.heartbeat":
         currentSnapshot = await shell.execute(command, payload);
         uiState.lastCallHeartbeatMs = Date.now();

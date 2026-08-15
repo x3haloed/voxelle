@@ -5819,6 +5819,13 @@ fn default_commands() -> Vec<UiCommand> {
             true,
         ),
         frontend_command(
+            "call.microphone.toggle",
+            "Mute or Unmute Microphone",
+            "Toggle the local microphone track without changing room membership",
+            None,
+            true,
+        ),
+        frontend_command(
             "message.composer.focus",
             "Focus Message Composer",
             "Move keyboard focus to the message composer",

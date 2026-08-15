@@ -693,9 +693,18 @@ remote voice-only participant renders as an explicit voice tile instead of an
 empty video element; a rendered preview probe exercised that label together
 with the independent **Connecting directly** state. This does not move
 participant selection, media authorization, or connection truth into the
-frontend. The verification machine has no physical camera or microphone, so capture,
-permission prompts, two-device media flow, and the resulting in-call tiles are
-not claimed as lived local evidence.
+frontend. The verification machine has no physical camera or microphone, so
+capture, permission prompts, two-device media flow, and the resulting in-call
+tiles are not claimed as lived local evidence.
+Active-call operation now includes a stable `call.microphone.toggle` frontend
+command shared by the visible call control and command palette. It changes all
+local WebView audio tracks together, projects **Microphone on** or **Microphone
+muted** in the local tile, and gives a leave-and-rejoin recovery action when a
+restart-like call snapshot has no captured track. Deterministic track tests
+exercise both directions and missing capture; rendered preview evidence covers
+the muted state, recovery copy, and palette route. This local device control
+does not change accepted call participation or signaling and is not physical
+audio evidence.
 
 The final local fixed-point pass is green for the changed system authorities:
 71 Rust tests, 9 browser-shell behavior tests, strict lint, generated-contract
