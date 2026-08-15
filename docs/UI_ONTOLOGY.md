@@ -250,6 +250,13 @@ peer-sync path. Revocation requires an explicit alert-dialog confirmation that
 names the stale-partition limitation; cancel returns focus to the originating
 invite row.
 
+Join failure copy follows the authoritative cause. Revoked and expired invites
+ask for a new signed invite, malformed invite material asks for a complete
+`.voxinvite`, and an already-initialized home names the separate-fresh-home
+requirement. Unknown local failures remain internal. The frontend preserves
+Rust's structured recovery category and technical detail without exposing the
+detail as the human summary.
+
 An existing but unreadable local home is not presented as fresh onboarding.
 Rust reports a structured `home_error`; the shell explains the damage, keeps
 technical detail disclosure explicit, and requires confirmation before

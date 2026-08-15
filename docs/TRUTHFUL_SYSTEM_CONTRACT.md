@@ -487,6 +487,12 @@ schemas and unsupported commands remain internal integration errors. The Rust
 classifier narrowly covers authoritative validation outcomes for message text
 and mentions, reactions, attachments, profiles, channel and role creation, and
 search; it does not reclassify permission failures or infrastructure faults.
+Invite joining now preserves the same distinction: an observed revocation,
+expiry, or malformed signed invite asks for corrected input; an already-used
+home names the separate-fresh-home requirement; and an unexplained local join
+failure remains internal rather than being mislabeled as reachability. A
+serialized revoked-invite test proves both the human recovery copy and that the
+refused join leaves the destination genuinely fresh.
 
 The packaged macOS conversation surface has crossed a lived reply/edit gate. A
 person selected Reply on a retained message, received named composer context,

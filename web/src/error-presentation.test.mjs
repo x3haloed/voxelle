@@ -5,14 +5,14 @@ import { presentShellError } from "./error-presentation.mjs";
 
 test("structured shell errors keep technical detail out of the human summary", () => {
   const presentation = presentShellError({
-    message: "Voxelle could not join with that invite.",
-    recovery: "needs_reachability",
-    recovery_message: "Check the invite and try its included peers again.",
-    detail: "parse /private/path/invite.json: invalid signature",
+    message: "That invite has been revoked.",
+    recovery: "needs_input",
+    recovery_message: "Ask a current space member for a new signed invite, then review it before joining.",
+    detail: "revocation learned from /private/path/invite.json",
   });
-  assert.equal(presentation.message, "Voxelle could not join with that invite.");
-  assert.equal(presentation.recovery, "needs_reachability");
-  assert.match(presentation.recoveryMessage, /included peers/);
+  assert.equal(presentation.message, "That invite has been revoked.");
+  assert.equal(presentation.recovery, "needs_input");
+  assert.match(presentation.recoveryMessage, /new signed invite/);
   assert.match(presentation.detail, /private\/path/);
   assert.doesNotMatch(presentation.message, /private\/path/);
 });

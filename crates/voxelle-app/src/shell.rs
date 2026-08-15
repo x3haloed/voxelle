@@ -259,11 +259,7 @@ fn command_error_presentation(
         );
     }
     if command_id == "space.join" {
-        return (
-            "Voxelle could not join with that invite.",
-            ShellRecovery::NeedsReachability,
-            "Check that the signed invite is complete and unexpired, then let Voxelle try its included ordinary peers again.",
-        );
+        return join_error_presentation(detail);
     }
     if command_id.starts_with("identity.recovery.") {
         return (
@@ -321,6 +317,49 @@ fn command_error_presentation(
         "Voxelle could not complete that action.",
         ShellRecovery::InternalError,
         "Try once more. If it repeats, retain the technical details for a bug report.",
+    )
+}
+
+fn join_error_presentation(
+    detail: &str,
+) -> (&'static str, ShellRecovery, &'static str) {
+    let detail = detail.to_ascii_lowercase();
+    let detail = detail.as_str();
+    if detail.contains("fresh voxelle home") {
+        return (
+            "This Voxelle home is already in use.",
+            ShellRecovery::NeedsHome,
+            "Keep this home intact. Joining another space requires a separate fresh Voxelle home.",
+        );
+    }
+    if detail.contains("revoked by a reachable ordinary peer") {
+        return (
+            "That invite has been revoked.",
+            ShellRecovery::NeedsInput,
+            "Ask a current space member for a new signed invite, then review the new space and expiry before joining.",
+        );
+    }
+    if detail.contains("space invite expired") {
+        return (
+            "That invite has expired.",
+            ShellRecovery::NeedsInput,
+            "Ask a current space member for a new signed invite, then review its expiry before joining.",
+        );
+    }
+    if detail.contains("space invite")
+        || detail.contains("signed bootstrap peer")
+        || detail.contains("parse signed space invite json")
+    {
+        return (
+            "That invite cannot be used.",
+            ShellRecovery::NeedsInput,
+            "Choose the complete signed .voxinvite file again, or ask a current space member to create a new invite.",
+        );
+    }
+    (
+        "Voxelle could not complete the join safely.",
+        ShellRecovery::InternalError,
+        "Your invite was not accepted. Try once more; if it repeats, retain the technical details for a bug report.",
     )
 }
 
@@ -985,6 +1024,72 @@ mod tests {
             .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
             .await
             .expect("stop");
+    }
+
+    #[tokio::test]
+    async fn serialized_join_reports_revoked_invite_without_creating_a_home() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let alice = ShellState::new(dir.path().join("alice"));
+        let charlie = ShellState::new(dir.path().join("charlie"));
+
+        alice
+            .execute_serialized_command(
+                "home.init",
+                serde_json::json!({ "default_room": null }),
+            )
+            .await
+            .expect("alice init");
+        alice
+            .execute_serialized_command(
+                "runtime.goOnline",
+                serde_json::json!({ "bind": null, "advertise": null }),
+            )
+            .await
+            .expect("alice online");
+        let created = alice
+            .execute_serialized_command(
+                "space.invite.create",
+                serde_json::json!({ "expires_minutes": 60 }),
+            )
+            .await
+            .expect("create invite");
+        let invite_json = created
+            .home
+            .expect("home")
+            .invite
+            .expect("invite exchange")
+            .space_invite_json
+            .expect("invite JSON");
+        let invite: crate::SpaceInviteFileV1 =
+            serde_json::from_str(&invite_json).expect("parse invite");
+        alice
+            .execute_serialized_command(
+                "space.invite.revoke",
+                serde_json::json!({ "invite_id": invite.invite_event.event_id }),
+            )
+            .await
+            .expect("revoke invite");
+
+        let error = charlie
+            .execute_serialized_command(
+                "space.join",
+                serde_json::json!({
+                    "space_invite_json": invite_json,
+                    "max_events": 64
+                }),
+            )
+            .await
+            .expect_err("revoked invite refused");
+        assert_eq!(error.recovery, ShellRecovery::NeedsInput);
+        assert_eq!(error.message, "That invite has been revoked.");
+        assert!(error.recovery_message.contains("new signed invite"));
+
+        let fresh = charlie
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("joiner remains fresh");
+        assert!(fresh.home.is_none());
+        assert!(fresh.home_error.is_none());
     }
 
     #[tokio::test]
@@ -1668,6 +1773,36 @@ mod tests {
         .is_some());
         assert!(correctable_input_presentation("member.ban", "not authorized").is_none());
         assert!(correctable_input_presentation("message.send", "database is locked").is_none());
+    }
+
+    #[test]
+    fn join_failures_name_the_recovery_that_matches_the_authoritative_cause() {
+        assert_eq!(
+            join_error_presentation(
+                "space invite was revoked by a reachable ordinary peer; no local home was created"
+            ),
+            (
+                "That invite has been revoked.",
+                ShellRecovery::NeedsInput,
+                "Ask a current space member for a new signed invite, then review the new space and expiry before joining.",
+            )
+        );
+        assert_eq!(
+            join_error_presentation("space invite expired").0,
+            "That invite has expired."
+        );
+        assert_eq!(
+            join_error_presentation("parse signed space invite JSON: expected value").0,
+            "That invite cannot be used."
+        );
+        assert_eq!(
+            join_error_presentation("joining a space requires a fresh Voxelle home").1,
+            ShellRecovery::NeedsHome
+        );
+        assert_eq!(
+            join_error_presentation("database write failed").1,
+            ShellRecovery::InternalError
+        );
     }
 
     #[test]
