@@ -273,6 +273,19 @@ h3 {
   background: color-mix(in srgb, var(--panel-background) 92%, var(--activity-error));
 }
 
+.error-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.error-detail {
+  max-width: min(72rem, 80vw);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .recovery-setup-prompt > div {
   display: grid;
   gap: 2px;

@@ -57,13 +57,13 @@ impl ShellState {
                     .lock()
                     .await
                     .record_available_product_update(available)
-                    .map_err(ShellError::from),
+                    .map_err(|error| ShellError::for_command(command_id, error)),
                 Err(error) => {
                     self.host
                         .lock()
                         .await
                         .record_product_update_failure(&format!("{error:#}"));
-                    Err(ShellError::from(error))
+                    Err(ShellError::for_command(command_id, error))
                 }
             };
         }
@@ -72,7 +72,8 @@ impl ShellState {
                 let host = self.host.lock().await;
                 (
                     host.update_transport_context().0,
-                    host.available_product_update().map_err(ShellError::from)?,
+                    host.available_product_update()
+                        .map_err(|error| ShellError::for_command(command_id, error))?,
                 )
             };
             return match manager.download_github_update(available).await {
@@ -81,13 +82,13 @@ impl ShellState {
                     .lock()
                     .await
                     .stage_downloaded_product_update(downloaded)
-                    .map_err(ShellError::from),
+                    .map_err(|error| ShellError::for_command(command_id, error)),
                 Err(error) => {
                     self.host
                         .lock()
                         .await
                         .record_product_update_failure(&format!("{error:#}"));
-                    Err(ShellError::from(error))
+                    Err(ShellError::for_command(command_id, error))
                 }
             };
         }
@@ -139,18 +140,21 @@ impl ShellState {
             "product.update.discardStaged" => host.discard_staged_product_update(),
             "product.update.rollback" => host.rollback_product_update(),
             _ => {
-                return Err(ShellError {
-                    message: format!("unknown command {command_id}"),
-                })
+                return Err(ShellError::unknown_command(command_id));
             }
         };
-        result.map_err(ShellError::from)
+        result.map_err(|error| ShellError::for_command(command_id, error))
     }
 }
 
 fn parse_request<T: serde::de::DeserializeOwned>(payload: serde_json::Value) -> ShellResult<T> {
     serde_json::from_value(payload).map_err(|error| ShellError {
-        message: format!("invalid command payload: {error}"),
+        message: "Voxelle could not understand that action.".to_string(),
+        recovery: ShellRecovery::InternalError,
+        recovery_message:
+            "Refresh the workspace and try once more. If it repeats, retain the technical details for a bug report."
+                .to_string(),
+        detail: format!("invalid command payload: {error}"),
     })
 }
 
@@ -159,14 +163,160 @@ pub type ShellResult<T> = Result<T, ShellError>;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq, TS)]
 pub struct ShellError {
     pub message: String,
+    pub recovery: ShellRecovery,
+    pub recovery_message: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum ShellRecovery {
+    NeedsHome,
+    NeedsServiceOnline,
+    NeedsPeerRecord,
+    NeedsReachability,
+    NeedsSync,
+    NeedsHuman,
+    InternalError,
+}
+
+impl ShellError {
+    pub fn internal(message: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            recovery: ShellRecovery::InternalError,
+            recovery_message:
+                "Try once more. If it repeats, retain the technical details for a bug report."
+                    .to_string(),
+            detail: detail.into(),
+        }
+    }
+
+    fn unknown_command(command_id: &str) -> Self {
+        Self::internal(
+            "This Voxelle surface requested an unsupported action.",
+            format!("unknown command {command_id}"),
+        )
+    }
+
+    fn for_command(command_id: &str, error: anyhow::Error) -> Self {
+        let detail = format!("{error:#}");
+        let lower = detail.to_ascii_lowercase();
+        let (message, recovery, recovery_message) = command_error_presentation(command_id, &lower);
+        Self {
+            message: message.to_string(),
+            recovery,
+            recovery_message: recovery_message.to_string(),
+            detail,
+        }
+    }
 }
 
 impl From<anyhow::Error> for ShellError {
     fn from(error: anyhow::Error) -> Self {
-        Self {
-            message: format!("{error:#}"),
-        }
+        Self::internal(
+            "Voxelle could not complete that action.",
+            format!("{error:#}"),
+        )
     }
+}
+
+fn command_error_presentation(
+    command_id: &str,
+    detail: &str,
+) -> (&'static str, ShellRecovery, &'static str) {
+    if command_id == "shell.refresh"
+        && (detail.contains("identity.json") || detail.contains("local state"))
+    {
+        return (
+            "Voxelle could not open this local home.",
+            ShellRecovery::NeedsHome,
+            "If local state was lost or damaged, start with a fresh Voxelle home and use your offline recovery kit to preserve the same identity.",
+        );
+    }
+    if command_id == "home.init" {
+        return (
+            "Voxelle could not create a new local home.",
+            ShellRecovery::NeedsHuman,
+            "Check that this device has writable storage, then try again. Existing identity files are never overwritten.",
+        );
+    }
+    if detail.contains("identity.json") || detail.contains("active home authority") {
+        return (
+            "This action needs a healthy local Voxelle home.",
+            ShellRecovery::NeedsHome,
+            "Finish setup first. If local state was lost or damaged, start with a fresh Voxelle home and use your offline recovery kit.",
+        );
+    }
+    if command_id.starts_with("runtime.") {
+        return (
+            "Voxelle could not change the connection service.",
+            ShellRecovery::NeedsReachability,
+            "Open Connection & sync, review the local address state, and try again.",
+        );
+    }
+    if command_id == "space.join" {
+        return (
+            "Voxelle could not join with that invite.",
+            ShellRecovery::NeedsReachability,
+            "Check that the signed invite is complete and unexpired, then let Voxelle try its included ordinary peers again.",
+        );
+    }
+    if command_id.starts_with("identity.recovery.") {
+        return (
+            "Voxelle could not complete identity recovery.",
+            ShellRecovery::NeedsHuman,
+            "Use the original offline recovery kit in a fresh Voxelle home. Keep the kit private and do not edit it.",
+        );
+    }
+    if command_id == "peer.import" {
+        return (
+            "Voxelle could not import that connection record.",
+            ShellRecovery::NeedsPeerRecord,
+            "Ask the member for a fresh complete peer record, then import it again. A peer record never grants membership.",
+        );
+    }
+    if command_id == "peer.diagnose" {
+        return (
+            "Voxelle could not reach that peer.",
+            ShellRecovery::NeedsReachability,
+            "Open Connection & sync, confirm the peer address, and retry diagnosis.",
+        );
+    }
+    if command_id == "peer.sync" {
+        return (
+            "Voxelle could not synchronize with that peer.",
+            ShellRecovery::NeedsSync,
+            "Confirm the peer is reachable and still authorized, then retry synchronization.",
+        );
+    }
+    if command_id.starts_with("product.update.") {
+        return (
+            "Voxelle could not complete the signed product update.",
+            ShellRecovery::NeedsHuman,
+            "Keep the current verified generation active and review Product Update before retrying.",
+        );
+    }
+    if detail.contains("service") || detail.contains("offline") {
+        return (
+            "Voxelle needs its local peer service for that action.",
+            ShellRecovery::NeedsServiceOnline,
+            "Go online, confirm Connection & sync is healthy, and try again.",
+        );
+    }
+    if detail.contains("permission") || detail.contains("not authorized") {
+        return (
+            "Your current role does not allow that action.",
+            ShellRecovery::NeedsHuman,
+            "Ask a space member with the required permission to perform or authorize it.",
+        );
+    }
+    (
+        "Voxelle could not complete that action.",
+        ShellRecovery::InternalError,
+        "Try once more. If it repeats, retain the technical details for a bug report.",
+    )
 }
 
 #[cfg(test)]
@@ -489,7 +639,8 @@ mod tests {
             )
             .await
             .expect_err("retired signer rejected");
-        assert!(rejected.message.contains("not trusted"));
+        assert_eq!(rejected.recovery, ShellRecovery::NeedsHuman);
+        assert!(rejected.detail.contains("not trusted"));
         let accepted = restarted
             .execute_serialized_command(
                 "product.update.install",
@@ -1217,9 +1368,12 @@ mod tests {
             .await
             .expect_err("send should fail");
 
-        assert!(error.message.contains("identity.json"));
+        assert_eq!(error.recovery, ShellRecovery::NeedsHome);
+        assert!(!error.message.contains("identity.json"));
+        assert!(error.detail.contains("identity.json"));
         let encoded = serde_json::to_string(&error).expect("serialize");
         assert!(encoded.contains("identity.json"));
+        assert!(encoded.contains("needs_home"));
     }
 
     #[tokio::test]
@@ -1272,20 +1426,18 @@ mod tests {
             ),
             360.0
         );
-        assert_eq!(
-            shell
-                .execute_serialized_command("not_a_command", serde_json::json!({}))
-                .await
-                .expect_err("unknown command")
-                .message,
-            "unknown command not_a_command"
-        );
-        assert!(shell
+        let unknown = shell
+            .execute_serialized_command("not_a_command", serde_json::json!({}))
+            .await
+            .expect_err("unknown command");
+        assert_eq!(unknown.recovery, ShellRecovery::InternalError);
+        assert_eq!(unknown.detail, "unknown command not_a_command");
+        let invalid = shell
             .execute_serialized_command("message.send", serde_json::json!({}))
             .await
-            .expect_err("invalid payload")
-            .message
-            .starts_with("invalid command payload:"));
+            .expect_err("invalid payload");
+        assert_eq!(invalid.recovery, ShellRecovery::InternalError);
+        assert!(invalid.detail.starts_with("invalid command payload:"));
     }
 
     #[test]

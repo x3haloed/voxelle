@@ -27,7 +27,7 @@ use std::{
 use tokio::{net::TcpListener, signal, sync::Semaphore, time};
 use tracing::info;
 use voxelle_app::{
-    resolve_home_root, shell_command_ids, ShellError, ShellSnapshotView, ShellState,
+    resolve_home_root, shell_command_ids, ShellError, ShellRecovery, ShellSnapshotView, ShellState,
 };
 
 #[derive(Debug, Parser)]
@@ -81,19 +81,7 @@ struct ActionResult {
     command_id: String,
     snapshot: Option<ShellSnapshotView>,
     error: Option<ShellError>,
-    recovery: Option<RecoveryKind>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum RecoveryKind {
-    NeedsHome,
-    NeedsServiceOnline,
-    NeedsPeerRecord,
-    NeedsReachability,
-    NeedsSync,
-    NeedsHuman,
-    InternalError,
+    recovery: Option<ShellRecovery>,
 }
 
 #[tokio::main]
@@ -225,7 +213,7 @@ async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> Ac
             ok: false,
             command_id: command_id.to_string(),
             snapshot: None,
-            recovery: Some(classify_recovery(&error.message)),
+            recovery: Some(error.recovery),
             error: Some(error),
         },
     }
@@ -322,25 +310,6 @@ fn validate_host(host: IpAddr) -> Result<()> {
     Ok(())
 }
 
-fn classify_recovery(message: &str) -> RecoveryKind {
-    let lower = message.to_ascii_lowercase();
-    if lower.contains("identity.json") || lower.contains("home") {
-        RecoveryKind::NeedsHome
-    } else if lower.contains("service") || lower.contains("offline") {
-        RecoveryKind::NeedsServiceOnline
-    } else if lower.contains("peer record") || lower.contains("unknown peer") {
-        RecoveryKind::NeedsPeerRecord
-    } else if lower.contains("diagnostic") || lower.contains("reach") || lower.contains("connect") {
-        RecoveryKind::NeedsReachability
-    } else if lower.contains("sync") {
-        RecoveryKind::NeedsSync
-    } else if lower.contains("permission") || lower.contains("manual") {
-        RecoveryKind::NeedsHuman
-    } else {
-        RecoveryKind::InternalError
-    }
-}
-
 fn write_discovery_file(
     path: Option<&FsPath>,
     home: &FsPath,
@@ -433,6 +402,18 @@ mod tests {
             .decode(token)
             .expect("token");
         assert_eq!(decoded.len(), 32);
+    }
+
+    #[tokio::test]
+    async fn action_result_reuses_the_shell_recovery_classification() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shell = ShellState::new(dir.path().join("home"));
+        let result = run_command(&shell, "not_a_command", serde_json::json!({})).await;
+        assert_eq!(result.recovery, Some(ShellRecovery::InternalError));
+        assert_eq!(
+            result.error.expect("structured error").recovery,
+            ShellRecovery::InternalError
+        );
     }
 
     #[cfg(unix)]

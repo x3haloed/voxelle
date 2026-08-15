@@ -20,6 +20,8 @@ if (!(app instanceof HTMLElement)) {
 const uiState = {
   busyCommand: "",
   error: "",
+  errorRecovery: "",
+  errorDetail: "",
   peerRecordDraft: "",
   spaceInviteDraft: "",
   messageDraft: "",
@@ -1466,12 +1468,12 @@ function roleListView(snapshot) {
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     if (!uiState.roleNameDraft.trim()) {
-      uiState.error = "Enter a role name.";
+      setUserError("Enter a role name.");
       render();
       return;
     }
     if (uiState.rolePermissionsDraft.size === 0) {
-      uiState.error = "Choose at least one permission for this role.";
+      setUserError("Choose at least one permission for this role.");
       render();
       return;
     }
@@ -2168,7 +2170,7 @@ async function runCommand(command, payload) {
   // may blur a control as soon as it becomes disabled.
   if (command === "workbench.commandPalette.open") rememberFocusReturn();
   uiState.busyCommand = command;
-  uiState.error = "";
+  clearError();
   render();
   try {
     switch (command) {
@@ -2468,9 +2470,24 @@ async function runCommand(command, payload) {
 /** @param {unknown} error */
 function reportError(error) {
   uiState.busyCommand = "";
-  uiState.error = errorMessage(error);
-  appendActivity(currentSnapshot, `error: ${uiState.error}`);
+  const presentation = presentShellError(error);
+  uiState.error = presentation.message;
+  uiState.errorRecovery = presentation.recoveryMessage;
+  uiState.errorDetail = presentation.detail;
+  appendActivity(currentSnapshot, `error (${presentation.recovery}): ${presentation.message}`);
   render();
+}
+
+function setUserError(message) {
+  uiState.error = message;
+  uiState.errorRecovery = "Correct the highlighted information and try again.";
+  uiState.errorDetail = "";
+}
+
+function clearError() {
+  uiState.error = "";
+  uiState.errorRecovery = "";
+  uiState.errorDetail = "";
 }
 
 /** @param {unknown} error */
@@ -2490,10 +2507,23 @@ function globalErrorBanner() {
   }
   const banner = element("section", "error-banner");
   banner.setAttribute("role", "alert");
+  const copy = element("div", "error-copy");
+  copy.append(
+    element("strong", "", uiState.error),
+    ...(uiState.errorRecovery ? [element("p", "summary", uiState.errorRecovery)] : []),
+  );
+  if (uiState.errorDetail) {
+    const details = element("details", "advanced-details");
+    details.append(
+      element("summary", "", "Technical details"),
+      element("pre", "error-detail", uiState.errorDetail),
+    );
+    copy.append(details);
+  }
   banner.append(
-    element("span", "", uiState.error),
+    copy,
     actionButton("Dismiss", () => {
-      uiState.error = "";
+      clearError();
       render();
     }),
   );

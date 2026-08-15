@@ -179,6 +179,12 @@ closing returns focus to the invoking control when it still exists. Snapshot
 refreshes do not make the entire application a live region; only bounded status
 and alert surfaces announce changes to assistive technology.
 
+Command failures lead with a bounded human explanation and a concrete recovery
+action. Rust-owned recovery categories travel with the same serialized command
+result used by every consumer; implementation paths and error chains remain
+available only under explicit technical details and never become the recovery
+authority.
+
 Until a recovery-kit export succeeds, the ordinary shell shows a compact
 recovery setup prompt. The durable health marker records only completion time,
 never recovery bytes or their filesystem location. After export, the prompt

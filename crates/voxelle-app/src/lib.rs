@@ -34,7 +34,7 @@ use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
 mod shell;
 
-pub use shell::{ShellError, ShellResult, ShellState};
+pub use shell::{ShellError, ShellRecovery, ShellResult, ShellState};
 
 pub const DEFAULT_ROOM_ID: &str = "room:general";
 const CALL_LIVENESS_MS: i64 = 90_000;
@@ -668,6 +668,11 @@ pub fn shell_contract_typescript() -> String {
     if !output.ends_with('\n') {
         output.push('\n');
     }
+    output.push_str("export ");
+    output.push_str(&ShellRecovery::decl(&cfg));
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
     output
 }
 
@@ -701,10 +706,11 @@ pub fn builtin_product_generation() -> ProductGenerationV1 {
 }
 
 fn builtin_product_component_source() -> String {
-    const MODULES: [&str; 6] = [
+    const MODULES: [&str; 7] = [
         include_str!("../../../web/src/call-media.mjs"),
         include_str!("../../../web/src/connection-status.mjs"),
         include_str!("../../../web/src/dom-reconcile.mjs"),
+        include_str!("../../../web/src/error-presentation.mjs"),
         include_str!("../../../web/src/focus-management.mjs"),
         include_str!("../../../web/src/ui-ontology.mjs"),
         include_str!("../../../web/src/workbench.mjs"),

@@ -65,9 +65,15 @@ class PreviewShellClient {
    */
   async execute(command) {
     if (command !== "shell.refresh") {
-      throw new Error(
-        `Preview only; launch the desktop app to run ${command}.`,
+      const error = Object.assign(
+        new Error(`Preview only; launch the desktop app to run ${command}.`),
+        {
+          recovery: "needs_human",
+          recovery_message: "Launch the native desktop app to perform actions through the local Voxelle authority.",
+          detail: `standalone preview refused semantic command ${command}`,
+        },
       );
+      throw error;
     }
     return this.current;
   }

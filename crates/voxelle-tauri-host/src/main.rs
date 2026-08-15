@@ -44,7 +44,10 @@ async fn choose_recovery_kit_path(mode: String) -> Result<Option<String>, ShellE
         "open" => dialog.pick_file().await,
         _ => {
             return Err(ShellError {
-                message: format!("unknown recovery file dialog mode {mode}"),
+                message: "Voxelle could not open the recovery file chooser.".to_string(),
+                recovery: voxelle_app::ShellRecovery::InternalError,
+                recovery_message: "Close this window, reopen Voxelle, and try again.".to_string(),
+                detail: format!("unknown recovery file dialog mode {mode}"),
             })
         }
     };

@@ -11,9 +11,11 @@
     </main>
     <script>
       window.addEventListener("error", (event) => {
+        if (document.querySelector("#app")?.dataset.fatalHandled === "true") return;
         document.querySelector("#app").textContent = `Voxelle failed to render: ${event.message}`;
       });
       window.addEventListener("unhandledrejection", (event) => {
+        if (document.querySelector("#app")?.dataset.fatalHandled === "true") return;
         const message = event.reason?.message ?? String(event.reason);
         document.querySelector("#app").textContent = `Voxelle failed to render: ${message}`;
       });

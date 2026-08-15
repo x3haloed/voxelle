@@ -1,4 +1,5 @@
 import { createShellClient } from "./shell-client.js";
+import { presentShellError } from "./error-presentation.mjs";
 import { ProductComponentHost } from "./product-component-host.mjs";
 
 const app = document.querySelector("#app");
@@ -38,7 +39,26 @@ let initialSnapshot;
 try {
   initialSnapshot = await shell.execute("shell.refresh");
 } catch (error) {
-  app.textContent = `Voxelle could not open your local identity: ${error?.message ?? String(error)}`;
+  const presentation = presentShellError(error);
+  app.dataset.fatalHandled = "true";
+  const alert = document.createElement("section");
+  alert.className = "startup-error";
+  alert.setAttribute("role", "alert");
+  const heading = document.createElement("h1");
+  heading.textContent = presentation.message;
+  const recovery = document.createElement("p");
+  recovery.textContent = presentation.recoveryMessage;
+  alert.append(heading, recovery);
+  if (presentation.detail) {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Technical details";
+    const detail = document.createElement("pre");
+    detail.textContent = presentation.detail;
+    details.append(summary, detail);
+    alert.append(details);
+  }
+  app.replaceChildren(alert);
   throw error;
 } finally {
   window.clearTimeout(credentialWaitNotice);
@@ -48,6 +68,7 @@ if (!initialSnapshot.product_component && shell.mode === "preview") {
     "./src/call-media.mjs",
     "./src/connection-status.mjs",
     "./src/dom-reconcile.mjs",
+    "./src/error-presentation.mjs",
     "./src/focus-management.mjs",
     "./src/ui-ontology.mjs",
     "./src/workbench.mjs",

@@ -215,6 +215,11 @@ Errors should classify the recovery path:
 - `needs_human`
 - `internal_error`
 
+The serialized `ShellError` owns that classification together with its human
+message, recovery instruction, and technical detail. HTTP action results may
+repeat the same recovery value for convenient routing, but adapters must not
+infer it by parsing error prose or invent a second classification.
+
 ### 3.5 Delta
 
 Deltas answer: "What changed since my last view?"
