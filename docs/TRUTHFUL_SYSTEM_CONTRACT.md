@@ -712,3 +712,12 @@ retained history; and three-way message visibility. Existing field validation
 runs before the section is replaced, so loopback or otherwise invalid topology
 cannot create an output receipt. Successful disposable recording is tooling
 evidence only, not a non-loopback network claim.
+
+Distribution evidence is staged through an authenticated boundary rather than
+hand-edited. The release CLI verifies the downloaded signed manifest, derives
+its exact release tag URL, checks that the partial receipt identifies the same
+release and sequence, and requires separate observations for public readback,
+DMG verification, universal binary inspection, packaged launch, live
+activation, rollback, and current-generation reactivation. This binds the
+record to release identity without claiming the recorder performed any of
+those lived operations.

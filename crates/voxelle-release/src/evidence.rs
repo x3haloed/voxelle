@@ -318,6 +318,27 @@ pub fn record_field(evidence: &mut BetaEvidenceV1, field: FieldEvidenceV1) -> Re
     Ok(())
 }
 
+pub fn record_distribution(
+    evidence: &mut BetaEvidenceV1,
+    distribution: DistributionEvidenceV1,
+    manifest: &ReleaseManifestV1,
+) -> Result<()> {
+    if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
+        return Err(anyhow!(
+            "unsupported beta evidence format {}",
+            evidence.format
+        ));
+    }
+    if evidence.release_id != manifest.release_id || evidence.sequence != manifest.sequence {
+        return Err(anyhow!(
+            "beta evidence does not identify the signed release"
+        ));
+    }
+    validate_distribution(&distribution, manifest)?;
+    evidence.distribution = distribution;
+    Ok(())
+}
+
 fn validate_distribution(
     distribution: &DistributionEvidenceV1,
     manifest: &ReleaseManifestV1,
@@ -845,6 +866,34 @@ mod tests {
         assert!(record_field(&mut receipt, refused).is_err());
         assert_eq!(receipt.field.operator, retained_operator);
         assert_ne!(receipt.field.machines[2].advertise_addr, "[::1]:47000");
+    }
+
+    #[test]
+    fn distribution_recorder_binds_the_manifest_before_replacing_the_section() {
+        let complete = valid();
+        let observed = complete.distribution.clone();
+        let mut receipt = complete.clone();
+        receipt.distribution.operator.clear();
+        receipt.distribution.live_activation = false;
+
+        record_distribution(&mut receipt, observed.clone(), &manifest())
+            .expect("record valid distribution evidence");
+        assert_eq!(receipt.distribution.operator, "operator");
+        assert!(receipt.distribution.live_activation);
+
+        let mut refused = observed;
+        refused.github_release_url =
+            "https://github.com/x3haloed/voxelle/releases/tag/wrong".to_string();
+        let retained_operator = receipt.distribution.operator.clone();
+        assert!(record_distribution(&mut receipt, refused, &manifest()).is_err());
+        assert_eq!(receipt.distribution.operator, retained_operator);
+        assert!(receipt.distribution.live_activation);
+
+        let mut wrong_receipt = receipt.clone();
+        wrong_receipt.sequence += 1;
+        assert!(
+            record_distribution(&mut wrong_receipt, complete.distribution, &manifest()).is_err()
+        );
     }
 
     #[test]

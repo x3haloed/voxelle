@@ -38,6 +38,32 @@ DMG verification, universal Mach-O inspection, packaged launch, live activation,
 rollback to the previous signed generation, and reactivation of the current
 generation. These are separate facts even when performed by one operator.
 
+After completing them, authenticate the same downloaded manifest and record
+the distribution section into a new staged receipt:
+
+```sh
+cargo run -q -p voxelle-release -- record-distribution-beta-evidence \
+  --input CURRENT_RECEIPT.json \
+  --output beta-evidence.distribution.json \
+  --trust-roots release/trusted-update-keys.json \
+  --manifest DOWNLOAD_DIR/VOXELLE-RELEASE.json \
+  --executed-utc 2026-08-14T22:00:00Z \
+  --operator "OPERATOR NAME" \
+  --attest-public-readback-verified \
+  --attest-macos-dmg-verified \
+  --attest-macos-universal-binary \
+  --attest-macos-packaged-launch \
+  --attest-live-activation \
+  --attest-rollback-to-previous \
+  --attest-reactivated-current
+```
+
+The recorder authenticates the manifest, derives its exact release tag URL,
+requires every packaged behavior separately, checks that the staged receipt
+identifies the same release and sequence, preserves other sections, and refuses
+output overwrite. It records the operator's observations; it does not perform
+the public readback, launch, activation, or rollback itself.
+
 ## 2. Record native Windows first launch
 
 On an x86-64 Windows machine, verify and install the exact NSIS asset listed by

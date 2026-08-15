@@ -123,6 +123,7 @@ enum Command {
     },
     RecordHumanBetaEvidence(Box<RecordHumanBetaEvidenceArgs>),
     RecordFieldBetaEvidence(Box<RecordFieldBetaEvidenceArgs>),
+    RecordDistributionBetaEvidence(Box<RecordDistributionBetaEvidenceArgs>),
     VerifyBetaEvidence {
         #[arg(long)]
         trust_roots: PathBuf,
@@ -259,6 +260,36 @@ struct RecordFieldBetaEvidenceArgs {
     attest_b_message_visible_on_all: bool,
     #[arg(long, required = true)]
     attest_c_message_visible_on_all: bool,
+}
+
+#[derive(Debug, Args)]
+struct RecordDistributionBetaEvidenceArgs {
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+    #[arg(long)]
+    trust_roots: PathBuf,
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    executed_utc: String,
+    #[arg(long)]
+    operator: String,
+    #[arg(long, required = true)]
+    attest_public_readback_verified: bool,
+    #[arg(long, required = true)]
+    attest_macos_dmg_verified: bool,
+    #[arg(long, required = true)]
+    attest_macos_universal_binary: bool,
+    #[arg(long, required = true)]
+    attest_macos_packaged_launch: bool,
+    #[arg(long, required = true)]
+    attest_live_activation: bool,
+    #[arg(long, required = true)]
+    attest_rollback_to_previous: bool,
+    #[arg(long, required = true)]
+    attest_reactivated_current: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -550,6 +581,51 @@ fn main() -> Result<()> {
             evidence::record_field(&mut receipt, field)?;
             write_new_json(&output, &receipt)?;
             println!("recorded field beta evidence in {}", output.display());
+            Ok(())
+        }
+        Command::RecordDistributionBetaEvidence(args) => {
+            let RecordDistributionBetaEvidenceArgs {
+                input,
+                output,
+                trust_roots,
+                manifest,
+                executed_utc,
+                operator,
+                attest_public_readback_verified,
+                attest_macos_dmg_verified,
+                attest_macos_universal_binary,
+                attest_macos_packaged_launch,
+                attest_live_activation,
+                attest_rollback_to_previous,
+                attest_reactivated_current,
+            } = *args;
+            let roots = read_trust_roots(&trust_roots)?;
+            let manager = UpdateManager::new(".", "0.1.0", roots)?;
+            let manifest = manager.verify_release_manifest_bytes(&fs::read(manifest)?)?;
+            let mut receipt: evidence::BetaEvidenceV1 =
+                serde_json::from_slice(&fs::read(&input).context("read beta evidence receipt")?)
+                    .context("parse beta evidence receipt")?;
+            let distribution = evidence::DistributionEvidenceV1 {
+                github_release_url: format!(
+                    "https://github.com/x3haloed/voxelle/releases/tag/{}",
+                    manifest.release_id
+                ),
+                public_readback_verified: attest_public_readback_verified,
+                macos_dmg_verified: attest_macos_dmg_verified,
+                macos_universal_binary: attest_macos_universal_binary,
+                macos_packaged_launch: attest_macos_packaged_launch,
+                live_activation: attest_live_activation,
+                rollback_to_previous: attest_rollback_to_previous,
+                reactivated_current: attest_reactivated_current,
+                executed_utc,
+                operator,
+            };
+            evidence::record_distribution(&mut receipt, distribution, &manifest)?;
+            write_new_json(&output, &receipt)?;
+            println!(
+                "recorded distribution beta evidence in {}",
+                output.display()
+            );
             Ok(())
         }
         Command::VerifyBetaEvidence {
