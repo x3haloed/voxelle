@@ -12,7 +12,7 @@ test("the admitted selected channel is exposed as the current location", () => {
 test("channel selection moves focus from its removed button to the selected row", () => {
   assert.match(
     source,
-    /case "channel\.select":\s*currentSnapshot = await shell\.execute\(command, payload\);\s*focusChannelRow\(payload\.room_id\);/,
+    /case "channel\.select":\s*currentSnapshot = await shell\.execute\(command, payload\);\s*currentSnapshot = await shell\.execute\("channel\.markRead", \{ room_id: payload\.room_id \}\);\s*focusChannelRow\(payload\.room_id\);/,
   );
   assert.match(source, /row\.dataset\.renderKey === `channel:\$\{roomId\}`/);
 });

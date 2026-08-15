@@ -35,6 +35,7 @@ const uiState = {
   rotatingChannelId: "",
   pendingAttachment: null,
   messageDraft: "",
+  messageClientRequestId: "",
   messageMentionsDraft: new Set(),
   replyTargetEventId: "",
   replyPreview: null,
@@ -2978,6 +2979,14 @@ function roomTimelineView(snapshot) {
     if (message.pinned) annotations.append(element("small", "muted", "pinned"));
     if (message.thread_root_event_id !== null) annotations.append(element("small", "muted", "thread reply"));
     if (message.reply_count > 0) annotations.append(element("small", "muted", `${message.reply_count} repl${message.reply_count === 1 ? "y" : "ies"}`));
+    for (const acknowledgement of message.acknowledgements ?? []) {
+      const acknowledgingProfile = profileForPeer(snapshot, acknowledgement.peer_id);
+      annotations.append(element(
+        "small",
+        "muted",
+        `${acknowledgingProfile.display_name} ${acknowledgement.state === "handled" ? "marked handled" : "observed"}`,
+      ));
+    }
     if (annotations.children.length > 0) content.append(annotations);
     const reactions = element("div", "message-reactions");
     for (const reaction of message.reactions ?? []) {
@@ -3037,6 +3046,29 @@ function roomTimelineView(snapshot) {
       thumb,
       pin,
     );
+    if (!own) {
+      const ownAcknowledgement = (message.acknowledgements ?? []).find(
+        (acknowledgement) => acknowledgement.peer_id === snapshot.home?.profile.peer_id,
+      );
+      if (!ownAcknowledgement) {
+        const observed = commandButton("message.acknowledge", {
+          target_event_id: message.event_id,
+          room: snapshot.home?.room.room_id ?? null,
+          state: "observed",
+        });
+        observed.textContent = "Acknowledge";
+        actions.append(observed);
+      }
+      if (ownAcknowledgement?.state !== "handled") {
+        const handled = commandButton("message.acknowledge", {
+          target_event_id: message.event_id,
+          room: snapshot.home?.room.room_id ?? null,
+          state: "handled",
+        });
+        handled.textContent = "Mark handled";
+        actions.append(handled);
+      }
+    }
     if (own && !message.redacted) {
       if ((message.attachments ?? []).length === 0) {
         actions.append(contextualActionButton("Edit", `Edit ${messageLabel}`, () => beginMessageEdit(message)));
@@ -4051,6 +4083,9 @@ async function runCommand(command, payload) {
         return;
       case "message.send": {
         const text = payload?.text ?? uiState.messageDraft;
+        const clientRequestId = payload?.client_request_id
+          ?? (uiState.messageClientRequestId || crypto.randomUUID());
+        uiState.messageClientRequestId = clientRequestId;
         currentSnapshot = await shell.execute(command, {
           text,
           room: payload?.room ?? null,
@@ -4061,8 +4096,10 @@ async function runCommand(command, payload) {
               uiState.messageMentionsDraft,
             ),
           thread_root_event_id: payload?.thread_root_event_id ?? blankToNull(uiState.replyTargetEventId),
+          client_request_id: clientRequestId,
         });
         uiState.messageDraft = "";
+        uiState.messageClientRequestId = "";
         uiState.messageMentionsDraft.clear();
         uiState.replyTargetEventId = "";
         uiState.replyPreview = null;
@@ -4070,10 +4107,12 @@ async function runCommand(command, payload) {
       }
       case "channel.select":
         currentSnapshot = await shell.execute(command, payload);
+        currentSnapshot = await shell.execute("channel.markRead", { room_id: payload.room_id });
         focusChannelRow(payload.room_id);
         return;
       case "message.open":
         currentSnapshot = await shell.execute(command, payload);
+        currentSnapshot = await shell.execute("channel.markRead", { room_id: payload.room_id });
         return;
       case "channel.markRead":
         currentSnapshot = await shell.execute(command, payload ?? { room_id: null });
@@ -4121,6 +4160,10 @@ async function runCommand(command, payload) {
       case "pin.remove":
         currentSnapshot = await shell.execute(command, payload);
         focusMessageControl(payload.target_event_id, messageFocusKey);
+        return;
+      case "message.acknowledge":
+        currentSnapshot = await shell.execute(command, payload);
+        focusMessageRow(payload.target_event_id);
         return;
       case "attachment.add":
         currentSnapshot = await shell.execute(command, payload);

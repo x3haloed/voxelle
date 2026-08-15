@@ -1793,6 +1793,28 @@ fn validate_room_event_body(
                 return Err(AcceptError::Invalid("MSG_POST text is invalid".to_string()));
             }
             validate_mentions(event)?;
+            if let Some(client_request_id) = string_body_field(event, "client_request_id") {
+                if !valid_short_text(&client_request_id, 128)
+                    || client_request_id.len() < 8
+                    || client_request_id.chars().any(char::is_whitespace)
+                {
+                    return Err(AcceptError::Invalid(
+                        "MSG_POST client_request_id is invalid".to_string(),
+                    ));
+                }
+                if accepted_events.iter().any(|candidate| {
+                    candidate.room_id == event.room_id
+                        && candidate.author_peer_id == event.author_peer_id
+                        && candidate.delegation.device_id == event.delegation.device_id
+                        && candidate.kind == "MSG_POST"
+                        && string_body_field(candidate, "client_request_id")
+                            == Some(client_request_id.clone())
+                }) {
+                    return Err(AcceptError::Invalid(
+                        "MSG_POST client_request_id was already admitted".to_string(),
+                    ));
+                }
+            }
             if let Some(thread_root) = string_body_field(event, "thread_root_event_id") {
                 if !accepted_events.iter().any(|candidate| {
                     candidate.room_id == event.room_id
@@ -1835,6 +1857,21 @@ fn validate_room_event_body(
                     && !peer_has_permission(state, context, author, PERMISSION_MESSAGE_MODERATE))
             {
                 return Err(AcceptError::NotAuthorized);
+            }
+        }
+        "MSG_ACK" => {
+            require_post()?;
+            let acknowledged = target("MSG_ACK")?;
+            if !matches!(acknowledged.kind.as_str(), "MSG_POST" | "ATTACHMENT_ADD") {
+                return Err(AcceptError::Invalid(
+                    "MSG_ACK target is not a message".to_string(),
+                ));
+            }
+            if !matches!(
+                string_body_field(event, "state").as_deref(),
+                Some("observed" | "handled")
+            ) {
+                return Err(AcceptError::Invalid("MSG_ACK state is invalid".to_string()));
             }
         }
         "REACTION_ADD" | "REACTION_REMOVE" => {

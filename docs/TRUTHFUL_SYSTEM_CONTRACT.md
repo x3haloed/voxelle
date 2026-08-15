@@ -704,13 +704,36 @@ The authenticated inhabitant SSE surface now wakes resident agents when the
 Rust-owned snapshot changes. A successful HTTP semantic command emits a
 process-monotonic `snapshot.changed` notice only after the command host returns
 its new snapshot; asynchronous peer-service invalidations use the same channel.
-The notice carries the canonical snapshot URL, so agents re-read authoritative
-state instead of relying on an HTTP-side reconstruction of room, governance, or
-recovery meaning. Unit evidence covers multi-subscriber monotonic delivery, and
+The notice carries the compact coordination-snapshot URL, so agents re-read
+authoritative state instead of relying on an HTTP-side reconstruction of room,
+governance, or recovery meaning. SSE is an invalidation channel, not a durable
+event log: reconnect does not promise replay, `service.ready` names the current
+process sequence and requires immediate snapshot reconciliation, and silence
+does not prove currency or delivery. The coordination snapshot carries a
+sequence captured across a stable projection attempt, so a reconnecting
+resident can retry until it reaches the sequence announced by the stream;
+discovery explicitly advertises that replay is unavailable. Unit evidence
+covers multi-subscriber monotonic delivery, and
 an isolated live HTTP/SSE rehearsal carried `home.init` from an authenticated
 command response showing initialized identity to sequence 1 on an already-open
 event stream. This is local loopback agent-surface evidence, not a resident
 Watch/WFB integration or autonomous-agent claim.
+The shared admitted message model now carries a caller-generated
+`client_request_id` scoped to principal, device, room, and semantic payload.
+Identical retries return the original event, including after process restart;
+conflicting reuse is rejected as correctable, non-retryable input. Ordinary
+signed `MSG_ACK` room facts project one monotonic `observed` or `handled` state
+per participant and target message, traverse the existing private-room
+encryption and admission path, and survive synchronization and restart. An
+acknowledgement advances only the acknowledging home's local read cursor
+through its target; channel selection remains context, not acknowledgement.
+Independent source-blind two-home rehearsals proved duplicate suppression,
+offline retained-message catch-up on `runtime.goOnline`, acknowledgement
+propagation, handled-state durability while the participant was offline, and
+honest `unreachable` sync evidence when the known peer could not be contacted.
+`handled` remains a participant assertion rather than proof of correct work;
+it does not yet bind a structured result event. Sync evidence is peer-relative,
+never a claim of global currency or live conversation presence.
 Episodic agent actions no longer require repository-source inspection to learn
 their payload shape. The same Rust-projected `UiCommand` records used by the
 WebView now name each shell command's request DTO, while empty-payload and

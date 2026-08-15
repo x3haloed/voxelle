@@ -74,11 +74,31 @@ struct DiscoveryView {
     pid: u32,
     started_at_unix_ms: u128,
     snapshot_url: String,
+    coordination_snapshot_url: String,
     events_url: String,
     commands_url: String,
     contract_url: String,
     authorization: String,
     capabilities: CapabilitiesView,
+    command_transport: CommandTransportView,
+    command_semantics: Vec<CommandSemanticsView>,
+    replay_policy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CommandTransportView {
+    method: String,
+    content_type: String,
+    authorization_header: String,
+    request_body: String,
+    response_body: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CommandSemanticsView {
+    command_id: String,
+    retry: String,
+    observation: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,7 +111,7 @@ struct CapabilitiesView {
 struct ActionResult {
     ok: bool,
     command_id: String,
-    snapshot: Option<ShellSnapshotView>,
+    snapshot: Option<Value>,
     activity_items: Vec<ServiceActivityItem>,
     error: Option<ShellError>,
     recovery: Option<ShellRecovery>,
@@ -131,6 +151,10 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/inhabitant/v0/discovery", get(get_discovery))
         .route("/inhabitant/v0/snapshot", get(snapshot))
+        .route(
+            "/inhabitant/v0/snapshot/coordination",
+            get(coordination_snapshot),
+        )
         .route("/inhabitant/v0/commands/:command_id", post(command))
         .route("/inhabitant/v0/contract.ts", get(contract))
         .route("/inhabitant/v0/events", get(events))
@@ -152,6 +176,9 @@ impl DiscoveryView {
             surface_version: "inhabitant.v0".to_string(),
             home_root,
             snapshot_url: format!("{base_url}/inhabitant/v0/snapshot"),
+            coordination_snapshot_url: format!(
+                "{base_url}/inhabitant/v0/snapshot/coordination"
+            ),
             events_url: format!("{base_url}/inhabitant/v0/events"),
             commands_url: format!("{base_url}/inhabitant/v0/commands/{{command_id}}"),
             contract_url: format!("{base_url}/inhabitant/v0/contract.ts"),
@@ -167,6 +194,41 @@ impl DiscoveryView {
                     "heartbeat".to_string(),
                 ],
             },
+            command_transport: CommandTransportView {
+                method: "POST".to_string(),
+                content_type: "application/json".to_string(),
+                authorization_header: "Authorization: Bearer <per-launch token>".to_string(),
+                request_body: "Direct JSON value matching the command payload_type; use {} for empty payloads".to_string(),
+                response_body: "ActionResult JSON with ok, command_id, compact snapshot, activity_items, error, and recovery".to_string(),
+            },
+            command_semantics: vec![
+                CommandSemanticsView {
+                    command_id: "message.send".to_string(),
+                    retry: "reuse the same client_request_id only for the identical principal, device, room, and payload; a conflicting reuse is rejected".to_string(),
+                    observation: "ok proves local admission; inspect the projected message by client_request_id, sync_evidence for peer-relative propagation, and signed acknowledgements for recipient observation or handling".to_string(),
+                },
+                CommandSemanticsView {
+                    command_id: "message.acknowledge".to_string(),
+                    retry: "semantic idempotent; handled is monotonic and a later observed request cannot lower it".to_string(),
+                    observation: "the signed acknowledgement is an admitted participant assertion, not proof that the work was correct".to_string(),
+                },
+                CommandSemanticsView {
+                    command_id: "channel.select".to_string(),
+                    retry: "semantic idempotent".to_string(),
+                    observation: "selection changes local context only and never marks messages read or acknowledges them".to_string(),
+                },
+                CommandSemanticsView {
+                    command_id: "channel.markRead".to_string(),
+                    retry: "semantic idempotent".to_string(),
+                    observation: "advances only this home's local read cursor; it is not a signed acknowledgement visible to senders".to_string(),
+                },
+                CommandSemanticsView {
+                    command_id: "runtime.goOnline".to_string(),
+                    retry: "safe to reconcile again".to_string(),
+                    observation: "starts the local runtime and attempts known peers; sync_evidence is peer-relative and never claims global currency".to_string(),
+                },
+            ],
+            replay_policy: "none; on every connect or reconnect, use service.ready.current_sequence and fetch coordination_snapshot_url until its current_sequence is at least that value".to_string(),
         }
     }
 }
@@ -207,6 +269,45 @@ async fn snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         Ok(Ok(snapshot)) => (StatusCode::OK, Json(snapshot)).into_response(),
         Ok(Err(error)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response(),
     }
+}
+
+async fn coordination_snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let Ok(Ok(_permit)) =
+        time::timeout(Duration::from_secs(1), state.request_slots.acquire()).await
+    else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    let Ok(_command_guard) = time::timeout(Duration::from_secs(1), state.command_gate.lock()).await
+    else {
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
+    for _ in 0..3 {
+        let before = snapshot_sequence();
+        match time::timeout(
+            Duration::from_secs(30),
+            state
+                .shell
+                .execute_serialized_command("shell.refresh", Value::Null),
+        )
+        .await
+        {
+            Err(_) => return StatusCode::GATEWAY_TIMEOUT.into_response(),
+            Ok(Err(error)) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response()
+            }
+            Ok(Ok(snapshot)) => {
+                let after = snapshot_sequence();
+                if before == after {
+                    return (
+                        StatusCode::OK,
+                        Json(coordination_snapshot_value(snapshot, after)),
+                    )
+                        .into_response();
+                }
+            }
+        }
+    }
+    StatusCode::CONFLICT.into_response()
 }
 
 async fn command(
@@ -257,7 +358,7 @@ async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> Ac
         Ok(snapshot) => ActionResult {
             ok: true,
             command_id: command_id.to_string(),
-            snapshot: Some(snapshot),
+            snapshot: Some(coordination_snapshot_value(snapshot, snapshot_sequence())),
             activity_items,
             error: None,
             recovery: None,
@@ -271,6 +372,23 @@ async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> Ac
             error: Some(error),
         },
     }
+}
+
+fn coordination_snapshot_value(snapshot: ShellSnapshotView, current_sequence: u64) -> Value {
+    let mut value = serde_json::to_value(snapshot).expect("shell snapshot serializes");
+    if let Some(object) = value.as_object_mut() {
+        object.remove("product_component");
+        object.remove("ui_ontology");
+        object.insert(
+            "projection".to_string(),
+            Value::String("coordination".to_string()),
+        );
+        object.insert(
+            "current_sequence".to_string(),
+            Value::from(current_sequence),
+        );
+    }
+    value
 }
 
 async fn events(State(state): State<Arc<AppState>>) -> axum::response::Response {
@@ -293,6 +411,9 @@ async fn events(State(state): State<Arc<AppState>>) -> axum::response::Response 
                         "surface_version": discovery.surface_version,
                         "home_root": discovery.home_root,
                         "base_url": discovery.base_url,
+                        "current_sequence": snapshot_sequence(),
+                        "reconnect_action": "fetch coordination_snapshot_url before acting",
+                        "coordination_snapshot_url": discovery.coordination_snapshot_url,
                     });
                     Some((
                         Ok::<Event, Infallible>(
@@ -306,9 +427,9 @@ async fn events(State(state): State<Arc<AppState>>) -> axum::response::Response 
                 EventState::Listening(discovery, mut changes, permit) => {
                     let event = tokio::select! {
                         received = changes.recv() => match received {
-                            Ok(sequence) => snapshot_changed_event(sequence, &discovery.snapshot_url),
+                            Ok(sequence) => snapshot_changed_event(sequence, &discovery.coordination_snapshot_url),
                             Err(broadcast::error::RecvError::Lagged(_)) => {
-                                snapshot_changed_event(snapshot_sequence(), &discovery.snapshot_url)
+                                snapshot_changed_event(snapshot_sequence(), &discovery.coordination_snapshot_url)
                             }
                             Err(broadcast::error::RecvError::Closed) => return None,
                         },

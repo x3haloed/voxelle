@@ -37,6 +37,7 @@ pub fn shell_command_payload(command_id: &str) -> Option<ShellCommandPayload> {
         "identity.recovery.export" => Typed("ExportRecoveryKitRequest"),
         "identity.recovery.restore" => Typed("RestoreRecoveryKitRequest"),
         "message.send" => Typed("SendMessageRequest"),
+        "message.acknowledge" => Typed("AcknowledgeMessageRequest"),
         "channel.select" => Typed("SelectChannelRequest"),
         "message.open" => Typed("OpenMessageRequest"),
         "channel.markRead" => Typed("MarkReadRequest"),
@@ -173,7 +174,7 @@ impl ShellState {
             "shell.refresh" => host.refresh_and_sync().await,
             "home.init" => host.init_home(parse_request(payload)?),
             "home.archiveForRecovery" => host.archive_unusable_home(),
-            "runtime.goOnline" => host.start_service(parse_request(payload)?),
+            "runtime.goOnline" => host.start_service_and_sync(parse_request(payload)?).await,
             "runtime.goOffline" => host.stop_service(),
             "space.invite.create" => host.create_space_invite(parse_request(payload)?),
             "space.invite.revoke" => host.revoke_space_invite(parse_request(payload)?).await,
@@ -181,6 +182,7 @@ impl ShellState {
             "identity.recovery.export" => host.export_recovery_kit(parse_request(payload)?),
             "identity.recovery.restore" => host.restore_recovery_kit(parse_request(payload)?).await,
             "message.send" => host.send_message(parse_request(payload)?).await,
+            "message.acknowledge" => host.acknowledge_message(parse_request(payload)?).await,
             "channel.select" => host.select_channel(parse_request(payload)?),
             "message.open" => host.open_message(parse_request(payload)?),
             "channel.markRead" => host.mark_read(parse_request(payload)?),
@@ -397,9 +399,7 @@ fn command_error_presentation(
     )
 }
 
-fn join_error_presentation(
-    detail: &str,
-) -> (&'static str, ShellRecovery, &'static str) {
+fn join_error_presentation(detail: &str) -> (&'static str, ShellRecovery, &'static str) {
     let detail = detail.to_ascii_lowercase();
     let detail = detail.as_str();
     if detail.contains("fresh voxelle home") {
@@ -453,6 +453,8 @@ fn correctable_input_presentation(
                 || detail.contains("msg_edit text is invalid")
                 || detail.contains("mentions are invalid")
                 || detail.contains("thread root does not exist")
+                || detail.contains("client_request_id was already used")
+                || detail.contains("client_request_id must be")
         }
         "reaction.add" | "reaction.remove" => detail.contains("reaction emoji is invalid"),
         "attachment.add" => {
@@ -490,7 +492,7 @@ fn correctable_input_presentation(
     Some(match command_id {
         "message.send" | "message.edit" => (
             "That message needs editing.",
-            "Use 1 to 4,000 characters without leading or trailing whitespace, and choose only current members for mentions.",
+            "Correct the message payload. For a retry, reuse a client request ID only with its identical original message; otherwise generate a new ID.",
         ),
         "reaction.add" | "reaction.remove" => (
             "That reaction is not valid.",
@@ -658,12 +660,14 @@ mod tests {
 
         let damaged_root = dir.path().join("damaged");
         std::fs::create_dir_all(&damaged_root).expect("damaged root");
-        std::fs::write(damaged_root.join("identity.json"), b"{not-json")
-            .expect("corrupt identity");
+        std::fs::write(damaged_root.join("identity.json"), b"{not-json").expect("corrupt identity");
         std::fs::create_dir_all(damaged_root.join("product-updates"))
             .expect("product update state");
-        std::fs::write(damaged_root.join("product-updates/trust-marker"), b"preserved")
-            .expect("product update marker");
+        std::fs::write(
+            damaged_root.join("product-updates/trust-marker"),
+            b"preserved",
+        )
+        .expect("product update marker");
         let damaged = ShellState::new(&damaged_root);
         let before = damaged
             .execute_serialized_command("shell.refresh", serde_json::json!({}))
@@ -684,7 +688,12 @@ mod tests {
         let archive = std::fs::read_dir(&damaged_root)
             .expect("archive listing")
             .filter_map(Result::ok)
-            .find(|entry| entry.file_name().to_string_lossy().starts_with(".unusable-home-"))
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".unusable-home-")
+            })
             .expect("private archive");
         assert!(archive.path().join("identity.json").exists());
         assert_eq!(
@@ -701,8 +710,14 @@ mod tests {
             .await
             .expect("restore same identity");
         let recovered_home = recovered.home.expect("recovered home");
-        assert_eq!(recovered_home.profile.peer_id, original_home.profile.peer_id);
-        assert_ne!(recovered_home.profile.device_id, original_home.profile.device_id);
+        assert_eq!(
+            recovered_home.profile.peer_id,
+            original_home.profile.peer_id
+        );
+        assert_ne!(
+            recovered_home.profile.device_id,
+            original_home.profile.device_id
+        );
     }
 
     #[tokio::test]
@@ -827,7 +842,10 @@ mod tests {
             .await
             .expect("activate first generation");
         assert_eq!(first.product_generation.active_sequence, 1);
-        assert!(first.product_component.source.contains("signed generation: Refresh Live"));
+        assert!(first
+            .product_component
+            .source
+            .contains("signed generation: Refresh Live"));
         assert_eq!(
             first
                 .ui_ontology
@@ -857,7 +875,10 @@ mod tests {
             .await
             .expect("reload persisted generation");
         assert_eq!(persisted.product_generation.active_sequence, 1);
-        assert!(persisted.product_component.source.contains("signed generation: Refresh Live"));
+        assert!(persisted
+            .product_component
+            .source
+            .contains("signed generation: Refresh Live"));
         assert_eq!(
             persisted
                 .ui_ontology
@@ -883,7 +904,10 @@ mod tests {
             .await
             .expect("rollback generation");
         assert_eq!(rolled_back.product_generation.active_sequence, 1);
-        assert!(rolled_back.product_component.source.contains("signed generation: Refresh Live"));
+        assert!(rolled_back
+            .product_component
+            .source
+            .contains("signed generation: Refresh Live"));
         assert_eq!(
             rolled_back
                 .ui_ontology
@@ -1064,9 +1088,26 @@ mod tests {
             health_status(&bob_joined, "peers"),
             NetworkHealthStatus::Working
         );
+        let joined_home = bob_joined.home.expect("home");
+        assert_eq!(joined_home.room.messages[0].text, "hello through shell");
+        let initial_event_id = joined_home.room.messages[0].event_id.clone();
+        bob.execute_serialized_command(
+            "message.acknowledge",
+            serde_json::json!({
+                "target_event_id": initial_event_id,
+                "room": null,
+                "state": "handled"
+            }),
+        )
+        .await
+        .expect("bob acknowledges");
+        let acknowledged = alice
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("alice receives acknowledgement");
         assert_eq!(
-            bob_joined.home.expect("home").room.messages[0].text,
-            "hello through shell"
+            acknowledged.home.expect("alice home").room.messages[0].acknowledgements[0].state,
+            crate::MessageAcknowledgementState::Handled
         );
 
         alice
@@ -1087,6 +1128,31 @@ mod tests {
             .messages
             .iter()
             .any(|message| message.text == "arrives without manual sync"));
+
+        bob.execute_serialized_command("runtime.goOffline", serde_json::json!({}))
+            .await
+            .expect("bob offline");
+        alice
+            .execute_serialized_command(
+                "message.send",
+                serde_json::json!({ "text": "catch up on reconnect", "room": null }),
+            )
+            .await
+            .expect("send while bob offline");
+        let bob_reconnected = bob
+            .execute_serialized_command(
+                "runtime.goOnline",
+                serde_json::json!({ "bind": null, "advertise": null }),
+            )
+            .await
+            .expect("reconnect catches up");
+        assert!(bob_reconnected
+            .home
+            .expect("bob home")
+            .room
+            .messages
+            .iter()
+            .any(|message| message.text == "catch up on reconnect"));
 
         bob.execute_serialized_command(
             "message.send",
@@ -1127,10 +1193,7 @@ mod tests {
         let charlie = ShellState::new(dir.path().join("charlie"));
 
         alice
-            .execute_serialized_command(
-                "home.init",
-                serde_json::json!({ "default_room": null }),
-            )
+            .execute_serialized_command("home.init", serde_json::json!({ "default_room": null }))
             .await
             .expect("alice init");
         alice
@@ -1513,13 +1576,31 @@ mod tests {
             1
         );
         assert_eq!(bob_received_home.notifications.len(), 1);
-        let marked_read = bob
+        let selected_unread = bob
             .execute_serialized_command(
                 "channel.select",
                 serde_json::json!({ "room_id": channel_id }),
             )
             .await
             .expect("open notification channel");
+        assert_eq!(
+            selected_unread
+                .home
+                .expect("home after selection")
+                .channels
+                .iter()
+                .find(|channel| channel.room_id == channel_id)
+                .expect("engineering channel")
+                .unread_count,
+            1
+        );
+        let marked_read = bob
+            .execute_serialized_command(
+                "channel.markRead",
+                serde_json::json!({ "room_id": channel_id }),
+            )
+            .await
+            .expect("mark notification channel read");
         let marked_read_home = marked_read.home.expect("home");
         assert_eq!(
             marked_read_home
@@ -2007,8 +2088,12 @@ mod tests {
                 .expect_err("out-of-range invite expiry rejected");
             assert_eq!(invalid_invite.recovery, ShellRecovery::NeedsInput);
             assert_eq!(invalid_invite.message, "That invite expiry is not valid.");
-            assert!(invalid_invite.recovery_message.contains("1 minute through 30 days"));
-            assert!(invalid_invite.detail.contains("invite expiry must be between"));
+            assert!(invalid_invite
+                .recovery_message
+                .contains("1 minute through 30 days"));
+            assert!(invalid_invite
+                .detail
+                .contains("invite expiry must be between"));
         }
         let after_invalid_invites = shell
             .execute_serialized_command("shell.refresh", serde_json::json!({}))
@@ -2031,6 +2116,11 @@ mod tests {
         assert!(correctable_input_presentation(
             "attachment.add",
             "event rejected: attachment must be 1 to 256 KiB"
+        )
+        .is_some());
+        assert!(correctable_input_presentation(
+            "message.send",
+            "client_request_id was already used for a different message payload"
         )
         .is_some());
         assert!(correctable_input_presentation("member.ban", "not authorized").is_none());
