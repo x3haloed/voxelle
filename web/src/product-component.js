@@ -327,26 +327,32 @@ function headerMore(snapshot) {
   const details = element("details", "header-more");
   details.append(element("summary", "command-button", "More"));
   const menu = element("div", "header-more-menu");
+  const closeAfterActivation = (button) => {
+    button.addEventListener("click", () => {
+      details.open = false;
+    });
+    return button;
+  };
   if (snapshot.home) {
     menu.append(
-      actionButton("Customize", () => {
+      closeAfterActivation(actionButton("Customize", () => {
         rememberFocusReturn();
         uiState.connectionOpen = false;
         uiState.utilityOpen = "settings";
         render();
-      }),
-      actionButton("Product updates", () => {
+      })),
+      closeAfterActivation(actionButton("Product updates", () => {
         rememberFocusReturn();
         uiState.connectionOpen = false;
         uiState.utilityOpen = "updates";
         render();
-      }),
-      layoutEditorButton(),
+      })),
+      closeAfterActivation(layoutEditorButton()),
     );
   }
   menu.append(
-    commandButton("workbench.commandPalette.open"),
-    commandButton("shell.refresh"),
+    closeAfterActivation(commandButton("workbench.commandPalette.open")),
+    closeAfterActivation(commandButton("shell.refresh")),
   );
   details.append(menu);
   return details;
@@ -1180,32 +1186,26 @@ function productUpdateView(snapshot) {
   }
 
   const form = element("form", "field-stack");
-  const packageInput = element("textarea", "mono-input");
-  packageInput.rows = 7;
-  packageInput.placeholder = "Paste a signed .voxupdate package";
-  packageInput.value = uiState.productUpdateDraft;
-  packageInput.setAttribute("aria-label", "Signed product update package");
-  packageInput.dataset.productUpdateInput = "package";
-  packageInput.addEventListener("input", () => {
-    uiState.productUpdateDraft = packageInput.value;
-    installButton.disabled = !packageInput.value.trim();
-  });
-  const fileInput = document.createElement("input");
-  fileInput.type = "file";
-  fileInput.accept = ".voxupdate,application/json";
-  fileInput.setAttribute("aria-label", "Choose a signed product update package");
-  fileInput.addEventListener("change", async () => {
-    const file = fileInput.files?.[0];
-    if (!file) return;
-    uiState.productUpdateDraft = await file.text();
-    packageInput.value = uiState.productUpdateDraft;
-    installButton.disabled = !uiState.productUpdateDraft.trim();
-  });
   const installButton = submitButton("product.update.install");
   installButton.disabled = !uiState.productUpdateDraft.trim();
+  const packageField = signedArtifactField({
+    accept: ".voxupdate,application/json",
+    chooseLabel: "Choose update package…",
+    emptyLabel: "No update package selected yet.",
+    manualLabel: "Paste update package JSON instead",
+    manualHelp: "Use this only when the complete signed .voxupdate package arrived as text.",
+    textareaLabel: "Signed product update package",
+    placeholder: "Paste complete signed .voxupdate JSON",
+    inputKind: "package",
+    value: uiState.productUpdateDraft,
+    previewKind: "package",
+    onValue: (value) => {
+      uiState.productUpdateDraft = value;
+      installButton.disabled = !value.trim();
+    },
+  });
   form.append(
-    fileInput,
-    packageInput,
+    packageField,
     element("p", "summary", "The native kernel verifies the embedded release signature before staging or activation. GitHub and mirrors are transport only."),
     installButton,
   );
@@ -1215,20 +1215,26 @@ function productUpdateView(snapshot) {
   });
   fragment.append(form);
   const trustForm = element("form", "field-stack");
-  const trustInput = element("textarea", "mono-input");
-  trustInput.rows = 4;
-  trustInput.placeholder = "Paste a signed .voxtrust transition";
-  trustInput.value = uiState.trustTransitionDraft;
-  trustInput.setAttribute("aria-label", "Signed release trust transition");
-  trustInput.dataset.productUpdateInput = "trust";
-  trustInput.addEventListener("input", () => {
-    uiState.trustTransitionDraft = trustInput.value;
-    trustButton.disabled = !trustInput.value.trim();
-  });
   const trustButton = submitButton("product.update.rotateTrust");
   trustButton.disabled = !uiState.trustTransitionDraft.trim();
+  const trustField = signedArtifactField({
+    accept: ".voxtrust,application/json",
+    chooseLabel: "Choose trust transition…",
+    emptyLabel: "No release-trust transition selected.",
+    manualLabel: "Paste trust transition JSON instead",
+    manualHelp: "Use this only when the complete signed .voxtrust transition arrived as text.",
+    textareaLabel: "Signed release trust transition",
+    placeholder: "Paste complete signed .voxtrust JSON",
+    inputKind: "trust",
+    value: uiState.trustTransitionDraft,
+    previewKind: "trust",
+    onValue: (value) => {
+      uiState.trustTransitionDraft = value;
+      trustButton.disabled = !value.trim();
+    },
+  });
   trustForm.append(
-    trustInput,
+    trustField,
     element("p", "summary", "Trust transitions are ordered, signed by a currently trusted release key, and can add or retire release keys without trusting GitHub."),
     trustButton,
   );
@@ -1241,6 +1247,128 @@ function productUpdateView(snapshot) {
     fragment.append(commandButton("product.update.rollback"));
   }
   return fragment;
+}
+
+function signedArtifactField(options) {
+  const field = element("section", "signed-artifact-field");
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.hidden = true;
+  fileInput.accept = options.accept;
+  const status = element(
+    "p",
+    options.value.trim() ? "artifact-source" : "artifact-source muted",
+    options.value.trim() ? "Using manually entered signed JSON." : options.emptyLabel,
+  );
+  status.setAttribute("aria-live", "polite");
+  const textarea = element("textarea", "mono-input");
+  textarea.rows = options.previewKind === "package" ? 7 : 4;
+  textarea.placeholder = options.placeholder;
+  textarea.value = options.value;
+  textarea.setAttribute("aria-label", options.textareaLabel);
+  textarea.dataset.productUpdateInput = options.inputKind;
+  const manual = element("details", "advanced-details artifact-manual");
+  manual.append(
+    element("summary", "", options.manualLabel),
+    element("p", "summary", options.manualHelp),
+    textarea,
+  );
+  const review = element("div", "artifact-review");
+  const update = (value) => {
+    options.onValue(value);
+    review.replaceChildren(signedArtifactReview(signedArtifactPreview(value, options.previewKind), options.previewKind));
+  };
+  textarea.addEventListener("input", () => {
+    status.textContent = textarea.value.trim()
+      ? "Using manually entered signed JSON. Review its claims below."
+      : options.emptyLabel;
+    status.classList.toggle("muted", !textarea.value.trim());
+    status.classList.remove("invite-review-warning");
+    update(textarea.value);
+  });
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    const maxBytes = options.previewKind === "trust" ? 64 * 1024 : 1024 * 1024;
+    if (file.size > maxBytes) {
+      textarea.value = "";
+      status.textContent = `That file exceeds the ${options.previewKind === "trust" ? "64 KiB trust-transition" : "1 MiB update-package"} limit.`;
+      status.classList.remove("muted");
+      status.classList.add("invite-review-warning");
+      update("");
+      return;
+    }
+    try {
+      const value = await file.text();
+      textarea.value = value;
+      manual.open = false;
+      status.textContent = value.trim()
+        ? `Selected ${file.name}. Review its claims below.`
+        : `${file.name} is empty. Choose a complete signed artifact.`;
+      status.classList.remove("muted");
+      status.classList.toggle("invite-review-warning", !value.trim());
+      update(value);
+    } catch (error) {
+      textarea.value = "";
+      status.textContent = "Voxelle could not read that file. Choose it again or paste the complete signed JSON.";
+      status.classList.remove("muted");
+      status.classList.add("invite-review-warning");
+      update("");
+    }
+  });
+  review.replaceChildren(signedArtifactReview(signedArtifactPreview(options.value, options.previewKind), options.previewKind));
+  field.append(
+    fileInput,
+    actionButton(options.chooseLabel, () => fileInput.click()),
+    status,
+    manual,
+    review,
+  );
+  return field;
+}
+
+function signedArtifactReview(preview, kind) {
+  if (preview.state === "empty") {
+    return element("p", "muted", `Choose a signed ${kind === "trust" ? "trust transition" : "update package"} to review its claims.`);
+  }
+  if (preview.state === "unavailable") {
+    const warning = element("p", "invite-review-warning", preview.reason);
+    warning.setAttribute("role", "status");
+    return warning;
+  }
+  const review = element("section", "invite-review-claims");
+  review.setAttribute("aria-label", kind === "trust" ? "Untrusted release trust claims" : "Untrusted product update claims");
+  const rows = kind === "trust"
+    ? [
+      ["Sequence", preview.sequence === null ? "Unrecognized" : String(preview.sequence)],
+      ["Signer", preview.signerKeyId],
+      ["Keys added", preview.addCount === null ? "Unrecognized" : String(preview.addCount)],
+      ["Keys retired", preview.removeCount === null ? "Unrecognized" : String(preview.removeCount)],
+    ]
+    : [
+      ["Release", preview.releaseId],
+      ["Sequence", preview.sequence === null ? "Unrecognized" : String(preview.sequence)],
+      ["Channel", preview.channel],
+      ["Minimum kernel", preview.minKernelVersion],
+      ["Signer", preview.signerKeyId],
+    ];
+  review.append(
+    element("strong", "", "Review untrusted claims"),
+    definitionGrid(rows),
+    element(
+      "p",
+      "summary",
+      kind === "trust"
+        ? "The native kernel verifies the current signer, exact next sequence, permitted key roles, and resulting trusted set before changing future update authority."
+        : "The native kernel verifies format, signature, trusted release role, sequence, downgrade protection, size, and kernel compatibility before activation.",
+    ),
+  );
+  if (!preview.recognizedFormat) {
+    const warning = element("p", "invite-review-warning", "This artifact does not claim a recognized Voxelle format. The native kernel is expected to reject it.");
+    warning.setAttribute("role", "alert");
+    review.prepend(warning);
+  }
+  return review;
 }
 
 function productUpdateConfirmation(snapshot) {

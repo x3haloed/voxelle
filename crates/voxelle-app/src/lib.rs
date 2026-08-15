@@ -714,7 +714,7 @@ pub fn builtin_product_generation() -> ProductGenerationV1 {
 }
 
 fn builtin_product_component_source() -> String {
-    const MODULES: [&str; 11] = [
+    const MODULES: [&str; 12] = [
         include_str!("../../../web/src/call-media.mjs"),
         include_str!("../../../web/src/clipboard.mjs"),
         include_str!("../../../web/src/connection-status.mjs"),
@@ -724,6 +724,7 @@ fn builtin_product_component_source() -> String {
         include_str!("../../../web/src/invite-preview.mjs"),
         include_str!("../../../web/src/message-composition.mjs"),
         include_str!("../../../web/src/product-update-confirmation.mjs"),
+        include_str!("../../../web/src/signed-artifact-preview.mjs"),
         include_str!("../../../web/src/ui-ontology.mjs"),
         include_str!("../../../web/src/workbench.mjs"),
     ];

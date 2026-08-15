@@ -27,8 +27,14 @@ length, and SHA-256 digest. It does not trust GitHub, a mirror, or the
 manifest's own claimed signer unless that signer is present in the reviewed
 trust-root file.
 
-The desktop Product Update view applies the same root verification to a signed
-`.voxupdate` package before live activation.
+The desktop **More → Product updates** surface leads with choosing a signed
+`.voxupdate` file, displays its claimed release, sequence, channel, minimum
+kernel, and signer for review, then applies the same native-root verification
+before live activation. Raw JSON paste remains available as an explicit text
+handoff fallback. The displayed claims are not verification; only the installed
+native kernel may authenticate or activate the package. The same surface accepts
+signed `.voxtrust` files for exceptional release-root transitions and previews
+their claimed sequence and key-set changes before native verification.
 
 ## macOS
 

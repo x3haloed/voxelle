@@ -295,6 +295,17 @@ non-mutating discovery, staging, and staged-package discard. This is human
 presentation evidence, not new kernel-verification, native activation, or
 release-root custody evidence.
 
+That surface now makes signed `.voxupdate` and `.voxtrust` files the ordinary
+portable handoff and keeps complete JSON paste behind explicit disclosure.
+Bounded untrusted previews name the package release, sequence, channel, minimum
+kernel, and signer or the transition sequence, signer, and added/retired key
+counts before confirmation. A rendered probe carried both file types through
+their hidden file inputs into the corresponding review, kept manual text
+keyboard-reachable, enabled the semantic action only after input, and preserved
+the existing modal handoff. It also exposed and closed a shared menu-state gap:
+More now collapses after any of its actions opens another surface. This remains
+presentation evidence; frontend parsing does not verify or authorize updates.
+
 The workbench risk has crossed its first lived gate. Every Rust-registered view
 can move among all five docks by drag/drop or an accessible selector, reorder,
 hide, restore, and reset. Rust rejects incomplete, duplicate, unknown, or

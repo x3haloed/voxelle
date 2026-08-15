@@ -198,6 +198,15 @@ cancel. Missing package or trust-transition input routes palette users to the
 same Product Updates surface and required field. Confirmation never substitutes
 for native-kernel authentication or activation.
 
+Portable `.voxupdate` packages and `.voxtrust` transitions lead with named file
+actions. Complete JSON text remains behind explicit disclosure for text-only
+handoffs. Before confirmation, bounded frontend parsing presents release,
+sequence, channel, minimum-kernel, signer, and key-set-change claims as
+untrusted; malformed, oversized, or unknown-format input remains explicit.
+Those previews neither reject nor authorize an artifact. The original bytes
+continue to the native kernel's signature, role, sequence, downgrade, format,
+size, compatibility, and resulting-trust-set checks.
+
 Command failures lead with a bounded human explanation and a concrete recovery
 action. Rust-owned recovery categories travel with the same serialized command
 result used by every consumer; implementation paths and error chains remain
