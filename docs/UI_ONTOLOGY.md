@@ -241,6 +241,15 @@ action. Rust-owned recovery categories travel with the same serialized command
 result used by every consumer; implementation paths and error chains remain
 available only under explicit technical details and never become the recovery
 authority.
+Dismissal keeps keyboard location causal: validation returns to its repaired
+control, a surviving initiating command regains focus inside the current
+transient surface, and a removed origin falls back within that surface or to the
+ordinary composer/header. Removing a notice never leaves focus on a detached
+button or moves it behind an open surface.
+Error and success dismissal retain the same visible verb but carry distinct
+frontend action identities. A stable capture handler owns dismissal rather than
+a transient reconciled button, and semantic action identity reacquires an
+initiating control when reconciliation has replaced its DOM node.
 Ordinary correctable validation failures use `needs_input`, so invalid names,
 message content, attachments, profile fields, reactions, and empty searches do
 not masquerade as product defects. Authority, connectivity, home, and internal

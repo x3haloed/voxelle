@@ -24,6 +24,8 @@ const uiState = {
   errorDetail: "",
   validationTarget: "",
   validationMessage: "",
+  noticeReturnElement: null,
+  noticeReturnActionKey: "",
   status: "",
   peerRecordDraft: "",
   spaceInviteDraft: "",
@@ -293,6 +295,7 @@ function handleKeydown(event) {
   runCommand(command.id).catch(reportError);
 }
 document.addEventListener("keydown", handleKeydown);
+document.addEventListener("click", handleNoticeDismissalClick, true);
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function header(snapshot) {
@@ -1460,6 +1463,7 @@ function beginProductConfirmation(command) {
 }
 
 function openProductUpdates(inputKind = "", status = "") {
+  rememberNoticeReturn();
   rememberFocusReturn();
   uiState.paletteOpen = false;
   uiState.paletteQuery = "";
@@ -3235,6 +3239,46 @@ function actionButton(label, action, title = label) {
   return button;
 }
 
+function noticeDismissButton(kind) {
+  const button = element("button", "command-button", "Dismiss");
+  button.type = "button";
+  button.title = `Dismiss this ${kind}`;
+  button.dataset.actionKey = `action:dismiss-${kind}`;
+  button.dataset.dismissNotice = kind;
+  button.disabled = uiState.busyCommand !== "";
+  button.addEventListener("pointerdown", (event) => event.stopPropagation());
+  return button;
+}
+
+function handleNoticeDismissalClick(event) {
+  const button = event.detail === 0
+    ? document.activeElement
+    : document.elementsFromPoint(event.clientX, event.clientY).find((node) =>
+      node.tagName === "BUTTON" && node.hasAttribute("data-dismiss-notice")
+    );
+  if (button?.tagName !== "BUTTON" || !app.contains(button)) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  dismissNotice(button.dataset.dismissNotice);
+}
+
+function dismissNotice(kind) {
+  const returnElement = uiState.noticeReturnElement;
+  const returnActionKey = uiState.noticeReturnActionKey;
+  const validationTarget = kind === "error" ? uiState.validationTarget : "";
+  if (kind === "error") {
+    clearError();
+  } else if (kind === "status") {
+    uiState.status = "";
+  } else {
+    return;
+  }
+  uiState.noticeReturnElement = null;
+  uiState.noticeReturnActionKey = "";
+  render();
+  focusAfterNoticeDismissal(returnElement, returnActionKey, validationTarget);
+}
+
 async function saveLayout(placements) {
   await runCommand("workbench.layout.save", { placements });
 }
@@ -3312,6 +3356,7 @@ async function runCommand(command, payload) {
     return;
   }
   const commandReturnElement = focusCoordinator.currentElement();
+  rememberNoticeReturn(commandReturnElement);
   // Capture before the busy render disables the focused command button; browsers
   // may blur a control as soon as it becomes disabled.
   if (command === "workbench.commandPalette.open") rememberFocusReturn();
@@ -3319,6 +3364,7 @@ async function runCommand(command, payload) {
   uiState.status = "";
   clearError();
   render();
+  let commandFailed = false;
   try {
     switch (command) {
       case "workbench.commandPalette.open":
@@ -3644,6 +3690,9 @@ async function runCommand(command, payload) {
       default:
         throw new Error(`No command handler is registered for ${command}`);
     }
+  } catch (error) {
+    commandFailed = true;
+    throw error;
   } finally {
     uiState.busyCommand = "";
     render();
@@ -3651,6 +3700,10 @@ async function runCommand(command, payload) {
       commandReturnElement,
       () => commandCompletionFocusTarget(command),
     );
+    if (!commandFailed && !uiState.status) {
+      uiState.noticeReturnElement = null;
+      uiState.noticeReturnActionKey = "";
+    }
     if (refreshQueued) queueMicrotask(() => publishRefresh().catch(reportError));
   }
 }
@@ -3677,6 +3730,7 @@ function commandCompletionFocusTarget(command) {
 /** @param {unknown} error */
 function reportError(error) {
   uiState.busyCommand = "";
+  rememberNoticeReturn();
   clearValidation();
   const presentation = presentShellError(error);
   uiState.error = presentation.message;
@@ -3692,6 +3746,8 @@ function setUserError(message, target) {
   uiState.errorDetail = "";
   uiState.validationTarget = target;
   uiState.validationMessage = message;
+  uiState.noticeReturnElement = null;
+  uiState.noticeReturnActionKey = "";
   window.requestAnimationFrame(() => focusValidationTarget(target));
 }
 
@@ -3739,10 +3795,7 @@ function globalErrorBanner() {
   }
   banner.append(
     copy,
-    actionButton("Dismiss", () => {
-      clearError();
-      render();
-    }),
+    noticeDismissButton("error"),
   );
   return banner;
 }
@@ -3769,17 +3822,50 @@ function globalStatusBanner() {
   banner.setAttribute("aria-live", "polite");
   banner.append(
     element("strong", "", uiState.status),
-    actionButton("Dismiss", () => {
-      uiState.status = "";
-      render();
-      window.requestAnimationFrame(() => app.querySelector('[data-command="invite.copy"]')?.focus());
-    }),
+    noticeDismissButton("status"),
   );
   return banner;
 }
 
 function rememberFocusReturn() {
   focusCoordinator.rememberReturnElement();
+}
+
+function rememberNoticeReturn(element = focusCoordinator.currentElement()) {
+  if (
+    element?.isConnected
+    && !element.closest?.(".error-banner, .status-banner")
+  ) {
+    uiState.noticeReturnElement = element;
+    uiState.noticeReturnActionKey = element.dataset?.actionKey ?? "";
+  }
+}
+
+function focusAfterNoticeDismissal(returnElement, returnActionKey, validationTarget) {
+  window.requestAnimationFrame(() => {
+    const validationControl = validationTarget
+      ? [...app.querySelectorAll("[data-validation-target]")]
+        .find((candidate) => candidate.dataset.validationTarget === validationTarget)
+      : null;
+    const activeSurface = app.querySelector(
+      ".utility-center, .connection-center, .command-palette, .product-update-confirmation",
+    );
+    const restoredAction = returnActionKey
+      ? [...app.querySelectorAll("[data-action-key]")]
+        .find((candidate) => candidate.dataset.actionKey === returnActionKey)
+      : null;
+    const target = validationControl instanceof HTMLFieldSetElement
+      ? validationControl.querySelector("input")
+      : validationControl
+        ?? (returnElement?.isConnected && (!activeSurface || activeSurface.contains(returnElement))
+          ? returnElement
+          : restoredAction && (!activeSurface || activeSurface.contains(restoredAction))
+            ? restoredAction
+            : activeSurface?.querySelector("[data-dialog-initial-focus='true']")
+            ?? app.querySelector(".message-input")
+            ?? app.querySelector(".app-header button"));
+    target?.focus();
+  });
 }
 
 function synchronizeTransientFocus() {
@@ -4140,6 +4226,7 @@ function element(tag, className, text) {
 return async function disposeProductComponent() {
   window.clearInterval(heartbeatTimer);
   document.removeEventListener("keydown", handleKeydown);
+  document.removeEventListener("click", handleNoticeDismissalClick, true);
   stopSnapshotInvalidation?.();
   stopLocalMedia();
   for (const peerId of [...uiState.peerConnections.keys()]) {

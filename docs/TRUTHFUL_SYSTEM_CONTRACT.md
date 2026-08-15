@@ -390,6 +390,15 @@ prompt, focus moved to **Message #general**. Deterministic tests cover both a
 disconnected origin and a document-root origin. This is lived local macOS focus
 evidence, not an assistive-technology claim.
 
+Global error and success notices now preserve causal keyboard location across
+render reconciliation. Correctable validation returns to the invalid control;
+command failure dismissal reacquires the initiating semantic action inside an
+open transient surface, with composer/header fallbacks only when that action no
+longer exists. A rendered preview probe exercised an empty channel name and a
+preview-rejected signed-invite command. In both cases the alert cleared and
+focus remained in the causal workflow. This is rendered WebView-equivalent
+evidence, not native assistive-technology or successful-command evidence.
+
 The degraded-connection human path has crossed a focused local macOS gate. Two
 separately identified ad-hoc-signed native bundles joined through a real signed
 invite. After the inviter exited, an explicit refresh retained the failed
