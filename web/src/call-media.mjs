@@ -58,10 +58,15 @@ export function participantConnectionLabel(connectionState) {
 }
 
 export function participantMediaPresentation(video, connectionState) {
+  const connected = connectionState === "connected";
+  const connectionLabel = participantConnectionLabel(connectionState);
   return {
     mediaLabel: video ? "Camera on" : "Voice only",
-    connectionLabel: participantConnectionLabel(connectionState),
-    showVideo: video,
+    connectionLabel,
+    placeholderLabel: connected
+      ? "Voice only"
+      : connectionLabel,
+    showVideo: video && connected,
   };
 }
 

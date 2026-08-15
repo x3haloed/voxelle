@@ -972,7 +972,13 @@ Rust remains the admission authority if that state changes. Heartbeats preserve
 the latest admitted join mode, and a
 remote voice-only participant renders as an explicit voice tile instead of an
 empty video element; a rendered preview probe exercised that label together
-with the independent **Connecting directly** state. This does not move
+with the independent **Connecting directly** state. Camera intent no longer
+creates a blank video element before that direct connection reaches
+`connected`: connecting and failed peers retain explicit placeholders, and a
+failed connection tells the local person to leave and rejoin to retry. A
+deterministic projection test covers connected, connecting, and failed camera
+intent, while a rendered preview exercised the connecting camera-intent tile.
+This does not move
 participant selection, media authorization, or connection truth into the
 frontend. The verification machine has no physical camera or microphone, so
 capture, permission prompts, two-device media flow, and the resulting in-call

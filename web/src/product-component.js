@@ -3304,7 +3304,7 @@ function callMeshView(snapshot) {
       );
       const media = presentation.showVideo
         ? callVideo(peerId, false)
-        : element("div", "call-media-placeholder", "Voice only");
+        : element("div", "call-media-placeholder", presentation.placeholderLabel);
       videos.append(callTile(
         `${profileForPeer(snapshot, peerId).display_name} · ${presentation.mediaLabel} · ${presentation.connectionLabel}`,
         media,
@@ -3432,7 +3432,7 @@ function ensurePeerConnection(peerId, callId) {
     if (uiState.peerConnections.get(peerId) !== pc) return;
     uiState.peerConnectionStates.set(peerId, pc.connectionState);
     if (pc.connectionState === "failed") {
-      uiState.mediaNotice = `Could not connect directly to ${profileForPeer(currentSnapshot, peerId).display_name}. They can leave and rejoin to try again.`;
+      uiState.mediaNotice = `Could not connect directly to ${profileForPeer(currentSnapshot, peerId).display_name}. Leave and rejoin the call to try this connection again.`;
       closePeerConnection(peerId);
       uiState.peerConnectionStates.set(peerId, "failed");
     } else if (pc.connectionState === "closed") {

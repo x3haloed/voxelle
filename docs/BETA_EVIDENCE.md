@@ -284,6 +284,11 @@ and command palette. Confirm the local and remote participant states change
 accordingly and are announced. From a voice-only join, invoke the camera control
 and confirm it directs the person to leave and rejoin with camera rather than
 claiming that capture started.
+While a remote camera participant connects, confirm their tile announces
+**Connecting directly** rather than exposing an empty video. Interrupt the
+direct connection and confirm the tile announces **Direct connection
+unavailable** and the local recovery notice directs the person to leave and
+rejoin; camera intent alone must not appear as received video.
 
 Do not enter `none`, `unknown`, or a generic claim. Accessibility-tree tests,
 keyboard automation, and deterministic media mocks are valuable development

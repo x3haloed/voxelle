@@ -98,13 +98,38 @@ test("remote voice-only participation never renders as an empty video", () => {
   assert.deepEqual(participantMediaPresentation(false, "connected"), {
     mediaLabel: "Voice only",
     connectionLabel: "Connected directly",
+    placeholderLabel: "Voice only",
     showVideo: false,
   });
+});
+
+test("remote camera intent cannot create blank video before a direct connection exists", () => {
   assert.deepEqual(participantMediaPresentation(true, "new"), {
     mediaLabel: "Camera on",
     connectionLabel: "Connecting directly",
+    placeholderLabel: "Connecting directly",
+    showVideo: false,
+  });
+  assert.deepEqual(participantMediaPresentation(true, "failed"), {
+    mediaLabel: "Camera on",
+    connectionLabel: "Direct connection unavailable",
+    placeholderLabel: "Direct connection unavailable",
+    showVideo: false,
+  });
+  assert.deepEqual(participantMediaPresentation(true, "connected"), {
+    mediaLabel: "Camera on",
+    connectionLabel: "Connected directly",
+    placeholderLabel: "Voice only",
     showVideo: true,
   });
+});
+
+test("a failed direct connection gives the local person a recovery action", () => {
+  assert.match(
+    productSource,
+    /Leave and rejoin the call to try this connection again\./,
+  );
+  assert.match(productSource, /presentation\.placeholderLabel/);
 });
 
 test("microphone toggling controls every local audio track and reports missing capture", () => {
