@@ -21,10 +21,18 @@ use std::{
     convert::Infallible,
     net::{IpAddr, SocketAddr},
     path::{Path as FsPath, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
     time::Duration,
 };
-use tokio::{net::TcpListener, signal, sync::Semaphore, time};
+use tokio::{
+    net::TcpListener,
+    signal,
+    sync::{broadcast, Semaphore},
+    time,
+};
 use tracing::info;
 use voxelle_app::{
     resolve_home_root, shell_command_ids, ShellError, ShellRecovery, ShellSnapshotView, ShellState,
@@ -53,6 +61,7 @@ struct AppState {
     bearer_token: Arc<str>,
     request_slots: Arc<Semaphore>,
     event_slots: Arc<Semaphore>,
+    snapshot_changes: broadcast::Sender<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,12 +114,14 @@ async fn main() -> Result<()> {
     write_discovery_file(cli.discovery_file.as_deref(), &home, &discovery_view)
         .context("write discovery file")?;
 
+    let (snapshot_changes, snapshot_invalidated) = snapshot_change_channel();
     let state = Arc::new(AppState {
-        shell: Arc::new(ShellState::new(home)),
+        shell: Arc::new(ShellState::new_with_notifier(home, snapshot_invalidated)),
         discovery: discovery_view,
         bearer_token: Arc::from(bearer_token),
         request_slots: Arc::new(Semaphore::new(8)),
         event_slots: Arc::new(Semaphore::new(8)),
+        snapshot_changes,
     });
     let app = Router::new()
         .route("/inhabitant/v0/discovery", get(get_discovery))
@@ -143,7 +154,11 @@ impl DiscoveryView {
             started_at_unix_ms: unix_ms(),
             capabilities: CapabilitiesView {
                 commands: shell_command_ids(),
-                events: vec!["service.ready".to_string(), "heartbeat".to_string()],
+                events: vec![
+                    "service.ready".to_string(),
+                    "snapshot.changed".to_string(),
+                    "heartbeat".to_string(),
+                ],
             },
         }
     }
@@ -192,6 +207,7 @@ async fn command(
         return StatusCode::GATEWAY_TIMEOUT.into_response();
     };
     let status = if result.ok {
+        notify_snapshot_change(&state.snapshot_changes);
         StatusCode::OK
     } else {
         StatusCode::BAD_REQUEST
@@ -229,11 +245,12 @@ async fn events(State(state): State<Arc<AppState>>) -> axum::response::Response 
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
     let discovery = state.discovery.clone();
+    let changes = state.snapshot_changes.subscribe();
     let stream = stream::unfold(
-        EventState::Ready(Box::new(discovery), permit),
+        EventState::Ready(Box::new(discovery), changes, permit),
         |state| async move {
             match state {
-                EventState::Ready(discovery, permit) => {
+                EventState::Ready(discovery, changes, permit) => {
                     let ready = serde_json::json!({
                         "surface_version": discovery.surface_version,
                         "home_root": discovery.home_root,
@@ -245,22 +262,29 @@ async fn events(State(state): State<Arc<AppState>>) -> axum::response::Response 
                                 .event("service.ready")
                                 .data(ready.to_string()),
                         ),
-                        EventState::Heartbeat(permit),
+                        EventState::Listening(discovery, changes, permit),
                     ))
                 }
-                EventState::Heartbeat(permit) => {
-                    time::sleep(Duration::from_secs(30)).await;
-                    let heartbeat = serde_json::json!({
-                        "at_unix_ms": unix_ms(),
-                        "pid": std::process::id(),
-                    });
+                EventState::Listening(discovery, mut changes, permit) => {
+                    let event = tokio::select! {
+                        received = changes.recv() => match received {
+                            Ok(sequence) => snapshot_changed_event(sequence, &discovery.snapshot_url),
+                            Err(broadcast::error::RecvError::Lagged(_)) => {
+                                snapshot_changed_event(snapshot_sequence(), &discovery.snapshot_url)
+                            }
+                            Err(broadcast::error::RecvError::Closed) => return None,
+                        },
+                        _ = time::sleep(Duration::from_secs(30)) => {
+                            let heartbeat = serde_json::json!({
+                                "at_unix_ms": unix_ms(),
+                                "pid": std::process::id(),
+                            });
+                            Event::default().event("heartbeat").data(heartbeat.to_string())
+                        }
+                    };
                     Some((
-                        Ok::<Event, Infallible>(
-                            Event::default()
-                                .event("heartbeat")
-                                .data(heartbeat.to_string()),
-                        ),
-                        EventState::Heartbeat(permit),
+                        Ok::<Event, Infallible>(event),
+                        EventState::Listening(discovery, changes, permit),
                     ))
                 }
             }
@@ -272,8 +296,46 @@ async fn events(State(state): State<Arc<AppState>>) -> axum::response::Response 
 }
 
 enum EventState {
-    Ready(Box<DiscoveryView>, tokio::sync::OwnedSemaphorePermit),
-    Heartbeat(tokio::sync::OwnedSemaphorePermit),
+    Ready(
+        Box<DiscoveryView>,
+        broadcast::Receiver<u64>,
+        tokio::sync::OwnedSemaphorePermit,
+    ),
+    Listening(
+        Box<DiscoveryView>,
+        broadcast::Receiver<u64>,
+        tokio::sync::OwnedSemaphorePermit,
+    ),
+}
+
+static SNAPSHOT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn snapshot_change_channel() -> (broadcast::Sender<u64>, Arc<dyn Fn() + Send + Sync>) {
+    let (changes, _) = broadcast::channel(64);
+    let notifier = changes.clone();
+    let snapshot_invalidated = Arc::new(move || notify_snapshot_change(&notifier));
+    (changes, snapshot_invalidated)
+}
+
+fn notify_snapshot_change(changes: &broadcast::Sender<u64>) {
+    let sequence = SNAPSHOT_SEQUENCE.fetch_add(1, Ordering::Relaxed) + 1;
+    let _ = changes.send(sequence);
+}
+
+fn snapshot_sequence() -> u64 {
+    SNAPSHOT_SEQUENCE.load(Ordering::Relaxed)
+}
+
+fn snapshot_changed_event(sequence: u64, snapshot_url: &str) -> Event {
+    let changed = serde_json::json!({
+        "sequence": sequence,
+        "at_unix_ms": unix_ms(),
+        "snapshot_url": snapshot_url,
+    });
+    Event::default()
+        .event("snapshot.changed")
+        .id(sequence.to_string())
+        .data(changed.to_string())
 }
 
 async fn authenticate(
@@ -432,6 +494,23 @@ mod tests {
             input.error.expect("input error").recovery,
             ShellRecovery::NeedsInput
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_notifier_wakes_event_subscribers_with_monotonic_sequences() {
+        let (changes, notify) = snapshot_change_channel();
+        let mut first = changes.subscribe();
+        let mut second = changes.subscribe();
+
+        notify();
+        let first_sequence = first.recv().await.expect("first subscriber");
+        assert_eq!(
+            second.recv().await.expect("second subscriber"),
+            first_sequence
+        );
+
+        notify();
+        assert_eq!(first.recv().await.expect("next change"), first_sequence + 1);
     }
 
     #[cfg(unix)]

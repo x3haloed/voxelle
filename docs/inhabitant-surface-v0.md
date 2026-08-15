@@ -253,6 +253,17 @@ Useful delta kinds:
 Each delta should include enough IDs for a later snapshot query to recover
 context.
 
+The first implemented waking event is the deliberately non-semantic
+`snapshot.changed` notice. It carries a process-monotonic `sequence`,
+`at_unix_ms`, and the canonical `snapshot_url`. A successful HTTP command emits
+the notice after the Rust command host has returned its new snapshot; inbound
+peer-service activity emits through the same host invalidation callback.
+Subscribers then fetch the authoritative snapshot instead of asking the HTTP
+adapter to reconstruct room, governance, or recovery meaning. A lagged
+subscriber receives the latest sequence and must re-read the full snapshot.
+More specific delta kinds remain future projections over that same snapshot
+authority, not separate admission paths.
+
 ## 4. First Watch/WFB Slice
 
 The first resident slice should be deliberately small:
@@ -262,9 +273,11 @@ The first resident slice should be deliberately small:
 3. `GET /inhabitant/v0/snapshot`.
 4. `POST /inhabitant/v0/commands/{command_id}` for the current shell command
    set.
-5. `GET /inhabitant/v0/events` as an SSE stream for room messages, network
-   health changes, runtime changes, peer diagnostics, sync reports, and service
-   activity.
+5. `GET /inhabitant/v0/events` as an SSE stream. The implemented v0 stream
+   provides `service.ready`, monotonic `snapshot.changed` waking notices, and
+   heartbeats; specific room, network-health, runtime, diagnostic, sync, and
+   service-activity delta kinds remain to be derived without duplicating the
+   snapshot's authority.
 6. A skill/docs folder for slower workflows: getting started, field testing,
    interpreting network health, and recovering from common failures.
 

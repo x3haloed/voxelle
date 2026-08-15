@@ -700,6 +700,17 @@ schemas and unsupported commands remain internal integration errors. The Rust
 classifier narrowly covers authoritative validation outcomes for message text
 and mentions, reactions, attachments, profiles, channel and role creation, and
 search; it does not reclassify permission failures or infrastructure faults.
+The authenticated inhabitant SSE surface now wakes resident agents when the
+Rust-owned snapshot changes. A successful HTTP semantic command emits a
+process-monotonic `snapshot.changed` notice only after the command host returns
+its new snapshot; asynchronous peer-service invalidations use the same channel.
+The notice carries the canonical snapshot URL, so agents re-read authoritative
+state instead of relying on an HTTP-side reconstruction of room, governance, or
+recovery meaning. Unit evidence covers multi-subscriber monotonic delivery, and
+an isolated live HTTP/SSE rehearsal carried `home.init` from an authenticated
+command response showing initialized identity to sequence 1 on an already-open
+event stream. This is local loopback agent-surface evidence, not a resident
+Watch/WFB integration or autonomous-agent claim.
 Initial snapshot failure no longer ends in a static dead-end screen after
 advising the person to retry. The pre-component shell renders the same bounded
 structured explanation, states that retry does not delete, archive, or replace
@@ -1035,7 +1046,7 @@ and palette tests cover this path; physical camera behavior remains an external
 human evidence gate.
 
 The current local verification pass is green for the changed system
-authorities: 119 Rust workspace tests, 135 frontend behavior tests, strict
+authorities: 120 Rust workspace tests, 135 frontend behavior tests, strict
 `voxelle-app` lint, generated-contract equality, IPv6 QUIC startup, retained
 artifact inspection, and the authority-specific recovery, invitation,
 governance, private-room, media, update, release-evidence, CLI, inhabitant, and
