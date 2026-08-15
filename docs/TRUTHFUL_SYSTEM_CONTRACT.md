@@ -683,6 +683,14 @@ containment, Escape cancellation, and stable invite-row return. This is shared
 human-presentation evidence; Rust admission, retained facts, and command-specific
 authority remain unchanged, and no packaged-native or assistive-technology
 claim is added.
+Rejected actions no longer put the sole structured error behind a still-open
+blocking review. Consequential, damaged-home, customization-reset, and
+product-update modals own their error while open: the alert retains bounded
+human recovery and technical detail, focuses **Dismiss**, and returns to the
+same retry action without closing the review or claiming acceptance. A rendered
+preview refusal exercised this complete failure, dismissal, and retry-focus
+path for invitation revocation. This is modal failure-presentation evidence,
+not a native governance rejection or admitted-fact claim.
 
 The shared shell error contract now distinguishes `needs_input` from authority,
 home, reachability, synchronization, human-intervention, and internal failures.

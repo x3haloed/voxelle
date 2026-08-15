@@ -532,6 +532,12 @@ semantic action, contains both Tab directions, suppresses unrelated shortcuts,
 and cancels with Escape. Cancel and completion still return to the stable row
 or originating attachment affordance named below. This shared presentation
 boundary never combines the distinct Rust commands or their authority effects.
+If Rust rejects an action, the unchanged review retains authority context and
+renders the structured human summary, recovery action, and technical disclosure
+inside the active modal rather than behind its backdrop. Focus moves to
+**Dismiss**; dismissing only the error returns focus to the exact semantic retry
+action. Damaged-home, customization-reset, and product-update confirmations use
+the same modal error ownership without sharing their command semantics.
 
 Banning a member requires an explicit focused confirmation that states the
 authority loss, retained-history behavior, and fresh-invite requirement before

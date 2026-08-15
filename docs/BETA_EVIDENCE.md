@@ -230,6 +230,11 @@ interaction, begins on the exact consequential action, wraps Tab in both
 directions, ignores command-palette shortcuts, and cancels with Escape to its
 stable originating row or attachment affordance. Cancellation must not invoke
 the semantic command or alter the projected authoritative state.
+From one of those reviews, exercise a safe rejected command. Confirm the
+structured error appears inside the active modal, focus moves to **Dismiss**,
+and technical details remain explicitly disclosed. Dismiss the error and
+confirm the review stays open with focus on the exact retry action; neither
+failure nor dismissal may claim acceptance or erase the review context.
 
 In **Connection & sync**, enter an advertised IPv6 address without brackets or
 a port, then a bracketed address with port `70000`. Invoke **Go Online** each

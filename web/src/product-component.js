@@ -198,10 +198,11 @@ function render() {
     document.documentElement,
     currentSnapshot.ui_ontology,
   );
+  const modalOwnsError = blockingModalOwnsError();
   const desired = document.createElement("div");
   desired.append(
     header(currentSnapshot),
-    globalErrorBanner(),
+    ...(modalOwnsError ? [] : [globalErrorBanner()]),
     globalProgressBanner(),
     globalStatusBanner(),
     ...(currentSnapshot.home && !currentSnapshot.home.recovery.kit_exported
@@ -758,6 +759,7 @@ function damagedHomeExperience(homeError) {
     title.id = "home-recovery-confirmation-title";
     confirmation.append(
       title,
+      globalErrorBanner(),
       element("p", "summary", "Voxelle will move the unusable local identity, device certificate, and retained database into a private archive inside this home. Nothing is deleted."),
       element("p", "recovery-note", "You need an offline .voxrecover kit to preserve the same identity. Without one, stop here and retain this archive for diagnosis."),
     );
@@ -803,8 +805,18 @@ function consequentialAlertDialog(className, ariaLabel) {
   dialog.setAttribute("role", "alertdialog");
   dialog.setAttribute("aria-modal", "true");
   dialog.setAttribute("aria-label", ariaLabel);
+  dialog.append(globalErrorBanner());
   backdrop.append(dialog);
   return { backdrop, dialog };
+}
+
+function blockingModalOwnsError() {
+  return Boolean(
+    uiState.preparingHomeRecovery
+    || uiState.customizationResetCommand
+    || uiState.productConfirmationCommand
+    || activeConsequentialReview()
+  );
 }
 
 function activeConsequentialReview() {
@@ -921,6 +933,7 @@ function customizationResetConfirmation() {
   );
   dialog.append(
     title,
+    globalErrorBanner(),
     element(
       "p",
       "summary",
@@ -1718,6 +1731,7 @@ function productUpdateConfirmation(snapshot) {
   controls.append(confirm, actionButton("Cancel", cancelProductConfirmation));
   dialog.append(
     title,
+    globalErrorBanner(),
     element("p", "summary", content.description),
     element(
       "p",
@@ -4317,7 +4331,13 @@ function reportError(error) {
   uiState.errorRecovery = presentation.recoveryMessage;
   uiState.errorDetail = presentation.detail;
   appendActivity(currentSnapshot, `error (${presentation.recovery}): ${presentation.message}`);
+  const focusModalDismissal = blockingModalOwnsError();
   render();
+  if (focusModalDismissal) {
+    window.requestAnimationFrame(() => {
+      app.querySelector('[data-dismiss-notice="error"]')?.focus();
+    });
+  }
 }
 
 function setUserError(message, target) {
@@ -4432,7 +4452,7 @@ function focusAfterNoticeDismissal(returnElement, returnActionKey, validationTar
         .find((candidate) => candidate.dataset.validationTarget === validationTarget)
       : null;
     const activeSurface = app.querySelector(
-      ".utility-center, .connection-center, .command-palette, .product-update-confirmation, .customization-reset-confirmation",
+      ".home-recovery-confirmation, .invite-revoke-confirmation, .channel-key-confirmation, .member-ban-confirmation, .role-assignment-confirmation, .message-delete-confirmation, .attachment-review, .utility-center, .connection-center, .command-palette, .product-update-confirmation, .customization-reset-confirmation",
     );
     const restoredAction = returnActionKey
       ? [...app.querySelectorAll("[data-action-key]")]
