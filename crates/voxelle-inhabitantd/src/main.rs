@@ -215,7 +215,7 @@ impl DiscoveryView {
                 CommandSemanticsView {
                     command_id: "message.continuation.update".to_string(),
                     retry: "reuse client_request_id only for the identical target, state, lease_ms, and sorted supersedes_event_ids; renewals and conflict resolutions use a new ID".to_string(),
-                    observation: "continuing is a bounded participant intention, not presence or proof of work; expiry projects unknown/overdue but emits no SSE event, so schedule a coordination snapshot fetch at expires_ms; coordination snapshot GET is observational and does not initiate peer sync; release and decline are explicit assertions, concurrent unsuperseded device updates project conflict, and handled remains separate completion evidence".to_string(),
+                    observation: "continuing is a bounded participant intention, not presence or proof of work; expiry projects unknown/overdue but emits no SSE event, so schedule a coordination snapshot fetch at home.coordination_frontier.next_projection_change_ms; that bounded frontier covers all accessible rooms, reports item-list truncation explicitly, and remains independent of room selection and read state; target_summary is only an orientation preview, and target_summary_truncated requires opening room_id/target_event_id before consequential action; coordination snapshot GET is observational and does not initiate peer sync; release and decline are explicit assertions, concurrent unsuperseded device updates project conflict, and handled remains separate completion evidence".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "channel.select".to_string(),

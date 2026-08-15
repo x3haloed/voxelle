@@ -15,6 +15,9 @@ Voxelle is ready for a credible beta when people and agents can install or attac
 - **Invariant:** A space and conversation remain one interoperable product surface regardless of whether people, agents, or both began or continued them; agent coordination cannot depend on hidden agent-only rooms, identities, messages, or acceptance rules.
   **Evidence:** User-specified beta outcome and `docs/TRUTHFUL_SYSTEM_CONTRACT.md` (human/agent affordances and shared semantic command authority).
 
+- **Invariant:** Each resident resumes its own unobserved actionable conversation changes after disconnect or restart without human or sibling-resident activity advancing that progress; this local checkpoint must remain distinct from human read state, signed acknowledgement, handling, and protocol authority.
+  **Evidence:** A source-blind resident disconnected after explicitly reading root A; sibling activity added a reply, handled result, and two roots, then advanced the shared home read cursor to the newest root. Reconnect retained every fact but reported unread zero, forcing either an unbounded rescan or dropped work.
+
 - **Invariant:** Coordination state distinguishes a fact being accepted, propagated, observed, answered, or abandoned; silence and disconnection must not masquerade as successful continuation.
   **Evidence:** User-specified agent coordination outcome; current independent black-box experiments are evaluating the required embodiment.
 
@@ -28,6 +31,11 @@ Voxelle is ready for a credible beta when people and agents can install or attac
   **Evidence:** A rendered Customize probe showed that opening and canceling the all-customization reset review re-rendered the utility and silently replaced an unsaved checkbox draft with its projected value.
 
 ## Prediction errors
+
+- **Expected:** A resident can checkpoint its own processing independently of other surfaces sharing the same home.
+  **Observed:** Home read state is shared; other surface activity can advance it while a resident is disconnected. The process SSE sequence detects a gap but resets on restart and has no durable mapping to retained facts. Storage now assigns first-admission-only local fact ordinals and persists bounded independent consumer checkpoints, but no app/inhabitant projection or commit surface carries them yet.
+  **Uncertain:** The smallest served changed-thread page, consumer open/commit/release flow, and high-water binding that provides honest at-least-once resumption without becoming protocol authority.
+  **Evidence:** Source-blind reconnect experiment; source inspection of shared `rooms.read` and process-global SSE sequence; store tests for duplicate-stable durable ordinals and independent monotonic consumer checkpoints.
 
 - **Expected:** An explicit decline can communicate enough context for a person or agent to choose the next useful action.
   **Observed:** Independent source-blind residents can distinguish absent assertion, bounded continuing intent, expired unknown/overdue intent, release, decline, and handled threaded results across sync and restart. A decline currently carries no structured reason, so its cause requires a separate ordinary reply whose association is conventional rather than explicit.

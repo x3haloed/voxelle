@@ -48,6 +48,10 @@ const SERVICE_BINDING_STATE: &str = "runtime.service_binding";
 const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
 const MAX_KNOWN_PEERS: usize = 128;
 const MAX_PROJECTED_MESSAGES: usize = 500;
+const MAX_COORDINATION_FRONTIER_ITEMS: usize = 256;
+const MAX_COORDINATION_SUMMARY_CHARACTERS: usize = 160;
+const MAX_COORDINATION_PARTICIPANTS: usize = 50;
+const MAX_COORDINATION_RESULT_IDS: usize = 16;
 const MAX_PROJECTED_CALL_SIGNALS: usize = 256;
 const MAX_SEARCH_QUERY_CHARACTERS: usize = 1024;
 const MAX_INVITE_EXPIRY_MINUTES: u64 = 30 * 24 * 60;
@@ -248,6 +252,69 @@ pub struct MessageContinuationView {
     pub expires_ms: Option<i64>,
     pub overdue: bool,
     pub head_event_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CoordinationFrontierView {
+    pub items: Vec<CoordinationFrontierItemView>,
+    pub matching_count: usize,
+    pub omitted_count: usize,
+    pub truncated: bool,
+    #[ts(type = "number | null")]
+    pub next_projection_change_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CoordinationFrontierItemView {
+    pub room_id: String,
+    pub room_name: String,
+    pub room_visibility: String,
+    pub target_event_id: String,
+    #[ts(type = "number")]
+    pub target_created_ms: i64,
+    pub target_author_peer_id: String,
+    pub target_redacted: bool,
+    pub target_summary: String,
+    pub target_summary_truncated: bool,
+    pub target_summary_original_chars: usize,
+    pub local_principal_mentioned: bool,
+    pub target_after_local_read_cursor: bool,
+    pub reply_count: usize,
+    #[ts(type = "number | null")]
+    pub latest_reply_ms: Option<i64>,
+    pub relevance: Vec<CoordinationFrontierRelevance>,
+    pub acknowledgements: Vec<CoordinationAcknowledgementView>,
+    pub acknowledgements_omitted_count: usize,
+    pub continuations: Vec<MessageContinuationView>,
+    pub continuations_omitted_count: usize,
+    #[ts(type = "number")]
+    pub latest_fact_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CoordinationAcknowledgementView {
+    pub peer_id: String,
+    pub state: MessageAcknowledgementState,
+    pub result_event_ids: Vec<String>,
+    pub result_event_ids_omitted_count: usize,
+    pub result_conflict: bool,
+    #[ts(type = "number")]
+    pub acknowledged_ms: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinationFrontierRelevance {
+    MentionWithoutLocalDisposition,
+    ReplyAfterLocalDisposition,
+    ContinuationActive,
+    ContinuationOverdue,
+    ContinuationConflict,
+    Observed,
+    Handled,
+    HandledResultAvailable,
+    Released,
+    Declined,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -660,6 +727,10 @@ pub fn shell_contract_typescript() -> String {
         MessageAcknowledgementView::decl(&cfg),
         MessageContinuationView::decl(&cfg),
         MessageContinuationProjectionState::decl(&cfg),
+        CoordinationFrontierView::decl(&cfg),
+        CoordinationFrontierItemView::decl(&cfg),
+        CoordinationFrontierRelevance::decl(&cfg),
+        CoordinationAcknowledgementView::decl(&cfg),
         ReactionView::decl(&cfg),
         AttachmentView::decl(&cfg),
         ChannelView::decl(&cfg),
@@ -781,11 +852,12 @@ pub fn builtin_product_generation() -> ProductGenerationV1 {
 }
 
 fn builtin_product_component_source() -> String {
-    const MODULES: [&str; 14] = [
+    const MODULES: [&str; 15] = [
         include_str!("../../../web/src/call-media.mjs"),
         include_str!("../../../web/src/clipboard.mjs"),
         include_str!("../../../web/src/command-progress.mjs"),
         include_str!("../../../web/src/connection-status.mjs"),
+        include_str!("../../../web/src/coordination-frontier.mjs"),
         include_str!("../../../web/src/dom-reconcile.mjs"),
         include_str!("../../../web/src/error-presentation.mjs"),
         include_str!("../../../web/src/focus-management.mjs"),
@@ -1254,6 +1326,7 @@ pub struct HomeScreenView {
     pub roles: Vec<RoleView>,
     pub profiles: Vec<ProfileView>,
     pub notifications: Vec<NotificationView>,
+    pub coordination_frontier: CoordinationFrontierView,
     pub call: CallView,
     pub room: RoomTimelineView,
 }
@@ -1470,6 +1543,21 @@ impl VoxelleHome {
         selected_room: Option<&str>,
         selected_message_event_id: Option<&str>,
     ) -> Result<HomeScreenView> {
+        self.home_screen_view_for_room_message_at(
+            online,
+            selected_room,
+            selected_message_event_id,
+            now_ms(),
+        )
+    }
+
+    fn home_screen_view_for_room_message_at(
+        &self,
+        online: Option<&OnlineHome>,
+        selected_room: Option<&str>,
+        selected_message_event_id: Option<&str>,
+        projection_ms: i64,
+    ) -> Result<HomeScreenView> {
         let config = self.load_config()?;
         let invite = online
             .map(|online| online.invite_view(None, None))
@@ -1483,7 +1571,9 @@ impl VoxelleHome {
             .find(|channel| channel.selected)
             .map(|channel| channel.room_id.clone())
             .unwrap_or_else(|| config.space.default_room_id.clone());
-        let mut projected_messages = self.read_messages(Some(&selected_room))?;
+        let mut projected_messages =
+            project_messages(self.decrypted_room_events(&selected_room)?, projection_ms);
+        let coordination_frontier = self.coordination_frontier(&channels, projection_ms)?;
         if let Some(event_id) = selected_message_event_id {
             if let Some(index) = projected_messages
                 .iter()
@@ -1516,6 +1606,7 @@ impl VoxelleHome {
             roles: self.roles()?,
             profiles: self.profiles()?,
             notifications: self.notifications()?,
+            coordination_frontier,
             call: self.call_view(&selected_room)?,
             room: RoomTimelineView {
                 room_id: selected_room.clone(),
@@ -2320,6 +2411,227 @@ impl VoxelleHome {
         }
         notifications.sort_by_key(|item| std::cmp::Reverse(item.created_ms));
         Ok(notifications)
+    }
+
+    fn coordination_frontier(
+        &self,
+        channels: &[ChannelView],
+        projection_ms: i64,
+    ) -> Result<CoordinationFrontierView> {
+        let local_peer_id = self.load_identity()?.peer_id;
+        let read_state = self.read_state()?;
+        let mut items = Vec::new();
+        let mut next_projection_change_ms: Option<i64> = None;
+
+        for channel in channels {
+            let mut events = self.decrypted_room_events(&channel.room_id)?;
+            events.sort_by(|left, right| {
+                left.created_ms
+                    .cmp(&right.created_ms)
+                    .then(left.event_id.cmp(&right.event_id))
+            });
+            let unread_target_ids: BTreeSet<String> = events
+                .iter()
+                .skip(unread_start(
+                    &events,
+                    read_state.last_read_event_ids.get(&channel.room_id),
+                ))
+                .filter(|event| matches!(event.kind.as_str(), "MSG_POST" | "ATTACHMENT_ADD"))
+                .map(|event| event.event_id.clone())
+                .collect();
+
+            let projected_messages = project_messages(events, projection_ms);
+            let latest_reply_by_root: BTreeMap<String, i64> = projected_messages
+                .iter()
+                .filter_map(|message| {
+                    message
+                        .thread_root_event_id
+                        .as_ref()
+                        .map(|root| (root.clone(), message.created_ms))
+                })
+                .fold(BTreeMap::new(), |mut latest, (root, created_ms)| {
+                    latest
+                        .entry(root)
+                        .and_modify(|current| *current = (*current).max(created_ms))
+                        .or_insert(created_ms);
+                    latest
+                });
+            for message in projected_messages {
+                let local_principal_mentioned = message
+                    .mentions
+                    .iter()
+                    .any(|peer_id| peer_id == &local_peer_id);
+                let local_acknowledgement = message
+                    .acknowledgements
+                    .iter()
+                    .find(|acknowledgement| acknowledgement.peer_id == local_peer_id);
+                let local_continuation = message
+                    .continuations
+                    .iter()
+                    .find(|continuation| continuation.peer_id == local_peer_id);
+                let locally_relevant = local_principal_mentioned
+                    || local_acknowledgement.is_some()
+                    || local_continuation.is_some()
+                    || (message.author_peer_id == local_peer_id
+                        && (!message.acknowledgements.is_empty()
+                            || !message.continuations.is_empty()));
+                if !locally_relevant {
+                    continue;
+                }
+
+                let mut relevance = Vec::new();
+                if local_principal_mentioned
+                    && local_acknowledgement.is_none()
+                    && local_continuation.is_none()
+                {
+                    relevance.push(CoordinationFrontierRelevance::MentionWithoutLocalDisposition);
+                }
+                let latest_local_disposition_ms = local_acknowledgement
+                    .map(|acknowledgement| acknowledgement.acknowledged_ms)
+                    .into_iter()
+                    .chain(local_continuation.map(|continuation| continuation.asserted_ms))
+                    .max();
+                let latest_reply_ms = latest_reply_by_root.get(&message.event_id).copied();
+                if latest_reply_ms.is_some_and(|reply_ms| {
+                    latest_local_disposition_ms
+                        .is_some_and(|disposition_ms| reply_ms > disposition_ms)
+                }) {
+                    relevance.push(CoordinationFrontierRelevance::ReplyAfterLocalDisposition);
+                }
+                for acknowledgement in &message.acknowledgements {
+                    match acknowledgement.state {
+                        MessageAcknowledgementState::Observed => {
+                            relevance.push(CoordinationFrontierRelevance::Observed);
+                        }
+                        MessageAcknowledgementState::Handled => {
+                            relevance.push(CoordinationFrontierRelevance::Handled);
+                            if !acknowledgement.result_event_ids.is_empty() {
+                                relevance
+                                    .push(CoordinationFrontierRelevance::HandledResultAvailable);
+                            }
+                        }
+                    }
+                }
+                for continuation in &message.continuations {
+                    match continuation.state {
+                        MessageContinuationProjectionState::Continuing => {
+                            relevance.push(CoordinationFrontierRelevance::ContinuationActive);
+                            if let Some(expires_ms) = continuation.expires_ms {
+                                next_projection_change_ms = Some(
+                                    next_projection_change_ms
+                                        .map_or(expires_ms, |current| current.min(expires_ms)),
+                                );
+                            }
+                        }
+                        MessageContinuationProjectionState::Unknown if continuation.overdue => {
+                            relevance.push(CoordinationFrontierRelevance::ContinuationOverdue);
+                        }
+                        MessageContinuationProjectionState::Conflict => {
+                            relevance.push(CoordinationFrontierRelevance::ContinuationConflict);
+                        }
+                        MessageContinuationProjectionState::Released => {
+                            relevance.push(CoordinationFrontierRelevance::Released);
+                        }
+                        MessageContinuationProjectionState::Declined => {
+                            relevance.push(CoordinationFrontierRelevance::Declined);
+                        }
+                        MessageContinuationProjectionState::Unknown => {}
+                    }
+                }
+                relevance.sort();
+                relevance.dedup();
+                if relevance.is_empty() {
+                    continue;
+                }
+
+                let latest_fact_ms = message
+                    .acknowledgements
+                    .iter()
+                    .map(|acknowledgement| acknowledgement.acknowledged_ms)
+                    .chain(
+                        message
+                            .continuations
+                            .iter()
+                            .map(|continuation| continuation.asserted_ms),
+                    )
+                    .chain(latest_reply_ms)
+                    .fold(message.created_ms, i64::max);
+                let target_summary_original_chars = message.text.chars().count();
+                let target_summary_truncated = !message.redacted
+                    && target_summary_original_chars > MAX_COORDINATION_SUMMARY_CHARACTERS;
+                let mut target_summary: String = if message.redacted {
+                    "Message removed".to_string()
+                } else if message.text.is_empty() && !message.attachments.is_empty() {
+                    "Attachment".to_string()
+                } else {
+                    message
+                        .text
+                        .chars()
+                        .take(MAX_COORDINATION_SUMMARY_CHARACTERS)
+                        .collect()
+                };
+                if target_summary_truncated {
+                    target_summary.push('…');
+                }
+                let acknowledgement_count = message.acknowledgements.len();
+                let acknowledgements = message
+                    .acknowledgements
+                    .into_iter()
+                    .take(MAX_COORDINATION_PARTICIPANTS)
+                    .map(|acknowledgement| {
+                        let result_event_id_count = acknowledgement.result_event_ids.len();
+                        CoordinationAcknowledgementView {
+                            peer_id: acknowledgement.peer_id,
+                            state: acknowledgement.state,
+                            result_event_ids: acknowledgement
+                                .result_event_ids
+                                .into_iter()
+                                .take(MAX_COORDINATION_RESULT_IDS)
+                                .collect(),
+                            result_event_ids_omitted_count: result_event_id_count
+                                .saturating_sub(MAX_COORDINATION_RESULT_IDS),
+                            result_conflict: acknowledgement.result_conflict,
+                            acknowledged_ms: acknowledgement.acknowledged_ms,
+                        }
+                    })
+                    .collect();
+                let continuation_count = message.continuations.len();
+                let continuations = message
+                    .continuations
+                    .into_iter()
+                    .take(MAX_COORDINATION_PARTICIPANTS)
+                    .collect();
+                items.push(CoordinationFrontierItemView {
+                    room_id: channel.room_id.clone(),
+                    room_name: channel.name.clone(),
+                    room_visibility: channel.visibility.clone(),
+                    target_event_id: message.event_id.clone(),
+                    target_created_ms: message.created_ms,
+                    target_author_peer_id: message.author_peer_id.clone(),
+                    target_redacted: message.redacted,
+                    target_summary,
+                    target_summary_truncated,
+                    target_summary_original_chars,
+                    local_principal_mentioned,
+                    target_after_local_read_cursor: unread_target_ids.contains(&message.event_id),
+                    reply_count: message.reply_count,
+                    latest_reply_ms,
+                    relevance,
+                    acknowledgements,
+                    acknowledgements_omitted_count: acknowledgement_count
+                        .saturating_sub(MAX_COORDINATION_PARTICIPANTS),
+                    continuations,
+                    continuations_omitted_count: continuation_count
+                        .saturating_sub(MAX_COORDINATION_PARTICIPANTS),
+                    latest_fact_ms,
+                });
+            }
+        }
+
+        Ok(finalize_coordination_frontier(
+            items,
+            next_projection_change_ms,
+        ))
     }
 
     pub fn active_invites(&self) -> Result<Vec<ActiveInviteView>> {
@@ -3783,6 +4095,46 @@ fn unread_start(events: &[EventV1], last_read_event_id: Option<&String>) -> usiz
     last_read_event_id
         .and_then(|event_id| events.iter().position(|event| &event.event_id == event_id))
         .map_or(0, |index| index + 1)
+}
+
+fn coordination_frontier_bucket(item: &CoordinationFrontierItemView) -> u8 {
+    if item.relevance.iter().any(|relevance| {
+        matches!(
+            relevance,
+            CoordinationFrontierRelevance::MentionWithoutLocalDisposition
+                | CoordinationFrontierRelevance::ReplyAfterLocalDisposition
+                | CoordinationFrontierRelevance::ContinuationActive
+                | CoordinationFrontierRelevance::ContinuationOverdue
+                | CoordinationFrontierRelevance::ContinuationConflict
+        )
+    }) {
+        0
+    } else {
+        1
+    }
+}
+
+fn finalize_coordination_frontier(
+    mut items: Vec<CoordinationFrontierItemView>,
+    next_projection_change_ms: Option<i64>,
+) -> CoordinationFrontierView {
+    items.sort_by(|left, right| {
+        coordination_frontier_bucket(left)
+            .cmp(&coordination_frontier_bucket(right))
+            .then(right.latest_fact_ms.cmp(&left.latest_fact_ms))
+            .then(left.room_id.cmp(&right.room_id))
+            .then(left.target_event_id.cmp(&right.target_event_id))
+    });
+    let matching_count = items.len();
+    items.truncate(MAX_COORDINATION_FRONTIER_ITEMS);
+    let omitted_count = matching_count.saturating_sub(items.len());
+    CoordinationFrontierView {
+        items,
+        matching_count,
+        omitted_count,
+        truncated: omitted_count > 0,
+        next_projection_change_ms,
+    }
 }
 
 fn unread_count(
@@ -5271,10 +5623,12 @@ impl VoxelleCommandHost {
 
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
         let online = self.service.as_ref().map(VoxelleService::online);
-        let (home, home_error) = match self.home.home_screen_view_for_room_and_message(
+        let projection_ms = now_ms();
+        let (home, home_error) = match self.home.home_screen_view_for_room_message_at(
             online,
             self.selected_room_id.as_deref(),
             self.selected_message_event_id.as_deref(),
+            projection_ms,
         ) {
             Ok(mut home) => {
                 if let Some(invite) = home.invite.as_mut() {
@@ -9039,6 +9393,259 @@ mod tests {
             .iter()
             .any(|item| { item.summary == "service stopped for address reconfiguration" }));
         host.stop_service().expect("stop service");
+    }
+
+    #[tokio::test]
+    async fn coordination_frontier_survives_selection_read_and_restart() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
+        let initialized = host
+            .init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let general_room = initialized.home.expect("home").profile.default_room;
+
+        let created = host
+            .create_channel(CreateChannelRequest {
+                name: "ops".to_string(),
+                topic: "coordination".to_string(),
+                private_members: Vec::new(),
+            })
+            .await
+            .expect("create ops");
+        let ops_room = created.home.expect("home").room.room_id;
+        let ops_target = host
+            .send_message(SendMessageRequest {
+                text: "continue in ops".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                thread_root_event_id: None,
+                client_request_id: Some("frontier-ops-target-001".to_string()),
+            })
+            .await
+            .expect("ops target")
+            .home
+            .expect("home")
+            .room
+            .messages[0]
+            .event_id
+            .clone();
+        host.update_message_continuation(UpdateMessageContinuationRequest {
+            target_event_id: ops_target.clone(),
+            room: Some(ops_room.clone()),
+            state: MessageContinuationState::Continuing,
+            lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+            supersedes_event_ids: Vec::new(),
+            client_request_id: "frontier-ops-continuation-001".to_string(),
+        })
+        .await
+        .expect("continue ops");
+        host.send_message(SendMessageRequest {
+            text: "newer ops reply".to_string(),
+            room: Some(ops_room.clone()),
+            mentions: Vec::new(),
+            thread_root_event_id: Some(ops_target.clone()),
+            client_request_id: Some("frontier-ops-reply-001".to_string()),
+        })
+        .await
+        .expect("newer ops reply");
+        host.mark_read(MarkReadRequest {
+            room_id: Some(ops_room.clone()),
+        })
+        .expect("read ops");
+
+        host.select_channel(SelectChannelRequest {
+            room_id: general_room.clone(),
+        })
+        .expect("select general");
+        let general_target = host
+            .send_message(SendMessageRequest {
+                text: "handle in general".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                thread_root_event_id: None,
+                client_request_id: Some("frontier-general-target-001".to_string()),
+            })
+            .await
+            .expect("general target")
+            .home
+            .expect("home")
+            .room
+            .messages[0]
+            .event_id
+            .clone();
+        let result_event_id = host
+            .send_message(SendMessageRequest {
+                text: "ordinary handled result".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                thread_root_event_id: Some(general_target.clone()),
+                client_request_id: Some("frontier-general-result-001".to_string()),
+            })
+            .await
+            .expect("general result")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.text == "ordinary handled result")
+            .expect("result message")
+            .event_id;
+        host.acknowledge_message(AcknowledgeMessageRequest {
+            target_event_id: general_target.clone(),
+            room: Some(general_room.clone()),
+            state: MessageAcknowledgementState::Handled,
+            result_event_id: Some(result_event_id),
+        })
+        .await
+        .expect("handled general");
+        let general_snapshot = host
+            .mark_read(MarkReadRequest {
+                room_id: Some(general_room.clone()),
+            })
+            .expect("read general");
+        let general_frontier = general_snapshot
+            .home
+            .expect("general home")
+            .coordination_frontier;
+        assert_eq!(general_frontier.matching_count, 2);
+        assert_eq!(general_frontier.items[0].target_event_id, ops_target);
+        assert!(general_frontier.items[0]
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ContinuationActive));
+        assert!(general_frontier.items[0]
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ReplyAfterLocalDisposition));
+        assert_eq!(general_frontier.items[0].reply_count, 1);
+        assert!(general_frontier.items[0].latest_reply_ms.is_some());
+        assert_eq!(general_frontier.items[1].target_event_id, general_target);
+        assert!(general_frontier.items[1]
+            .relevance
+            .contains(&CoordinationFrontierRelevance::HandledResultAvailable));
+        assert!(general_frontier
+            .items
+            .iter()
+            .all(|item| !item.target_after_local_read_cursor));
+
+        let ops_frontier = host
+            .select_channel(SelectChannelRequest { room_id: ops_room })
+            .expect("select ops")
+            .home
+            .expect("ops home")
+            .coordination_frontier;
+        assert_eq!(ops_frontier, general_frontier);
+
+        drop(host);
+        let restarted = VoxelleCommandHost::new(&home_root)
+            .snapshot()
+            .expect("restart snapshot")
+            .home
+            .expect("restart home")
+            .coordination_frontier;
+        assert_eq!(restarted.items, general_frontier.items);
+        assert_eq!(restarted.matching_count, 2);
+    }
+
+    #[tokio::test]
+    async fn coordination_frontier_uses_private_room_projection() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        let initialized = host
+            .init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let peer_id = initialized.home.expect("home").profile.peer_id;
+        let created = host
+            .create_channel(CreateChannelRequest {
+                name: "private coordination".to_string(),
+                topic: String::new(),
+                private_members: vec![peer_id],
+            })
+            .await
+            .expect("create private room");
+        let room_id = created.home.expect("home").room.room_id;
+        let target_event_id = host
+            .send_message(SendMessageRequest {
+                text: "private continuation ".repeat(9).trim_end().to_string(),
+                room: Some(room_id.clone()),
+                mentions: Vec::new(),
+                thread_root_event_id: None,
+                client_request_id: Some("frontier-private-target-001".to_string()),
+            })
+            .await
+            .expect("private target")
+            .home
+            .expect("home")
+            .room
+            .messages[0]
+            .event_id
+            .clone();
+        let snapshot = host
+            .update_message_continuation(UpdateMessageContinuationRequest {
+                target_event_id,
+                room: Some(room_id.clone()),
+                state: MessageContinuationState::Continuing,
+                lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "frontier-private-continuation-001".to_string(),
+            })
+            .await
+            .expect("private continuation");
+        let frontier = snapshot.home.expect("home").coordination_frontier;
+        assert_eq!(frontier.matching_count, 1);
+        assert_eq!(frontier.items[0].room_id, room_id);
+        assert_eq!(frontier.items[0].room_visibility, "private");
+        assert!(frontier.items[0].target_summary.ends_with('…'));
+        assert!(frontier.items[0].target_summary_truncated);
+        assert_eq!(frontier.items[0].target_summary_original_chars, 188);
+    }
+
+    #[test]
+    fn coordination_frontier_order_and_truncation_are_deterministic() {
+        let item =
+            |index: usize, relevance: CoordinationFrontierRelevance| CoordinationFrontierItemView {
+                room_id: format!("room:{:03}", index % 3),
+                room_name: "room".to_string(),
+                room_visibility: "public".to_string(),
+                target_event_id: format!("event:{index:03}"),
+                target_created_ms: index as i64,
+                target_author_peer_id: "peer:local".to_string(),
+                target_redacted: false,
+                target_summary: format!("message {index}"),
+                target_summary_truncated: false,
+                target_summary_original_chars: format!("message {index}").chars().count(),
+                local_principal_mentioned: false,
+                target_after_local_read_cursor: false,
+                reply_count: 0,
+                latest_reply_ms: None,
+                relevance: vec![relevance],
+                acknowledgements: Vec::new(),
+                acknowledgements_omitted_count: 0,
+                continuations: Vec::new(),
+                continuations_omitted_count: 0,
+                latest_fact_ms: index as i64,
+            };
+        let mut input: Vec<_> = (0..257)
+            .map(|index| item(index, CoordinationFrontierRelevance::Handled))
+            .collect();
+        input.push(item(
+            999,
+            CoordinationFrontierRelevance::ContinuationOverdue,
+        ));
+        let forward = finalize_coordination_frontier(input.clone(), Some(42));
+        input.reverse();
+        let reverse = finalize_coordination_frontier(input, Some(42));
+
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.matching_count, 258);
+        assert_eq!(forward.items.len(), MAX_COORDINATION_FRONTIER_ITEMS);
+        assert_eq!(forward.omitted_count, 2);
+        assert!(forward.truncated);
+        assert_eq!(forward.next_projection_change_ms, Some(42));
+        assert_eq!(forward.items[0].target_event_id, "event:999");
+        assert!(forward.items[0]
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ContinuationOverdue));
     }
 
     #[tokio::test]

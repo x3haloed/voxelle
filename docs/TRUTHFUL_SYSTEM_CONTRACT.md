@@ -780,6 +780,24 @@ adversarial probe found and drove removal of hidden peer synchronization from
 coordination snapshot GET; repeated post-fix reads preserved sync evidence and
 sequence while only `projected_at_ms` advanced. This remains same-machine
 loopback evidence, not external reachability, crash, or long-partition proof.
+
+Cross-room coordination is projected through one bounded factual frontier
+derived from the same admitted room messages. It remains independent of the
+selected room and local read cursor, prioritizes live/conflicting/overdue
+continuations and undispositioned mentions ahead of terminal history, reports
+all truncation, and exposes newer replies after a local disposition without
+interpreting their prose as a machine directive. The frontier adds no task
+authority or plaintext cache; private entries follow the ordinary admitted
+membership and decryption path. Human Notifications exposes the same facts as
+Follow-ups rather than maintaining a second frontend task model.
+Source-blind two-room restart evidence showed handled General and continuing
+Ops exchanges simultaneously while both rooms were read and General selected;
+selection changes and restart preserved the frontier, a newer reply advanced
+the root's factual relation, and repeated GET remained observational. A second
+private-room probe caught silent preview abbreviation before a consequential
+prohibition; item-level completeness fields, visible ellipsis, and an explicit
+open-before-action contract resolved that prediction error. These are
+same-machine loopback and served-contract results, not external field evidence.
 Episodic agent actions no longer require repository-source inspection to learn
 their payload shape. The same Rust-projected `UiCommand` records used by the
 WebView now name each shell command's request DTO, while empty-payload and

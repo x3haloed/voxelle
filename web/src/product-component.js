@@ -250,6 +250,9 @@ function scheduleContinuationExpiryRefresh() {
     .filter((continuation) => continuation.state === "continuing")
     .map((continuation) => continuation.expires_ms)
     .filter(Number.isFinite);
+  const frontierExpiry = currentSnapshot.home?.coordination_frontier
+    ?.next_projection_change_ms;
+  if (Number.isFinite(frontierExpiry)) expiries.push(frontierExpiry);
   if (expiries.length === 0) return;
   const delay = Math.max(50, Math.min(...expiries) - Date.now() + 25);
   continuationExpiryTimer = window.setTimeout(() => {
@@ -393,15 +396,25 @@ function header(snapshot) {
 
   const actions = element("div", "header-actions");
   if (snapshot.home) {
+    const attentionReasons = new Set([
+      "mention_without_local_disposition",
+      "reply_after_local_disposition",
+      "continuation_active",
+      "continuation_overdue",
+      "continuation_conflict",
+    ]);
+    const attentionCount = snapshot.home.coordination_frontier.items.filter(
+      (item) => item.relevance.some((reason) => attentionReasons.has(reason)),
+    ).length;
     actions.append(
       connectionCenterButton(snapshot),
       actionButton("Invite someone", openInviteUtility),
       utilityButton("people", `People · ${snapshot.home.profiles.length}`),
       utilityButton(
         "notifications",
-        snapshot.home.notifications.length > 0
-          ? `Notifications · ${snapshot.home.notifications.length}`
-          : "Notifications",
+        attentionCount > 0
+          ? `Attention · ${attentionCount}${snapshot.home.coordination_frontier.truncated ? "+" : ""}`
+          : "Attention",
       ),
       utilityButton("search", "Search"),
     );
@@ -493,8 +506,8 @@ function utilityCenter(snapshot, kind) {
       },
     },
     notifications: {
-      title: "Notifications",
-      summary: "Unread mentions retained from your replicated channels.",
+      title: "Attention",
+      summary: "Unread mentions and factual follow-ups from every channel you can access.",
       render: () => notificationCenterView(snapshot),
     },
     search: {
@@ -2907,6 +2920,7 @@ function messageSearchView(snapshot) {
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function notificationCenterView(snapshot) {
   const fragment = document.createDocumentFragment();
+  fragment.append(element("h3", "", "Unread mentions"));
   const list = element("ol", "activity-list");
   const notifications = snapshot.home?.notifications ?? [];
   if (notifications.length === 0) {
@@ -2927,7 +2941,53 @@ function notificationCenterView(snapshot) {
     );
     list.append(row);
   }
-  fragment.append(list);
+  fragment.append(list, element("h3", "", "Follow-ups"));
+  const frontier = snapshot.home?.coordination_frontier;
+  const followUps = element("ol", "activity-list");
+  if (!frontier || frontier.items.length === 0) {
+    followUps.append(element("li", "empty-state", "No recorded follow-ups."));
+  }
+  for (const item of frontier?.items ?? []) {
+    const row = element("li", "");
+    row.dataset.renderKey = `follow-up:${item.room_id}:${item.target_event_id}`;
+    const author = profileForPeer(snapshot, item.target_author_peer_id).display_name;
+    const channel = channelName(snapshot, item.room_id);
+    const statements = coordinationFrontierStatements(
+      item,
+      snapshot.home?.profile.peer_id ?? "",
+      (peerId) => profileForPeer(snapshot, peerId).display_name,
+      formatRecoveryKitSavedTime,
+    );
+    row.append(
+      element("strong", "", author),
+      element("span", "muted", `${item.room_visibility === "private" ? "Private · " : "# "}${channel}`),
+      element("span", "", item.target_summary || (item.target_redacted ? "Message removed" : "Message")),
+      ...(item.target_summary_truncated
+        ? [element("span", "warning-text", `Preview only · ${item.target_summary_original_chars} characters. Open the message before acting.`)]
+        : []),
+      ...statements.map((statement) => element(
+        "span",
+        item.relevance.includes("continuation_conflict")
+          || item.relevance.includes("continuation_overdue")
+          || item.relevance.includes("reply_after_local_disposition")
+          ? "warning-text"
+          : "muted",
+        statement,
+      )),
+      actionButton(`Open follow-up from ${author} in ${channel}`, () => {
+        openRetainedMessage(item.room_id, item.target_event_id).catch(reportError);
+      }),
+    );
+    followUps.append(row);
+  }
+  if (frontier?.truncated) {
+    followUps.prepend(element(
+      "li",
+      "warning-text",
+      `${frontier.omitted_count} additional follow-up${frontier.omitted_count === 1 ? " is" : "s are"} not shown. Review channels before assuming this list is complete.`,
+    ));
+  }
+  fragment.append(followUps);
   return fragment;
 }
 

@@ -270,6 +270,22 @@ Its `current_sequence` covers admitted or invalidated state, while
 a semantic transition. A handled acknowledgement is completion evidence and
 does not retroactively rewrite a separate continuation assertion.
 
+`home.coordination_frontier` is a bounded, rebuildable attention index over
+ordinary admitted messages in every currently accessible room. It reports
+literal mention, acknowledgement, handled-result, reply, and continuation
+facts; it never infers assignment, work, success, failure, presence, stopping,
+or abandonment. Room selection and human read state do not remove entries.
+`matching_count`, `omitted_count`, and `truncated` make projection bounds
+explicit, and `next_projection_change_ms` identifies the next continuation
+expiry that requires a time-derived refresh. Private entries exist only after
+ordinary membership, decryption, and semantic admission and are never stored
+as a parallel plaintext index.
+Each `target_summary` is only an orientation preview. Its
+`target_summary_truncated` and `target_summary_original_chars` fields state
+whether content was abbreviated; a consumer opens the ordinary target by room
+and event ID before taking consequential action from an abbreviated preview.
+Frontier-level truncation fields describe omitted rows only.
+
 ### 3.4 Action Result
 
 Action results answer: "What changed, and what should I do next?"
