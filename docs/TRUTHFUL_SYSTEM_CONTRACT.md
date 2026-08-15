@@ -604,6 +604,18 @@ Customize, and Product Updates, including expanded-state changes. This remains
 browser accessibility-tree and keyboard evidence, not an actual VoiceOver,
 Narrator, or NVDA claim.
 
+Fresh onboarding has also crossed a rendered system-color and narrow-window
+gate. At 420×700 it keeps create, signed-invite join, and recovery in one
+vertical causal path without document-level horizontal overflow; the manual
+invite disclosure remains keyboard-operable. A dark-scheme render exposed that
+fixed light message surfaces and fixed green/red status foregrounds did not
+adapt with `CanvasText`. The stable semantic token IDs now retain user
+customization while their defaults derive message surfaces from system colors
+and select distinct light/dark status colors. On the rendered dark canvas, the
+ownership/status and recovery-warning foregrounds measure 10.36:1 and 8.21:1
+contrast respectively. This is preview rendering evidence, not packaged-native
+or actual assistive-technology evidence.
+
 The same packaged surface now derives reaction and pin actions from projected
 accepted state: a native run added and removed the local reaction and pinned
 and unpinned the message through their distinct semantic commands. Deletion no

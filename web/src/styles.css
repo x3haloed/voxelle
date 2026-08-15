@@ -4,14 +4,14 @@
   --panel-border: ButtonBorder;
   --text-primary: CanvasText;
   --text-secondary: GrayText;
-  --runtime-online: #18794e;
+  --runtime-online: light-dark(#18794e, #63d69a);
   --runtime-offline: GrayText;
-  --peer-reachable: #18794e;
-  --peer-unreachable: #b42318;
+  --peer-reachable: light-dark(#18794e, #63d69a);
+  --peer-unreachable: light-dark(#b42318, #ff8a80);
   --message-own-background: color-mix(in srgb, Canvas 88%, LinkText);
   --message-remote-background: color-mix(in srgb, Canvas 94%, CanvasText);
   --activity-info: LinkText;
-  --activity-error: #b42318;
+  --activity-error: light-dark(#b42318, #ff8a80);
   --sidebar-width: 360px;
   --panel-padding: 12px;
   --panel-gap: 8px;

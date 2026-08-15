@@ -457,7 +457,9 @@ Default surface tokens that sit behind system-derived text remain
 color-scheme-aware. In particular, own and remote message backgrounds derive
 from `Canvas`, `CanvasText`, and `LinkText` so the default conversation remains
 legible in both supported system schemes while retaining the same stable,
-user-editable token IDs.
+user-editable token IDs. Online/reachable and error/unreachable foreground
+tokens likewise keep separate light and dark defaults instead of assuming a
+light canvas.
 
 Each token should eventually expose:
 

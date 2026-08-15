@@ -5979,7 +5979,7 @@ fn default_semantic_tokens() -> Vec<SemanticToken> {
             "runtime.online",
             "Runtime Online",
             "Online runtime state",
-            "#18794e",
+            "light-dark(#18794e, #63d69a)",
             &["runtime.status"],
         ),
         semantic_token(
@@ -5993,14 +5993,14 @@ fn default_semantic_tokens() -> Vec<SemanticToken> {
             "peer.reachable",
             "Peer Reachable",
             "Reachable peer diagnostic",
-            "#18794e",
+            "light-dark(#18794e, #63d69a)",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
             "peer.unreachable",
             "Peer Unreachable",
             "Unreachable peer diagnostic",
-            "#b42318",
+            "light-dark(#b42318, #ff8a80)",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
@@ -6028,7 +6028,7 @@ fn default_semantic_tokens() -> Vec<SemanticToken> {
             "activity.error",
             "Activity Error",
             "Error activity entries",
-            "#b42318",
+            "light-dark(#b42318, #ff8a80)",
             &["service.activity"],
         ),
     ]
@@ -7599,7 +7599,10 @@ mod tests {
             .commands
             .iter()
             .any(|command| command.id == "peer.sync"));
-        assert_eq!(semantic_token_value(&ontology, "peer.reachable"), "#18794e");
+        assert_eq!(
+            semantic_token_value(&ontology, "peer.reachable"),
+            "light-dark(#18794e, #63d69a)"
+        );
         assert_eq!(metric_value(&ontology, "sidebar.width"), 360.0);
         assert_eq!(
             behavior_value(&ontology, "timestamps.visible"),
@@ -7730,7 +7733,10 @@ mod tests {
             .reset_all_ui_preferences()
             .expect("reset all preferences");
         let defaults = reopened.ui_ontology().expect("default ontology");
-        assert_eq!(semantic_token_value(&defaults, "peer.reachable"), "#18794e");
+        assert_eq!(
+            semantic_token_value(&defaults, "peer.reachable"),
+            "light-dark(#18794e, #63d69a)"
+        );
         assert_eq!(
             behavior_value(&defaults, "timestamps.style"),
             UiBehaviorValue::Text("relative".to_string())
