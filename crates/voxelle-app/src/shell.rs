@@ -1376,6 +1376,36 @@ mod tests {
         assert!(!bob_profile.banned);
         assert!(bob_profile.role_ids.contains(&role_id));
 
+        let revoked = alice
+            .execute_serialized_command(
+                "role.revoke",
+                serde_json::json!({
+                    "peer_id": bob_peer_id,
+                    "role_id": role_id
+                }),
+            )
+            .await
+            .expect("revoke role");
+        assert!(!revoked
+            .home
+            .expect("home after revoke")
+            .profiles
+            .iter()
+            .find(|profile| profile.peer_id == bob_peer_id)
+            .expect("Bob after revoke")
+            .role_ids
+            .contains(&role_id));
+        alice
+            .execute_serialized_command(
+                "role.grant",
+                serde_json::json!({
+                    "peer_id": bob_peer_id,
+                    "role_id": role_id
+                }),
+            )
+            .await
+            .expect("regrant role before ban");
+
         let banned = alice
             .execute_serialized_command(
                 "member.ban",

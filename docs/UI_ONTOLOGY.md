@@ -257,6 +257,12 @@ invoking `member.ban`. Canceling or completing the action restores a stable
 keyboard location in the member row. The confirmation does not predict or
 project governance state; the Rust snapshot remains authoritative.
 
+Granting or revoking a role likewise requires a focused confirmation that names
+the member, role, direction of change, and human-readable permissions gained or
+lost. It states that other roles remain unchanged, then invokes only
+`role.grant` or `role.revoke`. Canceling or completing restores focus to the
+stable role row; accepted Rust governance remains the only assignment truth.
+
 Projected reaction and pin state determines whether the visible action invokes
 the add or remove command; the frontend does not guess a toggle result. Message
 deletion is a separate confirmed step that states the retained signed-tombstone

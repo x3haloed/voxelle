@@ -355,6 +355,15 @@ simulate the semantic command. The serialized two-home test above remains the
 authority evidence for the accepted ban transition; this is not yet a new
 packaged-native or assistive-technology claim.
 
+Role assignment is no longer a one-click authority change. Grant and revoke
+affordances now focus an explicit confirmation naming the member, role,
+direction, and human-readable permissions gained or lost, while noting that
+other roles remain unchanged. Cancel and completion return keyboard focus to
+the stable role row. Rendered-preview evidence covers the confirmation and
+semantic-command route; the serialized two-home governance path remains the
+accepted role-assignment evidence, so this is not a new packaged-native or
+assistive-technology claim.
+
 The shared shell error contract now distinguishes `needs_input` from authority,
 home, reachability, synchronization, human-intervention, and internal failures.
 Representative serialized and inhabitant-surface tests prove that an empty

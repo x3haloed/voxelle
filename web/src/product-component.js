@@ -40,6 +40,7 @@ const uiState = {
   roleNameDraft: "",
   rolePermissionsDraft: new Set(),
   roleCreateOpen: false,
+  roleAssignmentDraft: null,
   profileNameDraft: "",
   profileAboutDraft: "",
   profileDraftInitialized: false,
@@ -1485,6 +1486,8 @@ function roleListView(snapshot) {
   for (const role of snapshot.home?.roles ?? []) {
     const row = element("li", "peer-row");
     row.dataset.renderKey = `role:${role.role_id}`;
+    row.dataset.roleId = role.role_id;
+    row.tabIndex = -1;
     const body = element("div", "peer-body");
     body.append(
       element("strong", "", role.name),
@@ -1494,17 +1497,23 @@ function roleListView(snapshot) {
     row.append(body);
     if (role.role_id !== "role:everyone") {
       const members = element("details", "advanced-details");
+      members.open = uiState.roleAssignmentDraft?.roleId === role.role_id;
       members.append(element("summary", "", "Manage members"));
       const memberList = element("div", "choice-list");
       for (const profile of snapshot.home?.profiles ?? []) {
         if (profile.banned) continue;
         const assigned = profile.role_ids.includes(role.role_id);
-        const action = commandButton(assigned ? "role.revoke" : "role.grant", {
-          peer_id: profile.peer_id,
-          role_id: role.role_id,
-        });
-        action.textContent = assigned ? `Remove ${profile.display_name}` : `Add ${profile.display_name}`;
-        memberList.append(action);
+        const draft = uiState.roleAssignmentDraft;
+        if (draft?.roleId === role.role_id && draft.peerId === profile.peer_id) {
+          memberList.append(roleAssignmentConfirmation(role, profile, draft.grant));
+        } else {
+          memberList.append(actionButton(
+            assigned
+              ? `Remove ${profile.display_name} from ${role.name}…`
+              : `Give ${role.name} to ${profile.display_name}…`,
+            () => beginRoleAssignment(role.role_id, profile.peer_id, !assigned),
+          ));
+        }
       }
       members.append(memberList);
       row.append(members);
@@ -1551,6 +1560,62 @@ function roleListView(snapshot) {
   create.append(form);
   fragment.append(list, create);
   return fragment;
+}
+
+function roleAssignmentConfirmation(role, profile, grant) {
+  const verb = grant ? "Give" : "Remove";
+  const confirmation = element("section", "role-assignment-confirmation");
+  confirmation.setAttribute("role", "alertdialog");
+  confirmation.setAttribute(
+    "aria-label",
+    `${grant ? "Give" : "Remove"} ${role.name} ${grant ? "to" : "from"} ${profile.display_name} confirmation`,
+  );
+  const permissions = role.permissions.map(permissionLabel).join(", ") || "no additional permissions";
+  confirmation.append(
+    element(
+      "strong",
+      "",
+      `${verb} ${role.name} ${grant ? "to" : "from"} ${profile.display_name}?`,
+    ),
+    element(
+      "p",
+      "summary",
+      grant
+        ? `${profile.display_name} will gain this role's authority: ${permissions}. Their other roles are unchanged.`
+        : `${profile.display_name} will lose this role's authority: ${permissions}. Authority from their other roles is unchanged.`,
+    ),
+  );
+  const controls = element("div", "row-actions");
+  const confirm = commandButton(grant ? "role.grant" : "role.revoke", {
+    peer_id: profile.peer_id,
+    role_id: role.role_id,
+  });
+  confirm.textContent = grant
+    ? `Give ${role.name} to ${profile.display_name}`
+    : `Remove ${role.name} from ${profile.display_name}`;
+  controls.append(confirm, actionButton("Cancel role change", () => cancelRoleAssignment(role.role_id)));
+  confirmation.append(controls);
+  return confirmation;
+}
+
+function beginRoleAssignment(roleId, peerId, grant) {
+  uiState.roleAssignmentDraft = { roleId, peerId, grant };
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".role-assignment-confirmation .command-button")?.focus());
+}
+
+function cancelRoleAssignment(roleId) {
+  uiState.roleAssignmentDraft = null;
+  render();
+  focusRoleRow(roleId);
+}
+
+function focusRoleRow(roleId) {
+  window.requestAnimationFrame(() => {
+    const row = [...app.querySelectorAll("[data-role-id]")]
+      .find((candidate) => candidate.dataset.roleId === roleId);
+    row?.focus();
+  });
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
@@ -2509,6 +2574,8 @@ async function runCommand(command, payload) {
           return;
         }
         currentSnapshot = await shell.execute(command, payload);
+        uiState.roleAssignmentDraft = null;
+        focusRoleRow(payload.role_id);
         return;
       }
       case "member.ban":
