@@ -5896,9 +5896,16 @@ fn default_commands() -> Vec<UiCommand> {
             true,
         ),
         frontend_command(
+            "invite.handoff.copy",
+            "Copy Message for Friend",
+            "Copy human joining instructions together with the current signed membership invite",
+            None,
+            true,
+        ),
+        frontend_command(
             "invite.copy",
-            "Copy Signed Invite",
-            "Copy the current signed membership invite",
+            "Copy Signed Invite JSON",
+            "Copy only the current signed membership invite JSON",
             None,
             true,
         ),

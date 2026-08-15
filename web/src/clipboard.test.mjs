@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { copyTextToClipboard } from "./clipboard.mjs";
+import { copyTextToClipboard, inviteHandoffText } from "./clipboard.mjs";
 
 test("clipboard success waits for the native write", async () => {
   let copied = "";
@@ -32,4 +32,12 @@ test("clipboard rejection preserves human recovery and technical detail", async 
       && /permission denied/.test(error.detail)
     ),
   );
+});
+
+test("friend handoff includes install, join, privacy, and signed invite context", () => {
+  const handoff = inviteHandoffText('{"signed":"invite"}');
+  assert.match(handoff, /Install and open Voxelle/);
+  assert.match(handoff, /Join with an invite/);
+  assert.match(handoff, /Keep this invite private/);
+  assert.match(handoff, /\{"signed":"invite"\}$/);
 });

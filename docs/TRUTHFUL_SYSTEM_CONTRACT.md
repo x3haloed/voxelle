@@ -1069,7 +1069,7 @@ and palette tests cover this path; physical camera behavior remains an external
 human evidence gate.
 
 The current local verification pass is green for the changed system
-authorities: 121 Rust workspace tests, 135 frontend behavior tests, strict
+authorities: 121 Rust workspace tests, 137 frontend behavior tests, strict
 `voxelle-app` lint, generated-contract equality, IPv6 QUIC startup, retained
 artifact inspection, and the authority-specific recovery, invitation,
 governance, private-room, media, update, release-evidence, CLI, inhabitant, and
@@ -1077,7 +1077,7 @@ native-host paths all pass. The current universal macOS build and its DMG
 inspection are recorded separately below so artifact-specific claims remain
 distinguishable from semantic test evidence.
 
-Source commit `0559f982c5088dac7ad3b55d5020396e89578e99` now has one locally
+Historical source commit `0559f982c5088dac7ad3b55d5020396e89578e99` has one locally
 assembled `v0.1.0-beta.4` candidate at sequence 4. Its signed manifest
 authenticates the universal macOS DMG as
 `c84e6b3eaefccb89b9a0af9ba0992212da3160f14697de361fc7ce05ca9dee22`,
@@ -1106,6 +1106,27 @@ admission evidence, not production Keychain, restart, invite, recovery,
 multi-peer, physical-media, or completed release-receipt evidence. The generated
 receipt template still fails distribution, Windows, field, human, and custody
 sections exactly as intended; no tag or public beta.4 release is claimed.
+
+Subsequent native human review superseded that candidate as the current source
+for release purposes. An unfamiliar person was asked to create a conversation
+space for one friend and produce what they would actually send. The first run
+completed only after guessing that invitations lived under **People** and
+scrolling below the initial panel viewport. A release-bundle revision exposed
+**Invite someone** in the ordinary header while retaining the same signed
+`space.invite.create` authority path. A second fresh-home run reached invite
+creation directly, then showed that command completion returned the People
+panel to its top, clipboard confirmation was obscured behind the panel, and raw
+JSON did not tell a friend without Voxelle how to proceed. The integrated
+revision now keeps the invite result in view, reports creation and copy success
+inside that result, and exposes the semantic **Copy Message for Friend** command
+with installer, join, paste, and privacy instructions alongside the signed
+invite; copying JSON alone remains an explicit secondary action. On a third
+fresh native run the same person confirmed that the result stayed visible,
+copy success was clear, and the copied handoff adequately explained what the
+friend should do. The signed bearer values and disposable homes were not
+retained as evidence. This is lived evidence for sender-side comprehension and
+handoff only; it does not prove recipient installation, invite admission on a
+second device, non-loopback reachability, or distribution availability.
 
 The locally natural compression point is therefore the current authority
 topology, not the smallest imaginable byte count. The remaining separations

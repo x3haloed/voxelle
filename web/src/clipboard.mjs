@@ -18,3 +18,18 @@ export async function copyTextToClipboard(clipboard, text) {
     };
   }
 }
+
+export function inviteHandoffText(signedInvite) {
+  return [
+    "Join me on Voxelle",
+    "",
+    "1. Install and open Voxelle using the installer I sent you.",
+    "2. On the first screen, choose \"Join with an invite.\"",
+    "3. Expand \"Paste invite JSON instead,\" paste the signed invite below, then choose \"Join Space.\"",
+    "",
+    "Keep this invite private. Anyone holding it may attempt to join until it expires or is revoked.",
+    "",
+    "SIGNED VOXELLE INVITE JSON",
+    signedInvite,
+  ].join("\n");
+}

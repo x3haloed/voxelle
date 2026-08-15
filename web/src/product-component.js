@@ -30,6 +30,7 @@ const uiState = {
   peerRecordDraft: "",
   spaceInviteDraft: "",
   inviteExpiryMinutes: 1440,
+  inviteNotice: "",
   revokingInviteId: "",
   rotatingChannelId: "",
   pendingAttachment: null,
@@ -372,6 +373,7 @@ function header(snapshot) {
   if (snapshot.home) {
     actions.append(
       connectionCenterButton(snapshot),
+      actionButton("Invite someone", openInviteUtility),
       utilityButton("people", `People · ${snapshot.home.profiles.length}`),
       utilityButton(
         "notifications",
@@ -2049,8 +2051,20 @@ function inviteExchangeView(snapshot) {
       element(
         "p",
         "summary",
-        `Share this bearer invite privately with its intended recipient. It expires ${expiry}; anyone holding an unbound copy may attempt to join more than once before expiry or an admitted revocation.`,
+        `Your friend needs the Voxelle installer as well as this signed invite. Send both privately. After opening Voxelle, they choose Join with an invite, expand Paste invite JSON instead, paste the invite, and choose Join Space. It expires ${expiry}.`,
       ),
+      commandButton("invite.handoff.copy"),
+    );
+    if (uiState.inviteNotice) {
+      const notice = element("p", "success-label", uiState.inviteNotice);
+      notice.setAttribute("role", "status");
+      notice.setAttribute("aria-live", "polite");
+      inviteGroup.append(notice);
+    }
+    const sharingOptions = element("details", "advanced-details");
+    sharingOptions.append(
+      disclosureSummary("More sharing options"),
+      element("p", "summary", "Copy only the signed JSON when your friend already knows how to join."),
       commandButton("invite.copy"),
     );
     const details = element("details", "advanced-details");
@@ -2064,7 +2078,7 @@ function inviteExchangeView(snapshot) {
       element("p", "summary", "Creating another invite does not revoke existing active invites."),
       inviteCreationForm(),
     );
-    inviteGroup.append(details, replacement);
+    inviteGroup.append(sharingOptions, details, replacement);
   } else {
     inviteGroup.append(
       element("h3", "", "Invite someone to this space"),
@@ -3965,6 +3979,7 @@ async function runCommand(command, payload) {
         currentSnapshot = await shell.execute(command, {
           expires_minutes: uiState.inviteExpiryMinutes,
         });
+        uiState.inviteNotice = "Invite created. Copy the message for your friend.";
         return;
       case "space.invite.revoke":
         currentSnapshot = await shell.execute(command, payload);
@@ -4226,8 +4241,24 @@ async function runCommand(command, payload) {
           navigator.clipboard,
           currentSnapshot.home?.invite?.space_invite_json ?? "",
         );
-        uiState.status = "Signed invite copied. Send it privately to the person you want to invite.";
+        uiState.inviteNotice = "Signed invite JSON copied.";
         appendActivity(currentSnapshot, "copied invite");
+        return;
+      case "invite.handoff.copy":
+        if (shell.mode === "preview") {
+          throw new Error(
+            "Preview only; launch the desktop app to copy a usable invite.",
+          );
+        }
+        if (!currentSnapshot.home?.invite?.space_invite_json) {
+          throw new Error("Create a signed invite before copying it.");
+        }
+        await copyTextToClipboard(
+          navigator.clipboard,
+          inviteHandoffText(currentSnapshot.home.invite.space_invite_json),
+        );
+        uiState.inviteNotice = "Instructions and signed invite copied. Send the installer and copied message privately to your friend.";
+        appendActivity(currentSnapshot, "copied invite handoff");
         return;
       case "ui.preference.set":
         currentSnapshot = await shell.execute(
@@ -4287,6 +4318,18 @@ async function runCommand(command, payload) {
   } finally {
     uiState.busyCommand = "";
     render();
+    const inviteCommandCompleted = [
+      "space.invite.create",
+      "invite.copy",
+      "invite.handoff.copy",
+    ].includes(command);
+    if (!commandFailed && inviteCommandCompleted) {
+      window.requestAnimationFrame(() => {
+        const inviteFlow = app.querySelector(".invite-flow");
+        inviteFlow?.scrollIntoView({ block: "start" });
+        inviteFlow?.querySelector(".command-button")?.focus();
+      });
+    }
     focusCoordinator.restoreWhenNoSurface(
       commandReturnElement,
       () => commandCompletionFocusTarget(command),
@@ -4663,6 +4706,15 @@ function openPeopleUtility(focusSelector = "") {
   uiState.paletteOpen = false;
   uiState.utilityOpen = "people";
   uiState.utilityFocusSelector = focusSelector;
+}
+
+function openInviteUtility() {
+  if (uiState.utilityOpen !== "people") rememberFocusReturn();
+  openPeopleUtility(".invite-flow .command-button");
+  render();
+  window.requestAnimationFrame(() => {
+    app.querySelector(".invite-flow")?.scrollIntoView({ block: "start" });
+  });
 }
 
 function openPeopleForm(disclosureSelector) {
