@@ -421,10 +421,12 @@ submission use the same shared predicate, while Rust remains
 authoritative for message bounds, membership, permissions, mentions, and
 creation-time validity.
 
-Retained search likewise disables **Search Messages** for empty or
-whitespace-only input and reenables it as the person types visible terms. The
-frontend does not interpret those terms; Rust remains the authority for index
-scope, accessible channels, bounds, and returned retained facts. Profile editing
+Retained search likewise disables **Search Messages** for empty,
+control-containing, or more than 1,024 Unicode characters and reenables it as
+the person types valid visible terms. Inline live guidance names the correction;
+leading and trailing whitespace remains valid because Rust trims it. Rust owns
+the same finite query bound and remains the authority for index scope,
+accessible channels, and returned retained facts. Profile editing
 uses the complementary correction pattern: submitting an empty display name
 marks, describes, and focuses that field, and editing it clears only the stale
 validation presentation. Profile, channel, and role names share one advisory

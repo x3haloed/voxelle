@@ -646,11 +646,18 @@ back to disabled in both paths. Rust still owns
 message length, authorization, mention, and semantic admission; this is
 presentation evidence, not accepted-message evidence.
 
-Retained search now prevents the matching locally knowable empty request. Its
-button is disabled for empty and whitespace-only input, enables for visible
-terms, and disables again after keyboard clearing; the submit handler carries
-the same guard. A rendered probe exercised all four transitions. Rust still owns
-query bounds, accessible index scope, and the returned retained-message facts.
+Retained search now has one Rust-owned finite request shape for both human and
+agent callers: after edge whitespace is trimmed, a query must contain 1 to 1,024
+Unicode characters and no control characters. The semantic command returns
+correctable-input recovery for each refusal before lowercasing or scanning
+retained messages. The frontend advisory mirror disables **Search Messages**
+and gives live correction guidance for the same locally knowable shape while
+preserving edge whitespace that Rust accepts. Serialized semantic-command tests
+cover oversized and control-character refusals, and deterministic helper/source
+tests cover the human projection. The prior rendered probe covers only the
+empty, whitespace, visible-term, and cleared transitions; this is not a new
+rendered, packaged-native, or assistive-technology claim. Rust remains the
+authority for query bounds, accessible index scope, and returned retained facts.
 
 The human composer and inline editor now expose a named member picker for
 mentions. Rendered-preview evidence proves that selecting a member inserts the

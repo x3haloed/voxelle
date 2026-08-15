@@ -190,9 +190,12 @@ leading or trailing whitespace produces corrective guidance, and a 4,001
 character draft stays visible but cannot be sent until shortened.
 
 Open retained search and confirm **Search Messages** follows the same disabled
-empty, whitespace, visible-term, and cleared states. In profile editing, submit
-a whitespace-only display name; confirm the field is announced invalid, receives
-focus with **Enter a display name**, and clears that stale error when corrected.
+empty, whitespace, visible-term, and cleared states. Paste a multi-line query
+and then 1,025 Unicode characters; confirm the live guidance names the relevant
+correction, retains the draft, and does not claim a search ran. In profile
+editing, submit a whitespace-only display name; confirm the field is announced
+invalid, receives focus with **Enter a display name**, and clears that stale
+error when corrected.
 Also exercise a leading-space profile name, an 81-character channel name, and a
 trailing-space role name; confirm each form names and focuses its own correction
 without claiming the command was admitted.

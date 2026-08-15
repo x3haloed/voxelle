@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { optionalTextDraftError, shortTextDraftError } from "./form-draft.mjs";
+import { optionalTextDraftError, searchDraftError, shortTextDraftError } from "./form-draft.mjs";
 
 const options = {
   fieldName: "Display name",
@@ -40,4 +40,17 @@ test("optional human text exposes bounded local corrections", () => {
     optionalTextDraftError("😀".repeat(513), { fieldName: "About", maxCharacters: 512 }),
     "About must be 512 characters or fewer.",
   );
+});
+
+test("retained search exposes Rust-shaped local corrections", () => {
+  assert.equal(searchDraftError("   "), "Enter one or more words to search for.");
+  assert.equal(
+    searchDraftError("hello\nworld"),
+    "Search terms cannot contain control characters.",
+  );
+  assert.equal(
+    searchDraftError("😀".repeat(1025)),
+    "Search terms must be 1,024 characters or fewer.",
+  );
+  assert.equal(searchDraftError("  hello world  "), "");
 });

@@ -25,7 +25,8 @@ test("editing the failing control clears only its stale presentation error", () 
   assert.match(source, /clearValidation\(\);\n  const presentation = presentShellError/);
 });
 
-test("retained search cannot submit an empty local query", () => {
-  assert.match(source, /search\.disabled = Boolean\(uiState\.busyCommand\) \|\| !uiState\.searchDraft\.trim\(\)/);
-  assert.match(source, /if \(!uiState\.searchDraft\.trim\(\)\) return;\s*runCommand\("message\.search"/);
+test("retained search cannot submit a locally invalid bounded query", () => {
+  assert.match(source, /const error = searchDraftError\(uiState\.searchDraft\)/);
+  assert.match(source, /if \(searchDraftError\(uiState\.searchDraft\)\) return;\s*runCommand\("message\.search"/);
+  assert.match(source, /guidance\.setAttribute\("aria-live", "polite"\)/);
 });

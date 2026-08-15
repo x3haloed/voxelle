@@ -398,7 +398,11 @@ fn correctable_input_presentation(
             detail.contains("role name must contain a letter or number")
                 || detail.contains("invalid role definition")
         }
-        "message.search" => detail.contains("search query is empty"),
+        "message.search" => {
+            detail.starts_with("search query is ")
+                || detail.starts_with("search query exceeds ")
+                || detail.starts_with("search query contains ")
+        }
         _ => false,
     };
     if !matches {
@@ -429,9 +433,13 @@ fn correctable_input_presentation(
             "That role cannot be created as entered.",
             "Use a name containing a letter or number and choose at least one supported permission.",
         ),
-        "message.search" => (
+        "message.search" if detail.contains("search query is empty") => (
             "Enter something to search for.",
             "Type one or more words from a message or attachment name, then search again.",
+        ),
+        "message.search" => (
+            "That search needs editing.",
+            "Use at most 1,024 characters without control characters, then search again.",
         ),
         _ => unreachable!("matched correctable input command"),
     })
@@ -443,6 +451,7 @@ mod tests {
     use crate::{
         builtin_product_generation, default_ui_ontology, shell_contract_typescript,
         NetworkHealthStatus, ProductGenerationV1, UiPreferences, DEFAULT_ROOM_ID,
+        MAX_SEARCH_QUERY_CHARACTERS,
     };
     use std::collections::BTreeMap;
     use voxelle_core::Keypair;
@@ -1865,6 +1874,38 @@ mod tests {
         assert_eq!(empty_search.message, "Enter something to search for.");
         assert!(empty_search.recovery_message.contains("one or more words"));
         assert!(empty_search.detail.contains("search query is empty"));
+
+        let oversized_search = shell
+            .execute_serialized_command(
+                "message.search",
+                serde_json::json!({
+                    "query": "😀".repeat(MAX_SEARCH_QUERY_CHARACTERS + 1),
+                    "room": null,
+                    "limit": 10
+                }),
+            )
+            .await
+            .expect_err("oversized search rejected");
+        assert_eq!(oversized_search.recovery, ShellRecovery::NeedsInput);
+        assert_eq!(oversized_search.message, "That search needs editing.");
+        assert!(oversized_search
+            .recovery_message
+            .contains("1,024 characters"));
+        assert!(oversized_search.detail.contains("search query exceeds"));
+
+        let control_search = shell
+            .execute_serialized_command(
+                "message.search",
+                serde_json::json!({ "query": "hello\nworld", "room": null, "limit": 10 }),
+            )
+            .await
+            .expect_err("control-character search rejected");
+        assert_eq!(control_search.recovery, ShellRecovery::NeedsInput);
+        assert_eq!(control_search.message, "That search needs editing.");
+        assert!(control_search
+            .recovery_message
+            .contains("control characters"));
+        assert!(control_search.detail.contains("search query contains"));
     }
 
     #[test]

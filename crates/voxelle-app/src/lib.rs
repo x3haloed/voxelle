@@ -48,6 +48,7 @@ const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
 const MAX_KNOWN_PEERS: usize = 128;
 const MAX_PROJECTED_MESSAGES: usize = 500;
 const MAX_PROJECTED_CALL_SIGNALS: usize = 256;
+const MAX_SEARCH_QUERY_CHARACTERS: usize = 1024;
 const LOCAL_HOME_STATE_FILES: [&str; 5] = [
     "identity.json",
     "quic-cert.json",
@@ -2190,10 +2191,17 @@ impl VoxelleHome {
         &self,
         request: &SearchMessagesRequest,
     ) -> Result<Vec<SearchResultView>> {
-        let query = request.query.trim().to_lowercase();
+        let query = request.query.trim();
         if query.is_empty() {
             anyhow::bail!("search query is empty");
         }
+        if query.chars().count() > MAX_SEARCH_QUERY_CHARACTERS {
+            anyhow::bail!("search query exceeds {MAX_SEARCH_QUERY_CHARACTERS} characters");
+        }
+        if query.chars().any(char::is_control) {
+            anyhow::bail!("search query contains control characters");
+        }
+        let query = query.to_lowercase();
         let terms: Vec<&str> = query.split_whitespace().collect();
         let rooms: Vec<String> = if let Some(room) = &request.room {
             vec![room.clone()]
@@ -6986,6 +6994,7 @@ mod tests {
         assert!(source.contains("shortTextDraftError(uiState.roleNameDraft"));
         assert!(source.contains("optionalTextDraftError(uiState.profileAboutDraft"));
         assert!(source.contains("optionalTextDraftError(uiState.channelTopicDraft"));
+        assert!(source.contains("searchDraftError(uiState.searchDraft"));
     }
 
     #[test]

@@ -2520,13 +2520,17 @@ function messageSearchView(snapshot) {
   const fragment = document.createDocumentFragment();
   const form = element("form", "field-stack");
   const search = submitButton("message.search");
+  const guidance = element("span", "composer-validation");
+  guidance.setAttribute("aria-live", "polite");
   const updateSearchAvailability = () => {
-    search.disabled = Boolean(uiState.busyCommand) || !uiState.searchDraft.trim();
+    const error = searchDraftError(uiState.searchDraft);
+    search.disabled = Boolean(uiState.busyCommand) || Boolean(error);
+    guidance.textContent = error;
   };
   updateSearchAvailability();
   form.addEventListener("submit", (event) => {
     event.preventDefault();
-    if (!uiState.searchDraft.trim()) return;
+    if (searchDraftError(uiState.searchDraft)) return;
     runCommand("message.search", {
       query: uiState.searchDraft,
       room: null,
@@ -2541,7 +2545,7 @@ function messageSearchView(snapshot) {
       uiState.searchDraft = value;
       updateSearchAvailability();
     },
-  ), search);
+  ), guidance, search);
   const results = element("ol", "message-list");
   for (const result of snapshot.search_results ?? []) {
     const row = element("li", "message remote");

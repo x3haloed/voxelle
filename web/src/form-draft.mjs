@@ -33,3 +33,16 @@ export function optionalTextDraftError(value, options) {
   }
   return "";
 }
+
+/**
+ * Mirror the locally knowable shape of Rust's retained-search query.
+ * Leading and trailing whitespace remains valid because Rust trims it.
+ * @param {string} value
+ */
+export function searchDraftError(value) {
+  const query = value.trim();
+  if (!query) return "Enter one or more words to search for.";
+  if (/\p{Cc}/u.test(query)) return "Search terms cannot contain control characters.";
+  if ([...query].length > 1024) return "Search terms must be 1,024 characters or fewer.";
+  return "";
+}
