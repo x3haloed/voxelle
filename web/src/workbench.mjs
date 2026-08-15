@@ -124,6 +124,29 @@ export function paletteCommandAvailability(commandId, context) {
   if (commandId === "call.camera.toggle" && !context.joinedCall) {
     return { available: false, reason: "Join this room's call first" };
   }
+  if (
+    [
+      "product.update.check",
+      "product.update.stageAvailable",
+      "product.update.install",
+      "product.update.rotateTrust",
+    ].includes(commandId)
+    && !context.updateAuthenticationAvailable
+  ) {
+    return { available: false, reason: "No trusted release root is available" };
+  }
+  if (commandId === "product.update.stageAvailable" && !context.hasAvailableUpdate) {
+    return { available: false, reason: "Check for a signed update first" };
+  }
+  if (
+    ["product.update.activateStaged", "product.update.discardStaged"].includes(commandId)
+    && !context.hasStagedUpdate
+  ) {
+    return { available: false, reason: "Download and stage a signed update first" };
+  }
+  if (commandId === "product.update.rollback" && !context.hasPreviousGeneration) {
+    return { available: false, reason: "No previous verified product generation is available" };
+  }
   return { available: true, reason: "" };
 }
 

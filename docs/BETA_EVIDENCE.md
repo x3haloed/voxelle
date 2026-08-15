@@ -64,6 +64,15 @@ identifies the same release and sequence, preserves other sections, and refuses
 output overwrite. It records the operator's observations; it does not perform
 the public readback, launch, activation, or rollback itself.
 
+During the packaged update lifecycle, inspect Product Updates and the command
+palette before and after each transition. Confirm download and stage is
+unavailable until a signed release is discovered; activation and discard are
+unavailable until that generation is staged; and rollback is unavailable until
+a previous verified generation exists. Each unavailable action must name its
+missing prerequisite, and each action must become available from the
+Rust-projected state after its prerequisite completes—not from a frontend-only
+assumption.
+
 ## 2. Record native Windows first launch
 
 On an x86-64 Windows machine, verify and install the exact NSIS asset listed by

@@ -319,6 +319,19 @@ non-mutating discovery, staging, and staged-package discard. This is human
 presentation evidence, not new kernel-verification, native activation, or
 release-root custody evidence.
 
+The update view and command palette now derive the same pre-invocation
+availability from the Rust-projected product-generation snapshot. Missing trust
+roots disable discovery, staging, manual install, and trust rotation with an
+explicit reason; an undiscovered release disables staging; a missing staged
+generation disables activation and discard; and missing verified history
+disables rollback. These checks prevent avoidable failing actions but do not
+authorize an update: the unchanged Rust path still authenticates every release,
+transition, sequence, and generation change. A fresh-home rendered preview
+showed each unavailable palette command with its specific prerequisite, while
+the Product Updates surface exposed disabled discovery, install, and trust
+actions with the missing-root description. This is rendered unavailable-state
+evidence, not authenticated update or packaged-native evidence.
+
 That surface now makes signed `.voxupdate` and `.voxtrust` files the ordinary
 portable handoff and keeps complete JSON paste behind explicit disclosure.
 Bounded untrusted previews name the package release, sequence, channel, minimum

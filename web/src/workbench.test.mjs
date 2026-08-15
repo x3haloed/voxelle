@@ -63,6 +63,10 @@ test("palette availability explains causal prerequisites without changing comman
     hasInvite: false,
     joinedCall: false,
     callFull: false,
+    updateAuthenticationAvailable: false,
+    hasAvailableUpdate: false,
+    hasStagedUpdate: false,
+    hasPreviousGeneration: false,
   };
   assert.deepEqual(paletteCommandAvailability("channel.create", fresh), {
     available: false,
@@ -73,6 +77,12 @@ test("palette availability explains causal prerequisites without changing comman
     reason: "Create, join, or recover a space first",
   });
   assert.equal(paletteCommandAvailability("space.join", fresh).available, true);
+  assert.deepEqual(paletteCommandAvailability("product.update.check", fresh), {
+    available: false,
+    reason: "No trusted release root is available",
+  });
+  assert.equal(paletteCommandAvailability("product.update.discardStaged", fresh).available, false);
+  assert.equal(paletteCommandAvailability("product.update.rollback", fresh).available, false);
 
   const active = {
     hasHome: true,
@@ -81,6 +91,10 @@ test("palette availability explains causal prerequisites without changing comman
     hasInvite: false,
     joinedCall: false,
     callFull: false,
+    updateAuthenticationAvailable: true,
+    hasAvailableUpdate: false,
+    hasStagedUpdate: false,
+    hasPreviousGeneration: false,
   };
   assert.equal(paletteCommandAvailability("space.join", active).available, false);
   assert.equal(paletteCommandAvailability("identity.recovery.restore", active).available, false);
@@ -110,5 +124,34 @@ test("palette availability explains causal prerequisites without changing comman
   assert.deepEqual(
     paletteCommandAvailability("call.join", { ...active, callFull: true }),
     { available: false, reason: "This room's direct call is full" },
+  );
+  assert.deepEqual(paletteCommandAvailability("product.update.stageAvailable", active), {
+    available: false,
+    reason: "Check for a signed update first",
+  });
+  assert.equal(
+    paletteCommandAvailability("product.update.stageAvailable", {
+      ...active,
+      hasAvailableUpdate: true,
+    }).available,
+    true,
+  );
+  assert.deepEqual(paletteCommandAvailability("product.update.activateStaged", active), {
+    available: false,
+    reason: "Download and stage a signed update first",
+  });
+  assert.equal(
+    paletteCommandAvailability("product.update.activateStaged", {
+      ...active,
+      hasStagedUpdate: true,
+    }).available,
+    true,
+  );
+  assert.equal(
+    paletteCommandAvailability("product.update.rollback", {
+      ...active,
+      hasPreviousGeneration: true,
+    }).available,
+    true,
   );
 });

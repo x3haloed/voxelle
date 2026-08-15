@@ -267,6 +267,14 @@ cancel. Missing package or trust-transition input routes palette users to the
 same Product Updates surface and required field. Confirmation never substitutes
 for native-kernel authentication or activation.
 
+Update commands expose the Rust-projected lifecycle prerequisite before
+invocation. Discovery and authenticated package or trust submission require an
+available trusted release root; download and stage requires a discovered signed
+release; activation and discard require a staged generation; rollback requires
+a previous verified generation. The view and command palette share those
+availability reasons without changing the stable command vocabulary or treating
+frontend state as update authority.
+
 Portable `.voxupdate` packages and `.voxtrust` transitions lead with named file
 actions. Complete JSON text remains behind explicit disclosure for text-only
 handoffs. Before confirmation, bounded frontend parsing presents release,

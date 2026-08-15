@@ -7006,6 +7006,7 @@ mod tests {
         assert!(source.contains("function disambiguatedInviteLabel"));
         assert!(source.contains("function disambiguatedMessageLabel"));
         assert!(source.contains("function customizationResetConfirmation"));
+        assert!(source.contains("function availabilityButton"));
         assert!(source.contains("function preferenceForm(preference, input, request, isChanged, readDraft, showId)"));
         assert!(source.contains("memberBanConfirmation(profile, memberLabel)"));
         assert!(source.contains("roleAssignmentConfirmation("));

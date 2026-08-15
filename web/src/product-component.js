@@ -1405,7 +1405,7 @@ function productUpdateView(snapshot) {
   if (generation.notice) {
     fragment.append(element("p", "notice", generation.notice));
   }
-  fragment.append(commandButton("product.update.check"));
+  fragment.append(availabilityButton("product.update.check", snapshot));
   if (generation.available_release_id && generation.phase === "available") {
     fragment.append(commandButton("product.update.stageAvailable"));
   }
@@ -1416,7 +1416,11 @@ function productUpdateView(snapshot) {
 
   const form = element("form", "field-stack");
   const installButton = submitButton("product.update.install");
-  installButton.disabled = !uiState.productUpdateDraft.trim();
+  const installAvailability = paletteAvailability("product.update.install", snapshot);
+  installButton.disabled = !uiState.productUpdateDraft.trim() || !installAvailability.available;
+  if (!installAvailability.available) {
+    installButton.setAttribute("aria-description", installAvailability.reason);
+  }
   const packageField = signedArtifactField({
     accept: ".voxupdate,application/json",
     chooseLabel: "Choose update package…",
@@ -1430,7 +1434,7 @@ function productUpdateView(snapshot) {
     previewKind: "package",
     onValue: (value) => {
       uiState.productUpdateDraft = value;
-      installButton.disabled = !value.trim();
+      installButton.disabled = !value.trim() || !installAvailability.available;
     },
   });
   form.append(
@@ -1445,7 +1449,11 @@ function productUpdateView(snapshot) {
   fragment.append(form);
   const trustForm = element("form", "field-stack");
   const trustButton = submitButton("product.update.rotateTrust");
-  trustButton.disabled = !uiState.trustTransitionDraft.trim();
+  const trustAvailability = paletteAvailability("product.update.rotateTrust", snapshot);
+  trustButton.disabled = !uiState.trustTransitionDraft.trim() || !trustAvailability.available;
+  if (!trustAvailability.available) {
+    trustButton.setAttribute("aria-description", trustAvailability.reason);
+  }
   const trustField = signedArtifactField({
     accept: ".voxtrust,application/json",
     chooseLabel: "Choose trust transition…",
@@ -1459,7 +1467,7 @@ function productUpdateView(snapshot) {
     previewKind: "trust",
     onValue: (value) => {
       uiState.trustTransitionDraft = value;
-      trustButton.disabled = !value.trim();
+      trustButton.disabled = !value.trim() || !trustAvailability.available;
     },
   });
   trustForm.append(
@@ -3562,7 +3570,24 @@ function paletteAvailability(commandId, snapshot) {
     hasInvite: Boolean(snapshot.home?.invite?.space_invite_json),
     joinedCall: Boolean(localPeerId && callParticipants.includes(localPeerId)),
     callFull: callParticipants.length >= 4,
+    updateAuthenticationAvailable: snapshot.product_generation.update_authentication_available,
+    hasAvailableUpdate: Boolean(
+      snapshot.product_generation.available_release_id
+      && snapshot.product_generation.phase === "available"
+    ),
+    hasStagedUpdate: Boolean(snapshot.product_generation.staged_release_id),
+    hasPreviousGeneration: snapshot.product_generation.previous_available,
   });
+}
+
+function availabilityButton(command, snapshot) {
+  const button = commandButton(command);
+  const availability = paletteAvailability(command, snapshot);
+  if (!availability.available) {
+    button.disabled = true;
+    button.setAttribute("aria-description", availability.reason);
+  }
+  return button;
 }
 
 /**
