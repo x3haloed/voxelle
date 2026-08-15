@@ -5,6 +5,7 @@ import {
   connectionHeaderState,
   connectionHealthLabel,
   peerActivityEvidence,
+  peerRecordClaimPreview,
   peerTargetKey,
   resolvePeerTarget,
 } from "./connection-status.mjs";
@@ -76,4 +77,37 @@ test("field evidence is attributed to the selected peer rather than a label pref
     diagnosticReached: true,
     synchronized: true,
   });
+});
+
+test("peer availability claims are bounded and remain untrusted preview data", () => {
+  const record = JSON.stringify({
+    v: 1,
+    label: "Carol",
+    space_id: "s:friends",
+    governance_room_id: "s:friends:governance",
+    default_room: "s:friends:channel:general",
+    authority_peer_id: "p:alice",
+    endpoint: {
+      v: 1,
+      addr: "[fd00::23]:49154",
+      peer_id: "p:carol",
+      device_id: "d:carol-laptop",
+      quic_cert_der_b64: "certificate",
+      quic_cert_fingerprint: "sha256:fingerprint",
+    },
+  });
+
+  assert.deepEqual(peerRecordClaimPreview(record), {
+    state: "claims",
+    version: 1,
+    label: "Carol",
+    spaceId: "s:friends",
+    defaultRoom: "s:friends:channel:general",
+    address: "[fd00::23]:49154",
+    peerId: "p:carol",
+    deviceId: "d:carol-laptop",
+    recognized: true,
+  });
+  assert.equal(peerRecordClaimPreview("{").state, "unavailable");
+  assert.equal(peerRecordClaimPreview("x".repeat(128 * 1024 + 1)).state, "unavailable");
 });

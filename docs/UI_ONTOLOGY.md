@@ -316,6 +316,17 @@ exact principal/device tuple to `peer.diagnose` or `peer.sync`, and the Field
 Test view evaluates peer-named activity for the selected target. Selection does
 not import availability, grant membership, or become routing authority.
 
+`peer.import` requires visible draft context. Invoking it from the palette,
+Network Health, or Field Test with no draft opens and focuses one shared
+Connection & sync form instead of submitting empty state. The form bounds and
+previews untrusted label, address, principal, device, and space claims, keeps
+Import disabled for incomplete current-format JSON, and sends the complete raw
+record to Rust for authoritative validation. A foreign-space warning explains
+that availability is not membership and synchronization will still reject an
+authority mismatch. After admission, the imported principal/device tuple
+becomes the explicit manual target; optional auto-sync therefore cannot drift
+to an older stored peer.
+
 Message reply and edit affordances remain inside the conversation surface.
 Selecting Reply establishes local composer context, but the accepted action is
 still `message.send` with the root event ID in its payload. Inline editing and

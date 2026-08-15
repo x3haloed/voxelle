@@ -283,6 +283,15 @@ h3 {
   margin: 0;
 }
 
+.peer-record-review {
+  display: grid;
+  gap: 8px;
+}
+
+.peer-record-review > * {
+  margin: 0;
+}
+
 .success-label {
   color: var(--runtime-online);
   font-weight: 700;

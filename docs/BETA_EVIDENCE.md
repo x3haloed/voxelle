@@ -83,6 +83,14 @@ role record before invoking the peer-named action. Retain the corresponding
 peer-named Service Activity result. A generic success against whichever peer
 happened to be stored first is not directional field evidence.
 
+When a peer availability record must be imported, begin from the generic
+**Import Peer** action. Confirm it opens and focuses the bounded review rather
+than submitting an empty hidden draft. Record the claimed label, IPv6 address,
+principal, device, and space; compare them with the source role; and confirm
+incomplete JSON cannot be submitted. These are untrusted presentation claims:
+only the native kernel stores a validated record, and synchronization still
+refuses a record whose authority does not match the active home.
+
 ## 4. Record human causal-path evidence
 
 Use an actual supported desktop and name the assistive technology in the

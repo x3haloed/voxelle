@@ -125,6 +125,10 @@ hello from peer b
 ### Peer A Again
 
 1. Import B's peer record if needed; this must not change membership.
+   The generic **Import Peer** action must open the Connection & sync review,
+   focus the availability input, show B's claimed label/address/principal/device
+   and space, and keep Import disabled for incomplete JSON. Compare those claims
+   with B's recorded values before importing; Rust remains the validator.
 2. In `Connection & sync`, select B and confirm the displayed address,
    principal, and device match B's recorded values. Run the B-named diagnosis
    and sync actions; do not infer the target from peer ordering.
@@ -159,7 +163,8 @@ hello from peer c
 ```
 
 7. Have B import C's ordinary peer record if needed, explicitly select C,
-   confirm C's address/principal/device tuple, diagnose C, and sync C.
+   confirm the import review and C's address/principal/device tuple, diagnose C,
+   and sync C.
 8. Bring A back online, explicitly select either B or C, and sync that named
    peer. Record which topology edge was exercised.
 9. Confirm all three peers can eventually see A, B, and C messages.

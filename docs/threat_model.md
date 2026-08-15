@@ -203,6 +203,8 @@ Reviews should treat the following as repository-wide invariants:
 
 **Review focus.** The WebView is a high-privilege origin because a script that reaches the bridge can exercise the semantic command host. CSP, navigation policy, remote-content exclusion, `data:` attachment behavior, MIME handling, external opener behavior, and all DOM injection sinks deserve high scrutiny. Type-safe command parsing does not authenticate who called the bridge. Sensitive commands may need user-presence or explicit confirmation even when syntactically valid. Generated shell contracts must match Rust; fixture/preview clients cannot be security evidence.
 
+Peer availability JSON is attacker-controlled routing input, not membership. The frontend bounds and previews its claimed label, IPv6 address, principal, device, and space only for human review; it never treats that parse as validation. The Rust importer validates the complete endpoint record, and later synchronization independently checks the active space authority. Context-free import commands must open the visible review rather than sending stale or empty hidden draft state.
+
 ### 9. Inhabitant HTTP/SSE and CLI automation
 
 **Attacker-controlled inputs.** `--host`, `--port`, home paths, discovery-file path, HTTP command IDs and JSON bodies, connection count, SSE clients, and any process able to read the discovery file or connect to the selected address.

@@ -486,6 +486,20 @@ target retention, fallback when a record disappears, keyboard focus, visible
 identity, and command payloads. This does not add routing or membership
 authority, and it is not non-loopback or three-machine evidence.
 
+The no-peer recovery action is now causally complete. A context-free
+`peer.import` from the palette, Network Health, or Field Test opens and focuses
+the shared Connection & sync availability review rather than submitting an
+empty frontend draft. The bounded preview exposes claimed label, address,
+principal, device, and space while repeatedly naming those claims as untrusted;
+malformed or incomplete current-format JSON cannot be submitted. Rust still
+validates and stores the complete record, and the existing sync authority check
+still refuses a foreign-home record. A successful import selects that exact
+principal/device tuple for manual checks and optional auto-sync. Deterministic
+preview/selection tests and rendered palette-to-review evidence cover malformed
+input, foreign-space warning, focus, draft preservation on refusal, and refusal
+to simulate preview acceptance. This is not accepted native import or external
+network evidence.
+
 The member-ban affordance now requires an explicit confirmation that explains
 loss of participation authority, retained history, and the fresh-invite
 requirement before it invokes `member.ban`. Rendered-preview evidence exercises

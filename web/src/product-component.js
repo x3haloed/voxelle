@@ -53,6 +53,7 @@ const uiState = {
   bindDraft: "",
   advertiseDraft: "",
   peerTargetKey: "",
+  peerImportOpen: false,
   productUpdateDraft: "",
   trustTransitionDraft: "",
   productConfirmationCommand: "",
@@ -466,7 +467,12 @@ function connectionCenter(snapshot) {
   close.dataset.dialogInitialFocus = "true";
   heading.append(copy, close);
   const body = element("div", "connection-center-body");
-  body.append(serviceOptions(), peerTargetView(snapshot, true), networkHealthView(snapshot));
+  body.append(
+    serviceOptions(),
+    peerTargetView(snapshot, true),
+    peerImportDisclosure(snapshot),
+    networkHealthView(snapshot),
+  );
   aside.append(heading, body);
   return aside;
 }
@@ -1562,6 +1568,94 @@ function peerTargetView(snapshot, includeActions = false) {
 }
 
 /** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function peerImportDisclosure(snapshot) {
+  const details = element("details", "advanced-details peer-import-disclosure");
+  details.open = uiState.peerImportOpen
+    || (snapshot.home?.peers.length ?? 0) === 0
+    || uiState.peerRecordDraft.trim() !== "";
+  details.addEventListener("toggle", () => {
+    uiState.peerImportOpen = details.open;
+  });
+  details.append(
+    element("summary", "", (snapshot.home?.peers.length ?? 0) === 0
+      ? "Add peer availability"
+      : "Add another peer"),
+    peerImportForm(snapshot),
+  );
+  return details;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
+function peerImportForm(snapshot) {
+  const form = element("form", "field-stack peer-import-form");
+  const textarea = element("textarea", "peer-record-input");
+  textarea.setAttribute("aria-label", "Peer availability JSON");
+  textarea.placeholder = "Paste peer availability JSON";
+  textarea.rows = 5;
+  textarea.value = uiState.peerRecordDraft;
+  const review = element("div", "peer-record-review");
+  review.setAttribute("aria-live", "polite");
+  const submit = submitButton("peer.import");
+  const update = (value) => {
+    uiState.peerRecordDraft = value;
+    const preview = peerRecordClaimPreview(value);
+    review.replaceChildren(peerRecordReview(preview, snapshot));
+    submit.disabled = uiState.busyCommand !== ""
+      || preview.state !== "claims"
+      || !preview.recognized;
+  };
+  textarea.addEventListener("input", () => update(textarea.value));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    runCommand("peer.import").catch(reportError);
+  });
+  form.append(
+    element(
+      "p",
+      "summary",
+      "Availability records help members connect. They never grant space membership, roles, or permission to synchronize content.",
+    ),
+    textarea,
+    review,
+    submit,
+  );
+  update(uiState.peerRecordDraft);
+  return form;
+}
+
+function peerRecordReview(preview, snapshot) {
+  if (preview.state === "empty") {
+    return element("p", "muted", "Paste a complete record to review its claimed destination before importing.");
+  }
+  if (preview.state === "unavailable") {
+    return element("p", "invite-review-warning", `${preview.reason} Nothing can be imported yet.`);
+  }
+  const activeRoom = snapshot.home?.profile.default_room ?? "";
+  const match = preview.defaultRoom === activeRoom;
+  const fragment = document.createDocumentFragment();
+  fragment.append(
+    element("p", "invite-review-warning", "Untrusted availability claims; the Rust kernel validates the complete record before storing it."),
+    definitionGrid([
+      ["Peer", preview.label],
+      ["Address", preview.address || "Unrecognized"],
+      ["Principal", preview.peerId || "Unrecognized"],
+      ["Device", preview.deviceId || "Unrecognized"],
+      ["Space", preview.spaceId || "Unrecognized"],
+    ]),
+  );
+  if (!preview.recognized) {
+    fragment.append(element("p", "invite-review-warning", "This does not contain the complete recognizable v1 claims."));
+  } else if (!match) {
+    fragment.append(element(
+      "p",
+      "recovery-note",
+      "This record claims a different default room. It may describe availability, but synchronization with this home will refuse an authority mismatch.",
+    ));
+  }
+  return fragment;
+}
+
+/** @param {import("./shell-contract").ShellSnapshotView} snapshot */
 function selectedPeerTarget(snapshot) {
   return resolvePeerTarget(snapshot.home?.peers ?? [], uiState.peerTargetKey);
 }
@@ -1667,28 +1761,7 @@ function inviteExchangeView(snapshot) {
   }
 
   const manual = element("details", "advanced-details");
-  manual.append(element("summary", "", "Manual peer setup"));
-  const importGroup = element("form", "field-stack");
-  importGroup.addEventListener("submit", (event) => {
-    event.preventDefault();
-    runCommand("peer.import").catch(reportError);
-  });
-  const textarea = element("textarea", "peer-record-input");
-  textarea.placeholder = "Paste peer record JSON";
-  textarea.value = uiState.peerRecordDraft;
-  textarea.addEventListener("input", () => {
-    uiState.peerRecordDraft = textarea.value;
-  });
-  importGroup.append(
-    element(
-      "p",
-      "summary",
-      "Peer records provide availability only; they never grant membership. Use this when diagnostics require a peer address outside an invite.",
-    ),
-    textarea,
-    submitButton("peer.import"),
-  );
-  manual.append(importGroup);
+  manual.append(element("summary", "", "Manual peer setup"), peerImportForm(snapshot));
 
   fragment.append(inviteGroup, active, manual);
   return fragment;
@@ -3066,6 +3139,13 @@ function submitButton(command) {
  * @param {unknown} [payload]
  */
 async function runCommand(command, payload) {
+  if (command === "peer.import") {
+    const preview = peerRecordClaimPreview(uiState.peerRecordDraft);
+    if (preview.state !== "claims" || !preview.recognized) {
+      openPeerImport();
+      return;
+    }
+  }
   if (
     (command === "product.update.install" && !uiState.productUpdateDraft.trim())
     || (command === "product.update.rotateTrust" && !uiState.trustTransitionDraft.trim())
@@ -3173,15 +3253,22 @@ async function runCommand(command, payload) {
         });
         return;
       }
-      case "peer.import":
+      case "peer.import": {
+        const preview = peerRecordClaimPreview(uiState.peerRecordDraft);
+        uiState.peerTargetKey = peerTargetKey({
+          peer_id: preview.peerId,
+          device_id: preview.deviceId,
+        });
         currentSnapshot = await shell.execute(command, {
           peer_record_json: uiState.peerRecordDraft,
         });
         uiState.peerRecordDraft = "";
+        uiState.peerImportOpen = false;
         if (ontologyPresentation(currentSnapshot.ui_ontology).syncAutoAfterImport) {
           currentSnapshot = await shell.execute("peer.sync", firstPeerRequest());
         }
         return;
+      }
       case "peer.diagnose":
       case "peer.sync":
         currentSnapshot = await shell.execute(
@@ -3586,6 +3673,15 @@ function firstPeerRequest() {
     throw new Error("no peer available");
   }
   return peerRequest(peer);
+}
+
+function openPeerImport() {
+  if (!uiState.connectionOpen) rememberFocusReturn();
+  uiState.utilityOpen = "";
+  uiState.connectionOpen = true;
+  uiState.peerImportOpen = true;
+  render();
+  window.requestAnimationFrame(() => app.querySelector(".connection-center .peer-record-input")?.focus());
 }
 
 /** @param {import("./shell-contract").PeerListItemView} peer */

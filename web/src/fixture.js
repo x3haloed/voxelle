@@ -27,11 +27,14 @@ export const fixtureSnapshot = {
     },
     invite: {
       peer_record_json:
-        '{\n  "v": 1,\n  "label": "Alice",\n  "default_room": "room:general",\n  "endpoint": {\n    "v": 1,\n    "addr": "[::1]:49152",\n    "peer_id": "ed25519:alice000000000000000000000000000000000000000000000000",\n    "device_id": "ed25519:device0000000000000000000000000000000000000000000000",\n    "quic_cert_der_b64": "sample",\n    "quic_cert_fingerprint": "sha256:sample"\n  }\n}\n',
+        '{\n  "v": 1,\n  "label": "Alice",\n  "space_id": "s:preview",\n  "governance_room_id": "s:preview:governance",\n  "default_room": "room:general",\n  "authority_peer_id": "p:preview-alice",\n  "endpoint": {\n    "v": 1,\n    "addr": "[::1]:49152",\n    "peer_id": "ed25519:alice000000000000000000000000000000000000000000000000",\n    "device_id": "ed25519:device0000000000000000000000000000000000000000000000",\n    "quic_cert_der_b64": "sample",\n    "quic_cert_fingerprint": "sha256:sample"\n  }\n}\n',
       peer_record: {
         v: 1,
         label: "Alice",
+        space_id: "s:preview",
+        governance_room_id: "s:preview:governance",
         default_room: "room:general",
+        authority_peer_id: "p:preview-alice",
         endpoint: {
           v: 1,
           addr: "[::1]:49152",
