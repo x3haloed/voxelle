@@ -146,6 +146,45 @@ observations with the other supporting evidence. The receipt contains only the
 bounded operator attestation and must not contain recordings or private
 conversation content.
 
+After completing those observations, record the human section without manually
+editing nested JSON. Start from the latest partial receipt so completed Windows,
+field, or distribution sections remain intact. Every `--attest-*` flag is
+required separately; omission fails before creating the output:
+
+```sh
+cargo run -q -p voxelle-release -- record-human-beta-evidence \
+  --input CURRENT_RECEIPT.json \
+  --output beta-evidence.human.json \
+  --executed-utc 2026-08-14T20:00:00Z \
+  --operator "OPERATOR NAME" \
+  --platform macOS \
+  --technology VoiceOver \
+  --media-role A B \
+  --attest-keyboard-only \
+  --attest-fresh-setup \
+  --attest-invite-join \
+  --attest-conversation \
+  --attest-recovery \
+  --attest-customization \
+  --attest-degraded-connection \
+  --attest-media-controls \
+  --attest-physical-microphone-capture \
+  --attest-physical-camera-capture \
+  --attest-permission-denial-recovery \
+  --attest-direct-audio-observed-by-all \
+  --attest-direct-video-observed-by-all \
+  --attest-direct-connection-state-visible \
+  --attest-leave-stopped-capture \
+  --attest-missing-peer-state-visible
+```
+
+Use `--platform Windows --technology Narrator` (or the actual named Windows
+technology) when that is the tested surface. Roles must be two or three distinct
+members of A, B, and C from the same receipt. The recorder validates the human
+section, preserves all other sections, and refuses to overwrite an existing
+output. It improves recording accuracy; it does not observe the test or turn an
+operator assertion into proof.
+
 ## 5. Establish signing-secret custody
 
 The ordinary release key and recovery-only key carry different capabilities and

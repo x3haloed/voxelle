@@ -694,3 +694,12 @@ remain the external gates already named in the evidence horizon, not locally
 completed claims. The release-bound beta receipt now requires those human
 external gates explicitly, so local mocks and semantic tests cannot silently
 stand in for lived evidence.
+
+Human-gate recording no longer requires hand-editing its nested receipt
+section. The release CLI copies the latest partial `voxelle-beta-evidence/v1`
+receipt, requires an explicit flag for every keyboard-only assistive and
+physical-media observation, validates the complete human section against the
+field roles, preserves other evidence sections, and refuses output overwrite.
+An end-to-end disposable receipt proves successful recording and fail-closed
+omission without claiming the synthetic values as lived evidence. The command
+records operator attestations; it does not observe or strengthen them.

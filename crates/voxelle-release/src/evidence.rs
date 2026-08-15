@@ -294,6 +294,18 @@ pub fn validate(
     Ok(())
 }
 
+pub fn record_human(evidence: &mut BetaEvidenceV1, human: HumanEvidenceV1) -> Result<()> {
+    if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
+        return Err(anyhow!(
+            "unsupported beta evidence format {}",
+            evidence.format
+        ));
+    }
+    validate_human(&human, &evidence.field)?;
+    evidence.human = human;
+    Ok(())
+}
+
 fn validate_distribution(
     distribution: &DistributionEvidenceV1,
     manifest: &ReleaseManifestV1,
@@ -779,6 +791,27 @@ mod tests {
             "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f",
         )
         .expect("valid evidence");
+    }
+
+    #[test]
+    fn human_recorder_validates_before_replacing_the_template_section() {
+        let complete = valid();
+        let observed = complete.human.clone();
+        let mut receipt = complete.clone();
+        receipt.human.operator.clear();
+        receipt.human.assistive_technology.recovery = false;
+
+        record_human(&mut receipt, observed.clone()).expect("record valid human evidence");
+        assert_eq!(receipt.human.operator, "operator");
+        assert!(receipt.human.assistive_technology.recovery);
+        assert_eq!(receipt.human.media.participant_roles, vec!["A", "B"]);
+
+        let mut refused = observed;
+        refused.media.physical_camera_capture = false;
+        let retained_operator = receipt.human.operator.clone();
+        assert!(record_human(&mut receipt, refused).is_err());
+        assert_eq!(receipt.human.operator, retained_operator);
+        assert!(receipt.human.media.physical_camera_capture);
     }
 
     #[test]

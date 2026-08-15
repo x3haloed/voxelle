@@ -121,6 +121,54 @@ enum Command {
         #[arg(long)]
         source_commit: String,
     },
+    RecordHumanBetaEvidence {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        executed_utc: String,
+        #[arg(long)]
+        operator: String,
+        #[arg(long, value_parser = ["macOS", "Windows"])]
+        platform: String,
+        #[arg(long)]
+        technology: String,
+        #[arg(long = "media-role", required = true, num_args = 2..=3, value_parser = ["A", "B", "C"])]
+        media_roles: Vec<String>,
+        #[arg(long, required = true)]
+        attest_keyboard_only: bool,
+        #[arg(long, required = true)]
+        attest_fresh_setup: bool,
+        #[arg(long, required = true)]
+        attest_invite_join: bool,
+        #[arg(long, required = true)]
+        attest_conversation: bool,
+        #[arg(long, required = true)]
+        attest_recovery: bool,
+        #[arg(long, required = true)]
+        attest_customization: bool,
+        #[arg(long, required = true)]
+        attest_degraded_connection: bool,
+        #[arg(long, required = true)]
+        attest_media_controls: bool,
+        #[arg(long, required = true)]
+        attest_physical_microphone_capture: bool,
+        #[arg(long, required = true)]
+        attest_physical_camera_capture: bool,
+        #[arg(long, required = true)]
+        attest_permission_denial_recovery: bool,
+        #[arg(long, required = true)]
+        attest_direct_audio_observed_by_all: bool,
+        #[arg(long, required = true)]
+        attest_direct_video_observed_by_all: bool,
+        #[arg(long, required = true)]
+        attest_direct_connection_state_visible: bool,
+        #[arg(long, required = true)]
+        attest_leave_stopped_capture: bool,
+        #[arg(long, required = true)]
+        attest_missing_peer_state_visible: bool,
+    },
     VerifyBetaEvidence {
         #[arg(long)]
         trust_roots: PathBuf,
@@ -251,6 +299,66 @@ fn main() -> Result<()> {
             let template = evidence::template(&manifest, &roots, source_commit)?;
             write_new_json(&output, &template)?;
             println!("wrote beta evidence template {}", output.display());
+            Ok(())
+        }
+        Command::RecordHumanBetaEvidence {
+            input,
+            output,
+            executed_utc,
+            operator,
+            platform,
+            technology,
+            media_roles,
+            attest_keyboard_only,
+            attest_fresh_setup,
+            attest_invite_join,
+            attest_conversation,
+            attest_recovery,
+            attest_customization,
+            attest_degraded_connection,
+            attest_media_controls,
+            attest_physical_microphone_capture,
+            attest_physical_camera_capture,
+            attest_permission_denial_recovery,
+            attest_direct_audio_observed_by_all,
+            attest_direct_video_observed_by_all,
+            attest_direct_connection_state_visible,
+            attest_leave_stopped_capture,
+            attest_missing_peer_state_visible,
+        } => {
+            let mut receipt: evidence::BetaEvidenceV1 =
+                serde_json::from_slice(&fs::read(&input).context("read beta evidence receipt")?)
+                    .context("parse beta evidence receipt")?;
+            let human = evidence::HumanEvidenceV1 {
+                executed_utc,
+                operator,
+                assistive_technology: evidence::AssistiveTechnologyEvidenceV1 {
+                    platform,
+                    technology,
+                    keyboard_only: attest_keyboard_only,
+                    fresh_setup: attest_fresh_setup,
+                    invite_join: attest_invite_join,
+                    conversation: attest_conversation,
+                    recovery: attest_recovery,
+                    customization: attest_customization,
+                    degraded_connection: attest_degraded_connection,
+                    media_controls: attest_media_controls,
+                },
+                media: evidence::MediaEvidenceV1 {
+                    participant_roles: media_roles,
+                    physical_microphone_capture: attest_physical_microphone_capture,
+                    physical_camera_capture: attest_physical_camera_capture,
+                    permission_denial_recovery: attest_permission_denial_recovery,
+                    direct_audio_observed_by_all: attest_direct_audio_observed_by_all,
+                    direct_video_observed_by_all: attest_direct_video_observed_by_all,
+                    direct_connection_state_visible: attest_direct_connection_state_visible,
+                    leave_stopped_capture: attest_leave_stopped_capture,
+                    missing_peer_state_visible: attest_missing_peer_state_visible,
+                },
+            };
+            evidence::record_human(&mut receipt, human)?;
+            write_new_json(&output, &receipt)?;
+            println!("recorded human beta evidence in {}", output.display());
             Ok(())
         }
         Command::VerifyBetaEvidence {
