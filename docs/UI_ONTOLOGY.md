@@ -122,7 +122,10 @@ selected conversation and composer remain operable before secondary surfaces.
 This responsive projection must not rewrite persisted `place_id`, order, or
 visibility state, and it must not create a compact-only command path. Header
 actions and transient Connection and utility surfaces remain inside the
-scrollbar-safe containing width without requiring horizontal scrolling.
+scrollbar-safe containing width without requiring horizontal scrolling. Header
+actions and composer controls use bounded two-column projections at compact
+widths so routine navigation and composition do not each consume a full row or
+impose an intrinsic minimum wider than the conversation.
 When that width can no longer preserve a genuinely nonmodal panel beside a
 wrapped header, Connection and utility surfaces become viewport-contained
 modals without changing their view or command identities. Their `aria-modal`

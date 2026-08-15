@@ -1381,6 +1381,22 @@ kbd {
     display: grid;
   }
 
+  .header-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-content: stretch;
+  }
+
+  .header-actions > * {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .header-actions > .shell-mode,
+  .header-more > summary {
+    text-align: center;
+  }
+
   .workbench,
   .workbench.without-inspector {
     grid-template-areas:
@@ -1409,7 +1425,7 @@ kbd {
   }
 
   .composer-controls {
-    grid-template-columns: auto 1fr auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .composer-hint {

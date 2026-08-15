@@ -227,7 +227,9 @@ user-expanded disclosures stay open across an ordinary refresh.
 Resize the supported desktop window to its narrowest practical width during one
 conversation path. Confirm the header actions, selected conversation, composer,
 and transient Connection or utility action remain keyboard-reachable without
-document-level horizontal scrolling. Record the window size and any wrapping or
+document-level horizontal scrolling. At compact width, confirm header actions
+and composer controls form bounded two-column rows rather than pushing one
+routine action onto every row. Record the window size and any wrapping or
 stacking behavior; this operator observation complements rather than replaces
 the assistive-technology evidence above.
 If a transient surface becomes modal at that width, confirm it is announced as

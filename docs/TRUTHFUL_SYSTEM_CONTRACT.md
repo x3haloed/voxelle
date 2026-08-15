@@ -674,10 +674,15 @@ or actual assistive-technology evidence.
 The populated active-home surface has now crossed the matching 420×700 rendered
 gate. The header, selected conversation, messages, composer, and direct-media
 actions remain in one vertical projection with equal document client and scroll
-widths. Opening People exposed that the prior fixed 104px panel offset covered
-the dynamically wrapped header while leaving its actions focusable. Compact
-Connection and utility panels now become viewport-contained modals, report
-`aria-modal=true`, and trap Tab within visible controls. The shared focus order
+widths. The compact header now groups its six routine surfaces into two bounded
+columns instead of six separate rows. A 320×700 discriminating probe then
+exposed an independent intrinsic-width overflow in the composer controls; they
+now use the same bounded two-column projection. Repeated probes observed equal
+document client and scroll widths at both 320px and 420px, with matching composer
+client and scroll widths. Opening People exposed that the prior fixed 104px
+panel offset covered the dynamically wrapped header while leaving its actions
+focusable. Compact Connection and utility panels now become viewport-contained
+modals, report `aria-modal=true`, and trap Tab within visible controls. The shared focus order
 keeps native disclosure summaries but excludes their collapsed descendants; a
 rendered Shift+Tab probe wrapped from **Close** to **Manual peer setup**. Desktop
 widths retain the existing nonmodal panels and command paths. This is rendered
