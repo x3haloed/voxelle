@@ -6998,6 +6998,8 @@ mod tests {
         assert!(source.contains("optionalTextDraftError(uiState.profileAboutDraft"));
         assert!(source.contains("optionalTextDraftError(uiState.channelTopicDraft"));
         assert!(source.contains("searchDraftError(uiState.searchDraft"));
+        assert!(source.contains("optionalIpv6SocketDraftError(uiState.bindDraft"));
+        assert!(source.contains("optionalIpv6SocketDraftError(uiState.advertiseDraft"));
     }
 
     #[test]

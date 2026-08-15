@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { optionalTextDraftError, searchDraftError, shortTextDraftError } from "./form-draft.mjs";
+import {
+  optionalIpv6SocketDraftError,
+  optionalTextDraftError,
+  searchDraftError,
+  shortTextDraftError,
+} from "./form-draft.mjs";
 
 const options = {
   fieldName: "Display name",
@@ -53,4 +58,24 @@ test("retained search exposes Rust-shaped local corrections", () => {
     "Search terms must be 1,024 characters or fewer.",
   );
   assert.equal(searchDraftError("  hello world  "), "");
+});
+
+test("optional connection addresses expose bracketed IPv6 corrections", () => {
+  assert.equal(optionalIpv6SocketDraftError("", "Bind address"), "");
+  assert.equal(optionalIpv6SocketDraftError("[::]:0", "Bind address"), "");
+  assert.equal(optionalIpv6SocketDraftError("[2001:db8::4]:47000", "Advertised address"), "");
+  assert.equal(optionalIpv6SocketDraftError("[fe80::4%3]:47000", "Advertised address"), "");
+  assert.equal(optionalIpv6SocketDraftError("[::ffff:192.0.2.1]:47000", "Bind address"), "");
+  assert.equal(
+    optionalIpv6SocketDraftError("2001:db8::4", "Advertised address"),
+    "Advertised address must use a bracketed IPv6 address and port, such as [::]:0.",
+  );
+  assert.equal(
+    optionalIpv6SocketDraftError("[2001:db8::4]:70000", "Advertised address"),
+    "Advertised address port must be between 0 and 65,535.",
+  );
+  assert.equal(
+    optionalIpv6SocketDraftError("[not-ipv6]:47000", "Advertised address"),
+    "Advertised address contains an invalid IPv6 address.",
+  );
 });

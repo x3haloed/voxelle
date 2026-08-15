@@ -185,6 +185,13 @@ the live review names the selected signed bearer-capability window and the
 button says **Create signed invite**. After creation, confirm the projected
 absolute expiry matches that choice.
 
+In **Connection & sync**, enter an advertised IPv6 address without brackets or
+a port, then a bracketed address with port `70000`. Invoke **Go Online** each
+time and confirm the exact field is announced invalid, receives focus, and the
+service does not reconfigure. Correct it to a real bracketed IPv6 socket with a
+valid port and continue through the native connection path. Leaving both fields
+empty must retain automatic local setup.
+
 Before sending conversation content, confirm **Send Message** is disabled for
 an empty or whitespace-only draft, becomes enabled for visible text or a member
 inserted through **Mention someone**, and disables again when the draft is

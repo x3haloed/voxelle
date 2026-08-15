@@ -569,6 +569,18 @@ input, foreign-space warning, focus, draft preservation on refusal, and refusal
 to simulate preview acceptance. This is not accepted native import or external
 network evidence.
 
+Advanced Bind and Advertise input now presents the complete IPv6 socket shape
+with a port instead of ambiguously asking for an address. One advisory helper
+accepts empty automatic defaults or bracketed IPv6 sockets, including numeric
+scope IDs and IPv4-mapped tails, while correcting edge whitespace, controls,
+malformed addresses, missing ports, and ports above 65,535. **Go Online** opens
+Connection & sync, marks and focuses the exact invalid field, and does not
+invoke the semantic command until both drafts are locally usable. Rust's typed
+`SocketAddr` deserialization and service startup remain authoritative for the
+accepted configuration. Deterministic helper, product-source, and native bundle
+tests cover this presentation path; this is not new rendered, packaged-native,
+non-loopback, or field evidence.
+
 The member-ban affordance now requires an explicit confirmation that explains
 loss of participation authority, retained history, and the fresh-invite
 requirement before it invokes `member.ban`. Rendered-preview evidence exercises

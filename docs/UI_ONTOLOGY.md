@@ -102,6 +102,14 @@ advanced details for diagnosis and intervention. Those disclosures project the
 same Rust-owned state and invoke the same semantic commands; they are not a
 parallel authority path.
 
+Advanced connection addressing names the complete input unit: a bracketed IPv6
+socket with its port. Empty Bind and Advertise values retain automatic local
+setup. Locally knowable edge whitespace, control characters, malformed IPv6,
+missing ports, and ports above 65,535 keep **Go Online** from invoking the
+command; Connection & sync opens, describes the exact field, and focuses it.
+Rust's typed `SocketAddr` deserialization and native service startup remain the
+authority for accepted network configuration and reachability.
+
 Governance follows the same rule. Role creation exposes named, bounded
 permission choices; role assignment, ban, and unban controls lead with member
 and role names while stable principal and role IDs remain command payloads.

@@ -1542,14 +1542,20 @@ function serviceOptions() {
   options.append(
     labeledInput("Bind", "Optional local bind, e.g. [::]:0", uiState.bindDraft, (value) => {
       uiState.bindDraft = value;
-    }),
+    }, "service-bind"),
     labeledInput(
       "Advertise",
-      "Optional advertised IPv6 address",
+      "Optional advertised socket, e.g. [2001:db8::4]:47000",
       uiState.advertiseDraft,
       (value) => {
         uiState.advertiseDraft = value;
       },
+      "service-advertise",
+    ),
+    element(
+      "p",
+      "summary",
+      "Use bracketed IPv6 sockets with ports. Leave both blank for automatic local setup; advertise a reachable global IPv6 socket for other machines.",
     ),
   );
   return options;
@@ -3532,6 +3538,22 @@ async function runCommand(command, payload) {
   if (command === "message.search" && !payload) {
     openSearchUtility();
     return;
+  }
+  if (command === "runtime.goOnline") {
+    const addressErrors = [
+      [optionalIpv6SocketDraftError(uiState.bindDraft, "Bind address"), "service-bind"],
+      [optionalIpv6SocketDraftError(uiState.advertiseDraft, "Advertised address"), "service-advertise"],
+    ];
+    const invalidAddress = addressErrors.find(([message]) => message);
+    if (invalidAddress) {
+      if (!uiState.connectionOpen) rememberFocusReturn();
+      uiState.paletteOpen = false;
+      uiState.utilityOpen = "";
+      uiState.connectionOpen = true;
+      setUserError(invalidAddress[0], invalidAddress[1]);
+      render();
+      return;
+    }
   }
   if (command === "peer.import") {
     const preview = peerRecordClaimPreview(uiState.peerRecordDraft);
