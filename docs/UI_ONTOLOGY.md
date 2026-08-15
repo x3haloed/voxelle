@@ -419,6 +419,14 @@ and form submission use the same shared predicate, while Rust remains
 authoritative for message bounds, membership, permissions, mentions, and
 creation-time validity.
 
+Retained search likewise disables **Search Messages** for empty or
+whitespace-only input and reenables it as the person types visible terms. The
+frontend does not interpret those terms; Rust remains the authority for index
+scope, accessible channels, bounds, and returned retained facts. Profile editing
+uses the complementary correction pattern: submitting an empty display name
+marks, describes, and focuses that field, and editing it clears only the stale
+validation presentation.
+
 Message reply and edit affordances remain inside the conversation surface.
 Selecting Reply establishes local composer context, but the accepted action is
 still `message.send` with the root event ID in its payload. Inline editing and

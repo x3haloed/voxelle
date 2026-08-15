@@ -187,6 +187,11 @@ cleared. Open inline editing and confirm **Save changes** follows the same
 empty, whitespace, visible-content, and cleared states. Then send and edit
 through the ordinary admitted paths.
 
+Open retained search and confirm **Search Messages** follows the same disabled
+empty, whitespace, visible-term, and cleared states. In profile editing, submit
+a whitespace-only display name; confirm the field is announced invalid, receives
+focus with **Enter a display name**, and clears that stale error when corrected.
+
 After restoring identity on the fresh device, confirm the success status states
 that authority from previous devices was revoked and directs the person to save
 a fresh offline recovery kit. Keyboard focus must land on that fresh-kit action,

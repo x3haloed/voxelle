@@ -5,6 +5,7 @@ import test from "node:test";
 const source = readFileSync(new URL("./product-component.js", import.meta.url), "utf8");
 
 test("correctable form errors identify their failing controls", () => {
+  assert.match(source, /setUserError\("Enter a display name\.", "profile-name"\)/);
   assert.match(source, /setUserError\("Enter a channel name\.", "channel-name"\)/);
   assert.match(source, /setUserError\("Enter a role name\.", "role-name"\)/);
   assert.match(source, /setUserError\("Choose at least one permission for this role\.", "role-permissions"\)/);
@@ -20,4 +21,9 @@ test("editing the failing control clears only its stale presentation error", () 
   assert.match(source, /clearCorrectedValidation\(validationTarget\)/);
   assert.match(source, /uiState\.validationTarget !== target/);
   assert.match(source, /clearValidation\(\);\n  const presentation = presentShellError/);
+});
+
+test("retained search cannot submit an empty local query", () => {
+  assert.match(source, /search\.disabled = Boolean\(uiState\.busyCommand\) \|\| !uiState\.searchDraft\.trim\(\)/);
+  assert.match(source, /if \(!uiState\.searchDraft\.trim\(\)\) return;\s*runCommand\("message\.search"/);
 });

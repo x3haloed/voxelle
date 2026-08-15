@@ -1099,6 +1099,11 @@ function profileSummaryView(snapshot) {
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!uiState.profileNameDraft.trim()) {
+      setUserError("Enter a display name.", "profile-name");
+      render();
+      return;
+    }
     runCommand("profile.update", {
       display_name: uiState.profileNameDraft,
       about: uiState.profileAboutDraft,
@@ -1110,6 +1115,7 @@ function profileSummaryView(snapshot) {
       "Your name",
       uiState.profileNameDraft,
       (value) => { uiState.profileNameDraft = value; },
+      "profile-name",
     ),
     labeledInput(
       "About",
@@ -2476,15 +2482,29 @@ function focusRoleRow(roleId) {
 function messageSearchView(snapshot) {
   const fragment = document.createDocumentFragment();
   const form = element("form", "field-stack");
+  const search = submitButton("message.search");
+  const updateSearchAvailability = () => {
+    search.disabled = Boolean(uiState.busyCommand) || !uiState.searchDraft.trim();
+  };
+  updateSearchAvailability();
   form.addEventListener("submit", (event) => {
     event.preventDefault();
+    if (!uiState.searchDraft.trim()) return;
     runCommand("message.search", {
       query: uiState.searchDraft,
       room: null,
       limit: 50,
     }).catch(reportError);
   });
-  form.append(labeledInput("Search", "Words in messages or attachment names", uiState.searchDraft, (value) => { uiState.searchDraft = value; }), submitButton("message.search"));
+  form.append(labeledInput(
+    "Search",
+    "Words in messages or attachment names",
+    uiState.searchDraft,
+    (value) => {
+      uiState.searchDraft = value;
+      updateSearchAvailability();
+    },
+  ), search);
   const results = element("ol", "message-list");
   for (const result of snapshot.search_results ?? []) {
     const row = element("li", "message remote");

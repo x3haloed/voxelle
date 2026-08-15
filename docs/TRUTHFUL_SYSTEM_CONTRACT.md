@@ -586,12 +586,13 @@ schemas and unsupported commands remain internal integration errors. The Rust
 classifier narrowly covers authoritative validation outcomes for message text
 and mentions, reactions, attachments, profiles, channel and role creation, and
 search; it does not reclassify permission failures or infrastructure faults.
-The channel and role creation forms now make their narrower frontend
-prerequisite checks causally usable: empty channel name, empty role name, and
-missing role permissions each mark and describe the exact control or group and
-return keyboard focus to it. The accessible field name remains separate from
-the error description. Editing that exact field or selecting a missing
-permission removes the stale inline and global error immediately; unrelated
+The profile, channel, and role forms now make their narrower frontend
+prerequisite checks causally usable: empty profile display name, empty channel
+name, empty role name, and missing role permissions each mark and describe the
+exact control or group and return keyboard focus to it. The accessible field
+name remains separate from the error description. Editing that exact field or
+selecting a missing permission removes the stale inline and global error
+immediately; unrelated
 edits and later non-validation failures cannot inherit or erase a field marker
 accidentally. This presentation check does not accept the command or replace
 the Rust classifier and semantic admission path.
@@ -620,6 +621,12 @@ observed disabled empty and whitespace states, enabled visible text and `@Bob`
 insertion, and keyboard clearing back to disabled in both paths. Rust still owns
 message length, authorization, mention, and semantic admission; this is
 presentation evidence, not accepted-message evidence.
+
+Retained search now prevents the matching locally knowable empty request. Its
+button is disabled for empty and whitespace-only input, enables for visible
+terms, and disables again after keyboard clearing; the submit handler carries
+the same guard. A rendered probe exercised all four transitions. Rust still owns
+query bounds, accessible index scope, and the returned retained-message facts.
 
 The human composer and inline editor now expose a named member picker for
 mentions. Rendered-preview evidence proves that selecting a member inserts the
