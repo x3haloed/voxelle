@@ -286,7 +286,38 @@ whether content was abbreviated; a consumer opens the ordinary target by room
 and event ID before taking consequential action from an abbreviated preview.
 Frontier-level truncation fields describe omitted rows only.
 
-### 3.4 Action Result
+### 3.4 Durable resident observation
+
+Resident observation is local resumption bookkeeping over the same admitted
+conversation model. It is neither a replicated event nor an agent-only task
+store. A caller opens a stable `consumer_id` with `from_beginning` or
+`from_now`, then calls `resident.observation.page`. The first page omits
+`fact_high_water` and `after_fact_sequence`; later pages repeat the returned
+high water and exact next sequence while `has_more` is true. Roots and their
+ordinary replies span the exact accessible room set captured by the first
+page. The final page alone returns a one-use commit token.
+
+`fact_high_water` and each thread's `last_fact_sequence` are durable,
+home-local first-admission ordinals. They are not SSE `current_sequence`, event
+order, wall-clock order, channel read state, acknowledgement, or protocol
+authority. After process restart, the resident begins paging again with its
+stable consumer ID; uncommitted work is safely returned again. This is
+at-least-once delivery, so downstream actions remain idempotent.
+
+`resident.observation.commit` requires the final token and matching high water
+and advances only that consumer across the exact served room set. It never
+marks a channel read, publishes an acknowledgement, changes continuation,
+proves handling or correctness, synchronizes peers, or emits global
+`snapshot.changed`. `resident.observation.release` explicitly deletes only
+that local consumer and its progress. Consumer IDs are local namespaces, not
+principals, devices, credentials, or actor identities.
+
+Pages enumerate only currently accessible channels and carry private facts
+only through ordinary decryption and semantic admission. Page progress and
+commit tokens are process-local and intentionally disposable; committed
+consumer progress and local fact ordinals are durable.
+
+### 3.5 Action Result
 
 Action results answer: "What changed, and what should I do next?"
 
@@ -332,7 +363,7 @@ infer it by parsing error prose or invent a second classification.
 more supplied values violated a documented semantic bound; the caller should
 correct the payload rather than retry it unchanged or report an internal fault.
 
-### 3.5 Delta
+### 3.6 Delta
 
 Deltas answer: "What changed since my last view?"
 

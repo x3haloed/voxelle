@@ -798,6 +798,29 @@ private-room probe caught silent preview abbreviation before a consequential
 prohibition; item-level completeness fields, visible ellipsis, and an explicit
 open-before-action contract resolved that prediction error. These are
 same-machine loopback and served-contract results, not external field evidence.
+
+Resident resumption uses a second, explicitly local counter domain. A retained
+fact receives a durable per-home ordinal only on first admission; retries do
+not advance it, and it never participates in signatures, replication,
+governance, semantic admission, or protocol order. Independently named local
+consumers page changed ordinary roots and replies across accessible rooms,
+then commit only a final served token bound to the captured high water and room
+set. Human read state, signed acknowledgement, bounded continuation, process
+SSE sequence, and resident observation progress remain separate meanings.
+Uncommitted pages are delivered at least once across restart; consumer commits
+do not create a global invalidation or protocol fact. The surface makes no
+exactly-once, global-currency, presence, work, correctness, or remote-read
+claim.
+Three source-blind runs against the built inhabitant service exercised
+FromBeginning and FromNow, independent consumers, human read/selection/open
+independence, two-page delivery, arbitrary and mismatched commit rejection,
+crash-before-commit rereading, response-loss reconciliation, process restart,
+public/private multi-room pages, and commit silence on the global stream. The
+durable fact domain remained stable while SSE sequence reset, and signed
+acknowledgement, continuation, unread, and resident commit remained distinct.
+This is same-machine loopback evidence; excluded-retainer private paging,
+larger pagination, crash during multi-room commit, and external transport
+remain bounded gaps.
 Episodic agent actions no longer require repository-source inspection to learn
 their payload shape. The same Rust-projected `UiCommand` records used by the
 WebView now name each shell command's request DTO, while empty-payload and

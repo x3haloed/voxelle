@@ -20,6 +20,24 @@ export type CoordinationFrontierRelevance = "mention_without_local_disposition" 
 
 export type CoordinationAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_event_ids_omitted_count: number, result_conflict: boolean, acknowledged_ms: number, };
 
+export type ResidentObservationStartView = "from_beginning" | "from_now";
+
+export type OpenResidentObservationRequest = { consumer_id: string, start: ResidentObservationStartView, };
+
+export type ReleaseResidentObservationRequest = { consumer_id: string, };
+
+export type ResidentChangedThreadsRequest = { consumer_id: string, fact_high_water: number | null, after_fact_sequence: number | null, limit: number | null, };
+
+export type CommitResidentObservationRequest = { consumer_id: string, fact_high_water: number, commit_token: string, };
+
+export type ResidentObservationConsumerView = { consumer_id: string, start: ResidentObservationStartView, start_fact_sequence: number, created_ms: number, updated_ms: number, };
+
+export type ResidentChangedThreadView = { room_id: string, room_name: string, room_visibility: string, last_fact_sequence: number, root: MessageView, replies: Array<MessageView>, };
+
+export type ResidentChangedThreadsPageView = { consumer_id: string, fact_high_water: number, room_ids: Array<string>, items: Array<ResidentChangedThreadView>, has_more: boolean, next_after_fact_sequence: number | null, commit_token: string | null, };
+
+export type ResidentObservationCommitView = { consumer_id: string, committed_fact_sequence: number, room_ids: Array<string>, };
+
 export type ReactionView = { emoji: string, peer_ids: Array<string>, };
 
 export type AttachmentView = { event_id: string, filename: string, mime: string, sha256: string, size_bytes: number, data_b64: string, };

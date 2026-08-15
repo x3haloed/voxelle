@@ -24,7 +24,7 @@ use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
     QuicNode, RoomSync, ServedPeerRequest,
 };
-use voxelle_store::Store;
+use voxelle_store::{ResidentObservationStart, SequencedEvent, Store};
 use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
 use voxelle_update::{
     ActiveSource, AvailableProductUpdate, DownloadedProductUpdate, GenerationPointerV1,
@@ -52,6 +52,7 @@ const MAX_COORDINATION_FRONTIER_ITEMS: usize = 256;
 const MAX_COORDINATION_SUMMARY_CHARACTERS: usize = 160;
 const MAX_COORDINATION_PARTICIPANTS: usize = 50;
 const MAX_COORDINATION_RESULT_IDS: usize = 16;
+const MAX_RESIDENT_CHANGED_THREADS_PAGE: usize = 100;
 const MAX_PROJECTED_CALL_SIGNALS: usize = 256;
 const MAX_SEARCH_QUERY_CHARACTERS: usize = 1024;
 const MAX_INVITE_EXPIRY_MINUTES: u64 = 30 * 24 * 60;
@@ -240,6 +241,95 @@ pub struct MessageView {
     pub acknowledgements: Vec<MessageAcknowledgementView>,
     pub continuations: Vec<MessageContinuationView>,
     pub attachments: Vec<AttachmentView>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidentObservationStartView {
+    FromBeginning,
+    FromNow,
+}
+
+impl From<ResidentObservationStartView> for ResidentObservationStart {
+    fn from(value: ResidentObservationStartView) -> Self {
+        match value {
+            ResidentObservationStartView::FromBeginning => Self::FromBeginning,
+            ResidentObservationStartView::FromNow => Self::FromNow,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct OpenResidentObservationRequest {
+    pub consumer_id: String,
+    pub start: ResidentObservationStartView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ReleaseResidentObservationRequest {
+    pub consumer_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentChangedThreadsRequest {
+    pub consumer_id: String,
+    #[ts(type = "number | null")]
+    pub fact_high_water: Option<u64>,
+    #[ts(type = "number | null")]
+    pub after_fact_sequence: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CommitResidentObservationRequest {
+    pub consumer_id: String,
+    #[ts(type = "number")]
+    pub fact_high_water: u64,
+    pub commit_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentObservationConsumerView {
+    pub consumer_id: String,
+    pub start: ResidentObservationStartView,
+    #[ts(type = "number")]
+    pub start_fact_sequence: u64,
+    #[ts(type = "number")]
+    pub created_ms: i64,
+    #[ts(type = "number")]
+    pub updated_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentChangedThreadView {
+    pub room_id: String,
+    pub room_name: String,
+    pub room_visibility: String,
+    #[ts(type = "number")]
+    pub last_fact_sequence: u64,
+    pub root: MessageView,
+    pub replies: Vec<MessageView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentChangedThreadsPageView {
+    pub consumer_id: String,
+    #[ts(type = "number")]
+    pub fact_high_water: u64,
+    pub room_ids: Vec<String>,
+    pub items: Vec<ResidentChangedThreadView>,
+    pub has_more: bool,
+    #[ts(type = "number | null")]
+    pub next_after_fact_sequence: Option<u64>,
+    pub commit_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentObservationCommitView {
+    pub consumer_id: String,
+    #[ts(type = "number")]
+    pub committed_fact_sequence: u64,
+    pub room_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -731,6 +821,15 @@ pub fn shell_contract_typescript() -> String {
         CoordinationFrontierItemView::decl(&cfg),
         CoordinationFrontierRelevance::decl(&cfg),
         CoordinationAcknowledgementView::decl(&cfg),
+        ResidentObservationStartView::decl(&cfg),
+        OpenResidentObservationRequest::decl(&cfg),
+        ReleaseResidentObservationRequest::decl(&cfg),
+        ResidentChangedThreadsRequest::decl(&cfg),
+        CommitResidentObservationRequest::decl(&cfg),
+        ResidentObservationConsumerView::decl(&cfg),
+        ResidentChangedThreadView::decl(&cfg),
+        ResidentChangedThreadsPageView::decl(&cfg),
+        ResidentObservationCommitView::decl(&cfg),
         ReactionView::decl(&cfg),
         AttachmentView::decl(&cfg),
         ChannelView::decl(&cfg),
@@ -919,6 +1018,15 @@ pub struct VoxelleCommandHost {
     update_phase: String,
     peer_health_failures: BTreeMap<(String, String, PeerHealthOperation), PeerHealthFailure>,
     sync_evidence: SyncEvidenceView,
+    resident_page_progress: BTreeMap<String, ResidentPageProgress>,
+    resident_commit_tokens: BTreeMap<String, (String, u64, Vec<String>)>,
+}
+
+#[derive(Debug, Clone)]
+struct ResidentPageProgress {
+    fact_high_water: u64,
+    next_after_fact_sequence: Option<u64>,
+    room_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -2310,6 +2418,116 @@ impl VoxelleHome {
         Ok(channels)
     }
 
+    pub fn open_resident_observation(
+        &self,
+        request: &OpenResidentObservationRequest,
+    ) -> Result<ResidentObservationConsumerView> {
+        let consumer = self.open_store()?.open_resident_observation_consumer(
+            &request.consumer_id,
+            request.start.into(),
+            now_ms(),
+        )?;
+        Ok(ResidentObservationConsumerView {
+            consumer_id: consumer.consumer_id,
+            start: match consumer.start {
+                ResidentObservationStart::FromBeginning => {
+                    ResidentObservationStartView::FromBeginning
+                }
+                ResidentObservationStart::FromNow => ResidentObservationStartView::FromNow,
+            },
+            start_fact_sequence: consumer.start_fact_sequence,
+            created_ms: consumer.created_ms,
+            updated_ms: consumer.updated_ms,
+        })
+    }
+
+    pub fn resident_changed_threads(
+        &self,
+        consumer_id: &str,
+        fact_high_water: u64,
+        after_fact_sequence: Option<u64>,
+        limit: usize,
+        projection_ms: i64,
+        room_ids: &[String],
+    ) -> Result<ResidentChangedThreadsPageView> {
+        let store = self.open_store()?;
+        if store.resident_observation_consumer(consumer_id)?.is_none() {
+            anyhow::bail!("resident observation consumer is not open");
+        }
+        let current_high_water = store.local_fact_high_water()?;
+        if fact_high_water > current_high_water {
+            anyhow::bail!("resident fact high water is not yet available");
+        }
+        let after = after_fact_sequence.unwrap_or(0);
+        if after > fact_high_water {
+            anyhow::bail!("resident page cursor exceeds fact high water");
+        }
+        let limit = limit.clamp(1, MAX_RESIDENT_CHANGED_THREADS_PAGE);
+        let mut items = Vec::new();
+        let channels: BTreeMap<String, ChannelView> = self
+            .channels(None)?
+            .into_iter()
+            .map(|channel| (channel.room_id.clone(), channel))
+            .collect();
+        for room_id in room_ids {
+            let Some(channel) = channels.get(room_id) else {
+                continue;
+            };
+            let committed = store.effective_resident_observation_sequence(consumer_id, room_id)?;
+            let events = self.decrypted_room_events_with_sequence(room_id)?;
+            items.extend(project_resident_changed_threads(
+                events,
+                projection_ms,
+                committed,
+                fact_high_water,
+                channel,
+            ));
+        }
+        items.sort_by(|left, right| {
+            left.last_fact_sequence
+                .cmp(&right.last_fact_sequence)
+                .then(left.room_id.cmp(&right.room_id))
+                .then(left.root.event_id.cmp(&right.root.event_id))
+        });
+        items.retain(|item| item.last_fact_sequence > after);
+        let has_more = items.len() > limit;
+        items.truncate(limit);
+        let next_after_fact_sequence = has_more
+            .then(|| items.last().map(|item| item.last_fact_sequence))
+            .flatten();
+        Ok(ResidentChangedThreadsPageView {
+            consumer_id: consumer_id.to_string(),
+            fact_high_water,
+            room_ids: room_ids.to_vec(),
+            items,
+            has_more,
+            next_after_fact_sequence,
+            commit_token: None,
+        })
+    }
+
+    pub fn commit_resident_observation(
+        &self,
+        consumer_id: &str,
+        fact_high_water: u64,
+        room_ids: &[String],
+    ) -> Result<ResidentObservationCommitView> {
+        let store = self.open_store()?;
+        for room_id in room_ids {
+            store.commit_resident_observation(consumer_id, room_id, fact_high_water, now_ms())?;
+        }
+        Ok(ResidentObservationCommitView {
+            consumer_id: consumer_id.to_string(),
+            committed_fact_sequence: fact_high_water,
+            room_ids: room_ids.to_vec(),
+        })
+    }
+
+    pub fn release_resident_observation(&self, consumer_id: &str) -> Result<bool> {
+        self.open_store()?
+            .release_resident_observation_consumer(consumer_id)
+    }
+
     pub fn mark_read(&self, room: Option<&str>) -> Result<()> {
         let config = self.load_config()?;
         let room_id = room.unwrap_or(&config.space.default_room_id);
@@ -3063,6 +3281,14 @@ impl VoxelleHome {
     }
 
     fn decrypted_room_events(&self, room_id: &str) -> Result<Vec<EventV1>> {
+        Ok(self
+            .decrypted_room_events_with_sequence(room_id)?
+            .into_iter()
+            .map(|event| event.event)
+            .collect())
+    }
+
+    fn decrypted_room_events_with_sequence(&self, room_id: &str) -> Result<Vec<SequencedEvent>> {
         self.import_private_room_keys()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
@@ -3072,18 +3298,21 @@ impl VoxelleHome {
             .channels
             .get(room_id)
             .is_some_and(|channel| channel.visibility == ChannelVisibility::Private);
-        let mut raw_events = store.room_events(room_id)?;
+        let mut raw_events = store.room_events_with_sequence(room_id)?;
         raw_events.sort_by(|left, right| {
-            left.created_ms
-                .cmp(&right.created_ms)
-                .then(left.event_id.cmp(&right.event_id))
+            left.event
+                .created_ms
+                .cmp(&right.event.created_ms)
+                .then(left.event.event_id.cmp(&right.event.event_id))
         });
         if !private {
             return Ok(raw_events);
         }
         let mut accepted = governance;
         let mut decrypted = Vec::new();
-        for raw in raw_events {
+        for sequenced in raw_events {
+            let sequence = sequenced.local_fact_sequence;
+            let raw = sequenced.event;
             if raw.kind != "ROOM_ENCRYPTED" {
                 continue;
             }
@@ -3147,7 +3376,10 @@ impl VoxelleHome {
             .is_ok()
             {
                 accepted.push(event.clone());
-                decrypted.push(event);
+                decrypted.push(SequencedEvent {
+                    local_fact_sequence: sequence,
+                    event,
+                });
             }
         }
         Ok(decrypted)
@@ -4158,6 +4390,96 @@ fn unread_count(
         .count()
 }
 
+fn project_resident_changed_threads(
+    events: Vec<SequencedEvent>,
+    projection_ms: i64,
+    committed_fact_sequence: u64,
+    fact_high_water: u64,
+    channel: &ChannelView,
+) -> Vec<ResidentChangedThreadView> {
+    let events: Vec<SequencedEvent> = events
+        .into_iter()
+        .filter(|event| event.local_fact_sequence <= fact_high_water)
+        .collect();
+    let messages = project_messages(
+        events.iter().map(|event| event.event.clone()).collect(),
+        projection_ms,
+    );
+    let by_id: BTreeMap<String, MessageView> = messages
+        .iter()
+        .cloned()
+        .map(|message| (message.event_id.clone(), message))
+        .collect();
+    let root_for_message: BTreeMap<String, String> = messages
+        .iter()
+        .map(|message| {
+            (
+                message.event_id.clone(),
+                message
+                    .thread_root_event_id
+                    .clone()
+                    .unwrap_or_else(|| message.event_id.clone()),
+            )
+        })
+        .collect();
+    let mut last_fact_by_root = BTreeMap::<String, u64>::new();
+    for sequenced in &events {
+        let event = &sequenced.event;
+        let root = match event.kind.as_str() {
+            "MSG_POST" => event
+                .body
+                .get("thread_root_event_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&event.event_id)
+                .to_string(),
+            "ATTACHMENT_ADD" => event.event_id.clone(),
+            _ => event
+                .body
+                .get("target_event_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|target| root_for_message.get(target))
+                .cloned()
+                .unwrap_or_default(),
+        };
+        if !root.is_empty() {
+            last_fact_by_root
+                .entry(root)
+                .and_modify(|current| *current = (*current).max(sequenced.local_fact_sequence))
+                .or_insert(sequenced.local_fact_sequence);
+        }
+    }
+    let mut replies_by_root = BTreeMap::<String, Vec<MessageView>>::new();
+    for message in messages {
+        if let Some(root) = &message.thread_root_event_id {
+            replies_by_root
+                .entry(root.clone())
+                .or_default()
+                .push(message);
+        }
+    }
+    last_fact_by_root
+        .into_iter()
+        .filter(|(_, sequence)| *sequence > committed_fact_sequence)
+        .filter_map(|(root_event_id, last_fact_sequence)| {
+            let root = by_id.get(&root_event_id)?.clone();
+            let mut replies = replies_by_root.remove(&root_event_id).unwrap_or_default();
+            replies.sort_by(|left, right| {
+                left.created_ms
+                    .cmp(&right.created_ms)
+                    .then(left.event_id.cmp(&right.event_id))
+            });
+            Some(ResidentChangedThreadView {
+                room_id: channel.room_id.clone(),
+                room_name: channel.name.clone(),
+                room_visibility: channel.visibility.clone(),
+                last_fact_sequence,
+                root,
+                replies,
+            })
+        })
+        .collect()
+}
+
 fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<MessageView> {
     events.sort_by(|left, right| {
         left.created_ms
@@ -4544,6 +4866,8 @@ impl VoxelleCommandHost {
             update_phase,
             peer_health_failures: BTreeMap::new(),
             sync_evidence: SyncEvidenceView::default(),
+            resident_page_progress: BTreeMap::new(),
+            resident_commit_tokens: BTreeMap::new(),
         }
     }
 
@@ -4758,6 +5082,125 @@ impl VoxelleCommandHost {
     pub fn snapshot(&mut self) -> Result<ShellSnapshotView> {
         self.drain_service_events();
         self.snapshot_without_drain()
+    }
+
+    pub fn open_resident_observation(
+        &mut self,
+        request: OpenResidentObservationRequest,
+    ) -> Result<ResidentObservationConsumerView> {
+        let consumer = self.home.open_resident_observation(&request)?;
+        self.resident_page_progress.remove(&request.consumer_id);
+        self.resident_commit_tokens
+            .retain(|_, (consumer_id, _, _)| consumer_id != &request.consumer_id);
+        Ok(consumer)
+    }
+
+    pub fn resident_changed_threads(
+        &mut self,
+        request: ResidentChangedThreadsRequest,
+    ) -> Result<ResidentChangedThreadsPageView> {
+        let limit = request
+            .limit
+            .unwrap_or(MAX_RESIDENT_CHANGED_THREADS_PAGE)
+            .clamp(1, MAX_RESIDENT_CHANGED_THREADS_PAGE);
+        let (fact_high_water, room_ids) = match request.fact_high_water {
+            None => {
+                if request.after_fact_sequence.is_some() {
+                    anyhow::bail!("the first resident page must omit after_fact_sequence");
+                }
+                self.resident_page_progress.remove(&request.consumer_id);
+                (
+                    self.home.open_store()?.local_fact_high_water()?,
+                    self.home
+                        .channels(None)?
+                        .into_iter()
+                        .map(|channel| channel.room_id)
+                        .collect(),
+                )
+            }
+            Some(fact_high_water) => {
+                let progress = self
+                    .resident_page_progress
+                    .get(&request.consumer_id)
+                    .ok_or_else(|| anyhow::anyhow!("resident page session is unavailable"))?;
+                if progress.fact_high_water != fact_high_water
+                    || progress.next_after_fact_sequence != request.after_fact_sequence
+                {
+                    anyhow::bail!("resident page does not continue the served page session");
+                }
+                (fact_high_water, progress.room_ids.clone())
+            }
+        };
+        let mut page = self.home.resident_changed_threads(
+            &request.consumer_id,
+            fact_high_water,
+            request.after_fact_sequence,
+            limit,
+            now_ms(),
+            &room_ids,
+        )?;
+        if page.has_more {
+            self.resident_page_progress.insert(
+                request.consumer_id,
+                ResidentPageProgress {
+                    fact_high_water,
+                    next_after_fact_sequence: page.next_after_fact_sequence,
+                    room_ids,
+                },
+            );
+        } else {
+            self.resident_page_progress.remove(&request.consumer_id);
+            self.resident_commit_tokens
+                .retain(|_, (consumer_id, _, _)| consumer_id != &request.consumer_id);
+            let token =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 24]>());
+            self.resident_commit_tokens.insert(
+                token.clone(),
+                (
+                    request.consumer_id.clone(),
+                    fact_high_water,
+                    page.room_ids.clone(),
+                ),
+            );
+            page.commit_token = Some(token);
+        }
+        Ok(page)
+    }
+
+    pub fn commit_resident_observation(
+        &mut self,
+        request: CommitResidentObservationRequest,
+    ) -> Result<ResidentObservationCommitView> {
+        let Some((consumer_id, fact_high_water, room_ids)) = self
+            .resident_commit_tokens
+            .get(&request.commit_token)
+            .cloned()
+        else {
+            anyhow::bail!("resident commit token is unavailable or already used");
+        };
+        if consumer_id != request.consumer_id || fact_high_water != request.fact_high_water {
+            anyhow::bail!("resident commit token does not match the served snapshot");
+        }
+        let committed = self.home.commit_resident_observation(
+            &request.consumer_id,
+            request.fact_high_water,
+            &room_ids,
+        )?;
+        self.resident_commit_tokens.remove(&request.commit_token);
+        Ok(committed)
+    }
+
+    pub fn release_resident_observation(
+        &mut self,
+        request: ReleaseResidentObservationRequest,
+    ) -> Result<bool> {
+        let released = self
+            .home
+            .release_resident_observation(&request.consumer_id)?;
+        self.resident_page_progress.remove(&request.consumer_id);
+        self.resident_commit_tokens
+            .retain(|_, (consumer_id, _, _)| consumer_id != &request.consumer_id);
+        Ok(released)
     }
 
     pub fn init_home(&mut self, request: InitHomeRequest) -> Result<ShellSnapshotView> {
@@ -6749,6 +7192,34 @@ fn default_commands() -> Vec<UiCommand> {
             "message.continuation.update",
             "Update Message Continuation",
             "Publish, release, decline, renew, or reconcile a bounded intention to continue an exchange",
+            None,
+            false,
+        ),
+        shell_command(
+            "resident.observation.open",
+            "Open Resident Observation",
+            "Create or reopen a bounded local resident resumption consumer",
+            None,
+            false,
+        ),
+        shell_command(
+            "resident.observation.page",
+            "Read Resident Changes",
+            "Read a bounded page of changed ordinary conversation threads for one local consumer",
+            None,
+            false,
+        ),
+        shell_command(
+            "resident.observation.commit",
+            "Commit Resident Observation",
+            "Commit only one local consumer's fully served changed-thread snapshot",
+            None,
+            false,
+        ),
+        shell_command(
+            "resident.observation.release",
+            "Release Resident Observation",
+            "Delete one local resident consumer and its observation progress",
             None,
             false,
         ),
@@ -9844,6 +10315,200 @@ mod tests {
             MessageContinuationProjectionState::Released
         );
         assert!(!released_view.overdue);
+    }
+
+    #[tokio::test]
+    async fn resident_changed_threads_page_is_durable_bounded_and_commit_bound() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        host.open_resident_observation(OpenResidentObservationRequest {
+            consumer_id: "resident:alpha".to_string(),
+            start: ResidentObservationStartView::FromBeginning,
+        })
+        .expect("open consumer");
+        let initial = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: Some(1),
+            })
+            .expect("initial page");
+        host.commit_resident_observation(CommitResidentObservationRequest {
+            consumer_id: "resident:alpha".to_string(),
+            fact_high_water: initial.fact_high_water,
+            commit_token: initial.commit_token.expect("initial commit token"),
+        })
+        .expect("initial commit");
+
+        let first = host
+            .send_message(SendMessageRequest {
+                text: "Human request A".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                thread_root_event_id: None,
+                client_request_id: Some("resident-thread-a".to_string()),
+            })
+            .await
+            .expect("first root");
+        let first_id = first.home.expect("home").room.messages[0].event_id.clone();
+        let reply = host
+            .send_message(SendMessageRequest {
+                text: "Agent result A".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                thread_root_event_id: Some(first_id.clone()),
+                client_request_id: Some("resident-result-a".to_string()),
+            })
+            .await
+            .expect("first reply");
+        let reply_id = reply
+            .home
+            .expect("home")
+            .room
+            .messages
+            .last()
+            .expect("reply")
+            .event_id
+            .clone();
+        host.acknowledge_message(AcknowledgeMessageRequest {
+            target_event_id: first_id,
+            room: None,
+            state: MessageAcknowledgementState::Handled,
+            result_event_id: Some(reply_id),
+        })
+        .await
+        .expect("handled");
+        let second = host
+            .send_message(SendMessageRequest {
+                text: "Human request B".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                thread_root_event_id: None,
+                client_request_id: Some("resident-thread-b".to_string()),
+            })
+            .await
+            .expect("second root");
+        let second_id = second
+            .home
+            .expect("home")
+            .room
+            .messages
+            .last()
+            .expect("second")
+            .event_id
+            .clone();
+        host.update_message_continuation(UpdateMessageContinuationRequest {
+            target_event_id: second_id,
+            room: None,
+            state: MessageContinuationState::Continuing,
+            lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+            supersedes_event_ids: Vec::new(),
+            client_request_id: "resident-continuing-b".to_string(),
+        })
+        .await
+        .expect("continuing");
+
+        let first_page = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: Some(1),
+            })
+            .expect("first changed page");
+        assert!(first_page.has_more);
+        assert!(first_page.commit_token.is_none());
+        assert_eq!(first_page.items.len(), 1);
+        let second_page = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: Some(first_page.fact_high_water),
+                after_fact_sequence: first_page.next_after_fact_sequence,
+                limit: Some(1),
+            })
+            .expect("second changed page");
+        assert!(!second_page.has_more);
+        let mut all = first_page.items;
+        all.extend(second_page.items.clone());
+        assert_eq!(all.len(), 2);
+        let handled = all
+            .iter()
+            .find(|item| item.root.client_request_id.as_deref() == Some("resident-thread-a"))
+            .expect("handled thread");
+        assert_eq!(handled.replies.len(), 1);
+        assert_eq!(handled.replies[0].text, "Agent result A");
+        assert_eq!(
+            handled.root.acknowledgements[0].state,
+            MessageAcknowledgementState::Handled
+        );
+        let continuing = all
+            .iter()
+            .find(|item| item.root.client_request_id.as_deref() == Some("resident-thread-b"))
+            .expect("continuing thread");
+        assert_eq!(
+            continuing.root.continuations[0].state,
+            MessageContinuationProjectionState::Continuing
+        );
+        assert!(host
+            .commit_resident_observation(CommitResidentObservationRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: second_page.fact_high_water,
+                commit_token: "not-served".to_string(),
+            })
+            .expect_err("arbitrary commit rejected")
+            .to_string()
+            .contains("unavailable"));
+        host.commit_resident_observation(CommitResidentObservationRequest {
+            consumer_id: "resident:alpha".to_string(),
+            fact_high_water: second_page.fact_high_water,
+            commit_token: second_page.commit_token.expect("commit token"),
+        })
+        .expect("commit served high water");
+        let empty = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: None,
+            })
+            .expect("empty after commit");
+        assert!(empty.items.is_empty());
+        host.send_message(SendMessageRequest {
+            text: "Human request after checkpoint".to_string(),
+            room: None,
+            mentions: Vec::new(),
+            thread_root_event_id: None,
+            client_request_id: Some("resident-thread-after-restart".to_string()),
+        })
+        .await
+        .expect("post-checkpoint root");
+        host.stop_service().expect("stop service");
+        drop(host);
+
+        let mut reopened = VoxelleCommandHost::new(&home_root);
+        reopened
+            .open_resident_observation(OpenResidentObservationRequest {
+                consumer_id: "resident:alpha".to_string(),
+                start: ResidentObservationStartView::FromBeginning,
+            })
+            .expect("reopen durable consumer");
+        let after_restart = reopened
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: None,
+            })
+            .expect("page after restart");
+        assert_eq!(after_restart.items.len(), 1);
+        assert_eq!(
+            after_restart.items[0].root.client_request_id.as_deref(),
+            Some("resident-thread-after-restart")
+        );
     }
 
     #[test]

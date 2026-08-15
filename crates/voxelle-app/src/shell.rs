@@ -39,6 +39,10 @@ pub fn shell_command_payload(command_id: &str) -> Option<ShellCommandPayload> {
         "message.send" => Typed("SendMessageRequest"),
         "message.acknowledge" => Typed("AcknowledgeMessageRequest"),
         "message.continuation.update" => Typed("UpdateMessageContinuationRequest"),
+        "resident.observation.open" => Typed("OpenResidentObservationRequest"),
+        "resident.observation.page" => Typed("ResidentChangedThreadsRequest"),
+        "resident.observation.commit" => Typed("CommitResidentObservationRequest"),
+        "resident.observation.release" => Typed("ReleaseResidentObservationRequest"),
         "channel.select" => Typed("SelectChannelRequest"),
         "message.open" => Typed("OpenMessageRequest"),
         "channel.markRead" => Typed("MarkReadRequest"),
@@ -126,6 +130,46 @@ impl ShellState {
             .await
             .snapshot()
             .map_err(|error| ShellError::for_command("shell.refresh", error))
+    }
+
+    pub async fn execute_resident_command(
+        &self,
+        command_id: &str,
+        payload: serde_json::Value,
+    ) -> Option<ShellResult<serde_json::Value>> {
+        let mut host = self.host.lock().await;
+        let result: ShellResult<serde_json::Value> = match command_id {
+            "resident.observation.open" => {
+                parse_request_for(command_id, payload).and_then(|request| {
+                    host.open_resident_observation(request)
+                        .map_err(|error| ShellError::for_command(command_id, error))
+                        .and_then(serialize_resident_result)
+                })
+            }
+            "resident.observation.page" => {
+                parse_request_for(command_id, payload).and_then(|request| {
+                    host.resident_changed_threads(request)
+                        .map_err(|error| ShellError::for_command(command_id, error))
+                        .and_then(serialize_resident_result)
+                })
+            }
+            "resident.observation.commit" => {
+                parse_request_for(command_id, payload).and_then(|request| {
+                    host.commit_resident_observation(request)
+                        .map_err(|error| ShellError::for_command(command_id, error))
+                        .and_then(serialize_resident_result)
+                })
+            }
+            "resident.observation.release" => {
+                parse_request_for(command_id, payload).and_then(|request| {
+                    host.release_resident_observation(request)
+                        .map_err(|error| ShellError::for_command(command_id, error))
+                        .and_then(serialize_resident_result)
+                })
+            }
+            _ => return None,
+        };
+        Some(result)
     }
 
     pub async fn execute_serialized_command(
@@ -262,6 +306,15 @@ fn parse_request_for<T: serde::de::DeserializeOwned>(
         ShellError::for_command(
             command_id,
             anyhow::anyhow!("invalid command payload: {error}"),
+        )
+    })
+}
+
+fn serialize_resident_result<T: serde::Serialize>(value: T) -> ShellResult<serde_json::Value> {
+    serde_json::to_value(value).map_err(|error| {
+        ShellError::internal(
+            "Voxelle could not project resident observation state.",
+            format!("serialize resident observation result: {error}"),
         )
     })
 }
@@ -523,6 +576,19 @@ fn correctable_input_presentation(
                 || detail.contains("different continuation payload")
                 || detail.contains("client_request_id must be")
         }
+        command if command.starts_with("resident.observation.") => {
+            detail.contains("resident observation consumer")
+                || detail.contains("resident page")
+                || detail.contains("resident fact high water")
+                || detail.contains("resident commit token")
+                || detail.contains("consumer_id")
+                || detail.contains("consumer id")
+                || detail.contains("consumer limit")
+                || detail.contains("room limit")
+                || detail.contains("fact sequence")
+                || detail.contains("fact high water")
+                || detail.contains("start policy")
+        }
         "reaction.add" | "reaction.remove" => detail.contains("reaction emoji is invalid"),
         "attachment.add" => {
             detail.contains("decode attachment")
@@ -568,6 +634,10 @@ fn correctable_input_presentation(
         "message.continuation.update" => (
             "That continuation update needs correcting.",
             "For Continuing, use a bounded lease from 1 minute through 7 days. Release and Decline have no lease. Reconcile current head IDs before replacing an earlier update.",
+        ),
+        command if command.starts_with("resident.observation.") => (
+            "That resident observation request needs correcting.",
+            "Use a stable bounded consumer ID. Open it with an explicit start policy, fetch every served page in order, and commit only the final page's matching token and fact high water. After a process restart, begin paging again rather than reusing a page token.",
         ),
         "reaction.add" | "reaction.remove" => (
             "That reaction is not valid.",

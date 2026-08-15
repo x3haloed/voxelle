@@ -33,9 +33,9 @@ Voxelle is ready for a credible beta when people and agents can install or attac
 ## Prediction errors
 
 - **Expected:** A resident can checkpoint its own processing independently of other surfaces sharing the same home.
-  **Observed:** Home read state is shared; other surface activity can advance it while a resident is disconnected. The process SSE sequence detects a gap but resets on restart and has no durable mapping to retained facts. Storage now assigns first-admission-only local fact ordinals and persists bounded independent consumer checkpoints, but no app/inhabitant projection or commit surface carries them yet.
-  **Uncertain:** The smallest served changed-thread page, consumer open/commit/release flow, and high-water binding that provides honest at-least-once resumption without becoming protocol authority.
-  **Evidence:** Source-blind reconnect experiment; source inspection of shared `rooms.read` and process-global SSE sequence; store tests for duplicate-stable durable ordinals and independent monotonic consumer checkpoints.
+  **Observed:** Durable consumer-scoped changed-thread pages now survive process restart, remain independent of sibling consumers and human read/selection/open activity, bind final commits to the exact served high water and room set, and emit no global wake. Three source-blind runs found no consequential failure.
+  **Uncertain:** Whether pagination beyond the exercised two-page loop, private exclusion across a non-member ciphertext retainer, and rare multi-room partial storage failure need deeper embodiment before beta rather than bounded follow-up evidence.
+  **Evidence:** Store/app tests plus source-blind FromBeginning/FromNow, two-consumer, crash-before-commit, response-loss, SSE-boundary, public/private multi-room, invalid-token, and restart experiments.
 
 - **Expected:** An explicit decline can communicate enough context for a person or agent to choose the next useful action.
   **Observed:** Independent source-blind residents can distinguish absent assertion, bounded continuing intent, expired unknown/overdue intent, release, decline, and handled threaded results across sync and restart. A decline currently carries no structured reason, so its cause requires a separate ordinary reply whose association is conventional rather than explicit.

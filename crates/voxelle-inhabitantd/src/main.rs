@@ -82,6 +82,7 @@ struct DiscoveryView {
     capabilities: CapabilitiesView,
     command_transport: CommandTransportView,
     command_semantics: Vec<CommandSemanticsView>,
+    resident_observation_semantics: ResidentObservationSemanticsView,
     replay_policy: String,
 }
 
@@ -99,6 +100,17 @@ struct CommandSemanticsView {
     command_id: String,
     retry: String,
     observation: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ResidentObservationSemanticsView {
+    delivery: String,
+    consumer_id: String,
+    counters: String,
+    stream: String,
+    page: String,
+    commit: String,
+    privacy: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -199,13 +211,33 @@ impl DiscoveryView {
                 content_type: "application/json".to_string(),
                 authorization_header: "Authorization: Bearer <per-launch token>".to_string(),
                 request_body: "Direct JSON value matching the command payload_type; use {} for empty payloads".to_string(),
-                response_body: "ActionResult JSON with ok, command_id, compact snapshot, activity_items, error, and recovery".to_string(),
+                response_body: "ActionResult JSON with ok, command_id, snapshot, activity_items, error, and recovery; snapshot is the compact coordination projection for ordinary product commands and the command-specific consumer/page/commit DTO for resident.observation commands".to_string(),
             },
             command_semantics: vec![
                 CommandSemanticsView {
                     command_id: "message.send".to_string(),
-                    retry: "reuse the same client_request_id only for the identical principal, device, room, and payload; a conflicting reuse is rejected".to_string(),
+                    retry: "client_request_id is 8 to 128 non-whitespace characters; reuse the same ID only for the identical principal, device, room, and payload; a conflicting reuse is rejected".to_string(),
                     observation: "ok proves local admission; inspect the projected message by client_request_id, sync_evidence for peer-relative propagation, and signed acknowledgements for recipient observation or handling".to_string(),
+                },
+                CommandSemanticsView {
+                    command_id: "resident.observation.open".to_string(),
+                    retry: "idempotent only for the same consumer_id and immutable start policy; choose from_beginning to receive retained prior facts or from_now to begin after current local admission".to_string(),
+                    observation: "returns local consumer metadata only; it does not read, acknowledge, synchronize, publish, or grant protocol authority".to_string(),
+                },
+                CommandSemanticsView {
+                    command_id: "resident.observation.page".to_string(),
+                    retry: "before commit, refetch from the first page after process restart; within one process continue only with the exact fact_high_water and next_after_fact_sequence returned by the preceding page; starting a fresh first page supersedes every prior page session and final token for that consumer".to_string(),
+                    observation: "returns at-least-once changed ordinary thread projections across the exact accessible room set captured by the first page; the final page alone carries a one-use commit_token".to_string(),
+                },
+                CommandSemanticsView {
+                    command_id: "resident.observation.commit".to_string(),
+                    retry: "a successful commit is durable; if the response is lost, refetch the feed because the one-use token may already be consumed".to_string(),
+                    observation: "requires the final served commit_token and matching fact_high_water; advances only this consumer in the rooms that were served, emits no global snapshot change, and does not mark read, acknowledge, handle, or prove correctness".to_string(),
+                },
+                CommandSemanticsView {
+                    command_id: "resident.observation.release".to_string(),
+                    retry: "idempotent; false means the consumer was already absent".to_string(),
+                    observation: "deletes only local consumer progress; reopening requires an explicit start policy and changes no conversation or protocol fact".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "message.acknowledge".to_string(),
@@ -233,7 +265,16 @@ impl DiscoveryView {
                     observation: "starts the local runtime on the last successful automatic binding unless explicit addresses replace it, then attempts known peers; sync_evidence is peer-relative and never claims global currency".to_string(),
                 },
             ],
-            replay_policy: "none; on every connect or reconnect, use service.ready.current_sequence and fetch coordination_snapshot_url until its current_sequence is at least that value; current_sequence covers admitted/invalidation transitions, while projected_at_ms timestamps time-derived projection and heartbeat is not semantic change evidence".to_string(),
+            resident_observation_semantics: ResidentObservationSemanticsView {
+                delivery: "at least once until a fully served page set is committed; crash or restart before commit causes safe rereading, so actions must remain idempotent".to_string(),
+                consumer_id: "caller-chosen stable local namespace, not a principal, device, credential, actor, or protocol identity; independent consumers on one home have independent progress".to_string(),
+                counters: "fact_high_water and last_fact_sequence are durable home-local first-admission ordinals; they are not SSE current_sequence, wall-clock order, event IDs, room read cursors, acknowledgements, or replicated protocol facts".to_string(),
+                stream: "SSE current_sequence is only a process-local wake and reconciliation fence; after every process restart or reconnect, fetch resident.observation.page using the stable consumer_id and never use current_sequence as a durable cursor".to_string(),
+                page: "the first page omits fact_high_water and after_fact_sequence; continue with both exact returned values while has_more; after process restart begin again; full ordinary roots and replies are returned, and truncated message fields retain their existing open-before-action semantics; an empty final page may be left uncommitted when the consumer already has no items to examine".to_string(),
+                commit: "commit only after every page through fact_high_water has been examined; the final page token binds the consumer, high water, and exact served room set; commit is consumer-local bookkeeping and emits no global snapshot.changed".to_string(),
+                privacy: "pages enumerate only currently accessible rooms and project private facts only after ordinary decryption and semantic admission; excluded rooms and ciphertext metadata are absent".to_string(),
+            },
+            replay_policy: "none; on every connect or reconnect, use service.ready.current_sequence and fetch coordination_snapshot_url until its current_sequence is at least that value; current_sequence covers admitted/invalidation transitions, resets with the process, and is never comparable to durable resident fact_high_water; projected_at_ms timestamps time-derived projection and heartbeat is not semantic change evidence".to_string(),
         }
     }
 }
@@ -337,7 +378,9 @@ async fn command(
     };
     drop(command_guard);
     let status = if result.ok {
-        notify_snapshot_change(&state.snapshot_changes);
+        if !command_id.starts_with("resident.observation.") {
+            notify_snapshot_change(&state.snapshot_changes);
+        }
         StatusCode::OK
     } else {
         StatusCode::BAD_REQUEST
@@ -347,6 +390,30 @@ async fn command(
 
 async fn run_command(shell: &ShellState, command_id: &str, payload: Value) -> ActionResult {
     let activity_cursor = shell.activity_cursor().await;
+    if let Some(result) = shell
+        .execute_resident_command(command_id, payload.clone())
+        .await
+    {
+        let activity_items = shell.activity_items_after(activity_cursor).await;
+        return match result {
+            Ok(value) => ActionResult {
+                ok: true,
+                command_id: command_id.to_string(),
+                snapshot: Some(value),
+                activity_items,
+                error: None,
+                recovery: None,
+            },
+            Err(error) => ActionResult {
+                ok: false,
+                command_id: command_id.to_string(),
+                snapshot: None,
+                activity_items,
+                recovery: Some(error.recovery),
+                error: Some(error),
+            },
+        };
+    }
     let result = shell.execute_serialized_command(command_id, payload).await;
     let activity_items = match &result {
         Ok(snapshot) => snapshot
