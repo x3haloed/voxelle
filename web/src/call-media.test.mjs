@@ -9,6 +9,7 @@ import {
   leaveCall,
   mediaCaptureErrorMessage,
   participantConnectionLabel,
+  participantMediaPresentation,
 } from "./call-media.mjs";
 
 test("camera capture requests audio and video together", async () => {
@@ -82,6 +83,19 @@ test("participant connection states remain direct and human readable", () => {
   assert.equal(participantConnectionLabel("new"), "Connecting directly");
   assert.equal(participantConnectionLabel("connected"), "Connected directly");
   assert.equal(participantConnectionLabel("failed"), "Direct connection unavailable");
+});
+
+test("remote voice-only participation never renders as an empty video", () => {
+  assert.deepEqual(participantMediaPresentation(false, "connected"), {
+    mediaLabel: "Voice only",
+    connectionLabel: "Connected directly",
+    showVideo: false,
+  });
+  assert.deepEqual(participantMediaPresentation(true, "new"), {
+    mediaLabel: "Camera on",
+    connectionLabel: "Connecting directly",
+    showVideo: true,
+  });
 });
 
 test("local media stops even when durable leave fails", async () => {

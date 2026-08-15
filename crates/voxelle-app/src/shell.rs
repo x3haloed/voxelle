@@ -443,6 +443,7 @@ mod tests {
         builtin_product_generation, default_ui_ontology, shell_contract_typescript,
         NetworkHealthStatus, ProductGenerationV1, UiPreferences, DEFAULT_ROOM_ID,
     };
+    use std::collections::BTreeMap;
     use voxelle_core::Keypair;
     use voxelle_update::{
         package_signing_bytes, trust_transition_signing_bytes, ReleaseKeyRole, TrustTransitionV1,
@@ -1270,6 +1271,8 @@ mod tests {
             .expect("bob home")
             .call;
         assert_eq!(bob_call.participants.len(), 2);
+        assert_eq!(bob_call.participant_video.get(&alice_peer_id), Some(&false));
+        assert_eq!(bob_call.participant_video.get(&bob_peer_id), Some(&true));
         let call_id = bob_call.call_id.clone();
         alice
             .execute_serialized_command("shell.refresh", serde_json::json!({}))
@@ -1300,13 +1303,22 @@ mod tests {
             .signals
             .iter()
             .any(|signal| signal.kind == "CALL_OFFER" && signal.author_peer_id == alice_peer_id));
-        alice
+        let alice_after_heartbeat = alice
             .execute_serialized_command(
                 "call.heartbeat",
                 serde_json::json!({ "room": null, "call_id": call_id.clone() }),
             )
             .await
             .expect("alice heartbeat");
+        let heartbeat_call = alice_after_heartbeat.home.expect("alice home").call;
+        assert_eq!(
+            heartbeat_call.participant_video.get(&alice_peer_id),
+            Some(&false)
+        );
+        assert_eq!(
+            heartbeat_call.participant_video.get(&bob_peer_id),
+            Some(&true)
+        );
         bob.execute_serialized_command(
             "call.leave",
             serde_json::json!({ "room": null, "call_id": call_id }),
@@ -1317,13 +1329,11 @@ mod tests {
             .execute_serialized_command("shell.refresh", serde_json::json!({}))
             .await
             .expect("alice sees bob leave");
+        let call_after_leave = alice_after_leave.home.expect("alice home").call;
+        assert_eq!(call_after_leave.participants, vec![alice_peer_id.clone()]);
         assert_eq!(
-            alice_after_leave
-                .home
-                .expect("alice home")
-                .call
-                .participants,
-            vec![alice_peer_id.clone()]
+            call_after_leave.participant_video,
+            BTreeMap::from([(alice_peer_id.clone(), false)])
         );
 
         let channel_snapshot = alice

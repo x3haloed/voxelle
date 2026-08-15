@@ -310,6 +310,7 @@ pub struct CallSignalView {
 pub struct CallView {
     pub call_id: String,
     pub participants: Vec<String>,
+    pub participant_video: BTreeMap<String, bool>,
     pub signals: Vec<CallSignalView>,
 }
 
@@ -2231,6 +2232,7 @@ impl VoxelleHome {
         });
         let now = now_ms();
         let mut last_seen = BTreeMap::new();
+        let mut participant_video = BTreeMap::new();
         for event in &events {
             if event
                 .body
@@ -2240,10 +2242,16 @@ impl VoxelleHome {
             {
                 continue;
             }
-            if matches!(event.kind.as_str(), "CALL_JOIN" | "CALL_HEARTBEAT") {
+            if event.kind == "CALL_JOIN" {
+                last_seen.insert(event.author_peer_id.clone(), event.created_ms);
+                if let Some(video) = event.body.get("video").and_then(serde_json::Value::as_bool) {
+                    participant_video.insert(event.author_peer_id.clone(), video);
+                }
+            } else if event.kind == "CALL_HEARTBEAT" {
                 last_seen.insert(event.author_peer_id.clone(), event.created_ms);
             } else if event.kind == "CALL_LEAVE" {
                 last_seen.remove(&event.author_peer_id);
+                participant_video.remove(&event.author_peer_id);
             }
         }
         let participants: Vec<String> = last_seen
@@ -2252,6 +2260,7 @@ impl VoxelleHome {
             .map(|(peer_id, _)| peer_id)
             .take(4)
             .collect();
+        participant_video.retain(|peer_id, _| participants.contains(peer_id));
         let signals = if participants.is_empty() {
             Vec::new()
         } else {
@@ -2299,6 +2308,7 @@ impl VoxelleHome {
         Ok(CallView {
             call_id,
             participants,
+            participant_video,
             signals,
         })
     }

@@ -57,6 +57,14 @@ export function participantConnectionLabel(connectionState) {
   return "Connecting directly";
 }
 
+export function participantMediaPresentation(video, connectionState) {
+  return {
+    mediaLabel: video ? "Camera on" : "Voice only",
+    connectionLabel: participantConnectionLabel(connectionState),
+    showVideo: video,
+  };
+}
+
 export async function leaveCall(executeLeave, stopMedia) {
   try {
     return await executeLeave();

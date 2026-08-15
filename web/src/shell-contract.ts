@@ -22,7 +22,7 @@ export type NotificationView = { event_id: string, room_id: string, author_peer_
 
 export type CallSignalView = { event_id: string, kind: string, call_id: string, author_peer_id: string, target_peer_id: string | null, video: boolean | null, sdp: string | null, candidate: string | null, created_ms: number, };
 
-export type CallView = { call_id: string, participants: Array<string>, signals: Array<CallSignalView>, };
+export type CallView = { call_id: string, participants: Array<string>, participant_video: { [key in string]: boolean }, signals: Array<CallSignalView>, };
 
 export type PeerRecord = { v: number, label: string | null, space_id: string, governance_room_id: string, default_room: string, authority_peer_id: string, endpoint: PeerEndpoint, };
 

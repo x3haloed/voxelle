@@ -424,6 +424,14 @@ ciphertext, keys, or plaintext already retained. Canceling or completing the
 semantic `channel.rotateKey` action returns focus to the stable channel row;
 the frontend never generates or predicts key material.
 
+The call mesh projects each active participant's accepted camera intent from
+Rust alongside liveness. Heartbeats may extend participation but do not erase
+the most recent admitted join mode. A voice-only peer receives an explicit
+voice tile and accessible label rather than an empty video element; camera
+participants retain direct-video tiles. Connection wording remains separately
+derived from the local direct WebRTC state, and neither presentation grants
+room participation or signaling authority.
+
 Projected reaction and pin state determines whether the visible action invokes
 the add or remove command; the frontend does not guess a toggle result. Message
 deletion is a separate confirmed step that states the retained signed-tombstone

@@ -101,7 +101,7 @@ export const fixtureSnapshot = {
         summary: "Bob mentioned you: Does Saturday afternoon work?",
       },
     ],
-    call: { call_id: "", participants: [], signals: [] },
+    call: { call_id: "", participants: [], participant_video: {}, signals: [] },
     room: {
       room_id: "room:general",
       messages: [

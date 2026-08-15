@@ -2912,8 +2912,17 @@ function callMeshView(snapshot) {
     videos.append(callTile(`You · ${uiState.localMediaMode === "video" ? "Camera on" : "Voice only"}`, localMedia));
     for (const peerId of call?.participants ?? []) {
       if (peerId === localPeerId) continue;
-      const label = participantConnectionLabel(uiState.peerConnectionStates.get(peerId));
-      videos.append(callTile(`${profileForPeer(snapshot, peerId).display_name} · ${label}`, callVideo(peerId, false)));
+      const presentation = participantMediaPresentation(
+        call.participant_video[peerId],
+        uiState.peerConnectionStates.get(peerId),
+      );
+      const media = presentation.showVideo
+        ? callVideo(peerId, false)
+        : element("div", "call-media-placeholder", "Voice only");
+      videos.append(callTile(
+        `${profileForPeer(snapshot, peerId).display_name} · ${presentation.mediaLabel} · ${presentation.connectionLabel}`,
+        media,
+      ));
     }
   }
   fragment.append(status);

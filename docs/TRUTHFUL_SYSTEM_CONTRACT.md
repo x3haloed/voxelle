@@ -687,7 +687,13 @@ permission-denial truthfulness. The packaged macOS surface now presents mutually
 exclusive pre-join and in-call actions, explains the direct four-person envelope
 before capture, localizes actionable permission and device failures, and names
 each participant's direct connection state for assistive technology. This
-verification machine has no physical camera or microphone, so capture,
+surface now also receives each active participant's accepted camera intent from
+the Rust projection. Heartbeats preserve the latest admitted join mode, and a
+remote voice-only participant renders as an explicit voice tile instead of an
+empty video element; a rendered preview probe exercised that label together
+with the independent **Connecting directly** state. This does not move
+participant selection, media authorization, or connection truth into the
+frontend. The verification machine has no physical camera or microphone, so capture,
 permission prompts, two-device media flow, and the resulting in-call tiles are
 not claimed as lived local evidence.
 
