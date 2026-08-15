@@ -112,6 +112,7 @@ impl ShellState {
             "channel.rotateKey" => host.rotate_channel_key(parse_request(payload)?).await,
             "call.join" => host.join_call(parse_request(payload)?).await,
             "call.signal" => host.signal_call(parse_request(payload)?).await,
+            "call.media" => host.update_call_media(parse_request(payload)?).await,
             "call.heartbeat" => host.heartbeat_call(parse_request(payload)?).await,
             "call.leave" => host.leave_call(parse_request(payload)?).await,
             "message.edit" => host.edit_message(parse_request(payload)?).await,
@@ -1318,6 +1319,29 @@ mod tests {
         assert_eq!(
             heartbeat_call.participant_video.get(&bob_peer_id),
             Some(&true)
+        );
+        bob.execute_serialized_command(
+            "call.media",
+            serde_json::json!({
+                "room": null,
+                "call_id": call_id.clone(),
+                "video": false
+            }),
+        )
+        .await
+        .expect("bob turns camera off");
+        let alice_after_media = alice
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("alice sees bob camera state");
+        assert_eq!(
+            alice_after_media
+                .home
+                .expect("alice home")
+                .call
+                .participant_video
+                .get(&bob_peer_id),
+            Some(&false)
         );
         bob.execute_serialized_command(
             "call.leave",

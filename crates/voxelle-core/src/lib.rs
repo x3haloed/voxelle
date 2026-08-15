@@ -1950,6 +1950,30 @@ fn validate_room_event_body(
                 return Err(AcceptError::NotAuthorized);
             }
         }
+        "CALL_MEDIA" => {
+            require_post()?;
+            let call_id = string_body_field(event, "call_id")
+                .ok_or_else(|| AcceptError::Invalid("call_id missing".to_string()))?;
+            if !valid_short_text(&call_id, 128)
+                || !active_call_participants(
+                    accepted_events,
+                    &event.room_id,
+                    &call_id,
+                    event.created_ms,
+                )
+                .contains(author)
+            {
+                return Err(AcceptError::NotAuthorized);
+            }
+            if event
+                .body
+                .get("video")
+                .and_then(serde_json::Value::as_bool)
+                .is_none()
+            {
+                return Err(AcceptError::Invalid("call video flag missing".to_string()));
+            }
+        }
         "CALL_OFFER" | "CALL_ANSWER" | "CALL_ICE" => {
             require_post()?;
             let call_id = string_body_field(event, "call_id")
@@ -2599,6 +2623,19 @@ mod tests {
         .expect("offer");
         accept_event(&offer, &accepted, &context, 1_200).expect("participant offer accepted");
 
+        let media = create_event(
+            author,
+            delegation_for(author, vec!["room:call".to_string()]),
+            "room:general",
+            1_201,
+            "CALL_MEDIA",
+            compute_heads(&accepted),
+            json!({ "call_id": call_id, "video": false }),
+        )
+        .expect("media event");
+        accept_event(&media, &accepted, &context, 1_201)
+            .expect("participant media update accepted");
+
         let excluded = identities
             .iter()
             .find(|identity| !participants.contains(&identity.peer_id))
@@ -2621,6 +2658,21 @@ mod tests {
         assert_eq!(
             accept_event(&excluded_offer, &accepted, &context, 1_201)
                 .expect_err("excluded peer cannot signal"),
+            AcceptError::NotAuthorized
+        );
+        let excluded_media = create_event(
+            excluded,
+            delegation_for(excluded, vec!["room:call".to_string()]),
+            "room:general",
+            1_202,
+            "CALL_MEDIA",
+            compute_heads(&accepted),
+            json!({ "call_id": call_id, "video": true }),
+        )
+        .expect("excluded media event");
+        assert_eq!(
+            accept_event(&excluded_media, &accepted, &context, 1_202)
+                .expect_err("excluded peer cannot update media intent"),
             AcceptError::NotAuthorized
         );
         assert!(active_call_participants(

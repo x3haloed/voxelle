@@ -80,6 +80,8 @@ export type RotateChannelKeyRequest = { room_id: string, };
 
 export type CallJoinRequest = { room: string | null, video: boolean, };
 
+export type CallMediaRequest = { room: string | null, call_id: string, video: boolean, };
+
 export type CallSignalRequest = { room: string | null, call_id: string, target_peer_id: string, signal_type: string, sdp: string | null, candidate: string | null, };
 
 export type CallLeaveRequest = { room: string | null, call_id: string, };

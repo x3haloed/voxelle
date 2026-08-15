@@ -71,7 +71,6 @@ const uiState = {
   paletteOpen: false,
   paletteQuery: "",
   localMediaStream: null,
-  localMediaMode: "",
   remoteMediaStreams: new Map(),
   peerConnections: new Map(),
   peerConnectionStates: new Map(),
@@ -2902,12 +2901,18 @@ function callMeshView(snapshot) {
   const controls = element("div", "control-row");
   if (joined) {
     const microphoneEnabled = localMicrophoneEnabled(uiState.localMediaStream);
+    const cameraEnabled = localCameraEnabled(uiState.localMediaStream);
     const microphone = commandButton("call.microphone.toggle");
     microphone.textContent = microphoneEnabled ? "Mute microphone" : "Unmute microphone";
     microphone.title = microphoneEnabled
       ? "Stop sending your microphone audio to this direct call"
       : "Resume sending your microphone audio to this direct call";
-    controls.append(microphone, commandButton("call.leave"));
+    const camera = commandButton("call.camera.toggle");
+    camera.textContent = cameraEnabled ? "Turn camera off" : "Turn camera on";
+    camera.title = cameraEnabled
+      ? "Stop sending your camera video and update the state shown to this direct call"
+      : "Resume an already captured camera and update the state shown to this direct call";
+    controls.append(microphone, camera, commandButton("call.leave"));
   } else {
     controls.append(
       commandButton("call.join", { video: false }),
@@ -2928,14 +2933,17 @@ function callMeshView(snapshot) {
   status.setAttribute("aria-live", "polite");
   const videos = element("div", "call-grid");
   if (joined) {
+    const cameraEnabled = localCameraEnabled(uiState.localMediaStream);
+    const hasCameraTrack = Boolean(uiState.localMediaStream?.getVideoTracks().length);
     const microphoneLabel = localMicrophoneEnabled(uiState.localMediaStream)
       ? "Microphone on"
       : "Microphone muted";
-    const localMedia = uiState.localMediaMode === "video"
+    const cameraLabel = cameraEnabled ? "Camera on" : hasCameraTrack ? "Camera off" : "Voice only";
+    const localMedia = cameraEnabled
       ? callVideo("local", true)
-      : element("div", "call-media-placeholder", microphoneLabel);
+      : element("div", "call-media-placeholder", cameraLabel);
     videos.append(callTile(
-      `You · ${uiState.localMediaMode === "video" ? "Camera on" : "Voice only"} · ${microphoneLabel}`,
+      `You · ${cameraLabel} · ${microphoneLabel}`,
       localMedia,
     ));
     for (const peerId of call?.participants ?? []) {
@@ -3117,7 +3125,6 @@ function closePeerConnection(peerId) {
 function stopLocalMedia() {
   for (const track of uiState.localMediaStream?.getTracks() ?? []) track.stop();
   uiState.localMediaStream = null;
-  uiState.localMediaMode = "";
   for (const peerId of [...uiState.peerConnections.keys()]) closePeerConnection(peerId);
   uiState.peerConnectionStates.clear();
   uiState.seenCallSignals.clear();
@@ -3597,7 +3604,6 @@ async function runCommand(command, payload) {
           return;
         }
         uiState.localMediaStream = capture.stream;
-        uiState.localMediaMode = capture.video ? "video" : "voice";
         uiState.mediaNotice = capture.notice;
         try {
           currentSnapshot = await shell.execute(command, {
@@ -3629,6 +3635,21 @@ async function runCommand(command, payload) {
         uiState.mediaNotice = microphone.changed
           ? microphone.enabled ? "Microphone on." : "Microphone muted."
           : "No microphone track is available. Leave and rejoin the call to try again.";
+        return;
+      }
+      case "call.camera.toggle": {
+        const camera = await toggleCameraIntent(uiState.localMediaStream, async (video) => {
+          currentSnapshot = await shell.execute("call.media", {
+            room: currentSnapshot.home?.room.room_id ?? null,
+            call_id: currentSnapshot.home?.call?.call_id ?? "",
+            video,
+          });
+        });
+        if (!camera.changed) {
+          uiState.mediaNotice = "No camera track is available. Leave and rejoin with camera to try again.";
+          return;
+        }
+        uiState.mediaNotice = camera.enabled ? "Camera on." : "Camera off.";
         return;
       }
       case "call.heartbeat":

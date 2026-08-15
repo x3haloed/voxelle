@@ -347,8 +347,8 @@ Current command families:
   `message.composer.focus`;
 - people and governance: `profile.update`, `role.create`, `role.grant`,
   `role.revoke`, `member.ban`, `member.unban`;
-- calls: `call.join`, `call.signal`, `call.heartbeat`, `call.leave`,
-  `call.microphone.toggle`;
+- calls: `call.join`, `call.signal`, `call.media`, `call.heartbeat`,
+  `call.leave`, `call.microphone.toggle`, `call.camera.toggle`;
 - peers: `peer.import`, `peer.diagnose`, `peer.sync`;
 - workbench/preferences: `ui.preference.set`, `ui.preferences.reset`, `workbench.layout.save`,
   `workbench.layout.reset`, `workbench.commandPalette.open`.
@@ -445,6 +445,13 @@ same frontend command ID, and the local tile names **Microphone on** or
 **Microphone muted**. A missing track remains explicit and directs the person
 to leave and rejoin; muting never writes a room fact, changes participation, or
 claims anything about a remote connection.
+`call.camera.toggle` similarly changes only already captured local video tracks,
+but it also publishes the resulting boolean camera intent through the hidden
+`call.media` shell command. That signed `CALL_MEDIA` fact is admitted only for an
+active participant, does not refresh liveness or alter membership, and drives
+the remote participant label. If no camera track was captured, the command
+directs the person to leave and rejoin with camera; it does not silently request
+new capture or claim that renegotiation succeeded.
 
 Projected reaction and pin state determines whether the visible action invokes
 the add or remove command; the frontend does not guess a toggle result. Message

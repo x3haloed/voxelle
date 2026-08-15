@@ -192,6 +192,8 @@ struct RecordHumanBetaEvidenceArgs {
     #[arg(long, required = true)]
     attest_microphone_toggle_controls: bool,
     #[arg(long, required = true)]
+    attest_camera_toggle_controls: bool,
+    #[arg(long, required = true)]
     attest_physical_microphone_capture: bool,
     #[arg(long, required = true)]
     attest_physical_camera_capture: bool,
@@ -466,6 +468,7 @@ fn main() -> Result<()> {
                 attest_compact_window_navigation,
                 attest_media_controls,
                 attest_microphone_toggle_controls,
+                attest_camera_toggle_controls,
                 attest_physical_microphone_capture,
                 attest_physical_camera_capture,
                 attest_permission_denial_recovery,
@@ -494,6 +497,7 @@ fn main() -> Result<()> {
                     compact_window_navigation: attest_compact_window_navigation,
                     media_controls: attest_media_controls,
                     microphone_toggle_controls: attest_microphone_toggle_controls,
+                    camera_toggle_controls: attest_camera_toggle_controls,
                 },
                 media: evidence::MediaEvidenceV1 {
                     participant_roles: media_roles,

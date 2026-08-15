@@ -8,10 +8,14 @@ import {
   disconnectedParticipantIds,
   isCameraUnavailable,
   leaveCall,
+  localCameraEnabled,
   localMicrophoneEnabled,
   mediaCaptureErrorMessage,
   participantConnectionLabel,
   participantMediaPresentation,
+  setLocalCameraEnabled,
+  toggleCameraIntent,
+  toggleLocalCamera,
   toggleLocalMicrophone,
 } from "./call-media.mjs";
 
@@ -118,10 +122,51 @@ test("microphone toggling controls every local audio track and reports missing c
   });
 });
 
+test("camera toggling controls every captured video track and reports missing capture", () => {
+  const videoTracks = [{ enabled: true }, { enabled: true }];
+  const stream = { getVideoTracks: () => videoTracks };
+
+  assert.equal(localCameraEnabled(stream), true);
+  assert.deepEqual(toggleLocalCamera(stream), { changed: true, enabled: false });
+  assert.deepEqual(videoTracks.map((track) => track.enabled), [false, false]);
+  assert.deepEqual(setLocalCameraEnabled(stream, true), { changed: true, enabled: true });
+  assert.equal(localCameraEnabled(stream), true);
+  assert.deepEqual(toggleLocalCamera({ getVideoTracks: () => [] }), {
+    changed: false,
+    enabled: false,
+  });
+});
+
+test("camera intent rolls local tracks back when the admitted update fails", async () => {
+  const videoTracks = [{ enabled: true }];
+  const stream = { getVideoTracks: () => videoTracks };
+  const published = [];
+
+  assert.deepEqual(await toggleCameraIntent(stream, async (enabled) => published.push(enabled)), {
+    changed: true,
+    enabled: false,
+  });
+  assert.deepEqual(published, [false]);
+  assert.equal(videoTracks[0].enabled, false);
+
+  await assert.rejects(
+    toggleCameraIntent(stream, async () => { throw new Error("admission failed"); }),
+    /admission failed/,
+  );
+  assert.equal(videoTracks[0].enabled, false);
+});
+
 test("the active call and palette share the microphone semantic command", () => {
   assert.match(productSource, /commandButton\("call\.microphone\.toggle"\)/);
   assert.match(productSource, /case "call\.microphone\.toggle":/);
   assert.match(productSource, /No microphone track is available\. Leave and rejoin/);
+});
+
+test("the active call and palette share the camera semantic command", () => {
+  assert.match(productSource, /commandButton\("call\.camera\.toggle"\)/);
+  assert.match(productSource, /case "call\.camera\.toggle":/);
+  assert.match(productSource, /shell\.execute\("call\.media"/);
+  assert.match(productSource, /No camera track is available\. Leave and rejoin with camera/);
 });
 
 test("local media stops even when durable leave fails", async () => {

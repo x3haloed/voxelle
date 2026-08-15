@@ -77,6 +77,33 @@ export function toggleLocalMicrophone(stream) {
   return { changed: true, enabled };
 }
 
+export function localCameraEnabled(stream) {
+  return Boolean(stream?.getVideoTracks().some((track) => track.enabled));
+}
+
+export function setLocalCameraEnabled(stream, enabled) {
+  const tracks = stream?.getVideoTracks() ?? [];
+  if (tracks.length === 0) return { changed: false, enabled: false };
+  for (const track of tracks) track.enabled = enabled;
+  return { changed: true, enabled };
+}
+
+export function toggleLocalCamera(stream) {
+  return setLocalCameraEnabled(stream, !localCameraEnabled(stream));
+}
+
+export async function toggleCameraIntent(stream, publish) {
+  const camera = toggleLocalCamera(stream);
+  if (!camera.changed) return camera;
+  try {
+    await publish(camera.enabled);
+    return camera;
+  } catch (error) {
+    setLocalCameraEnabled(stream, !camera.enabled);
+    throw error;
+  }
+}
+
 export async function leaveCall(executeLeave, stopMedia) {
   try {
     return await executeLeave();

@@ -88,4 +88,12 @@ test("palette availability explains causal prerequisites without changing comman
     paletteCommandAvailability("call.microphone.toggle", { ...active, joinedCall: true }).available,
     true,
   );
+  assert.equal(
+    paletteCommandAvailability("call.camera.toggle", active).reason,
+    "Join this room's call first",
+  );
+  assert.equal(
+    paletteCommandAvailability("call.camera.toggle", { ...active, joinedCall: true }).available,
+    true,
+  );
 });

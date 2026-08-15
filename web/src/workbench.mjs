@@ -74,6 +74,7 @@ const HOME_COMMANDS = new Set([
   "call.join",
   "call.leave",
   "call.microphone.toggle",
+  "call.camera.toggle",
   "peer.import",
   "peer.diagnose",
   "peer.sync",
@@ -111,6 +112,9 @@ export function paletteCommandAvailability(commandId, context) {
     return { available: false, reason: "You are not in this room's call" };
   }
   if (commandId === "call.microphone.toggle" && !context.joinedCall) {
+    return { available: false, reason: "Join this room's call first" };
+  }
+  if (commandId === "call.camera.toggle" && !context.joinedCall) {
     return { available: false, reason: "Join this room's call first" };
   }
   return { available: true, reason: "" };

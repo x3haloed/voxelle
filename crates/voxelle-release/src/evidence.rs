@@ -110,6 +110,7 @@ pub struct AssistiveTechnologyEvidenceV1 {
     pub compact_window_navigation: bool,
     pub media_controls: bool,
     pub microphone_toggle_controls: bool,
+    pub camera_toggle_controls: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +241,7 @@ pub fn template(
                 compact_window_navigation: false,
                 media_controls: false,
                 microphone_toggle_controls: false,
+                camera_toggle_controls: false,
             },
             media: MediaEvidenceV1 {
                 participant_roles: Vec::new(),
@@ -595,10 +597,11 @@ fn validate_human(human: &HumanEvidenceV1, field: &FieldEvidenceV1) -> Result<()
         && assistive.degraded_connection
         && assistive.compact_window_navigation
         && assistive.media_controls
-        && assistive.microphone_toggle_controls)
+        && assistive.microphone_toggle_controls
+        && assistive.camera_toggle_controls)
     {
         return Err(anyhow!(
-            "keyboard-only assistive-technology evidence must complete setup, join, conversation, recovery, customization, degraded-connection, compact-window navigation, media-control, and microphone-toggle paths"
+            "keyboard-only assistive-technology evidence must complete setup, join, conversation, recovery, customization, degraded-connection, compact-window navigation, media-control, microphone-toggle, and camera-toggle paths"
         ));
     }
 
@@ -870,6 +873,7 @@ mod tests {
                     compact_window_navigation: true,
                     media_controls: true,
                     microphone_toggle_controls: true,
+                    camera_toggle_controls: true,
                 },
                 media: MediaEvidenceV1 {
                     participant_roles: vec!["A".to_string(), "B".to_string()],
@@ -1111,6 +1115,16 @@ mod tests {
             .human
             .assistive_technology
             .microphone_toggle_controls = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.assistive_technology.camera_toggle_controls = false;
         assert!(validate(
             &evidence,
             &manifest(),

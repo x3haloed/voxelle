@@ -717,6 +717,16 @@ exercise both directions and missing capture; rendered preview evidence covers
 the muted state, recovery copy, and palette route. This local device control
 does not change accepted call participation or signaling and is not physical
 audio evidence.
+Active camera control follows the same visible-control and command-palette
+vocabulary through `call.camera.toggle`. It disables or reenables only an
+already negotiated local camera track, while a signed, semantically admitted
+`CALL_MEDIA` fact updates the projected camera intent seen by ordinary peers.
+Only an active call participant may publish that fact, and it neither extends
+liveness nor changes call membership. A voice-only capture remains explicit and
+directs the person to leave and rejoin with camera instead of pretending a new
+track was negotiated. Deterministic authority, serialized two-home, device-track,
+and palette tests cover this path; physical camera behavior remains an external
+human evidence gate.
 
 The final local fixed-point pass is green for the changed system authorities:
 71 Rust tests, 9 browser-shell behavior tests, strict lint, generated-contract

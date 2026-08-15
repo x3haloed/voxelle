@@ -644,6 +644,7 @@ pub fn shell_contract_typescript() -> String {
         CreateChannelRequest::decl(&cfg),
         RotateChannelKeyRequest::decl(&cfg),
         CallJoinRequest::decl(&cfg),
+        CallMediaRequest::decl(&cfg),
         CallSignalRequest::decl(&cfg),
         CallLeaveRequest::decl(&cfg),
         MessageTargetRequest::decl(&cfg),
@@ -948,6 +949,13 @@ pub struct RotateChannelKeyRequest {
 pub struct CallJoinRequest {
     pub room: Option<String>,
     #[serde(default)]
+    pub video: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallMediaRequest {
+    pub room: Option<String>,
+    pub call_id: String,
     pub video: bool,
 }
 
@@ -2249,6 +2257,14 @@ impl VoxelleHome {
                 }
             } else if event.kind == "CALL_HEARTBEAT" {
                 last_seen.insert(event.author_peer_id.clone(), event.created_ms);
+            } else if event.kind == "CALL_MEDIA" {
+                if last_seen.contains_key(&event.author_peer_id) {
+                    if let Some(video) =
+                        event.body.get("video").and_then(serde_json::Value::as_bool)
+                    {
+                        participant_video.insert(event.author_peer_id.clone(), video);
+                    }
+                }
             } else if event.kind == "CALL_LEAVE" {
                 last_seen.remove(&event.author_peer_id);
                 participant_video.remove(&event.author_peer_id);
@@ -2350,6 +2366,14 @@ impl VoxelleHome {
                 "sdp": request.sdp,
                 "candidate": request.candidate,
             }),
+        )
+    }
+
+    pub fn update_call_media(&self, request: &CallMediaRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "CALL_MEDIA",
+            serde_json::json!({ "call_id": request.call_id, "video": request.video }),
         )
     }
 
@@ -4314,6 +4338,16 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
+    pub async fn update_call_media(
+        &mut self,
+        mut request: CallMediaRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.update_call_media(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
     pub async fn heartbeat_call(
         &mut self,
         mut request: CallLeaveRequest,
@@ -5805,6 +5839,13 @@ fn default_commands() -> Vec<UiCommand> {
             false,
         ),
         shell_command(
+            "call.media",
+            "Update Call Camera State",
+            "Replicate an authenticated camera-intent update for an active participant",
+            None,
+            false,
+        ),
+        shell_command(
             "call.heartbeat",
             "Keep Call Alive",
             "Replicate short-lived room call presence",
@@ -5822,6 +5863,13 @@ fn default_commands() -> Vec<UiCommand> {
             "call.microphone.toggle",
             "Mute or Unmute Microphone",
             "Toggle the local microphone track without changing room membership",
+            None,
+            true,
+        ),
+        frontend_command(
+            "call.camera.toggle",
+            "Turn Camera Off or On",
+            "Toggle an already captured camera track and publish the resulting camera intent",
             None,
             true,
         ),

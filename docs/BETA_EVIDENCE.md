@@ -185,6 +185,11 @@ named call control and through the command palette. Confirm the assistive
 technology announces the resulting **Microphone muted** and **Microphone on**
 states. If the captured track disappears, confirm the unavailable state directs
 the person to leave and rejoin rather than claiming that audio resumed.
+Turn an already captured camera off and back on through the named call control
+and command palette. Confirm the local and remote participant states change
+accordingly and are announced. From a voice-only join, invoke the camera control
+and confirm it directs the person to leave and rejoin with camera rather than
+claiming that capture started.
 
 Do not enter `none`, `unknown`, or a generic claim. Accessibility-tree tests,
 keyboard automation, and deterministic media mocks are valuable development
@@ -256,6 +261,7 @@ cargo run -q -p voxelle-release -- record-human-beta-evidence \
   --attest-compact-window-navigation \
   --attest-media-controls \
   --attest-microphone-toggle-controls \
+  --attest-camera-toggle-controls \
   --attest-physical-microphone-capture \
   --attest-physical-camera-capture \
   --attest-permission-denial-recovery \
