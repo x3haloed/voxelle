@@ -117,6 +117,13 @@ invitations, notifications, local search, and connection health. Their
 underlying named views remain registered, dockable, and restorable through Edit
 layout so the focused presentation does not narrow the ontology.
 
+At compact window widths, presentation may stack the named places so the
+selected conversation and composer remain operable before secondary surfaces.
+This responsive projection must not rewrite persisted `place_id`, order, or
+visibility state, and it must not create a compact-only command path. Header
+actions and transient Connection and utility surfaces remain inside the
+scrollbar-safe containing width without requiring horizontal scrolling.
+
 ## 3. Primitive Categories
 
 ### 3.1 Places

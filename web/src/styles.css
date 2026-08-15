@@ -416,7 +416,7 @@ h3 {
   z-index: 80;
   top: 68px;
   right: var(--panel-gap);
-  width: min(680px, calc(100vw - 2 * var(--panel-gap)));
+  width: min(680px, calc(100% - 2 * var(--panel-gap)));
   max-height: calc(100vh - 84px);
   overflow: hidden;
   display: grid;
@@ -445,7 +445,7 @@ h3 {
 }
 
 .utility-center {
-  width: min(560px, calc(100vw - 2 * var(--panel-gap)));
+  width: min(560px, calc(100% - 2 * var(--panel-gap)));
 }
 
 .utility-sections {
@@ -1357,7 +1357,8 @@ kbd {
     display: grid;
   }
 
-  .workbench {
+  .workbench,
+  .workbench.without-inspector {
     grid-template-areas:
       "main"
       "sidebar"

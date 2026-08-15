@@ -429,6 +429,16 @@ overflow. This is rendered browser evidence for presentation and interaction,
 not a new native file-dialog or successful-admission claim; the preceding
 packaged gate remains the Rust-owned admission evidence.
 
+The broader workbench narrow-window projection has also crossed a rendered
+browser gate. At 640, 480, and 360 CSS pixels, the current conversation and
+composer remain fully reachable without document-level horizontal scrolling;
+the header wraps its actions inside the visible width. At 480 pixels,
+Connection & sync remains inside the scrollbar-safe containing width and has no
+internal horizontal overflow. The compact projection stacks the existing named
+dock areas without changing their stable IDs, persisted placement, visibility,
+or command authority. This is rendered presentation evidence, not
+packaged-native, Windows, or assistive-technology evidence.
+
 Invite lifecycle controls have crossed a rendered interaction and Rust
 operational gate. The People surface offers explicit one-hour, one-day,
 seven-day, and thirty-day expiries, truthfully states bearer reuse, and lists

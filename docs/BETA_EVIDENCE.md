@@ -113,6 +113,13 @@ the command palette and confirm focus lands in the required visible input. Also
 inspect one unavailable command and confirm the assistive technology announces
 its missing prerequisite rather than allowing an avoidable failing action.
 
+Resize the supported desktop window to its narrowest practical width during one
+conversation path. Confirm the header actions, selected conversation, composer,
+and transient Connection or utility action remain keyboard-reachable without
+document-level horizontal scrolling. Record the window size and any wrapping or
+stacking behavior; this operator observation complements rather than replaces
+the assistive-technology evidence above.
+
 Then use two or three distinct physical participants drawn from the three
 machine roles in the field receipt. In `human.media`, record the participating roles
 and confirm all of the following with real microphones and cameras:
