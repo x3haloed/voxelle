@@ -11,5 +11,12 @@ test("channel actions expose their visible channel context", () => {
 
 test("message action disclosures expose author and bounded content context", () => {
   assert.match(source, /actionSummary\.setAttribute\("aria-label", messageActionsLabel\(message, author\.display_name\)\)/);
+  assert.match(source, /reaction on \$\{messageContextLabel\(message, author\.display_name\)\}/);
   assert.match(source, /text\.length > 48 \? `\$\{text\.slice\(0, 47\)\}…` : text/);
+});
+
+test("governance row controls expose their visible member, role, and invite targets", () => {
+  assert.match(source, /Actions for member \$\{profile\.display_name\}/);
+  assert.match(source, /Manage members for role \$\{role\.name\}/);
+  assert.match(source, /Revoke invite expiring \$\{inviteExpiry\}/);
 });

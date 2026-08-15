@@ -112,9 +112,11 @@ During those keyboard-only paths, invoke at least one form-backed action from
 the command palette and confirm focus lands in the required visible input. Also
 inspect one unavailable command and confirm the assistive technology announces
 its missing prerequisite rather than allowing an avoidable failing action.
-In the channel list and conversation, navigate repeated channel and message
-controls and confirm each announced name identifies the visible target rather
-than relying on position alone.
+In the channel list, conversation, and People surface, navigate repeated
+channel, message, reaction, member, role, and invitation controls. Confirm each
+announced name identifies the visible target rather than relying on position
+alone. Close one transient panel with Escape and confirm focus returns to its
+invoking header control with the collapsed state announced.
 Open at least one disclosure with Enter and another with Space. Confirm the
 assistive technology announces each as an actionable control and reports the
 collapsed or expanded state after activation.

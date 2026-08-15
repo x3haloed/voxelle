@@ -193,6 +193,10 @@ Repeated controls expose enough visible row context in their accessible names
 to identify the target without reconstructing it from DOM position. Channel
 actions include the channel name and privacy where relevant; message action
 disclosures include the author and a bounded content or attachment preview.
+Member and role disclosures include their visible names, invite revocation
+includes the displayed expiry, and visible reaction controls include the
+message author and bounded content context.
+
 This naming changes presentation only: stable command IDs and payloads remain
 the semantic authority.
 

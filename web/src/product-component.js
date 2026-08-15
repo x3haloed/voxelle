@@ -1836,8 +1836,9 @@ function activeInviteRow(invite) {
   const row = element("li", "peer-row active-invite-row");
   row.dataset.inviteId = invite.invite_id;
   row.tabIndex = -1;
+  const inviteExpiry = new Date(invite.expires_ms).toLocaleString();
   row.append(definitionGrid([
-    ["Expires", new Date(invite.expires_ms).toLocaleString()],
+    ["Expires", inviteExpiry],
     ["Created", new Date(invite.created_ms).toLocaleString()],
     ["Invite ID", invite.invite_id],
   ]));
@@ -1860,7 +1861,9 @@ function activeInviteRow(invite) {
     confirmation.append(controls);
     row.append(confirmation);
   } else {
-    row.append(actionButton("Revoke invite…", () => beginInviteRevocation(invite.invite_id)));
+    const revoke = actionButton("Revoke invite…", () => beginInviteRevocation(invite.invite_id));
+    revoke.setAttribute("aria-label", `Revoke invite expiring ${inviteExpiry}`);
+    row.append(revoke);
   }
   return row;
 }
@@ -2202,8 +2205,10 @@ function memberProfilesView(snapshot) {
     row.append(body);
     if (!isOwn) {
       const actions = element("details", "advanced-details member-actions");
+      const memberSummary = disclosureSummary("Member actions");
+      memberSummary.setAttribute("aria-label", `Actions for member ${profile.display_name}`);
       actions.append(
-        disclosureSummary("Member actions"),
+        memberSummary,
         element(
           "p",
           "summary",
@@ -2294,7 +2299,9 @@ function roleListView(snapshot) {
     if (role.role_id !== "role:everyone") {
       const members = element("details", "advanced-details");
       members.open = uiState.roleAssignmentDraft?.roleId === role.role_id;
-      members.append(disclosureSummary("Manage members"));
+      const memberSummary = disclosureSummary("Manage members");
+      memberSummary.setAttribute("aria-label", `Manage members for role ${role.name}`);
+      members.append(memberSummary);
       const memberList = element("div", "choice-list");
       for (const profile of snapshot.home?.profiles ?? []) {
         if (profile.banned) continue;
@@ -2544,7 +2551,10 @@ function roomTimelineView(snapshot) {
       const ownReaction = reaction.peer_ids.includes(snapshot.home?.profile.peer_id ?? "");
       const button = commandButton(ownReaction ? "reaction.remove" : "reaction.add", { target_event_id: message.event_id, emoji: reaction.emoji, room: snapshot.home?.room.room_id ?? null });
       button.textContent = `${reaction.emoji} ${reaction.peer_ids.length}`;
-      button.setAttribute("aria-label", `${ownReaction ? "Remove" : "Add"} ${reaction.emoji} reaction`);
+      button.setAttribute(
+        "aria-label",
+        `${ownReaction ? "Remove" : "Add"} ${reaction.emoji} reaction on ${messageContextLabel(message, author.display_name)}`,
+      );
       reactions.append(button);
     }
     if (reactions.children.length > 0) content.append(reactions);
@@ -3999,13 +4009,17 @@ function profileInitials(displayName) {
 }
 
 function messageActionsLabel(message, authorName) {
+  return `Actions for ${messageContextLabel(message, authorName)}`;
+}
+
+function messageContextLabel(message, authorName) {
   const text = message.redacted
     ? "deleted message"
     : message.text?.replace(/\s+/g, " ").trim()
       || message.attachments?.[0]?.filename
       || "message";
   const preview = text.length > 48 ? `${text.slice(0, 47)}…` : text;
-  return `Actions for message from ${authorName}: ${preview}`;
+  return `message from ${authorName}: ${preview}`;
 }
 
 function disclosureSummary(label, className = "") {
