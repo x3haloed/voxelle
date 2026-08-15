@@ -212,6 +212,7 @@ Errors should classify the recovery path:
 - `needs_peer_record`
 - `needs_reachability`
 - `needs_sync`
+- `needs_input`
 - `needs_human`
 - `internal_error`
 
@@ -219,6 +220,9 @@ The serialized `ShellError` owns that classification together with its human
 message, recovery instruction, and technical detail. HTTP action results may
 repeat the same recovery value for convenient routing, but adapters must not
 infer it by parsing error prose or invent a second classification.
+`needs_input` means the command reached the authoritative validator but one or
+more supplied values violated a documented semantic bound; the caller should
+correct the payload rather than retry it unchanged or report an internal fault.
 
 ### 3.5 Delta
 

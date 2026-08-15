@@ -178,6 +178,7 @@ pub enum ShellRecovery {
     NeedsPeerRecord,
     NeedsReachability,
     NeedsSync,
+    NeedsInput,
     NeedsHuman,
     InternalError,
 }
@@ -299,6 +300,9 @@ fn command_error_presentation(
             "Keep the current verified generation active and review Product Update before retrying.",
         );
     }
+    if let Some((message, recovery_message)) = correctable_input_presentation(command_id, detail) {
+        return (message, ShellRecovery::NeedsInput, recovery_message);
+    }
     if detail.contains("service") || detail.contains("offline") {
         return (
             "Voxelle needs its local peer service for that action.",
@@ -318,6 +322,79 @@ fn command_error_presentation(
         ShellRecovery::InternalError,
         "Try once more. If it repeats, retain the technical details for a bug report.",
     )
+}
+
+fn correctable_input_presentation(
+    command_id: &str,
+    detail: &str,
+) -> Option<(&'static str, &'static str)> {
+    let detail = detail.to_ascii_lowercase();
+    let detail = detail.as_str();
+    let matches = match command_id {
+        "message.send" | "message.edit" => {
+            detail.contains("message text is invalid")
+                || detail.contains("msg_post text is invalid")
+                || detail.contains("msg_edit text is invalid")
+                || detail.contains("mentions are invalid")
+                || detail.contains("thread root does not exist")
+        }
+        "reaction.add" | "reaction.remove" => detail.contains("reaction emoji is invalid"),
+        "attachment.add" => {
+            detail.contains("decode attachment")
+                || detail.contains("attachment metadata is invalid")
+                || detail.contains("attachment base64 is invalid")
+                || detail.contains("attachment must be 1 to 256 kib")
+        }
+        "profile.update" => {
+            detail.contains("profile display_name is invalid")
+                || detail.contains("profile about is invalid")
+        }
+        "channel.create" => {
+            detail.contains("channel name must contain a letter or number")
+                || detail.contains("private channel members must already belong to the space")
+                || detail.contains("invalid channel definition")
+        }
+        "role.create" => {
+            detail.contains("role name must contain a letter or number")
+                || detail.contains("invalid role definition")
+        }
+        "message.search" => detail.contains("search query is empty"),
+        _ => false,
+    };
+    if !matches {
+        return None;
+    }
+    Some(match command_id {
+        "message.send" | "message.edit" => (
+            "That message needs editing.",
+            "Use 1 to 4,000 characters without leading or trailing whitespace, and choose only current members for mentions.",
+        ),
+        "reaction.add" | "reaction.remove" => (
+            "That reaction is not valid.",
+            "Choose a visible emoji or short reaction of at most 32 characters and try again.",
+        ),
+        "attachment.add" => (
+            "That file cannot be attached.",
+            "Choose a non-empty file no larger than 256 KiB with a valid filename, then try again.",
+        ),
+        "profile.update" => (
+            "Those profile details are not valid.",
+            "Use a display name of 1 to 80 characters and an About description of at most 512 characters.",
+        ),
+        "channel.create" => (
+            "That channel cannot be created as entered.",
+            "Use a name containing a letter or number and choose only current space members for a private channel.",
+        ),
+        "role.create" => (
+            "That role cannot be created as entered.",
+            "Use a name containing a letter or number and choose at least one supported permission.",
+        ),
+        "message.search" => (
+            "Enter something to search for.",
+            "Type one or more words from a message or attachment name, then search again.",
+        ),
+        _ => unreachable!("matched correctable input command"),
+    })
 }
 
 #[cfg(test)]
@@ -1457,6 +1534,34 @@ mod tests {
             .expect_err("invalid payload");
         assert_eq!(invalid.recovery, ShellRecovery::InternalError);
         assert!(invalid.detail.starts_with("invalid command payload:"));
+
+        let empty_search = shell
+            .execute_serialized_command(
+                "message.search",
+                serde_json::json!({ "query": "   ", "room": null, "limit": 10 }),
+            )
+            .await
+            .expect_err("empty search rejected");
+        assert_eq!(empty_search.recovery, ShellRecovery::NeedsInput);
+        assert_eq!(empty_search.message, "Enter something to search for.");
+        assert!(empty_search.recovery_message.contains("one or more words"));
+        assert!(empty_search.detail.contains("search query is empty"));
+    }
+
+    #[test]
+    fn correctable_input_classification_does_not_absorb_authority_or_internal_errors() {
+        assert!(correctable_input_presentation(
+            "channel.create",
+            "channel name must contain a letter or number"
+        )
+        .is_some());
+        assert!(correctable_input_presentation(
+            "attachment.add",
+            "event rejected: attachment must be 1 to 256 KiB"
+        )
+        .is_some());
+        assert!(correctable_input_presentation("member.ban", "not authorized").is_none());
+        assert!(correctable_input_presentation("message.send", "database is locked").is_none());
     }
 
     #[test]

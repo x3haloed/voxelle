@@ -414,6 +414,24 @@ mod tests {
             result.error.expect("structured error").recovery,
             ShellRecovery::InternalError
         );
+
+        run_command(
+            &shell,
+            "home.init",
+            serde_json::json!({ "default_room": null }),
+        )
+        .await;
+        let input = run_command(
+            &shell,
+            "message.search",
+            serde_json::json!({ "query": " ", "room": null, "limit": 10 }),
+        )
+        .await;
+        assert_eq!(input.recovery, Some(ShellRecovery::NeedsInput));
+        assert_eq!(
+            input.error.expect("input error").recovery,
+            ShellRecovery::NeedsInput
+        );
     }
 
     #[cfg(unix)]

@@ -355,6 +355,15 @@ simulate the semantic command. The serialized two-home test above remains the
 authority evidence for the accepted ban transition; this is not yet a new
 packaged-native or assistive-technology claim.
 
+The shared shell error contract now distinguishes `needs_input` from authority,
+home, reachability, synchronization, human-intervention, and internal failures.
+Representative serialized and inhabitant-surface tests prove that an empty
+retained-message search is returned as correctable input while malformed command
+schemas and unsupported commands remain internal integration errors. The Rust
+classifier narrowly covers authoritative validation outcomes for message text
+and mentions, reactions, attachments, profiles, channel and role creation, and
+search; it does not reclassify permission failures or infrastructure faults.
+
 The packaged macOS conversation surface has crossed a lived reply/edit gate. A
 person selected Reply on a retained message, received named composer context,
 posted through `message.send` with the authoritative thread root, and observed

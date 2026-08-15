@@ -184,6 +184,10 @@ action. Rust-owned recovery categories travel with the same serialized command
 result used by every consumer; implementation paths and error chains remain
 available only under explicit technical details and never become the recovery
 authority.
+Ordinary correctable validation failures use `needs_input`, so invalid names,
+message content, attachments, profile fields, reactions, and empty searches do
+not masquerade as product defects. Authority, connectivity, home, and internal
+failures retain their distinct recovery meanings.
 
 Until a recovery-kit export succeeds, the ordinary shell shows a compact
 recovery setup prompt. The durable health marker records only completion time,

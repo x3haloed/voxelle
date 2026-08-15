@@ -141,4 +141,4 @@ export type PeerListItemView = { label: string, peer_id: string, device_id: stri
 export type RoomTimelineView = { room_id: string, messages: Array<MessageView>, };
 
 export type ShellError = { message: string, recovery: ShellRecovery, recovery_message: string, detail: string, };
-export type ShellRecovery = "needs_home" | "needs_service_online" | "needs_peer_record" | "needs_reachability" | "needs_sync" | "needs_human" | "internal_error";
+export type ShellRecovery = "needs_home" | "needs_service_online" | "needs_peer_record" | "needs_reachability" | "needs_sync" | "needs_input" | "needs_human" | "internal_error";
