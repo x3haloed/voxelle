@@ -509,11 +509,18 @@ behavior, and workbench placement or visibility, states which protocol state is
 untouched, focuses the consequential action, traps keyboard navigation, and
 returns to Reset after button or Escape cancellation. Only explicit confirmation
 invokes the existing Rust-owned reset command; accepted preference or reset
-commands clear their matching disposable drafts. A rendered preview probe
+commands clear their matching disposable drafts. The distinct
+`workbench.layout.reset` command now uses the same modal discipline but names
+only dock placement and visibility, explicitly preserves appearance, spacing,
+and behavior, and returns cancellation to the exact reset control or the visible
+More entry point when no narrower reset control is rendered. A rendered preview probe
 verified unchanged/changed/reverted Save states, draft survival across Refresh,
 the reset review and initial focus, both cancellation paths, retained draft on
 cancel, and focus return without invoking reset. This is rendered presentation
-evidence, not a new packaged-native or assistive-technology claim.
+evidence. A fresh-home rendered palette probe separately verified the
+layout-only review, its bounded preservation language, consequential initial
+focus, Escape cancellation, and focus return to collapsed More without invoking
+the command. These are not new packaged-native or assistive-technology claims.
 
 The public Discord families have crossed their operational gate. Space
 governance now carries channel definitions, profiles, roles, permissions,

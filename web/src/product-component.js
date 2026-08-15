@@ -63,7 +63,7 @@ const uiState = {
   productUpdateDraft: "",
   trustTransitionDraft: "",
   productConfirmationCommand: "",
-  preferencesResetConfirming: false,
+  customizationResetCommand: "",
   preferenceDrafts: new Map(),
   draggedViewId: "",
   layoutEditing: false,
@@ -216,8 +216,8 @@ function render() {
     ...(uiState.productConfirmationCommand
       ? [productUpdateConfirmation(currentSnapshot)]
       : []),
-    ...(uiState.preferencesResetConfirming
-      ? [preferencesResetConfirmation()]
+    ...(uiState.customizationResetCommand
+      ? [customizationResetConfirmation()]
       : []),
     currentSnapshot.home
       ? workbenchShell(currentSnapshot)
@@ -259,14 +259,14 @@ function recoverySetupPrompt() {
 }
 
 function handleKeydown(event) {
-  if (event.key === "Tab" && uiState.preferencesResetConfirming) {
-    const confirmation = app.querySelector(".preferences-reset-confirmation");
+  if (event.key === "Tab" && uiState.customizationResetCommand) {
+    const confirmation = app.querySelector(".customization-reset-confirmation");
     if (confirmation) trapModalTab(event, confirmation);
     return;
   }
-  if (event.key === "Escape" && uiState.preferencesResetConfirming) {
+  if (event.key === "Escape" && uiState.customizationResetCommand) {
     event.preventDefault();
-    cancelPreferencesResetConfirmation();
+    cancelCustomizationResetConfirmation();
     return;
   }
   if (event.key === "Tab" && uiState.productConfirmationCommand) {
@@ -806,25 +806,36 @@ function customizationEditor(snapshot) {
   return fragment;
 }
 
-function preferencesResetConfirmation() {
-  const backdrop = element("div", "command-palette-backdrop preferences-reset-backdrop");
-  const dialog = element("section", "command-palette preferences-reset-confirmation");
+function customizationResetConfirmation() {
+  const resetAll = uiState.customizationResetCommand === "ui.preferences.reset";
+  const backdrop = element("div", "command-palette-backdrop customization-reset-backdrop");
+  const dialog = element("section", "command-palette customization-reset-confirmation");
   dialog.setAttribute("role", "alertdialog");
   dialog.setAttribute("aria-modal", "true");
-  dialog.setAttribute("aria-labelledby", "preferences-reset-title");
-  const title = element("h2", "", "Reset all customization?");
-  title.id = "preferences-reset-title";
-  const confirm = commandButton("ui.preferences.reset", { confirmed: true });
-  confirm.textContent = "Reset appearance, behavior, and layout";
+  dialog.setAttribute("aria-labelledby", "customization-reset-title");
+  const title = element("h2", "", resetAll ? "Reset all customization?" : "Reset workbench layout?");
+  title.id = "customization-reset-title";
+  const confirm = commandButton(uiState.customizationResetCommand, { confirmed: true });
+  confirm.textContent = resetAll
+    ? "Reset appearance, behavior, and layout"
+    : "Reset dock placement and visibility";
   confirm.dataset.dialogInitialFocus = "true";
   const controls = element("div", "row-actions");
-  controls.append(confirm, actionButton("Keep my customization", cancelPreferencesResetConfirmation));
+  controls.append(
+    confirm,
+    actionButton(
+      resetAll ? "Keep my customization" : "Keep my layout",
+      cancelCustomizationResetConfirmation,
+    ),
+  );
   dialog.append(
     title,
     element(
       "p",
       "summary",
-      "This restores every appearance, spacing, and behavior preference and returns every docked view to its default placement and visibility.",
+      resetAll
+        ? "This restores every appearance, spacing, and behavior preference and returns every docked view to its default placement and visibility."
+        : "This returns every docked view to its default placement and visibility. Appearance, spacing, and behavior preferences remain unchanged.",
     ),
     element(
       "p",
@@ -837,21 +848,30 @@ function preferencesResetConfirmation() {
   return backdrop;
 }
 
-function beginPreferencesResetConfirmation() {
+function beginCustomizationResetConfirmation(command) {
   rememberFocusReturn();
   uiState.paletteOpen = false;
   uiState.paletteQuery = "";
   uiState.connectionOpen = false;
-  uiState.utilityOpen = "settings";
-  uiState.preferencesResetConfirming = true;
+  if (command === "ui.preferences.reset") {
+    uiState.utilityOpen = "settings";
+  } else {
+    uiState.utilityOpen = "";
+    uiState.layoutEditing = true;
+  }
+  uiState.customizationResetCommand = command;
   render();
 }
 
-function cancelPreferencesResetConfirmation() {
-  uiState.preferencesResetConfirming = false;
+function cancelCustomizationResetConfirmation() {
+  const command = uiState.customizationResetCommand;
+  uiState.customizationResetCommand = "";
   render();
   window.requestAnimationFrame(() => {
-    app.querySelector('[data-command="ui.preferences.reset"]')?.focus();
+    (
+      app.querySelector(`[data-command="${command}"]`)
+      ?? app.querySelector(".header-more > summary")
+    )?.focus();
   });
 }
 
@@ -3739,8 +3759,11 @@ async function runCommand(command, payload) {
     beginProductConfirmation(command);
     return;
   }
-  if (command === "ui.preferences.reset" && payload?.confirmed !== true) {
-    beginPreferencesResetConfirmation();
+  if (
+    (command === "ui.preferences.reset" || command === "workbench.layout.reset")
+    && payload?.confirmed !== true
+  ) {
+    beginCustomizationResetConfirmation(command);
     return;
   }
   const commandReturnElement = focusCoordinator.currentElement();
@@ -4065,7 +4088,7 @@ async function runCommand(command, payload) {
       case "ui.preferences.reset":
         currentSnapshot = await shell.execute(command, {});
         uiState.preferenceDrafts.clear();
-        uiState.preferencesResetConfirming = false;
+        uiState.customizationResetCommand = "";
         return;
       case "workbench.layout.save":
         currentSnapshot = await shell.execute(
@@ -4075,6 +4098,7 @@ async function runCommand(command, payload) {
         return;
       case "workbench.layout.reset":
         currentSnapshot = await shell.execute(command, {});
+        uiState.customizationResetCommand = "";
         return;
       case "product.update.install":
         currentSnapshot = await shell.execute(command, {
@@ -4271,7 +4295,7 @@ function focusAfterNoticeDismissal(returnElement, returnActionKey, validationTar
         .find((candidate) => candidate.dataset.validationTarget === validationTarget)
       : null;
     const activeSurface = app.querySelector(
-      ".utility-center, .connection-center, .command-palette, .product-update-confirmation, .preferences-reset-confirmation",
+      ".utility-center, .connection-center, .command-palette, .product-update-confirmation, .customization-reset-confirmation",
     );
     const restoredAction = returnActionKey
       ? [...app.querySelectorAll("[data-action-key]")]
@@ -4293,8 +4317,8 @@ function focusAfterNoticeDismissal(returnElement, returnActionKey, validationTar
 }
 
 function synchronizeTransientFocus() {
-  const surface = uiState.preferencesResetConfirming
-    ? "preferences-reset-confirmation"
+  const surface = uiState.customizationResetCommand
+    ? `customization-reset:${uiState.customizationResetCommand}`
     : uiState.productConfirmationCommand
     ? `product-confirmation:${uiState.productConfirmationCommand}`
     : uiState.paletteOpen
@@ -4307,8 +4331,8 @@ function synchronizeTransientFocus() {
   focusCoordinator.synchronize(surface, () => {
     const target = surface === "palette"
       ? app.querySelector(".command-palette-input")
-      : surface === "preferences-reset-confirmation"
-        ? app.querySelector(".preferences-reset-confirmation [data-dialog-initial-focus='true']")
+      : surface.startsWith("customization-reset:")
+        ? app.querySelector(".customization-reset-confirmation [data-dialog-initial-focus='true']")
       : surface.startsWith("product-confirmation:")
         ? app.querySelector(".product-update-confirmation [data-dialog-initial-focus='true']")
         : surface.startsWith("utility:") && uiState.utilityFocusSelector

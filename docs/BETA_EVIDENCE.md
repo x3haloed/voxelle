@@ -189,6 +189,11 @@ states that protocol state is untouched, traps Tab and Shift+Tab, and returns
 to the reset action after Escape or **Keep my customization** without changing
 the current customization. Confirm the reviewed reset through the ordinary
 native command only when the test intends to restore all defaults.
+Invoke **Reset Workbench Layout** from the command palette and confirm its
+separate focused review names only dock placement and visibility, explicitly
+preserves appearance, spacing, and behavior, and returns to the rendered reset
+control or visible **More** entry point after cancellation without changing
+either layout or preference drafts.
 
 Before creating an invite, change among the bounded expiry choices and confirm
 the live review names the selected signed bearer-capability window and the

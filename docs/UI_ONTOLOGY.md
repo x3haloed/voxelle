@@ -681,8 +681,11 @@ reverts, or abandons the surface, then persist through the Rust preference autho
 `ui.preferences.reset` first reviews that appearance, spacing, behavior, and
 workbench placement or visibility will all return to defaults while protocol
 state remains untouched; only its explicit confirmation reaches that same Rust
-authority. Renderer replacement remains a named future editing surface rather
-than a claimed implementation.
+authority. The narrower `workbench.layout.reset` retains its distinct command
+and reviews only the default dock placement and visibility transition while
+stating that appearance, spacing, and behavior remain unchanged. Renderer
+replacement remains a named future editing surface rather than a claimed
+implementation.
 
 ## 4. Primitive Record Shape
 
