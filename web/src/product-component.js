@@ -1730,7 +1730,7 @@ function healthRow(row, snapshot) {
       : selectedPeerTarget(snapshot);
     const payload = row.primary_action_payload
       ?? (isPeerOperation(row.primary_action) && target ? peerRequest(target) : undefined);
-    const action = commandButton(row.primary_action, payload);
+    const action = availabilityButton(row.primary_action, snapshot, payload);
     if (isPeerOperation(row.primary_action) && target) {
       action.textContent = `${peerOperationVerb(row.primary_action)} ${target.label}`;
       action.setAttribute(
@@ -3568,6 +3568,7 @@ function paletteAvailability(commandId, snapshot) {
     hasHomeError: Boolean(snapshot.home_error),
     runtimeOnline: snapshot.home?.runtime.state === "online",
     hasInvite: Boolean(snapshot.home?.invite?.space_invite_json),
+    hasKnownPeer: (snapshot.home?.peers.length ?? 0) > 0,
     joinedCall: Boolean(localPeerId && callParticipants.includes(localPeerId)),
     callFull: callParticipants.length >= 4,
     updateAuthenticationAvailable: snapshot.product_generation.update_authentication_available,
@@ -3580,8 +3581,8 @@ function paletteAvailability(commandId, snapshot) {
   });
 }
 
-function availabilityButton(command, snapshot) {
-  const button = commandButton(command);
+function availabilityButton(command, snapshot, payload) {
+  const button = commandButton(command, payload);
   const availability = paletteAvailability(command, snapshot);
   if (!availability.available) {
     button.disabled = true;

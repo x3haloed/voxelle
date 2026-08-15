@@ -15,6 +15,11 @@ test("message action disclosures expose author and bounded content context", () 
   assert.match(source, /text\.length > 48 \? `\$\{text\.slice\(0, 47\)\}…` : text/);
 });
 
+test("network health peer actions share target availability", () => {
+  assert.match(source, /availabilityButton\(row\.primary_action, snapshot, payload\)/);
+  assert.match(source, /hasKnownPeer: \(snapshot\.home\?\.peers\.length \?\? 0\) > 0/);
+});
+
 test("governance row controls expose their visible member, role, and invite targets", () => {
   assert.match(source, /Actions for member \$\{memberLabel\}/);
   assert.match(source, /Manage members for role \$\{roleLabel\}/);

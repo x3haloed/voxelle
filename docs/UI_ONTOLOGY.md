@@ -433,6 +433,12 @@ exact principal/device tuple to `peer.diagnose` or `peer.sync`, and the Field
 Test view evaluates peer-named activity for the selected target. Selection does
 not import availability, grant membership, or become routing authority.
 
+When no ordinary peer record exists, Diagnose Peer and Sync Peer are unavailable
+in both the command palette and re-entrant health rows with the prerequisite
+**Join with an invite or import peer availability first**. Import Peer remains
+available and leads to the shared bounded review. This prevents a targetless
+frontend invocation without treating availability as membership or authority.
+
 `peer.import` requires visible draft context. Invoking it from the palette,
 Network Health, or Field Test with no draft opens and focuses one shared
 Connection & sync form instead of submitting empty state. The form bounds and

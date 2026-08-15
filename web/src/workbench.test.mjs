@@ -61,6 +61,7 @@ test("palette availability explains causal prerequisites without changing comman
     hasHomeError: false,
     runtimeOnline: false,
     hasInvite: false,
+    hasKnownPeer: false,
     joinedCall: false,
     callFull: false,
     updateAuthenticationAvailable: false,
@@ -89,6 +90,7 @@ test("palette availability explains causal prerequisites without changing comman
     hasHomeError: false,
     runtimeOnline: true,
     hasInvite: false,
+    hasKnownPeer: true,
     joinedCall: false,
     callFull: false,
     updateAuthenticationAvailable: true,
@@ -99,6 +101,15 @@ test("palette availability explains causal prerequisites without changing comman
   assert.equal(paletteCommandAvailability("space.join", active).available, false);
   assert.equal(paletteCommandAvailability("identity.recovery.restore", active).available, false);
   assert.equal(paletteCommandAvailability("invite.copy", active).reason, "Create a signed invite first");
+  assert.equal(
+    paletteCommandAvailability("peer.diagnose", { ...active, hasKnownPeer: false }).reason,
+    "Join with an invite or import peer availability first",
+  );
+  assert.equal(
+    paletteCommandAvailability("peer.sync", { ...active, hasKnownPeer: false }).available,
+    false,
+  );
+  assert.equal(paletteCommandAvailability("peer.sync", active).available, true);
   assert.equal(paletteCommandAvailability("channel.create", active).available, true);
   assert.equal(paletteCommandAvailability("message.composer.focus", active).available, true);
   assert.equal(

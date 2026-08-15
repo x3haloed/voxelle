@@ -590,6 +590,18 @@ target retention, fallback when a record disappears, keyboard focus, visible
 identity, and command payloads. This does not add routing or membership
 authority, and it is not non-loopback or three-machine evidence.
 
+The zero-peer degraded state no longer offers targetless diagnosis or sync as
+though it could complete. Palette and Network Health actions share the
+Rust-projected known-peer prerequisite, remain disabled with **Join with an
+invite or import peer availability first**, and leave Import Peer available as
+the causal recovery path. The existing Rust commands still validate the exact
+principal/device payload; the frontend check neither imports a route nor grants
+authority. Deterministic availability and source tests plus a rendered temporary
+zero-peer fixture verified the disabled actions and descriptions in both
+surfaces while Import Peer remained available. This is rendered unavailable-state
+evidence, not accepted import, reachability, synchronization, or external-network
+evidence.
+
 The no-peer recovery action is now causally complete. A context-free
 `peer.import` from the palette, Network Health, or Field Test opens and focuses
 the shared Connection & sync availability review rather than submitting an

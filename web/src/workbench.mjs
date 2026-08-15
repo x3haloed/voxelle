@@ -109,6 +109,15 @@ export function paletteCommandAvailability(commandId, context) {
   if (commandId === "invite.copy" && !context.hasInvite) {
     return { available: false, reason: "Create a signed invite first" };
   }
+  if (
+    ["peer.diagnose", "peer.sync"].includes(commandId)
+    && !context.hasKnownPeer
+  ) {
+    return {
+      available: false,
+      reason: "Join with an invite or import peer availability first",
+    };
+  }
   if (commandId === "call.join" && context.joinedCall) {
     return { available: false, reason: "You are already in this room's call" };
   }

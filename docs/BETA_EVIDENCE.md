@@ -118,6 +118,12 @@ role record before invoking the peer-named action. Retain the corresponding
 peer-named Service Activity result. A generic success against whichever peer
 happened to be stored first is not directional field evidence.
 
+Before importing the first peer record on one role, confirm Diagnose Peer and
+Sync Peer are unavailable in the command palette and Network Health with **Join
+with an invite or import peer availability first**, while Import Peer remains
+available and opens the bounded availability review. Do not count this local
+unavailable-state check as field connectivity evidence.
+
 When a peer availability record must be imported, begin from the generic
 **Import Peer** action. Confirm it opens and focuses the bounded review rather
 than submitting an empty hidden draft. Record the claimed label, IPv6 address,
