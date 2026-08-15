@@ -524,6 +524,15 @@ window. The frontend closes the transient surface and focuses the returned
 message; it does not maintain read state, reconstruct history, or infer result
 validity.
 
+Consequential inline reviews share one interaction boundary for invitation
+revocation, private-channel key rotation, member bans, role changes, message or
+attachment deletion, and attachment sharing. Each review appears above an
+interaction-blocking backdrop, exposes a modal alert dialog, focuses its exact
+semantic action, contains both Tab directions, suppresses unrelated shortcuts,
+and cancels with Escape. Cancel and completion still return to the stable row
+or originating attachment affordance named below. This shared presentation
+boundary never combines the distinct Rust commands or their authority effects.
+
 Banning a member requires an explicit focused confirmation that states the
 authority loss, retained-history behavior, and fresh-invite requirement before
 invoking `member.ban`. Canceling or completing the action restores a stable

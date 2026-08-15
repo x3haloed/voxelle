@@ -671,6 +671,19 @@ semantic-command route; the serialized two-home governance path remains the
 accepted role-assignment evidence, so this is not a new packaged-native or
 assistive-technology claim.
 
+Invitation revocation, private-channel key rotation, member bans, role
+assignment, message or attachment deletion, and attachment sharing now reuse
+one modal interaction boundary without merging their semantic commands. Every
+review blocks background interaction, focuses its consequential action, wraps
+Tab in both directions, suppresses unrelated shortcuts, cancels with Escape,
+and retains its existing stable return target. Deterministic source coverage
+holds all six review families to that boundary. A rendered invite-revocation
+probe verified the overlay, alert-dialog identity, both focus wraps, shortcut
+containment, Escape cancellation, and stable invite-row return. This is shared
+human-presentation evidence; Rust admission, retained facts, and command-specific
+authority remain unchanged, and no packaged-native or assistive-technology
+claim is added.
+
 The shared shell error contract now distinguishes `needs_input` from authority,
 home, reachability, synchronization, human-intervention, and internal failures.
 Representative serialized and inhabitant-surface tests prove that an empty

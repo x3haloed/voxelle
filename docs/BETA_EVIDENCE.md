@@ -224,6 +224,12 @@ Create two active invites whose expiries render identically; confirm their row
 actions remain distinct and the chosen invite marker persists through the
 revocation confirmation and final Revoke button while the other invite remains
 unchanged after cancellation.
+For that revocation and one example each of key rotation, member ban, role
+change, deletion, and attachment sharing, confirm the review blocks background
+interaction, begins on the exact consequential action, wraps Tab in both
+directions, ignores command-palette shortcuts, and cancels with Escape to its
+stable originating row or attachment affordance. Cancellation must not invoke
+the semantic command or alter the projected authoritative state.
 
 In **Connection & sync**, enter an advertised IPv6 address without brackets or
 a port, then a bracketed address with port `70000`. Invoke **Go Online** each

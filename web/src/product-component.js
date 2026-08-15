@@ -289,6 +289,19 @@ function handleKeydown(event) {
     cancelProductConfirmation();
     return;
   }
+  const consequentialReview = activeConsequentialReview();
+  if (consequentialReview) {
+    if (event.key === "Tab") {
+      const confirmation = app.querySelector(consequentialReview.selector);
+      if (confirmation) trapModalTab(event, confirmation);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      consequentialReview.cancel();
+    } else if (event.metaKey || event.ctrlKey || event.altKey) {
+      event.preventDefault();
+    }
+    return;
+  }
   if (event.key === "Tab" && uiState.paletteOpen) {
     const palette = app.querySelector(".command-palette");
     if (palette) trapModalTab(event, palette);
@@ -782,6 +795,67 @@ function onboardingChoice(title, description) {
     element("p", "summary", description),
   );
   return article;
+}
+
+function consequentialAlertDialog(className, ariaLabel) {
+  const backdrop = element("div", "command-palette-backdrop consequential-review-backdrop");
+  const dialog = element("section", `command-palette ${className}`);
+  dialog.setAttribute("role", "alertdialog");
+  dialog.setAttribute("aria-modal", "true");
+  dialog.setAttribute("aria-label", ariaLabel);
+  backdrop.append(dialog);
+  return { backdrop, dialog };
+}
+
+function activeConsequentialReview() {
+  if (uiState.revokingInviteId) {
+    const inviteId = uiState.revokingInviteId;
+    return {
+      key: `invite-revoke:${inviteId}`,
+      selector: ".invite-revoke-confirmation",
+      cancel: () => cancelInviteRevocation(inviteId),
+    };
+  }
+  if (uiState.rotatingChannelId) {
+    const roomId = uiState.rotatingChannelId;
+    return {
+      key: `channel-key:${roomId}`,
+      selector: ".channel-key-confirmation",
+      cancel: () => cancelChannelKeyRotation(roomId),
+    };
+  }
+  if (uiState.banningPeerId) {
+    const peerId = uiState.banningPeerId;
+    return {
+      key: `member-ban:${peerId}`,
+      selector: ".member-ban-confirmation",
+      cancel: () => cancelMemberBan(peerId),
+    };
+  }
+  if (uiState.roleAssignmentDraft) {
+    const roleId = uiState.roleAssignmentDraft.roleId;
+    return {
+      key: `role-assignment:${roleId}:${uiState.roleAssignmentDraft.peerId}`,
+      selector: ".role-assignment-confirmation",
+      cancel: () => cancelRoleAssignment(roleId),
+    };
+  }
+  if (uiState.deletingMessageId) {
+    const eventId = uiState.deletingMessageId;
+    return {
+      key: `message-delete:${eventId}`,
+      selector: ".message-delete-confirmation",
+      cancel: () => cancelMessageDelete(eventId),
+    };
+  }
+  if (uiState.pendingAttachment) {
+    return {
+      key: "attachment-review",
+      selector: ".attachment-review",
+      cancel: cancelAttachmentReview,
+    };
+  }
+  return null;
 }
 
 function layoutEditorButton() {
@@ -2081,9 +2155,10 @@ function activeInviteRow(invite, activeInvites) {
     ["Invite ID", invite.invite_id],
   ]));
   if (uiState.revokingInviteId === invite.invite_id) {
-    const confirmation = element("section", "invite-revoke-confirmation");
-    confirmation.setAttribute("role", "alertdialog");
-    confirmation.setAttribute("aria-label", `Revoke invite expiring ${inviteLabel} confirmation`);
+    const { backdrop, dialog: confirmation } = consequentialAlertDialog(
+      "invite-revoke-confirmation",
+      `Revoke invite expiring ${inviteLabel} confirmation`,
+    );
     confirmation.append(
       element("strong", "", `Revoke invite expiring ${inviteLabel}?`),
       element(
@@ -2095,9 +2170,10 @@ function activeInviteRow(invite, activeInvites) {
     const controls = element("div", "row-actions");
     const confirm = commandButton("space.invite.revoke", { invite_id: invite.invite_id });
     confirm.textContent = `Revoke invite expiring ${inviteLabel}`;
+    confirm.dataset.dialogInitialFocus = "true";
     controls.append(confirm, actionButton("Cancel revocation", () => cancelInviteRevocation(invite.invite_id)));
     confirmation.append(controls);
-    row.append(confirmation);
+    row.append(backdrop);
   } else {
     const revoke = actionButton("Revoke invite…", () => beginInviteRevocation(invite.invite_id));
     revoke.setAttribute("aria-label", `Revoke invite expiring ${inviteLabel}`);
@@ -2390,9 +2466,10 @@ function channelCreatePayload(snapshot) {
 }
 
 function channelKeyRotationConfirmation(channel, channelLabel) {
-  const confirmation = element("section", "channel-key-confirmation");
-  confirmation.setAttribute("role", "alertdialog");
-  confirmation.setAttribute("aria-label", `Rotate key for ${channelLabel}`);
+  const { backdrop, dialog: confirmation } = consequentialAlertDialog(
+    "channel-key-confirmation",
+    `Rotate key for ${channelLabel}`,
+  );
   confirmation.append(
     element("strong", "", `Rotate the key for #${channelLabel}?`),
     element(
@@ -2409,12 +2486,13 @@ function channelKeyRotationConfirmation(channel, channelLabel) {
   const controls = element("div", "row-actions");
   const confirm = commandButton("channel.rotateKey", { room_id: channel.room_id });
   confirm.textContent = "Rotate private-channel key";
+  confirm.dataset.dialogInitialFocus = "true";
   controls.append(
     confirm,
     actionButton("Cancel key rotation", () => cancelChannelKeyRotation(channel.room_id)),
   );
   confirmation.append(controls);
-  return confirmation;
+  return backdrop;
 }
 
 function beginChannelKeyRotation(roomId) {
@@ -2503,9 +2581,10 @@ function memberProfilesView(snapshot) {
 }
 
 function memberBanConfirmation(profile, memberLabel) {
-  const confirmation = element("section", "member-ban-confirmation");
-  confirmation.setAttribute("role", "alertdialog");
-  confirmation.setAttribute("aria-label", `Ban ${memberLabel} confirmation`);
+  const { backdrop, dialog: confirmation } = consequentialAlertDialog(
+    "member-ban-confirmation",
+    `Ban ${memberLabel} confirmation`,
+  );
   confirmation.append(
     element("strong", "", `Ban ${memberLabel}?`),
     element(
@@ -2520,9 +2599,10 @@ function memberBanConfirmation(profile, memberLabel) {
     reason: "Removed by a space administrator",
   });
   confirm.textContent = `Ban ${memberLabel}`;
+  confirm.dataset.dialogInitialFocus = "true";
   controls.append(confirm, actionButton("Cancel ban", () => cancelMemberBan(profile.peer_id)));
   confirmation.append(controls);
-  return confirmation;
+  return backdrop;
 }
 
 function beginMemberBan(peerId) {
@@ -2655,10 +2735,8 @@ function roleListView(snapshot) {
 
 function roleAssignmentConfirmation(role, roleLabel, profile, memberLabel, grant) {
   const verb = grant ? "Give" : "Remove";
-  const confirmation = element("section", "role-assignment-confirmation");
-  confirmation.setAttribute("role", "alertdialog");
-  confirmation.setAttribute(
-    "aria-label",
+  const { backdrop, dialog: confirmation } = consequentialAlertDialog(
+    "role-assignment-confirmation",
     `${grant ? "Give" : "Remove"} ${roleLabel} ${grant ? "to" : "from"} ${memberLabel} confirmation`,
   );
   const permissions = role.permissions.map(permissionLabel).join(", ") || "no additional permissions";
@@ -2684,9 +2762,10 @@ function roleAssignmentConfirmation(role, roleLabel, profile, memberLabel, grant
   confirm.textContent = grant
     ? `Give ${roleLabel} to ${memberLabel}`
     : `Remove ${roleLabel} from ${memberLabel}`;
+  confirm.dataset.dialogInitialFocus = "true";
   controls.append(confirm, actionButton("Cancel role change", () => cancelRoleAssignment(role.role_id)));
   confirmation.append(controls);
-  return confirmation;
+  return backdrop;
 }
 
 function beginRoleAssignment(roleId, peerId, grant) {
@@ -2943,9 +3022,10 @@ function roomTimelineView(snapshot) {
 
 function messageDeleteConfirmation(message, messageLabel, snapshot) {
   const attachment = message.attachments?.[0] ?? null;
-  const confirmation = element("section", "message-delete-confirmation");
-  confirmation.setAttribute("role", "alertdialog");
-  confirmation.setAttribute("aria-label", `Delete ${messageLabel} confirmation`);
+  const { backdrop, dialog: confirmation } = consequentialAlertDialog(
+    "message-delete-confirmation",
+    `Delete ${messageLabel} confirmation`,
+  );
   confirmation.append(
     element("strong", "", attachment ? `Delete ${attachment.filename} from ${messageLabel}?` : `Delete ${messageLabel}?`),
     element(
@@ -2962,9 +3042,10 @@ function messageDeleteConfirmation(message, messageLabel, snapshot) {
     room: snapshot.home?.room.room_id ?? null,
   });
   remove.textContent = attachment ? `Delete file from ${messageLabel}` : `Delete ${messageLabel}`;
+  remove.dataset.dialogInitialFocus = "true";
   controls.append(remove, actionButton("Cancel deletion", () => cancelMessageDelete(message.event_id)));
   confirmation.append(controls);
-  return confirmation;
+  return backdrop;
 }
 
 function beginMessageDelete(eventId) {
@@ -3213,9 +3294,10 @@ function messageComposerView(snapshot) {
 }
 
 function attachmentReview(channel, attachment) {
-  const review = element("section", "attachment-review");
-  review.setAttribute("role", "alertdialog");
-  review.setAttribute("aria-label", `Review ${attachment.filename} before sharing`);
+  const { backdrop, dialog: review } = consequentialAlertDialog(
+    "attachment-review",
+    `Review ${attachment.filename} before sharing`,
+  );
   const audience = channel?.visibility === "private"
     ? `${channel.private_member_count} current private-channel member${channel.private_member_count === 1 ? "" : "s"}`
     : "every admitted space member who receives this channel";
@@ -3240,9 +3322,10 @@ function attachmentReview(channel, attachment) {
     room: null,
   });
   confirm.textContent = "Share file";
+  confirm.dataset.dialogInitialFocus = "true";
   controls.append(confirm, actionButton("Cancel file sharing", cancelAttachmentReview));
   review.append(controls);
-  return review;
+  return backdrop;
 }
 
 function cancelAttachmentReview() {
@@ -4371,12 +4454,15 @@ function focusAfterNoticeDismissal(returnElement, returnActionKey, validationTar
 }
 
 function synchronizeTransientFocus() {
+  const consequentialReview = activeConsequentialReview();
   const surface = uiState.preparingHomeRecovery
     ? "home-recovery"
     : uiState.customizationResetCommand
     ? `customization-reset:${uiState.customizationResetCommand}`
     : uiState.productConfirmationCommand
     ? `product-confirmation:${uiState.productConfirmationCommand}`
+    : consequentialReview
+    ? `consequential-review:${consequentialReview.key}`
     : uiState.paletteOpen
     ? "palette"
     : uiState.connectionOpen
@@ -4389,6 +4475,8 @@ function synchronizeTransientFocus() {
       ? app.querySelector(".command-palette-input")
       : surface === "home-recovery"
         ? app.querySelector(".home-recovery-confirmation [data-dialog-initial-focus='true']")
+      : surface.startsWith("consequential-review:")
+        ? app.querySelector(`${consequentialReview?.selector} [data-dialog-initial-focus='true']`)
       : surface.startsWith("customization-reset:")
         ? app.querySelector(".customization-reset-confirmation [data-dialog-initial-focus='true']")
       : surface.startsWith("product-confirmation:")
