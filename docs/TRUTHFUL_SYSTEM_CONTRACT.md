@@ -311,6 +311,23 @@ inviter received and projected the accepted message. This is local
 packaged-debug evidence, not the external three-machine, Windows,
 assistive-technology, or release-artifact gate.
 
+Damaged local-home handling now preserves the recovery boundary instead of
+misrepresenting unreadable state as a fresh installation. Rust distinguishes a
+missing home from an existing unusable one and owns the confirmed transition:
+`identity.json`, `quic-cert.json`, and the SQLite database plus its WAL/SHM
+companions move into a private `.unusable-home-*` archive under the selected
+home. Nothing is deleted, `product-updates` remains in place as separate update
+trust state, and a healthy home is ineligible for the transition. A serialized
+shell regression carries an exported recovery kit through malformed local
+identity, structured failure, archival, genuinely fresh state, and restoration
+of the same person-level peer identity on a newly authorized device. Native
+presentation crossed a focused local macOS gate: the packaged app showed the
+bounded damage explanation with collapsed technical detail, placed keyboard
+focus into the explicit archive confirmation, returned to truthful onboarding
+after acceptance, and focused **Recover My Identity**. This does not yet prove
+recovery from a damaged home on Windows or through an external-machine field
+test.
+
 A new disposable-home run of the current ad-hoc-signed macOS `.app` exposed and
 then closed a keyboard handoff gap in that same path. Native pointer activation
 left the WebView document root active after `home.init`, so the vanished create

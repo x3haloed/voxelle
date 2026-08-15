@@ -48,6 +48,13 @@ const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
 const MAX_KNOWN_PEERS: usize = 128;
 const MAX_PROJECTED_MESSAGES: usize = 500;
 const MAX_PROJECTED_CALL_SIGNALS: usize = 256;
+const LOCAL_HOME_STATE_FILES: [&str; 5] = [
+    "identity.json",
+    "quic-cert.json",
+    "store.sqlite3",
+    "store.sqlite3-wal",
+    "store.sqlite3-shm",
+];
 
 pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
     resolve_home_root_from(
@@ -838,7 +845,7 @@ pub struct ShellSnapshotView {
     #[ts(type = "string")]
     pub home_root: PathBuf,
     pub home: Option<HomeScreenView>,
-    pub home_error: Option<String>,
+    pub home_error: Option<ShellError>,
     pub network_health: NetworkHealthView,
     pub ui_ontology: UiOntologyView,
     pub product_generation: ProductGenerationStatusView,
@@ -1164,6 +1171,46 @@ impl VoxelleHome {
 
     fn path(&self, name: &str) -> PathBuf {
         self.root.join(name)
+    }
+
+    fn has_local_home_state(&self) -> bool {
+        LOCAL_HOME_STATE_FILES
+            .iter()
+            .any(|name| fs::symlink_metadata(self.path(name)).is_ok())
+    }
+
+    fn archive_unusable_local_state(&self) -> Result<PathBuf> {
+        if self.home_screen_view(None).is_ok() {
+            anyhow::bail!("a healthy local home cannot be archived for recovery");
+        }
+        if !self.has_local_home_state() {
+            anyhow::bail!("there is no local home state to archive");
+        }
+        ensure_private_dir(&self.root)?;
+        let suffix =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 6]>());
+        let archive = self
+            .root
+            .join(format!(".unusable-home-{}-{suffix}", now_ms()));
+        ensure_private_dir(&archive)?;
+        let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for name in LOCAL_HOME_STATE_FILES {
+            let source = self.path(name);
+            if fs::symlink_metadata(&source).is_err() {
+                continue;
+            }
+            let destination = archive.join(name);
+            if let Err(error) = fs::rename(&source, &destination) {
+                for (original, archived) in moved.iter().rev() {
+                    let _ = fs::rename(archived, original);
+                }
+                let _ = fs::remove_dir(&archive);
+                return Err(anyhow::Error::new(error))
+                    .with_context(|| format!("archive unusable local state file {name}"));
+            }
+            moved.push((source, destination));
+        }
+        Ok(archive)
     }
 
     pub fn init(&self, default_room: impl Into<String>) -> Result<ProfileSummary> {
@@ -3797,6 +3844,25 @@ impl VoxelleCommandHost {
         })
     }
 
+    pub fn archive_unusable_home(&mut self) -> Result<ShellSnapshotView> {
+        if self.service.is_some() {
+            anyhow::bail!("the local service must be offline before preparing recovery");
+        }
+        let archive = self.home.archive_unusable_local_state()?;
+        self.selected_room_id = None;
+        self.selected_message_event_id = None;
+        self.search_results.clear();
+        let archive_name = archive
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("private recovery archive");
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("archived unusable local home as {archive_name}"),
+        );
+        self.snapshot()
+    }
+
     pub fn start_service(&mut self, request: StartServiceRequest) -> Result<ShellSnapshotView> {
         if self.service.is_some() {
             if request.bind.is_none() && request.advertise.is_none() {
@@ -4337,7 +4403,11 @@ impl VoxelleCommandHost {
                 }
                 (Some(home), None)
             }
-            Err(error) => (None, Some(format!("{error:#}"))),
+            Err(error) if self.home.has_local_home_state() => (
+                None,
+                Some(ShellError::for_command("shell.refresh", error)),
+            ),
+            Err(_) => (None, None),
         };
         let preferences = self.home.ui_preferences()?;
         let ui_ontology = match &self.product_generation {
@@ -5260,6 +5330,13 @@ fn default_commands() -> Vec<UiCommand> {
             "Create local identity and a private space",
             None,
             true,
+        ),
+        shell_command(
+            "home.archiveForRecovery",
+            "Prepare This Device for Recovery",
+            "Move unusable local identity, certificate, and retained state into a private archive so an offline recovery kit can restore the same principal",
+            None,
+            false,
         ),
         shell_command(
             "runtime.goOnline",
@@ -7433,7 +7510,7 @@ mod tests {
 
         assert_eq!(snapshot.home_root, dir.path().join("home"));
         assert!(snapshot.home.is_none());
-        assert!(snapshot.home_error.is_some());
+        assert!(snapshot.home_error.is_none());
         assert_eq!(
             network_health_status(&snapshot.network_health, "home"),
             NetworkHealthStatus::NeedsAttention

@@ -96,6 +96,7 @@ impl ShellState {
         let result = match command_id {
             "shell.refresh" => host.refresh_and_sync().await,
             "home.init" => host.init_home(parse_request(payload)?),
+            "home.archiveForRecovery" => host.archive_unusable_home(),
             "runtime.goOnline" => host.start_service(parse_request(payload)?),
             "runtime.goOffline" => host.stop_service(),
             "space.invite.create" => host.create_space_invite(parse_request(payload)?),
@@ -202,7 +203,7 @@ impl ShellError {
         )
     }
 
-    fn for_command(command_id: &str, error: anyhow::Error) -> Self {
+    pub(crate) fn for_command(command_id: &str, error: anyhow::Error) -> Self {
         let detail = format!("{error:#}");
         let lower = detail.to_ascii_lowercase();
         let (message, recovery, recovery_message) = command_error_presentation(command_id, &lower);
@@ -228,13 +229,11 @@ fn command_error_presentation(
     command_id: &str,
     detail: &str,
 ) -> (&'static str, ShellRecovery, &'static str) {
-    if command_id == "shell.refresh"
-        && (detail.contains("identity.json") || detail.contains("local state"))
-    {
+    if command_id == "shell.refresh" {
         return (
             "Voxelle could not open this local home.",
             ShellRecovery::NeedsHome,
-            "If local state was lost or damaged, start with a fresh Voxelle home and use your offline recovery kit to preserve the same identity.",
+            "Prepare this device for recovery to archive the unusable local state without deleting it, then use your offline recovery kit to preserve the same identity.",
         );
     }
     if command_id == "home.init" {
@@ -484,7 +483,7 @@ mod tests {
             .expect("snapshot");
 
         assert!(snapshot.home.is_none());
-        assert!(snapshot.home_error.is_some());
+        assert!(snapshot.home_error.is_none());
         assert_eq!(
             health_status(&snapshot, "home"),
             NetworkHealthStatus::NeedsAttention
@@ -494,6 +493,82 @@ mod tests {
             .views
             .iter()
             .any(|view| view.id == "network.health"));
+    }
+
+    #[tokio::test]
+    async fn damaged_home_can_be_archived_then_recover_the_same_principal() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let kit_path = dir.path().join("identity.voxrecover");
+        let original = ShellState::new(dir.path().join("original"));
+        let initialized = original
+            .execute_serialized_command("home.init", serde_json::json!({"default_room": null}))
+            .await
+            .expect("initialize source");
+        let original_home = initialized.home.expect("initialized home");
+        original
+            .execute_serialized_command(
+                "identity.recovery.export",
+                serde_json::json!({"path": kit_path}),
+            )
+            .await
+            .expect("export recovery kit");
+        original
+            .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
+            .await
+            .expect("stop healthy source");
+        assert!(original
+            .execute_serialized_command("home.archiveForRecovery", serde_json::json!({}))
+            .await
+            .is_err());
+        assert!(dir.path().join("original/identity.json").exists());
+
+        let damaged_root = dir.path().join("damaged");
+        std::fs::create_dir_all(&damaged_root).expect("damaged root");
+        std::fs::write(damaged_root.join("identity.json"), b"{not-json")
+            .expect("corrupt identity");
+        std::fs::create_dir_all(damaged_root.join("product-updates"))
+            .expect("product update state");
+        std::fs::write(damaged_root.join("product-updates/trust-marker"), b"preserved")
+            .expect("product update marker");
+        let damaged = ShellState::new(&damaged_root);
+        let before = damaged
+            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+            .await
+            .expect("damaged snapshot");
+        let error = before.home_error.expect("structured damage error");
+        assert_eq!(error.recovery, ShellRecovery::NeedsHome);
+        assert!(!error.detail.is_empty());
+        assert_ne!(error.detail, error.message);
+
+        let prepared = damaged
+            .execute_serialized_command("home.archiveForRecovery", serde_json::json!({}))
+            .await
+            .expect("archive damaged local state");
+        assert!(prepared.home.is_none());
+        assert!(prepared.home_error.is_none());
+        assert!(!damaged_root.join("identity.json").exists());
+        let archive = std::fs::read_dir(&damaged_root)
+            .expect("archive listing")
+            .filter_map(Result::ok)
+            .find(|entry| entry.file_name().to_string_lossy().starts_with(".unusable-home-"))
+            .expect("private archive");
+        assert!(archive.path().join("identity.json").exists());
+        assert_eq!(
+            std::fs::read(damaged_root.join("product-updates/trust-marker"))
+                .expect("preserved product update state"),
+            b"preserved"
+        );
+
+        let recovered = damaged
+            .execute_serialized_command(
+                "identity.recovery.restore",
+                serde_json::json!({"path": kit_path, "max_events_per_peer": 4096}),
+            )
+            .await
+            .expect("restore same identity");
+        let recovered_home = recovered.home.expect("recovered home");
+        assert_eq!(recovered_home.profile.peer_id, original_home.profile.peer_id);
+        assert_ne!(recovered_home.profile.device_id, original_home.profile.device_id);
     }
 
     #[tokio::test]

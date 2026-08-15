@@ -160,7 +160,8 @@ The existing `ShellSnapshotView` should remain the reference shape. v0 may add
 agent-facing hints, but should not fork the core truth:
 
 - `home_root`
-- `home` or `home_error`
+- `home` or structured `home_error` (`message`, `recovery_message`, `detail`,
+  and Rust-owned `recovery` category); a genuinely fresh home has neither
 - `network_health`
 - `ui_ontology`
 - `service_activity`
@@ -181,6 +182,7 @@ The v0 action set uses the same stable semantic command IDs as the UI:
 
 - `shell.refresh`
 - `home.init`
+- `home.archiveForRecovery`
 - `runtime.goOnline`
 - `runtime.goOffline`
 - `message.send`

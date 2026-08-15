@@ -13,7 +13,7 @@ export async function createShellClient() {
   const snapshot = structuredClone(fixtureSnapshot);
   if (new URLSearchParams(window.location?.search ?? "").get("preview") === "fresh") {
     snapshot.home = null;
-    snapshot.home_error = "This device does not have a Voxelle identity yet.";
+    snapshot.home_error = null;
   }
   return new PreviewShellClient(snapshot, "preview");
 }

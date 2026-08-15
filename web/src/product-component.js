@@ -65,6 +65,8 @@ const uiState = {
   processingCallSignals: false,
   mediaNotice: null,
   lastCallHeartbeatMs: 0,
+  preparingHomeRecovery: false,
+  homeRecoveryNotice: "",
 };
 const focusCoordinator = new FocusSurfaceCoordinator(
   document,
@@ -432,6 +434,7 @@ function connectionCenter(snapshot) {
 }
 
 function onboardingExperience(snapshot) {
+  if (snapshot.home_error) return damagedHomeExperience(snapshot.home_error);
   const section = element("section", "onboarding");
   section.setAttribute("aria-labelledby", "onboarding-title");
   const intro = element("div", "onboarding-intro");
@@ -447,6 +450,9 @@ function onboardingExperience(snapshot) {
   intro.querySelector("h2").id = "onboarding-title";
 
   const choices = element("div", "onboarding-choices");
+  if (uiState.homeRecoveryNotice) {
+    intro.append(element("p", "recovery-success", uiState.homeRecoveryNotice));
+  }
   const create = onboardingChoice(
     "Create a new space",
     "Start a new identity and private space on this device. You can invite people after Voxelle brings your peer online.",
@@ -498,6 +504,56 @@ function onboardingExperience(snapshot) {
 
   choices.append(create, join, recover);
   section.append(intro, choices);
+  return section;
+}
+
+function damagedHomeExperience(homeError) {
+  const section = element("section", "onboarding damaged-home");
+  section.setAttribute("aria-labelledby", "damaged-home-title");
+  const panel = element("article", "damaged-home-panel");
+  panel.append(
+    element("p", "eyebrow", "Local recovery needed"),
+    element("h2", "", "This local home cannot be opened"),
+    element("p", "summary", homeError.message),
+    element("p", "recovery-note", homeError.recovery_message),
+  );
+  panel.querySelector("h2").id = "damaged-home-title";
+  const details = element("details", "technical-details");
+  details.append(
+    element("summary", "", "Technical details"),
+    element("pre", "", homeError.detail),
+  );
+  panel.append(details);
+
+  if (uiState.preparingHomeRecovery) {
+    const confirmation = element("section", "home-recovery-confirmation");
+    confirmation.setAttribute("role", "alertdialog");
+    confirmation.setAttribute("aria-label", "Prepare this device for identity recovery confirmation");
+    confirmation.append(
+      element("strong", "", "Prepare this device for recovery?"),
+      element("p", "summary", "Voxelle will move the unusable local identity, device certificate, and retained database into a private archive inside this home. Nothing is deleted."),
+      element("p", "recovery-note", "You need an offline .voxrecover kit to preserve the same identity. Without one, stop here and retain this archive for diagnosis."),
+    );
+    const controls = element("div", "row-actions");
+    const confirm = commandButton("home.archiveForRecovery");
+    confirm.textContent = "Archive local state and continue";
+    confirm.dataset.dialogInitialFocus = "true";
+    controls.append(confirm, actionButton("Cancel", () => {
+      uiState.preparingHomeRecovery = false;
+      render();
+      window.requestAnimationFrame(() => app.querySelector(".damaged-home-panel > .command-button")?.focus());
+    }));
+    confirmation.append(controls);
+    panel.append(confirmation);
+  } else {
+    const prepare = actionButton("Prepare This Device for Recovery…", () => {
+      uiState.preparingHomeRecovery = true;
+      render();
+      window.requestAnimationFrame(() => app.querySelector(".home-recovery-confirmation .command-button")?.focus());
+    });
+    panel.append(prepare);
+  }
+  section.append(panel);
   return section;
 }
 
@@ -789,7 +845,7 @@ function profileSummaryView(snapshot) {
     const empty = element("div", "empty-state");
     empty.append(
       element("h3", "", "No initialized home"),
-      element("p", "summary", snapshot.home_error ?? "Home state is not available."),
+      element("p", "summary", snapshot.home_error?.message ?? "Home state is not available."),
       commandButton("home.init"),
     );
     const joinForm = element("form", "field-stack");
@@ -1203,7 +1259,7 @@ function fieldTestView(snapshot) {
       label: "Home initialized",
       status: snapshot.home ? "working" : "needs_attention",
       command: snapshot.home ? null : "home.init",
-      detail: snapshot.home ? snapshot.home.profile.default_room : snapshot.home_error,
+      detail: snapshot.home ? snapshot.home.profile.default_room : snapshot.home_error?.message,
     },
     {
       label: "Resident service online",
@@ -2351,6 +2407,11 @@ async function runCommand(command, payload) {
       case "home.init":
         currentSnapshot = await shell.execute(command, { default_room: null });
         return;
+      case "home.archiveForRecovery":
+        currentSnapshot = await shell.execute(command);
+        uiState.preparingHomeRecovery = false;
+        uiState.homeRecoveryNotice = "Unusable local state was archived without deletion. Choose Recover My Identity and open your offline recovery kit.";
+        return;
       case "runtime.goOnline":
         currentSnapshot = await shell.execute(command, {
           bind: blankToNull(uiState.bindDraft),
@@ -2655,6 +2716,9 @@ async function runCommand(command, payload) {
 }
 
 function commandCompletionFocusTarget(command) {
+  if (command === "home.archiveForRecovery") {
+    return app.querySelector('[data-command="identity.recovery.restore"]');
+  }
   if (command === "home.init" || command === "space.join") {
     return app.querySelector(".recovery-setup-prompt .command-button")
       ?? app.querySelector(".message-input");

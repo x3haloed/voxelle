@@ -195,6 +195,15 @@ message content, attachments, profile fields, reactions, and empty searches do
 not masquerade as product defects. Authority, connectivity, home, and internal
 failures retain their distinct recovery meanings.
 
+An existing but unreadable local home is not presented as fresh onboarding.
+Rust reports a structured `home_error`; the shell explains the damage, keeps
+technical detail disclosure explicit, and requires confirmation before
+`home.archiveForRecovery` moves local identity, device certificate, and SQLite
+state into a private archive. The transition never deletes those files and does
+not move product-update trust state. Once Rust reports a genuinely fresh home,
+focus moves to `identity.recovery.restore` so the offline kit remains the one
+path that preserves principal continuity.
+
 Until a recovery-kit export succeeds, the ordinary shell shows a compact
 recovery setup prompt. The durable health marker records only completion time,
 never recovery bytes or their filesystem location. After export, the prompt
@@ -210,7 +219,8 @@ A command is a user-invokable action with a stable ID.
 
 Current command families:
 
-- shell/home/runtime: `shell.refresh`, `home.init`, `runtime.goOnline`,
+- shell/home/runtime: `shell.refresh`, `home.init`,
+  `home.archiveForRecovery`, `runtime.goOnline`,
   `runtime.goOffline`;
 - admission: `space.invite.create`, `space.join`, `invite.copy`;
 - identity recovery: `identity.recovery.export`, `identity.recovery.restore`;

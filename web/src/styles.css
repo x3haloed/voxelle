@@ -417,6 +417,34 @@ h3 {
   font-size: 0.85rem;
 }
 
+.damaged-home-panel {
+  max-width: 720px;
+  display: grid;
+  gap: 14px;
+  padding: clamp(20px, 3vw, 32px);
+  border: 1px solid var(--activity-error);
+  background: var(--panel-background);
+}
+
+.technical-details pre {
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+}
+
+.home-recovery-confirmation {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--panel-border);
+}
+
+.recovery-success {
+  color: var(--runtime-online);
+  font-weight: 650;
+}
+
 .hidden-view-shelf {
   display: flex;
   flex-wrap: wrap;

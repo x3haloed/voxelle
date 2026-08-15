@@ -28,7 +28,7 @@ test("fresh preview exposes the uninitialized human path without simulating auth
   const snapshot = await client.execute("shell.refresh");
 
   assert.equal(snapshot.home, null);
-  assert.match(snapshot.home_error, /does not have a Voxelle identity/);
+  assert.equal(snapshot.home_error, null);
   await assert.rejects(client.execute("home.init"), /Preview only/);
 });
 

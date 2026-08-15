@@ -56,7 +56,7 @@ export type UiRenderer = { id: string, label: string, renders: string, default_r
 
 export type UiBehaviorValue = { "type": "bool", "value": boolean } | { "type": "text", "value": string };
 
-export type ShellSnapshotView = { home_root: string, home: HomeScreenView | null, home_error: string | null, network_health: NetworkHealthView, ui_ontology: UiOntologyView, product_generation: ProductGenerationStatusView, product_component: ProductComponentView, service_activity: Array<ServiceActivityItem>, search_results: Array<SearchResultView>, };
+export type ShellSnapshotView = { home_root: string, home: HomeScreenView | null, home_error: ShellError | null, network_health: NetworkHealthView, ui_ontology: UiOntologyView, product_generation: ProductGenerationStatusView, product_component: ProductComponentView, service_activity: Array<ServiceActivityItem>, search_results: Array<SearchResultView>, };
 
 export type ServiceActivityItem = { id: number, level: ServiceActivityLevel, summary: string, };
 
