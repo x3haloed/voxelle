@@ -574,6 +574,16 @@ the serialized two-home command test carries the resulting stable peer ID into
 the admitted message and recipient notification. This is local semantic and
 rendered evidence, not a new packaged-native or assistive-technology claim.
 
+Repeated workbench controls now carry their visible target into the accessible
+name. Channel selection names the public or private channel, private-key
+rotation names its channel, and each message-action disclosure names the author
+plus a bounded text or attachment preview. A rendered accessibility-tree probe
+covers public text, mentioned text, and attachment-only messages while the
+underlying buttons continue to invoke the existing stable commands and payloads.
+Deterministic source regressions preserve the contextual labels and preview
+bound. This reduces nonvisual navigation ambiguity but is not the actual
+assistive-technology beta gate.
+
 The same packaged surface now derives reaction and pin actions from projected
 accepted state: a native run added and removed the local reaction and pinned
 and unpinned the message through their distinct semantic commands. Deletion no

@@ -112,6 +112,9 @@ During those keyboard-only paths, invoke at least one form-backed action from
 the command palette and confirm focus lands in the required visible input. Also
 inspect one unavailable command and confirm the assistive technology announces
 its missing prerequisite rather than allowing an avoidable failing action.
+In the channel list and conversation, navigate repeated channel and message
+controls and confirm each announced name identifies the visible target rather
+than relying on position alone.
 
 Resize the supported desktop window to its narrowest practical width during one
 conversation path. Confirm the header actions, selected conversation, composer,

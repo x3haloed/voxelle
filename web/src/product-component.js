@@ -2021,7 +2021,12 @@ function channelListView(snapshot) {
     }
     const actions = element("div", "row-actions");
     if (!channel.selected) {
-      actions.append(commandButton("channel.select", { room_id: channel.room_id }));
+      const select = commandButton("channel.select", { room_id: channel.room_id });
+      select.setAttribute(
+        "aria-label",
+        `Select ${channel.visibility === "private" ? "private " : ""}channel ${channel.name}`,
+      );
+      actions.append(select);
     }
     if (channel.visibility === "private") {
       if (uiState.rotatingChannelId === channel.room_id) {
@@ -2030,6 +2035,7 @@ function channelListView(snapshot) {
         continue;
       }
       const rotate = actionButton("Rotate key…", () => beginChannelKeyRotation(channel.room_id));
+      rotate.setAttribute("aria-label", `Rotate encryption key for private channel ${channel.name}`);
       actions.append(rotate);
     }
     row.append(body);
@@ -2555,7 +2561,9 @@ function roomTimelineView(snapshot) {
       content.append(link);
     }
     const actionDetails = element("details", "message-actions");
-    actionDetails.append(element("summary", "", "Message actions"));
+    const actionSummary = element("summary", "", "Message actions");
+    actionSummary.setAttribute("aria-label", messageActionsLabel(message, author.display_name));
+    actionDetails.append(actionSummary);
     const actions = element("div", "row-actions");
     const ownThumb = message.reactions
       .find((reaction) => reaction.emoji === "👍")
@@ -3988,6 +3996,16 @@ function profileInitials(displayName) {
   const parts = displayName.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "?";
   return parts.slice(0, 2).map((part) => part[0].toUpperCase()).join("");
+}
+
+function messageActionsLabel(message, authorName) {
+  const text = message.redacted
+    ? "deleted message"
+    : message.text?.replace(/\s+/g, " ").trim()
+      || message.attachments?.[0]?.filename
+      || "message";
+  const preview = text.length > 48 ? `${text.slice(0, 47)}…` : text;
+  return `Actions for message from ${authorName}: ${preview}`;
 }
 
 /**

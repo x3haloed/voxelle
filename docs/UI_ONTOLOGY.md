@@ -189,6 +189,13 @@ moves into a newly opened surface, modal Tab navigation remains contained, and
 closing returns focus to the invoking control when it still exists. Snapshot
 refreshes do not make the entire application a live region; only bounded status
 and alert surfaces announce changes to assistive technology.
+Repeated controls expose enough visible row context in their accessible names
+to identify the target without reconstructing it from DOM position. Channel
+actions include the channel name and privacy where relevant; message action
+disclosures include the author and a bounded content or attachment preview.
+This naming changes presentation only: stable command IDs and payloads remain
+the semantic authority.
+
 When a successful semantic command replaces its initiating surface, the
 coordinator rejects the document root as a meaningful origin and selects a
 causal fallback. Fresh creation or join focuses recovery setup; successful
