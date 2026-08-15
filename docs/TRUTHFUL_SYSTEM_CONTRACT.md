@@ -1077,23 +1077,29 @@ native-host paths all pass. The current universal macOS build and its DMG
 inspection are recorded separately below so artifact-specific claims remain
 distinguishable from semantic test evidence.
 
-A later current-branch native rehearsal rebuilt the human-UX branch as the
-universal `Voxelle_0.1.0_universal.dmg`. `hdiutil verify` accepted the image,
-its SHA-256 was
-`65d3ac79477cd133d3aea8f11644b73c6ac86e0de25a3ba1977b6866c2796c95`,
-`lipo` reported both `x86_64` and `arm64`, and strict `codesign` verification
-accepted the intended ad-hoc hardened-runtime signature. From the mounted
-read-only DMG, a disposable `VOXELLE_HOME_ROOT` with the documented test-file
-vault displayed only Create, signed-invite Join, and Recover; accepted Create,
-immediately projected the recovery-kit obligation, opened the native
-`.voxrecover` save chooser without writing, admitted a harmless message through
-Rust, and projected it in Conversation. The app then exited cleanly and the
-disposable home was removed. This is current packaged-WebView and local
+Source commit `0559f982c5088dac7ad3b55d5020396e89578e99` now has one locally
+assembled `v0.1.0-beta.4` candidate at sequence 4. Its signed manifest
+authenticates the universal macOS DMG as
+`c84e6b3eaefccb89b9a0af9ba0992212da3160f14697de361fc7ce05ca9dee22`,
+the Windows x86-64 NSIS installer as
+`a513c04d7c36c73c14bda3a41b5bb9f0399bbfca987ce7d1d980c71779ce5f28`,
+and the live product generation as
+`1562ea99a4fa09edbaa1ac83645ad514b77c9cb2c920e470fac1eee26c88f68d`.
+The release verifier accepted all three exact bytes. `hdiutil verify` accepted
+the DMG; inspection of its mounted app reported `x86_64` and `arm64`, a valid
+ad-hoc signature, and hardened runtime. The cross-built Windows executable is
+COFF x86-64 with the Windows GUI subsystem, but has not run on Windows.
+
+From the exact candidate DMG, an isolated native rehearsal using the documented
+test-file vault displayed only Create, signed-invite Join, and Recover; accepted
+Create through Rust, immediately projected the offline recovery-kit obligation,
+showed online state, admitted `beta4-release-bound-rehearsal`, and projected it
+in Conversation. The app exited cleanly, the read-only image detached, and the
+disposable home was removed. This is release-bound packaged-WebView and local
 admission evidence, not production Keychain, restart, invite, recovery,
-multi-peer, physical-media, beta.4, or release-receipt evidence. The authenticated
-beta.3 manifest and its three artifacts remain internally valid but are more
-than ninety commits behind this rehearsal branch, so they cannot evidence these
-later human UX changes.
+multi-peer, physical-media, or completed release-receipt evidence. The generated
+receipt template still fails distribution, Windows, field, human, and custody
+sections exactly as intended; no tag or public beta.4 release is claimed.
 
 The locally natural compression point is therefore the current authority
 topology, not the smallest imaginable byte count. The remaining separations
