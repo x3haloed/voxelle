@@ -426,6 +426,11 @@ disclosures, and Search Messages opens its focused search field. Each form
 invokes the same stable semantic command with an explicit payload only when the
 person submits it. Shortcut invocation uses the same availability decision.
 
+Create-channel and create-role disclosures name themselves as opening their
+respective creation form, distinct from the inner **Create Channel** and
+**Create Role** semantic submit actions. Expanded state remains on the opener;
+only the submit action can carry the completed draft to Rust admission.
+
 Manual diagnosis and synchronization expose an explicit, disposable target
 selection over Rust-projected ordinary peer records. The selector names the
 peer and shows its address, principal, and device; each action carries that

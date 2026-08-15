@@ -558,6 +558,14 @@ human permission names and member/role actions while keeping stable IDs in
 command payloads; private-channel creation selects current named members and
 explains the self-only case without requiring principal-ID entry.
 
+Governance creation surfaces now distinguish disclosure from admission in their
+accessible names. **Open channel creation form** and **Open role creation form**
+only expose retained frontend drafts and expanded state; the nested **Create
+Channel** and **Create Role** controls remain the sole semantic submissions to
+Rust. Deterministic source checks and a rendered preview verified one distinct
+opener and submit action for each form. This is rendered interaction evidence,
+not admitted-governance, packaged-native, or assistive-technology evidence.
+
 File sharing now has a human consent boundary before admission. Selecting a
 file opens a focused review of its name, type, decoded size, destination,
 projected audience, and durable-retention limitation; cancel returns to the one

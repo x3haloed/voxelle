@@ -2280,7 +2280,9 @@ function channelCreateDisclosure(snapshot) {
   create.addEventListener("toggle", () => {
     uiState.channelCreateOpen = create.open;
   });
-  create.append(disclosureSummary("Create a channel"));
+  const createSummary = disclosureSummary("Create a channel");
+  createSummary.setAttribute("aria-label", "Open channel creation form");
+  create.append(createSummary);
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -2587,7 +2589,9 @@ function roleListView(snapshot) {
   create.addEventListener("toggle", () => {
     uiState.roleCreateOpen = create.open;
   });
-  create.append(disclosureSummary("Create a role"));
+  const createSummary = disclosureSummary("Create a role");
+  createSummary.setAttribute("aria-label", "Open role creation form");
+  create.append(createSummary);
   const form = element("form", "field-stack");
   form.addEventListener("submit", (event) => {
     event.preventDefault();

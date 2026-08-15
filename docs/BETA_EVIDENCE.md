@@ -320,6 +320,9 @@ mode on and then off; confirm **Private channel options** closes when its privat
 fields no longer apply. Confirm profile, peer-import, channel-create, and
 role-create disclosures close after their successful commands, while unrelated
 user-expanded disclosures stay open across an ordinary refresh.
+Confirm the channel and role disclosure controls announce **Open channel
+creation form** and **Open role creation form**, distinct from the nested
+**Create Channel** and **Create Role** submit actions.
 
 Resize the supported desktop window to its narrowest practical width during one
 conversation path. Confirm the header actions, selected conversation, composer,

@@ -25,3 +25,10 @@ test("governance row controls expose their visible member, role, and invite targ
   assert.match(source, /Manage members for role \$\{roleLabel\}/);
   assert.match(source, /Revoke invite expiring \$\{inviteLabel\}/);
 });
+
+test("governance form disclosures are distinct from their semantic submit actions", () => {
+  assert.match(source, /createSummary\.setAttribute\("aria-label", "Open channel creation form"\)/);
+  assert.match(source, /createSummary\.setAttribute\("aria-label", "Open role creation form"\)/);
+  assert.match(source, /form\.append\(privacy, submitButton\("channel\.create"\)\)/);
+  assert.match(source, /form\.append\(permissions, submitButton\("role\.create"\)\)/);
+});
