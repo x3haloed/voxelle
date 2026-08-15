@@ -351,6 +351,15 @@ changing membership or local conversation availability. This is local
 loopback lived evidence, not the external IPv6 field, physical-machine, or
 assistive-technology gate.
 
+Signed-invite handoff has crossed a focused native macOS feedback gate. From a
+fresh packaged launch, a real Rust-created space invite reached the native
+clipboard and only then produced the visible live-region message **Signed
+invite copied. Send it privately to the person you want to invite.** The
+deterministic clipboard boundary separately rejects missing and failed writes,
+preserves technical detail, and directs the person to manually copy the
+complete signed JSON. This proves local clipboard feedback, not successful
+delivery to another person or an assistive-technology announcement.
+
 Customization has crossed a focused native macOS gate. The packaged workbench
 opens one human settings surface from More, presents everyday behavior before
 advanced semantic-token and metric controls, and exposes contextual accessible

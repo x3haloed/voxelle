@@ -203,6 +203,12 @@ retry. The ordinary header counts the broken row; a successful operation against
 that same peer clears it. These observations report availability only and do
 not alter membership, authority, or retained facts.
 
+Frontend-only commands still require truthful completion evidence. In
+particular, `invite.copy` waits for the operating-system clipboard write before
+announcing a dismissible success status. An unavailable or rejected clipboard
+is a structured `needs_human` failure with a manual path through the complete
+Signed invite details; absence of the browser API never counts as success.
+
 An existing but unreadable local home is not presented as fresh onboarding.
 Rust reports a structured `home_error`; the shell explains the damage, keeps
 technical detail disclosure explicit, and requires confirmation before

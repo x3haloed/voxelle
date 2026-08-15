@@ -22,6 +22,7 @@ const uiState = {
   error: "",
   errorRecovery: "",
   errorDetail: "",
+  status: "",
   peerRecordDraft: "",
   spaceInviteDraft: "",
   messageDraft: "",
@@ -181,6 +182,7 @@ function render() {
   desired.append(
     header(currentSnapshot),
     globalErrorBanner(),
+    globalStatusBanner(),
     ...(currentSnapshot.home && !currentSnapshot.home.recovery.kit_exported
       ? [recoverySetupPrompt()]
       : []),
@@ -2386,6 +2388,7 @@ async function runCommand(command, payload) {
   // may blur a control as soon as it becomes disabled.
   if (command === "workbench.commandPalette.open") rememberFocusReturn();
   uiState.busyCommand = command;
+  uiState.status = "";
   clearError();
   render();
   try {
@@ -2659,9 +2662,11 @@ async function runCommand(command, payload) {
         if (!currentSnapshot.home?.invite?.space_invite_json) {
           throw new Error("Create a signed invite before copying it.");
         }
-        await navigator.clipboard?.writeText(
+        await copyTextToClipboard(
+          navigator.clipboard,
           currentSnapshot.home?.invite?.space_invite_json ?? "",
         );
+        uiState.status = "Signed invite copied. Send it privately to the person you want to invite.";
         appendActivity(currentSnapshot, "copied invite");
         return;
       case "ui.preference.set":
@@ -2791,6 +2796,24 @@ function globalErrorBanner() {
     actionButton("Dismiss", () => {
       clearError();
       render();
+    }),
+  );
+  return banner;
+}
+
+function globalStatusBanner() {
+  if (!uiState.status) {
+    return document.createDocumentFragment();
+  }
+  const banner = element("section", "status-banner");
+  banner.setAttribute("role", "status");
+  banner.setAttribute("aria-live", "polite");
+  banner.append(
+    element("strong", "", uiState.status),
+    actionButton("Dismiss", () => {
+      uiState.status = "";
+      render();
+      window.requestAnimationFrame(() => app.querySelector('[data-command="invite.copy"]')?.focus());
     }),
   );
   return banner;

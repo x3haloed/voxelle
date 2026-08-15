@@ -273,6 +273,17 @@ h3 {
   background: color-mix(in srgb, var(--panel-background) 92%, var(--activity-error));
 }
 
+.status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--panel-gap);
+  padding: 9px var(--panel-padding);
+  color: var(--runtime-online);
+  border-bottom: 1px solid var(--runtime-online);
+  background: color-mix(in srgb, var(--panel-background) 92%, var(--runtime-online));
+}
+
 .error-copy {
   display: grid;
   gap: 3px;
