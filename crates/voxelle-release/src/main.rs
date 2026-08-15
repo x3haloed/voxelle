@@ -186,7 +186,11 @@ struct RecordHumanBetaEvidenceArgs {
     #[arg(long, required = true)]
     attest_degraded_connection: bool,
     #[arg(long, required = true)]
+    attest_compact_window_navigation: bool,
+    #[arg(long, required = true)]
     attest_media_controls: bool,
+    #[arg(long, required = true)]
+    attest_microphone_toggle_controls: bool,
     #[arg(long, required = true)]
     attest_physical_microphone_capture: bool,
     #[arg(long, required = true)]
@@ -459,7 +463,9 @@ fn main() -> Result<()> {
                 attest_recovery,
                 attest_customization,
                 attest_degraded_connection,
+                attest_compact_window_navigation,
                 attest_media_controls,
+                attest_microphone_toggle_controls,
                 attest_physical_microphone_capture,
                 attest_physical_camera_capture,
                 attest_permission_denial_recovery,
@@ -485,7 +491,9 @@ fn main() -> Result<()> {
                     recovery: attest_recovery,
                     customization: attest_customization,
                     degraded_connection: attest_degraded_connection,
+                    compact_window_navigation: attest_compact_window_navigation,
                     media_controls: attest_media_controls,
+                    microphone_toggle_controls: attest_microphone_toggle_controls,
                 },
                 media: evidence::MediaEvidenceV1 {
                     participant_roles: media_roles,

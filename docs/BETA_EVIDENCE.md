@@ -175,7 +175,9 @@ With that technology active and without using a pointer, complete and record:
 - reading and sending conversation content;
 - recovery and lost-device revocation;
 - dock placement or visibility customization that survives restart;
-- understanding and acting on a degraded connection state; and
+- understanding and acting on a degraded connection state;
+- navigating the narrowest practical window without hidden keyboard targets or
+  document-level horizontal scrolling; and
 - entering, operating, and leaving the direct-media surface.
 
 While operating that surface, mute and unmute the local microphone through the
@@ -251,7 +253,9 @@ cargo run -q -p voxelle-release -- record-human-beta-evidence \
   --attest-recovery \
   --attest-customization \
   --attest-degraded-connection \
+  --attest-compact-window-navigation \
   --attest-media-controls \
+  --attest-microphone-toggle-controls \
   --attest-physical-microphone-capture \
   --attest-physical-camera-capture \
   --attest-permission-denial-recovery \
