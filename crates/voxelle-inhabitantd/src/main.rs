@@ -308,8 +308,8 @@ impl DiscoveryView {
                 },
                 CommandSemanticsView {
                     command_id: "message.send".to_string(),
-                    retry: "client_request_id is 8 to 128 non-whitespace characters; reuse the same ID only for the identical principal, device, room, and payload; a conflicting reuse is rejected".to_string(),
-                    observation: "ok proves local admission; inspect the projected message by client_request_id, sync_evidence for peer-relative propagation, and signed acknowledgements for recipient observation or handling".to_string(),
+                    retry: "client_request_id is 8 to 128 non-whitespace characters; reuse the same ID only for the identical principal, device, room, text, mentions, addressed_origin_session_ids, thread root, and exact reply target; a conflicting reuse is rejected".to_string(),
+                    observation: "ok proves local admission; inspect the projected message by client_request_id, sync_evidence for peer-relative propagation, and signed acknowledgements for recipient observation or handling. thread_root_event_id groups one flat readable conversation while in_reply_to_event_id names the exact message answered and is required for replies. addressed_origin_session_ids is a signed orientation hint for up to 16 local origin sessions: it is not membership, permission, assignment, obligation, presence, exclusivity, confidentiality, acknowledgement, or proof of handling; unknown well-formed session IDs remain valid hints and ordinary room visibility is unchanged".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "resident.observation.open".to_string(),
@@ -319,7 +319,7 @@ impl DiscoveryView {
                 CommandSemanticsView {
                     command_id: "resident.observation.page".to_string(),
                     retry: "before commit, refetch from the first page after process restart; within one process continue only with the exact fact_high_water and next_after_fact_sequence returned by the preceding page; starting a fresh first page supersedes every prior page session and final token for that consumer".to_string(),
-                    observation: "only the owning authenticated origin can page; a foreign origin sees the consumer as unavailable. Returns at-least-once changed ordinary thread projections across the exact accessible room set captured by the first page; the final page alone carries a one-use commit_token".to_string(),
+                    observation: "only the owning authenticated origin can page; a foreign origin sees the consumer as unavailable. Returns at-least-once changed ordinary thread projections across the exact accessible room set captured by the first page; the full feed is never filtered by delivery hints. addressed_to_owner and addressed_event_ids are derived only by comparing signed message hints with the authenticated consumer owner's session, grant no authority, and are not receipts. The final page alone carries a one-use commit_token".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "resident.observation.commit".to_string(),
@@ -334,7 +334,7 @@ impl DiscoveryView {
                 CommandSemanticsView {
                     command_id: "message.acknowledge".to_string(),
                     retry: "semantic idempotent for the same state and result_event_id; handled is monotonic, and rebinding a locally known handled result is rejected".to_string(),
-                    observation: "the signed acknowledgement is an admitted participant assertion, not proof that the work was correct; optional handled result_event_id must name the handler's visible admitted reply threaded to the target, while observed must omit it; concurrent device results are retained and projected as a conflict".to_string(),
+                    observation: "the signed acknowledgement is an admitted participant assertion, not proof that the work was correct; optional handled result_event_id must name the handler's visible admitted ordinary message in the same flat thread whose in_reply_to_event_id is the exact acknowledged target, while observed must omit it; concurrent device results are retained and projected as a conflict".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "message.continuation.update".to_string(),
@@ -1649,6 +1649,83 @@ mod tests {
             .await
             .ok
         );
+    }
+
+    #[tokio::test]
+    async fn initialized_home_restart_immediately_reopens_origin_and_serves_coordination() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let registry_path = home.join(ORIGIN_REGISTRY_FILE);
+        let first = ShellState::new(&home);
+        assert!(
+            run_command(
+                &first,
+                "home.init",
+                serde_json::json!({"default_room": null}),
+                None,
+            )
+            .await
+            .ok
+        );
+        let device_id = first.current_device_id().await.expect("device");
+        let secret = test_secret(0x61);
+        let request = OpenResidentOriginRequest {
+            client_instance_id: "restart-origin-alpha".to_string(),
+            secret: secret.clone(),
+            label: "Restart Alpha".to_string(),
+        };
+        let opened = open_origin_session(&registry_path, &device_id, request.clone())
+            .expect("initial origin");
+        assert!(
+            run_command(&first, "runtime.goOffline", serde_json::json!({}), None)
+                .await
+                .ok
+        );
+        drop(first);
+
+        let bearer = "restart-test-bearer";
+        let discovery = DiscoveryView::new(home.clone(), "http://127.0.0.1:1".to_string(), bearer);
+        let (snapshot_changes, snapshot_invalidated) = snapshot_change_channel();
+        let state = Arc::new(AppState {
+            shell: Arc::new(ShellState::new_with_notifier(&home, snapshot_invalidated)),
+            discovery,
+            bearer_token: Arc::from(bearer),
+            request_slots: Arc::new(Semaphore::new(8)),
+            command_gate: Arc::new(Mutex::new(())),
+            event_slots: Arc::new(Semaphore::new(8)),
+            snapshot_changes,
+            origin_registry_path: registry_path,
+        });
+
+        let response = time::timeout(
+            Duration::from_secs(2),
+            command(
+                State(state.clone()),
+                Path("resident.origin.open".to_string()),
+                HeaderMap::new(),
+                Json(serde_json::json!({
+                    "client_instance_id": request.client_instance_id,
+                    "secret": request.secret,
+                    "label": request.label,
+                })),
+            ),
+        )
+        .await
+        .expect("origin open must not stall after restart")
+        .into_response();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("origin response");
+        let body: Value = serde_json::from_slice(&body).expect("ActionResult JSON");
+        assert_eq!(body["snapshot"]["origin_id"], opened.origin_id);
+
+        let coordination =
+            time::timeout(Duration::from_secs(2), coordination_snapshot(State(state)))
+                .await
+                .expect("coordination must remain available after origin open")
+                .into_response();
+        assert_eq!(coordination.status(), StatusCode::OK);
     }
 
     #[test]

@@ -256,7 +256,9 @@ pub struct MessageView {
     pub edited_ms: Option<i64>,
     pub redacted: bool,
     pub mentions: Vec<String>,
+    pub addressed_origin_session_ids: Vec<String>,
     pub thread_root_event_id: Option<String>,
+    pub in_reply_to_event_id: Option<String>,
     pub reply_count: usize,
     pub pinned: bool,
     pub reactions: Vec<ReactionView>,
@@ -332,6 +334,8 @@ pub struct ResidentChangedThreadView {
     pub last_fact_sequence: u64,
     pub root: MessageView,
     pub replies: Vec<MessageView>,
+    pub addressed_to_owner: bool,
+    pub addressed_event_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1311,7 +1315,11 @@ pub struct SendMessageRequest {
     #[serde(default)]
     pub mentions: Vec<String>,
     #[serde(default)]
+    pub addressed_origin_session_ids: Vec<String>,
+    #[serde(default)]
     pub thread_root_event_id: Option<String>,
+    #[serde(default)]
+    pub in_reply_to_event_id: Option<String>,
     #[serde(default)]
     pub client_request_id: Option<String>,
 }
@@ -1795,6 +1803,10 @@ impl VoxelleHome {
         })
     }
 
+    pub fn current_device_id(&self) -> Result<String> {
+        Ok(self.load_identity()?.device.id)
+    }
+
     pub fn home_screen_view(&self, online: Option<&OnlineHome>) -> Result<HomeScreenView> {
         self.home_screen_view_for_room(online, None)
     }
@@ -2166,7 +2178,7 @@ impl VoxelleHome {
     }
 
     pub fn send_message(&self, text: &str, room: Option<&str>) -> Result<EventV1> {
-        self.send_message_with_metadata(text, room, Vec::new(), None, None)
+        self.send_message_with_metadata(text, room, Vec::new(), Vec::new(), None, None, None)
     }
 
     pub fn send_message_with_metadata(
@@ -2174,7 +2186,9 @@ impl VoxelleHome {
         text: &str,
         room: Option<&str>,
         mentions: Vec<String>,
+        addressed_origin_session_ids: Vec<String>,
         thread_root_event_id: Option<String>,
+        in_reply_to_event_id: Option<String>,
         client_request_id: Option<String>,
     ) -> Result<EventV1> {
         let origin = self.default_origin_context()?;
@@ -2182,7 +2196,9 @@ impl VoxelleHome {
             text,
             room,
             mentions,
+            addressed_origin_session_ids,
             thread_root_event_id,
+            in_reply_to_event_id,
             client_request_id,
             Some(&origin),
         )
@@ -2193,17 +2209,26 @@ impl VoxelleHome {
         text: &str,
         room: Option<&str>,
         mentions: Vec<String>,
+        mut addressed_origin_session_ids: Vec<String>,
         thread_root_event_id: Option<String>,
+        in_reply_to_event_id: Option<String>,
         client_request_id: Option<String>,
         origin: Option<&OriginContext>,
     ) -> Result<EventV1> {
+        addressed_origin_session_ids.sort();
+        addressed_origin_session_ids.dedup();
+        if addressed_origin_session_ids.len() > 16 {
+            anyhow::bail!("a message may address at most 16 origin sessions");
+        }
         self.create_room_event_with_origin(
             room,
             "MSG_POST",
             serde_json::json!({
                 "text": text,
                 "mentions": mentions,
+                "addressed_origin_session_ids": addressed_origin_session_ids,
                 "thread_root_event_id": thread_root_event_id,
+                "in_reply_to_event_id": in_reply_to_event_id,
                 "client_request_id": client_request_id,
             }),
             origin,
@@ -2694,6 +2719,7 @@ impl VoxelleHome {
                 committed,
                 fact_high_water,
                 channel,
+                owner_origin_id,
             ));
         }
         items.sort_by(|left, right| {
@@ -3454,7 +3480,17 @@ impl VoxelleHome {
         let store = self.open_store()?;
         let room = room.unwrap_or(&config.space.default_room_id);
         let created_ms = now_ms();
-        let parents = store.room_heads(room)?;
+        let mut parents = store.room_heads(room)?;
+        if let Some(in_reply_to_event_id) = body
+            .get("in_reply_to_event_id")
+            .and_then(serde_json::Value::as_str)
+        {
+            if !parents.iter().any(|parent| parent == in_reply_to_event_id) {
+                parents.push(in_reply_to_event_id.to_string());
+                parents.sort();
+                parents.dedup();
+            }
+        }
         let delegation_scope = if kind.starts_with("CALL_") {
             "room:call"
         } else {
@@ -4683,6 +4719,7 @@ fn project_resident_changed_threads(
     committed_fact_sequence: u64,
     fact_high_water: u64,
     channel: &ChannelView,
+    owner_origin_id: &str,
 ) -> Vec<ResidentChangedThreadView> {
     let events: Vec<SequencedEvent> = events
         .into_iter()
@@ -4755,6 +4792,19 @@ fn project_resident_changed_threads(
                     .cmp(&right.created_ms)
                     .then(left.event_id.cmp(&right.event_id))
             });
+            let mut addressed_event_ids = std::iter::once(&root)
+                .chain(replies.iter())
+                .filter(|message| {
+                    message
+                        .addressed_origin_session_ids
+                        .iter()
+                        .any(|session_id| session_id == owner_origin_id)
+                })
+                .map(|message| message.event_id.clone())
+                .take(16)
+                .collect::<Vec<_>>();
+            addressed_event_ids.sort();
+            let addressed_to_owner = !addressed_event_ids.is_empty();
             Some(ResidentChangedThreadView {
                 room_id: channel.room_id.clone(),
                 room_name: channel.name.clone(),
@@ -4762,6 +4812,8 @@ fn project_resident_changed_threads(
                 last_fact_sequence,
                 root,
                 replies,
+                addressed_to_owner,
+                addressed_event_ids,
             })
         })
         .collect()
@@ -4825,9 +4877,23 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                             .filter_map(serde_json::Value::as_str)
                             .map(ToOwned::to_owned)
                             .collect(),
+                        addressed_origin_session_ids: event
+                            .body
+                            .get("addressed_origin_session_ids")
+                            .and_then(serde_json::Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect(),
                         thread_root_event_id: event
                             .body
                             .get("thread_root_event_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned),
+                        in_reply_to_event_id: event
+                            .body
+                            .get("in_reply_to_event_id")
                             .and_then(serde_json::Value::as_str)
                             .map(ToOwned::to_owned),
                         reply_count: 0,
@@ -4855,7 +4921,9 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
                         edited_ms: None,
                         redacted: false,
                         mentions: Vec::new(),
+                        addressed_origin_session_ids: Vec::new(),
                         thread_root_event_id: None,
+                        in_reply_to_event_id: None,
                         reply_count: 0,
                         pinned: false,
                         reactions: Vec::new(),
@@ -5316,7 +5384,7 @@ fn uncovered_reply_event_ids(
         .iter()
         .filter(|reply| {
             reply.kind == "MSG_POST"
-                && string_event_body(reply, "thread_root_event_id") == target_event_id
+                && string_event_body(reply, "in_reply_to_event_id") == target_event_id
                 && !bound_result_ids.contains(&reply.event_id)
                 && !disposition_heads
                     .iter()
@@ -5470,6 +5538,10 @@ impl VoxelleCommandHost {
             display_label,
             request_id,
         )
+    }
+
+    pub fn current_device_id(&self) -> Result<String> {
+        self.home.current_device_id()
     }
 
     fn default_origin_context(&self) -> Result<OriginContext> {
@@ -6125,9 +6197,11 @@ impl VoxelleCommandHost {
 
     pub async fn send_message_with_origin(
         &mut self,
-        request: SendMessageRequest,
+        mut request: SendMessageRequest,
         origin: &OriginContext,
     ) -> Result<ShellSnapshotView> {
+        request.addressed_origin_session_ids.sort();
+        request.addressed_origin_session_ids.dedup();
         let room = request.room.as_deref().or(self.selected_room_id.as_deref());
         if let Some(client_request_id) = request.client_request_id.as_deref() {
             if client_request_id.len() < 8
@@ -6146,8 +6220,12 @@ impl VoxelleCommandHost {
                     .and_then(serde_json::Value::as_str)
                     == Some(request.text.as_str())
                     && existing.body.get("mentions") == Some(&serde_json::json!(request.mentions))
+                    && existing.body.get("addressed_origin_session_ids")
+                        == Some(&serde_json::json!(request.addressed_origin_session_ids))
                     && existing.body.get("thread_root_event_id")
-                        == Some(&serde_json::json!(request.thread_root_event_id));
+                        == Some(&serde_json::json!(request.thread_root_event_id))
+                    && existing.body.get("in_reply_to_event_id")
+                        == Some(&serde_json::json!(request.in_reply_to_event_id));
                 if !same_payload {
                     anyhow::bail!(
                         "client_request_id was already used for a different message payload"
@@ -6167,7 +6245,9 @@ impl VoxelleCommandHost {
             &request.text,
             room,
             request.mentions,
+            request.addressed_origin_session_ids,
             request.thread_root_event_id,
+            request.in_reply_to_event_id,
             request.client_request_id,
             Some(origin),
         )?;
@@ -9439,7 +9519,7 @@ mod tests {
             2,
             "MSG_POST",
             vec![target.event_id.clone()],
-            serde_json::json!({"text":"result a","mentions":[],"thread_root_event_id":target.event_id}),
+            serde_json::json!({"text":"result a","mentions":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id}),
         )
         .expect("result a");
         let result_b = create_event(
@@ -9449,7 +9529,7 @@ mod tests {
             2,
             "MSG_POST",
             vec![target.event_id.clone()],
-            serde_json::json!({"text":"result b","mentions":[],"thread_root_event_id":target.event_id}),
+            serde_json::json!({"text":"result b","mentions":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id}),
         )
         .expect("result b");
         let ack_a = create_event(
@@ -9637,7 +9717,7 @@ mod tests {
             serde_json::json!({"text":"work","mentions":[]}),
         )
         .expect("target");
-        let reply = create_event(&identity, delegation(), "room:test", 500, "MSG_POST", vec![target.event_id.clone()], serde_json::json!({"text":"reply","mentions":[],"thread_root_event_id":target.event_id})).expect("reply");
+        let reply = create_event(&identity, delegation(), "room:test", 500, "MSG_POST", vec![target.event_id.clone()], serde_json::json!({"text":"reply","mentions":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id})).expect("reply");
         let covered = create_event(&identity, delegation(), "room:test", 200, "MSG_ACK", vec![reply.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"observed","result_event_id":null})).expect("covered");
         assert!(!has_uncovered_reply(
             &[covered.clone(), reply.clone(), target.clone()],
@@ -9742,7 +9822,8 @@ mod tests {
                     serde_json::json!({
                         "text": format!("follow-up {index}"),
                         "mentions": [],
-                        "thread_root_event_id": target_event_id
+                        "thread_root_event_id": target_event_id,
+                        "in_reply_to_event_id": target_event_id
                     }),
                 )
                 .expect("bounded reply"),
@@ -10171,21 +10252,33 @@ mod tests {
             bob.read_messages(Some(&room_id)).expect("bob decrypts")[0].text,
             "e2e secret phrase"
         );
+        let private_origin_id = format!(
+            "os:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x33_u8; 32])
+        );
         let private_result = bob
             .send_message_with_metadata(
                 "private ordinary result",
                 Some(&room_id),
                 Vec::new(),
+                vec![private_origin_id.clone()],
+                Some(sent.event_id.clone()),
                 Some(sent.event_id.clone()),
                 Some("private-result-001".to_string()),
             )
             .expect("bob private result");
         assert_eq!(private_result.kind, "ROOM_ENCRYPTED");
+        assert!(!serde_json::to_string(&private_result)
+            .expect("private result event json")
+            .contains(&private_origin_id));
         let private_result_id = bob
             .read_messages(Some(&room_id))
             .expect("bob result projection")
             .into_iter()
-            .find(|message| message.text == "private ordinary result")
+            .find(|message| {
+                message.text == "private ordinary result"
+                    && message.addressed_origin_session_ids == vec![private_origin_id.clone()]
+            })
             .expect("private result message")
             .event_id;
         let private_ack = bob
@@ -10586,7 +10679,9 @@ mod tests {
                 text: "from command host".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: None,
+                in_reply_to_event_id: None,
                 client_request_id: None,
             })
             .await
@@ -10797,7 +10892,9 @@ mod tests {
                 text: "continue in ops".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: None,
+                in_reply_to_event_id: None,
                 client_request_id: Some("frontier-ops-target-001".to_string()),
             })
             .await
@@ -10822,7 +10919,9 @@ mod tests {
             text: "newer ops reply".to_string(),
             room: Some(ops_room.clone()),
             mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
             thread_root_event_id: Some(ops_target.clone()),
+            in_reply_to_event_id: Some(ops_target.clone()),
             client_request_id: Some("frontier-ops-reply-001".to_string()),
         })
         .await
@@ -10841,7 +10940,9 @@ mod tests {
                 text: "handle in general".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: None,
+                in_reply_to_event_id: None,
                 client_request_id: Some("frontier-general-target-001".to_string()),
             })
             .await
@@ -10857,7 +10958,9 @@ mod tests {
                 text: "ordinary handled result".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: Some(general_target.clone()),
+                in_reply_to_event_id: Some(general_target.clone()),
                 client_request_id: Some("frontier-general-result-001".to_string()),
             })
             .await
@@ -10883,7 +10986,9 @@ mod tests {
                 text: "human follow-up after handled".to_string(),
                 room: Some(general_room.clone()),
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: Some(general_target.clone()),
+                in_reply_to_event_id: Some(general_target.clone()),
                 client_request_id: Some("frontier-general-follow-up-001".to_string()),
             })
             .await
@@ -10993,7 +11098,9 @@ mod tests {
                 text: "private continuation ".repeat(9).trim_end().to_string(),
                 room: Some(room_id.clone()),
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: None,
+                in_reply_to_event_id: None,
                 client_request_id: Some("frontier-private-target-001".to_string()),
             })
             .await
@@ -11028,7 +11135,9 @@ mod tests {
                 text: "private result".to_string(),
                 room: Some(room_id.clone()),
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: Some(target_event_id.clone()),
+                in_reply_to_event_id: Some(target_event_id.clone()),
                 client_request_id: Some("frontier-private-result-001".to_string()),
             })
             .await
@@ -11153,7 +11262,9 @@ mod tests {
             text: "coordinate this once".to_string(),
             room: None,
             mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
             thread_root_event_id: None,
+            in_reply_to_event_id: None,
             client_request_id: Some("request-0001".to_string()),
         };
         let first = host
@@ -11181,7 +11292,9 @@ mod tests {
                 text: "ordinary threaded result".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: Some(event_id.clone()),
+                in_reply_to_event_id: Some(event_id.clone()),
                 client_request_id: Some("result-0001".to_string()),
             })
             .await
@@ -11257,7 +11370,9 @@ mod tests {
                 text: "quiet coordination".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: None,
+                in_reply_to_event_id: None,
                 client_request_id: Some("continuation-target-001".to_string()),
             })
             .await
@@ -11345,7 +11460,9 @@ mod tests {
                 text: "Human request A".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: None,
+                in_reply_to_event_id: None,
                 client_request_id: Some("resident-thread-a".to_string()),
             })
             .await
@@ -11356,7 +11473,9 @@ mod tests {
                 text: "Agent result A".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: Some(first_id.clone()),
+                in_reply_to_event_id: Some(first_id.clone()),
                 client_request_id: Some("resident-result-a".to_string()),
             })
             .await
@@ -11383,7 +11502,9 @@ mod tests {
                 text: "Human request B".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: None,
+                in_reply_to_event_id: None,
                 client_request_id: Some("resident-thread-b".to_string()),
             })
             .await
@@ -11477,7 +11598,9 @@ mod tests {
             text: "Human request after checkpoint".to_string(),
             room: None,
             mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
             thread_root_event_id: None,
+            in_reply_to_event_id: None,
             client_request_id: Some("resident-thread-after-restart".to_string()),
         })
         .await
@@ -11607,6 +11730,88 @@ mod tests {
             &beta,
         )
         .expect("independent beta consumer");
+        let unowned_origin_id = format!(
+            "os:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x44_u8; 32])
+        );
+        let addressed_request = SendMessageRequest {
+            text: "Beta, please inspect this thread".to_string(),
+            room: None,
+            mentions: Vec::new(),
+            addressed_origin_session_ids: vec![
+                unowned_origin_id.clone(),
+                beta.owner_origin_id().to_string(),
+            ],
+            thread_root_event_id: None,
+            in_reply_to_event_id: None,
+            client_request_id: Some("origin-address-beta-001".to_string()),
+        };
+        let sent = host
+            .send_message_with_origin(addressed_request.clone(), &alpha)
+            .await
+            .expect("addressed send");
+        let addressed_event_id = sent
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.client_request_id.as_deref() == Some("origin-address-beta-001"))
+            .expect("addressed message")
+            .event_id;
+        let mut reordered_retry = addressed_request.clone();
+        reordered_retry.addressed_origin_session_ids.reverse();
+        host.send_message_with_origin(reordered_retry, &alpha)
+            .await
+            .expect("exact addressed retry");
+        let mut conflict = addressed_request;
+        conflict.addressed_origin_session_ids = vec![alpha.owner_origin_id().to_string()];
+        assert!(host
+            .send_message_with_origin(conflict, &alpha)
+            .await
+            .expect_err("addressed retry conflict")
+            .to_string()
+            .contains("different message payload"));
+
+        let alpha_changed = host
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: "shared-consumer".to_string(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &alpha,
+            )
+            .expect("alpha sees all changed threads");
+        let alpha_item = alpha_changed
+            .items
+            .iter()
+            .find(|item| item.root.event_id == addressed_event_id)
+            .expect("alpha changed thread remains present");
+        assert!(!alpha_item.addressed_to_owner);
+        assert!(alpha_item.addressed_event_ids.is_empty());
+        let beta_changed = host
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: "beta-independent".to_string(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &beta,
+            )
+            .expect("beta page");
+        let beta_item = beta_changed
+            .items
+            .iter()
+            .find(|item| item.root.event_id == addressed_event_id)
+            .expect("beta changed thread");
+        assert!(beta_item.addressed_to_owner);
+        assert_eq!(
+            beta_item.addressed_event_ids,
+            vec![addressed_event_id.clone()]
+        );
         drop(host);
 
         let mut restarted = VoxelleCommandHost::new(&home_root);
@@ -11626,6 +11831,22 @@ mod tests {
                 "beta-restart".to_string(),
             )
             .expect("beta restart origin");
+        let beta_restart_page = restarted
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: "beta-independent".to_string(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &beta_after_restart,
+            )
+            .expect("addressed prioritization survives restart");
+        assert!(beta_restart_page
+            .items
+            .iter()
+            .any(|item| item.addressed_to_owner
+                && item.addressed_event_ids.contains(&addressed_event_id)));
         restarted
             .open_resident_observation_with_origin(open.clone(), &alpha_after_restart)
             .expect("owner reopens after restart");
@@ -11634,6 +11855,187 @@ mod tests {
             .expect_err("foreign owner remains rejected after restart")
             .to_string()
             .contains("not open"));
+    }
+
+    #[tokio::test]
+    async fn flat_thread_direct_reply_can_handle_an_addressed_delegation() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let human = host
+            .issue_origin_context(
+                &[0x51; 32],
+                OriginSurfaceProtocolV1::NativeWebview,
+                Some("Human".to_string()),
+                "human-open".to_string(),
+            )
+            .expect("human origin");
+        let alpha = host
+            .issue_origin_context(
+                &[0x52; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Alpha".to_string()),
+                "alpha-open".to_string(),
+            )
+            .expect("alpha origin");
+        let beta = host
+            .issue_origin_context(
+                &[0x53; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Beta".to_string()),
+                "beta-open".to_string(),
+            )
+            .expect("beta origin");
+        let root = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "Please coordinate an answer".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: vec![alpha.owner_origin_id().to_string()],
+                    thread_root_event_id: None,
+                    in_reply_to_event_id: None,
+                    client_request_id: Some("direct-reply-root-001".to_string()),
+                },
+                &human,
+            )
+            .await
+            .expect("human root")
+            .home
+            .expect("home")
+            .room
+            .messages[0]
+            .event_id
+            .clone();
+        let delegation = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "Beta, compute the answer".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: vec![beta.owner_origin_id().to_string()],
+                    thread_root_event_id: Some(root.clone()),
+                    in_reply_to_event_id: Some(root.clone()),
+                    client_request_id: Some("direct-reply-delegation-001".to_string()),
+                },
+                &alpha,
+            )
+            .await
+            .expect("delegation")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| {
+                message.client_request_id.as_deref() == Some("direct-reply-delegation-001")
+            })
+            .expect("delegation projection")
+            .event_id;
+        let result = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "The answer is 95".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: Some(root.clone()),
+                    in_reply_to_event_id: Some(delegation.clone()),
+                    client_request_id: Some("direct-reply-result-001".to_string()),
+                },
+                &beta,
+            )
+            .await
+            .expect("direct result")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.client_request_id.as_deref() == Some("direct-reply-result-001"))
+            .expect("result projection");
+        assert_eq!(result.thread_root_event_id.as_deref(), Some(root.as_str()));
+        assert_eq!(
+            result.in_reply_to_event_id.as_deref(),
+            Some(delegation.as_str())
+        );
+        host.send_message_with_origin(
+            SendMessageRequest {
+                text: "The answer is 95".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: Some(root.clone()),
+                in_reply_to_event_id: Some(delegation.clone()),
+                client_request_id: Some("direct-reply-result-001".to_string()),
+            },
+            &beta,
+        )
+        .await
+        .expect("exact direct-reply retry");
+        assert!(host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "The answer is 95".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: Some(root.clone()),
+                    in_reply_to_event_id: Some(root.clone()),
+                    client_request_id: Some("direct-reply-result-001".to_string()),
+                },
+                &beta,
+            )
+            .await
+            .expect_err("changed direct target conflicts")
+            .to_string()
+            .contains("different message payload"));
+        let handled = host
+            .acknowledge_message_with_origin(
+                AcknowledgeMessageRequest {
+                    target_event_id: delegation.clone(),
+                    room: None,
+                    state: MessageAcknowledgementState::Handled,
+                    result_event_id: Some(result.event_id.clone()),
+                },
+                &beta,
+            )
+            .await
+            .expect("handle exact delegation");
+        let delegation_view = handled
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.event_id == delegation)
+            .expect("delegation after handled");
+        assert_eq!(delegation_view.acknowledgements.len(), 1);
+        assert_eq!(
+            delegation_view.acknowledgements[0].result_event_ids,
+            vec![result.event_id]
+        );
+        let invalid_root_error = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "invalid root response edge".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: None,
+                    in_reply_to_event_id: Some(root),
+                    client_request_id: Some("direct-reply-invalid-root-001".to_string()),
+                },
+                &beta,
+            )
+            .await
+            .expect_err("root cannot directly reply");
+        let invalid_root_error = format!("{invalid_root_error:#}");
+        assert!(
+            invalid_root_error.contains("root message cannot name"),
+            "unexpected error: {invalid_root_error}"
+        );
     }
 
     #[test]
@@ -12117,7 +12519,9 @@ mod tests {
             text: "origin-aware root".to_string(),
             room: None,
             mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
             thread_root_event_id: None,
+            in_reply_to_event_id: None,
             client_request_id: Some("origin-root-001".to_string()),
         };
         let sent = host
@@ -12319,7 +12723,9 @@ mod tests {
                     text: "private attributed message".to_string(),
                     room: Some(room_id.clone()),
                     mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
                     thread_root_event_id: None,
+                    in_reply_to_event_id: None,
                     client_request_id: Some("private-origin-message-001".to_string()),
                 },
                 &origin,

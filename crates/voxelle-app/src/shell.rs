@@ -74,13 +74,7 @@ pub fn shell_command_payload(command_id: &str) -> Option<ShellCommandPayload> {
 
 impl ShellState {
     pub async fn current_device_id(&self) -> Option<String> {
-        self.host
-            .lock()
-            .await
-            .snapshot()
-            .ok()?
-            .home
-            .map(|home| home.profile.device_id)
+        self.host.lock().await.current_device_id().ok()
     }
 
     pub async fn issue_inhabitant_origin_context(
@@ -612,7 +606,7 @@ fn command_error_presentation(
     if let Some((message, recovery_message)) = correctable_input_presentation(command_id, detail) {
         return (message, ShellRecovery::NeedsInput, recovery_message);
     }
-    if detail.contains("service") || detail.contains("offline") {
+    if detail.contains("service") || detail.contains("offline") || detail.contains("go online") {
         return (
             "Voxelle needs its local peer service for that action.",
             ShellRecovery::NeedsServiceOnline,
@@ -687,8 +681,13 @@ fn correctable_input_presentation(
                 || detail.contains("msg_edit text is invalid")
                 || detail.contains("mentions are invalid")
                 || detail.contains("thread root does not exist")
+                || detail.contains("in-reply-to")
+                || detail.contains("thread reply must name")
+                || detail.contains("root message cannot name")
                 || detail.contains("client_request_id was already used")
                 || detail.contains("client_request_id must be")
+                || detail.contains("addressed_origin_session_ids")
+                || detail.contains("origin session id")
         }
         "message.acknowledge" => {
             detail.contains("observed msg_ack cannot name a result")
@@ -755,7 +754,7 @@ fn correctable_input_presentation(
     Some(match command_id {
         "message.send" | "message.edit" => (
             "That message needs editing.",
-            "Correct the message payload. For a retry, reuse a client request ID only with its identical original message; otherwise generate a new ID.",
+            "Correct the message payload. Address at most 16 unique canonical origin session IDs. For a retry, reuse a client request ID only with its identical original message; otherwise generate a new ID.",
         ),
         "message.acknowledge" => (
             "That acknowledgement cannot use this result.",
@@ -1904,7 +1903,8 @@ mod tests {
                 "text": "Thread reply",
                 "room": channel_id,
                 "mentions": [alice_peer_id],
-                "thread_root_event_id": root_id
+                "thread_root_event_id": root_id,
+                "in_reply_to_event_id": root_id
             }),
         )
         .await
@@ -2415,6 +2415,18 @@ mod tests {
         .is_some());
         assert!(correctable_input_presentation("member.ban", "not authorized").is_none());
         assert!(correctable_input_presentation("message.send", "database is locked").is_none());
+        let (_, recovery, recovery_message) = command_error_presentation(
+            "space.invite.create",
+            "go online before creating a space invite",
+        );
+        assert_eq!(recovery, ShellRecovery::NeedsServiceOnline);
+        assert!(recovery_message.contains("Go online"));
+        let (_, recovery, recovery_message) = command_error_presentation(
+            "message.send",
+            "MSG_POST addressed_origin_session_ids contains an invalid origin session ID",
+        );
+        assert_eq!(recovery, ShellRecovery::NeedsInput);
+        assert!(recovery_message.contains("16 unique canonical"));
     }
 
     #[tokio::test]

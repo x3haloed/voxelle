@@ -1956,6 +1956,7 @@ fn validate_room_event_body(
                 return Err(AcceptError::Invalid("MSG_POST text is invalid".to_string()));
             }
             validate_mentions(event)?;
+            validate_addressed_origin_session_ids(event)?;
             if let Some(client_request_id) = string_body_field(event, "client_request_id") {
                 if !valid_short_text(&client_request_id, 128)
                     || client_request_id.len() < 8
@@ -1979,15 +1980,50 @@ fn validate_room_event_body(
                 }
             }
             if let Some(thread_root) = string_body_field(event, "thread_root_event_id") {
-                if !accepted_events.iter().any(|candidate| {
+                let root_exists = accepted_events.iter().any(|candidate| {
                     candidate.room_id == event.room_id
                         && candidate.event_id == thread_root
                         && candidate.kind == "MSG_POST"
-                }) {
+                        && string_body_field(candidate, "thread_root_event_id").is_none()
+                });
+                if !root_exists {
                     return Err(AcceptError::Invalid(
                         "thread root does not exist".to_string(),
                     ));
                 }
+                if let Some(in_reply_to) = string_body_field(event, "in_reply_to_event_id") {
+                    let reply_target = accepted_events.iter().find(|candidate| {
+                        candidate.room_id == event.room_id
+                            && candidate.event_id == in_reply_to
+                            && candidate.kind == "MSG_POST"
+                    });
+                    if !reply_target.is_some_and(|candidate| {
+                        candidate.event_id == thread_root
+                            || string_body_field(candidate, "thread_root_event_id")
+                                == Some(thread_root.clone())
+                    }) {
+                        return Err(AcceptError::Invalid(
+                            "in-reply-to target is not in the same flat thread".to_string(),
+                        ));
+                    }
+                    if !event.parents.iter().any(|parent| parent == &in_reply_to) {
+                        return Err(AcceptError::Invalid(
+                            "in-reply-to target must be a causal parent".to_string(),
+                        ));
+                    }
+                } else {
+                    return Err(AcceptError::Invalid(
+                        "thread reply must name an in-reply-to target".to_string(),
+                    ));
+                }
+            } else if event
+                .body
+                .get("in_reply_to_event_id")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(AcceptError::Invalid(
+                    "root message cannot name an in-reply-to target".to_string(),
+                ));
             }
         }
         "MSG_EDIT" => {
@@ -2052,7 +2088,7 @@ fn validate_room_event_body(
                 if state.as_deref() != Some("handled")
                     || result.kind != "MSG_POST"
                     || result.author_peer_id != event.author_peer_id
-                    || string_body_field(result, "thread_root_event_id")
+                    || string_body_field(result, "in_reply_to_event_id")
                         != Some(acknowledged.event_id.clone())
                     || accepted_events.iter().any(|candidate| {
                         candidate.room_id == event.room_id
@@ -2450,6 +2486,57 @@ fn validate_mentions(event: &EventV1) -> AcceptResult<()> {
         })
     {
         return Err(AcceptError::Invalid("mentions are invalid".to_string()));
+    }
+    Ok(())
+}
+
+fn validate_addressed_origin_session_ids(event: &EventV1) -> AcceptResult<()> {
+    let Some(value) = event.body.get("addressed_origin_session_ids") else {
+        return Ok(());
+    };
+    let ids = value.as_array().ok_or_else(|| {
+        AcceptError::Invalid("MSG_POST addressed_origin_session_ids is invalid".to_string())
+    })?;
+    if ids.len() > 16 {
+        return Err(AcceptError::Invalid(
+            "MSG_POST addressed_origin_session_ids exceeds 16 entries".to_string(),
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for value in ids {
+        let id = value.as_str().ok_or_else(|| {
+            AcceptError::Invalid("MSG_POST addressed_origin_session_ids is invalid".to_string())
+        })?;
+        let encoded = id.strip_prefix("os:").ok_or_else(|| {
+            AcceptError::Invalid(
+                "MSG_POST addressed_origin_session_ids contains an invalid origin session ID"
+                    .to_string(),
+            )
+        })?;
+        let decoded = Some(encoded)
+            .and_then(|encoded| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(encoded)
+                    .ok()
+            })
+            .filter(|decoded| decoded.len() == 32)
+            .ok_or_else(|| {
+                AcceptError::Invalid(
+                    "MSG_POST addressed_origin_session_ids contains an invalid origin session ID"
+                        .to_string(),
+                )
+            })?;
+        if base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&decoded) != encoded {
+            return Err(AcceptError::Invalid(
+                "MSG_POST addressed_origin_session_ids contains a non-canonical origin session ID"
+                    .to_string(),
+            ));
+        }
+        if !unique.insert(decoded) {
+            return Err(AcceptError::Invalid(
+                "MSG_POST addressed_origin_session_ids contains duplicates".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -2940,6 +3027,167 @@ mod tests {
             json!({ "text": "hello" }),
         )
         .expect("message")
+    }
+
+    #[test]
+    fn addressed_origin_session_ids_are_bounded_unique_and_canonical() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let canonical = format!(
+            "os:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([3_u8; 32])
+        );
+        let event_with = |ids: serde_json::Value| {
+            create_event(
+                &identity,
+                delegation_for(&identity, vec!["room:post".to_string()]),
+                "room:general",
+                1_000,
+                "MSG_POST",
+                vec![],
+                json!({"text": "hello", "addressed_origin_session_ids": ids}),
+            )
+            .expect("message")
+        };
+
+        validate_addressed_origin_session_ids(&event_with(json!([canonical.clone()])))
+            .expect("canonical ID");
+        assert!(
+            validate_addressed_origin_session_ids(&event_with(json!(["os:not-base64"]))).is_err()
+        );
+        assert!(validate_addressed_origin_session_ids(&event_with(json!([
+            canonical.clone(),
+            canonical
+        ])))
+        .is_err());
+        let too_many = (0_u8..17)
+            .map(|byte| {
+                format!(
+                    "os:{}",
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([byte; 32])
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(validate_addressed_origin_session_ids(&event_with(json!(too_many))).is_err());
+    }
+
+    #[test]
+    fn direct_reply_edges_preserve_flat_threads_and_bind_handled_results() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let context = RoomContext::new(identity.peer_id.clone());
+        let join = member_join(&identity);
+        let root = message(&identity, 1_100, vec![join.event_id.clone()]);
+        accept_event(&root, std::slice::from_ref(&join), &context, 1_100).expect("root");
+        let delegation = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_200,
+            "MSG_POST",
+            vec![root.event_id.clone()],
+            json!({
+                "text": "delegated work",
+                "thread_root_event_id": root.event_id,
+                "in_reply_to_event_id": root.event_id,
+            }),
+        )
+        .expect("delegation");
+        accept_event(&delegation, &[join.clone(), root.clone()], &context, 1_200)
+            .expect("flat reply");
+        let ambiguous_reply = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_250,
+            "MSG_POST",
+            vec![root.event_id.clone()],
+            json!({"text": "ambiguous", "thread_root_event_id": root.event_id}),
+        )
+        .expect("ambiguous reply");
+        assert!(matches!(
+            accept_event(
+                &ambiguous_reply,
+                &[join.clone(), root.clone(), delegation.clone()],
+                &context,
+                1_250,
+            ),
+            Err(AcceptError::Invalid(message)) if message.contains("must name an in-reply-to")
+        ));
+        let result = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_300,
+            "MSG_POST",
+            vec![delegation.event_id.clone()],
+            json!({
+                "text": "delegated result",
+                "thread_root_event_id": root.event_id,
+                "in_reply_to_event_id": delegation.event_id,
+            }),
+        )
+        .expect("result");
+        let admitted = vec![join.clone(), root.clone(), delegation.clone()];
+        accept_event(&result, &admitted, &context, 1_300).expect("direct nested reply");
+        let acknowledgement = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_400,
+            "MSG_ACK",
+            vec![result.event_id.clone()],
+            json!({
+                "target_event_id": delegation.event_id,
+                "state": "handled",
+                "result_event_id": result.event_id,
+            }),
+        )
+        .expect("acknowledgement");
+        let mut with_result = admitted;
+        with_result.push(result.clone());
+        accept_event(&acknowledgement, &with_result, &context, 1_400)
+            .expect("result binds exact direct target");
+
+        let missing_parent = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_500,
+            "MSG_POST",
+            vec![root.event_id.clone()],
+            json!({
+                "text": "missing causal edge",
+                "thread_root_event_id": root.event_id,
+                "in_reply_to_event_id": delegation.event_id,
+            }),
+        )
+        .expect("missing-parent reply");
+        assert!(matches!(
+            accept_event(&missing_parent, &with_result, &context, 1_500),
+            Err(AcceptError::Invalid(message)) if message.contains("causal parent")
+        ));
+
+        let other_root = message(&identity, 1_600, vec![result.event_id.clone()]);
+        accept_event(&other_root, &with_result, &context, 1_600).expect("other root");
+        let cross_thread = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_700,
+            "MSG_POST",
+            vec![other_root.event_id.clone()],
+            json!({
+                "text": "cross-thread reply",
+                "thread_root_event_id": root.event_id,
+                "in_reply_to_event_id": other_root.event_id,
+            }),
+        )
+        .expect("cross-thread reply");
+        let mut with_other_root = with_result;
+        with_other_root.push(other_root);
+        assert!(matches!(
+            accept_event(&cross_thread, &with_other_root, &context, 1_700),
+            Err(AcceptError::Invalid(message)) if message.contains("same flat thread")
+        ));
     }
 
     #[test]

@@ -884,6 +884,36 @@ and non-mutation. A source-blind Alpha/Beta rehearsal then proved that a
 foreign origin could not open or page the same consumer, consume its final
 token, or release it; the owner's original token remained valid and ownership
 plus committed progress survived sidecar restart and bearer rotation.
+
+Ordinary signed message posts may carry a bounded set of device-certified
+origin-session IDs as delivery hints. These hints remain message content: they
+are forgeable or omissible by an authorized sender, non-confidential in public
+rooms, and grant no membership, visibility, private key, assignment,
+obligation, presence, observation, handling, correctness, or task authority.
+Full resident feeds remain complete. Only a page authenticated as its owning
+origin derives `addressed_to_owner`; this local comparison is not accepted from
+JSON and does not become a replicated delivery receipt. Private-room hints are
+encrypted solely inside the semantic message and omitted from the outer
+ciphertext carrier. A source-blind multi-resident delegation exercise showed
+the original gap: an ordinary message could not identify the intended sibling
+origin without prose. The implemented hint now gives every consumer the same
+ordinary message while only the matching owner derives prioritization. Public
+and private synchronization, excluded-peer confidentiality, malformed and
+unknown IDs, retry conflicts, full-feed preservation, and disconnect/reconcile
+behavior have source-blind evidence. Restart recovery remains under active
+investigation after a full addressed flow reproduced a first-command stall.
+
+Flat threads carry a separate exact `in_reply_to_event_id`. The thread root
+continues to group one human-readable conversation, while the exact reply
+target lets a handled result bind to a directed reply without overclaiming the
+broader root. The first source-naive delegation rehearsal exposed this missing
+relationship; rebuilt end-to-end evidence remains pending.
+
+A separate source-blind restart probe found that offline
+`space.invite.create` reported `internal_error` even though its detail required
+going online. It now reports `needs_service_online` and identifies
+`runtime.goOnline`; a rebuilt source-blind retest passed.
+
 Episodic agent actions no longer require repository-source inspection to learn
 their payload shape. The same Rust-projected `UiCommand` records used by the
 WebView now name each shell command's request DTO, while empty-payload and

@@ -39,6 +39,7 @@ const uiState = {
   continuationRequestIds: new Map(),
   messageMentionsDraft: new Set(),
   replyTargetEventId: "",
+  replyThreadRootEventId: "",
   replyPreview: null,
   editingMessageId: "",
   messageEditDraft: "",
@@ -3021,6 +3022,7 @@ function roomTimelineView(snapshot) {
     element("p", "summary", channel?.topic || "Messages retained and synchronized by space members."),
   );
   const messages = snapshot.home?.room.messages ?? [];
+  const originSessionDirectory = originSessionLabels(messages);
   const messageContexts = messages.map((message) => ({
     event_id: message.event_id,
     display_context: messageContextLabel(
@@ -3073,6 +3075,13 @@ function roomTimelineView(snapshot) {
     if (message.pinned) annotations.append(element("small", "muted", "pinned"));
     if (message.thread_root_event_id !== null) annotations.append(element("small", "muted", "thread reply"));
     if (message.reply_count > 0) annotations.append(element("small", "muted", `${message.reply_count} repl${message.reply_count === 1 ? "y" : "ies"}`));
+    for (const sessionId of message.addressed_origin_session_ids ?? []) {
+      annotations.append(element(
+        "small",
+        "muted",
+        `Directed to ${directedToLabel(sessionId, originSessionDirectory)}`,
+      ));
+    }
     for (const acknowledgement of message.acknowledgements ?? []) {
       const acknowledgingProfile = profileForPeer(snapshot, acknowledgement.peer_id);
       const acknowledgementVia = assertionOriginsLabel(acknowledgement.assertions ?? []);
@@ -3297,6 +3306,37 @@ function factOriginViaLabel(origin) {
   }
 }
 
+function originSessionLabels(messages) {
+  const labels = new Map();
+  const visit = (origin) => {
+    if (!origin?.session_id) return;
+    const label = factOriginViaLabel(origin);
+    if (!labels.has(origin.session_id)) labels.set(origin.session_id, new Set());
+    if (label !== "") labels.get(origin.session_id).add(label);
+  };
+  for (const message of messages) {
+    visit(message.origin);
+    for (const acknowledgement of message.acknowledgements ?? []) {
+      for (const assertion of acknowledgement.assertions ?? []) visit(assertion.origin);
+    }
+    for (const continuation of message.continuations ?? []) {
+      for (const head of continuation.heads ?? []) visit(head.origin);
+    }
+  }
+  return labels;
+}
+
+function directedToLabel(sessionId, sessionDirectory) {
+  const shortId = sessionId.startsWith("os:") ? sessionId.slice(3, 11) : sessionId.slice(0, 8);
+  const ownLabels = [...(sessionDirectory.get(sessionId) ?? [])];
+  if (ownLabels.length !== 1) return `session ${shortId}`;
+  const label = ownLabels[0];
+  const duplicate = [...sessionDirectory.entries()].some(([otherId, labels]) => (
+    otherId !== sessionId && labels.has(label)
+  ));
+  return duplicate ? `${label} · ${shortId}` : label;
+}
+
 function assertionOriginsLabel(assertions) {
   const labels = [...new Set(assertions
     .map((assertion) => factOriginViaLabel(assertion.origin))
@@ -3436,7 +3476,8 @@ function cancelMessageEdit() {
 }
 
 function beginReply(message, authorName) {
-  uiState.replyTargetEventId = message.thread_root_event_id ?? message.event_id;
+  uiState.replyTargetEventId = message.event_id;
+  uiState.replyThreadRootEventId = message.thread_root_event_id ?? message.event_id;
   uiState.replyPreview = {
     authorName,
     text: message.text || message.attachments?.[0]?.filename || "Shared file",
@@ -3447,6 +3488,7 @@ function beginReply(message, authorName) {
 
 function cancelReply() {
   uiState.replyTargetEventId = "";
+  uiState.replyThreadRootEventId = "";
   uiState.replyPreview = null;
   render();
   window.requestAnimationFrame(() => app.querySelector(".message-input")?.focus());
@@ -4314,13 +4356,16 @@ async function runCommand(command, payload) {
               currentSnapshot.home?.profiles ?? [],
               uiState.messageMentionsDraft,
             ),
-          thread_root_event_id: payload?.thread_root_event_id ?? blankToNull(uiState.replyTargetEventId),
+          addressed_origin_session_ids: payload?.addressed_origin_session_ids ?? [],
+          thread_root_event_id: payload?.thread_root_event_id ?? blankToNull(uiState.replyThreadRootEventId),
+          in_reply_to_event_id: payload?.in_reply_to_event_id ?? blankToNull(uiState.replyTargetEventId),
           client_request_id: clientRequestId,
         });
         uiState.messageDraft = "";
         uiState.messageClientRequestId = "";
         uiState.messageMentionsDraft.clear();
         uiState.replyTargetEventId = "";
+        uiState.replyThreadRootEventId = "";
         uiState.replyPreview = null;
         return;
       }

@@ -21,6 +21,12 @@ Voxelle is ready for a credible beta when people and agents can install or attac
 - **Invariant:** Each resident resumes its own unobserved actionable conversation changes after disconnect or restart without human or sibling-resident activity advancing that progress; this local checkpoint must remain distinct from human read state, signed acknowledgement, handling, and protocol authority.
   **Evidence:** A source-blind resident disconnected after explicitly reading root A; sibling activity added a reply, handled result, and two roots, then advanced the shared home read cursor to the newest root. Reconnect retained every fact but reported unread zero, forcing either an unbounded rescan or dropped work. The implemented correction durably binds each consumer, page session, and commit token to `owner_origin_id` derived from authenticated origin context—not JSON—and requires that origin for open/page/commit/release. A source-blind Alpha/Beta rehearsal proved foreign page/open/commit/release attempts were unavailable and non-mutating, Alpha's token remained valid, and ownership/cursor isolation survived restart.
 
+- **Invariant:** An ordinary message may carry bounded signed origin-session routing hints without changing full-feed delivery or creating assignment, obligation, presence, visibility, membership, handling, or task authority. Only an owner-authenticated observation page derives `addressed_to_owner`; private hints remain inside the encrypted semantic event.
+  **Evidence gap:** A source-blind sibling-resident delegation attempt could not structurally identify the intended local origin, leaving both feeds identical and requiring prose inference. Implementation tests and fresh public/private, spoof, restart, and full-feed source-blind evidence are pending.
+
+- **Expected:** Offline invite creation identifies the recoverable runtime prerequisite.
+  **Observed:** A source-blind restart probe returned `internal_error` with detail “go online before creating a space invite.” The classifier should return `needs_service_online` and direct `runtime.goOnline`; rebuilt-surface confirmation is pending.
+
 - **Invariant:** Coordination state distinguishes a fact being accepted, propagated, observed, answered, or abandoned; silence and disconnection must not masquerade as successful continuation.
   **Evidence:** User-specified agent coordination outcome; current independent black-box experiments are evaluating the required embodiment.
 
@@ -38,10 +44,13 @@ Voxelle is ready for a credible beta when people and agents can install or attac
 
 ## Prediction errors
 
+- **Expected:** An origin-addressed reply gives a resident enough structure to return and bind a readable result to the exact delegated exchange.
+  **Observed:** The first source-naive rehearsal could identify Alpha's reply as addressed to Beta, but the old single `thread_root_event_id` field forced Beta to choose between an unrepresentable nested reply and overclaiming the broader human root. The correction preserves the flat thread root while adding an exact causal `in_reply_to_event_id`; handled results bind to that exact target.
+  **Evidence:** A rebuilt source-naive Human-to-Alpha-to-Beta rehearsal survived a hard pre-commit crash, reopened both origin and consumer, returned Beta's ordinary result under the human root while directly answering Alpha, bound handled to Alpha's exact delegation, projected the readable chain to the human surface, and drained Beta's durable cursor to empty.
+
 - **Expected:** Two cleanly stopped online peers can restart together and immediately serve local coordination snapshots.
-  **Observed:** One source-blind provenance rehearsal against the 16:39 binary left both first snapshot requests hung and required process termination. The freshly rebuilt 16:42 binary did not reproduce it across isolated offline, isolated previously-online, simultaneous two-peer restart, or the complete two-session provenance/restart flow; requests completed in roughly 0.18–0.23 seconds.
-  **Uncertain:** Whether the original hang was a transient harness/process condition or a low-frequency runtime deadlock. It is not claimed fixed without a causal explanation; future restart soak evidence should watch for recurrence.
-  **Evidence:** Source-blind staged restart isolation and repeated full provenance rehearsal on disposable two-home processes.
+  **Observed:** A second full addressed-flow rehearsal reproduced the hang: `resident.origin.open` held the global command gate while obtaining the device ID through a full restarted-home snapshot. Origin authentication now reads the identity vault directly and no longer drains service events or projects the home while holding that gate.
+  **Evidence:** A deterministic restart handler regression plus a rebuilt source-blind full addressed flow: origin reopens completed in 5--12 ms, coordination in 186 ms, consumer reopen in 9 ms, and the persisted empty cursor page in 75 ms.
 
 - **Expected:** A resident can checkpoint its own processing independently of other surfaces sharing the same home.
   **Observed:** Durable consumer-scoped changed-thread pages now survive process restart, remain independent of sibling consumers and human read/selection/open activity, bind final commits to the exact served high water and room set, and emit no global wake. Three source-blind runs found no consequential failure.

@@ -224,6 +224,11 @@ A sibling may also copy a resident observation consumer ID, page cursor, high
 water, or commit token to suppress or advance another resident's work, or may
 place a forged `owner_origin_id` in JSON hoping it overrides authenticated
 transport context.
+An authorized sender may guess, scrape, replay, flood, or falsely name
+`addressed_origin_session_ids`, correlate a stable public-room session hint,
+or try to make a recipient treat routing as assignment or proof of delivery.
+An excluded private-room retainer may inspect the outer envelope for hint
+metadata if encryption placement regresses.
 The authorized device itself can fabricate any origin it certifies. A process
 that can read or replace `.voxelle-inhabitant-origins.json` may learn labels,
 IDs, client-instance names, and stored secret hashes, corrupt availability, or
@@ -245,6 +250,14 @@ prevent cooperative sibling interference but do not survive theft of the
 owning origin secret. Origin labels are presentation claims, not verified
 identities. A source-blind two-origin restart rehearsal verified collision,
 copied-token, page, and release isolation without mutating the owner's cursor.
+
+Addressed-origin hints are bounded signed content only. Owner-authenticated
+observation pages compare them locally to derive `addressed_to_owner`, while
+full accessible feeds remain unfiltered. UI and agents must not turn the hint
+into obligation, presence, membership, decryption rights, observation, or a
+receipt. Public-room correlation is an explicit limitation; private-room hints
+must remain inside the encrypted semantic event. Spoof, omission, cardinality,
+private-carrier, and full-feed tests are required before beta use.
 
 **Review focus.** Loopback is a reachability restriction, not an authorization credential. Non-loopback binding should require an explicit security mode with authentication, origin protections, TLS as appropriate, and clear warnings; otherwise it should be refused. Discovery files should not contain secrets and should have safe permissions. Request/body/concurrency limits and cancellation must be explicit. Snapshot-before-action is a consistency aid, not authorization; high-impact commands need attribution and may need optimistic state/version checks.
 

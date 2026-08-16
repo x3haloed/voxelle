@@ -4,7 +4,7 @@ export type PeerEndpoint = { v: number, addr: string, peer_id: string, device_id
 
 export type ProfileSummary = { home: string, peer_id: string, device_id: string, default_room: string, authority_peer_id: string, };
 
-export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, origin: FactOriginView, client_request_id: string | null, text: string, edited_ms: number | null, redacted: boolean, mentions: Array<string>, thread_root_event_id: string | null, reply_count: number, pinned: boolean, reactions: Array<ReactionView>, acknowledgements: Array<MessageAcknowledgementView>, continuations: Array<MessageContinuationView>, participant_actionability: Array<MessageParticipantActionabilityView>, attachments: Array<AttachmentView>, };
+export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, origin: FactOriginView, client_request_id: string | null, text: string, edited_ms: number | null, redacted: boolean, mentions: Array<string>, addressed_origin_session_ids: Array<string>, thread_root_event_id: string | null, in_reply_to_event_id: string | null, reply_count: number, pinned: boolean, reactions: Array<ReactionView>, acknowledgements: Array<MessageAcknowledgementView>, continuations: Array<MessageContinuationView>, participant_actionability: Array<MessageParticipantActionabilityView>, attachments: Array<AttachmentView>, };
 
 export type MessageAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_conflict: boolean, acknowledged_ms: number, assertions: Array<MessageAcknowledgementAssertionView>, };
 
@@ -48,7 +48,7 @@ export type CommitResidentObservationRequest = { consumer_id: string, fact_high_
 
 export type ResidentObservationConsumerView = { consumer_id: string, start: ResidentObservationStartView, start_fact_sequence: number, created_ms: number, updated_ms: number, };
 
-export type ResidentChangedThreadView = { room_id: string, room_name: string, room_visibility: string, last_fact_sequence: number, root: MessageView, replies: Array<MessageView>, };
+export type ResidentChangedThreadView = { room_id: string, room_name: string, room_visibility: string, last_fact_sequence: number, root: MessageView, replies: Array<MessageView>, addressed_to_owner: boolean, addressed_event_ids: Array<string>, };
 
 export type ResidentChangedThreadsPageView = { consumer_id: string, fact_high_water: number, room_ids: Array<string>, items: Array<ResidentChangedThreadView>, has_more: boolean, next_after_fact_sequence: number | null, commit_token: string | null, };
 
@@ -118,7 +118,7 @@ export type InitHomeRequest = { default_room: string | null, };
 
 export type StartServiceRequest = { bind: string | null, advertise: string | null, };
 
-export type SendMessageRequest = { text: string, room: string | null, mentions: Array<string>, thread_root_event_id: string | null, client_request_id: string | null, };
+export type SendMessageRequest = { text: string, room: string | null, mentions: Array<string>, addressed_origin_session_ids: Array<string>, thread_root_event_id: string | null, in_reply_to_event_id: string | null, client_request_id: string | null, };
 
 export type AcknowledgeMessageRequest = { target_event_id: string, room: string | null, state: MessageAcknowledgementState, result_event_id: string | null, };
 

@@ -338,6 +338,23 @@ high water and exact next sequence while `has_more` is true. Roots and their
 ordinary replies span the exact accessible room set captured by the first
 page. The final page alone returns a one-use commit token.
 
+An ordinary `message.send` may include up to 16 unique, canonical
+`addressed_origin_session_ids`. They are signed routing hints, not confidential
+or authoritative claims. They grant no membership, visibility, assignment,
+obligation, presence, observation, or handling. Full observation feeds remain
+unchanged: every accessible changed thread is returned regardless of its hint.
+Only a page authenticated as the consumer's owner derives the factual boolean
+`addressed_to_owner`; callers cannot submit that value in JSON, and general
+message/frontier projections do not infer delivery from it. Private-room hints
+remain inside the encrypted inner message and are absent from the outer carrier.
+
+Ordinary replies preserve both levels needed for mixed-surface coordination:
+`thread_root_event_id` keeps one readable flat conversation, while
+`in_reply_to_event_id` identifies the exact message being answered. A handled
+result binds only when its ordinary result message directly answers the
+acknowledged target. This lets a resident return a readable result for a
+directed reply without claiming that it handled the broader thread root.
+
 Every observation consumer has an `owner_origin_id` derived exclusively from
 the authenticated `OriginContext` supplied beside the command. It is never
 accepted from JSON. The same authenticated origin must perform open, page,
@@ -423,6 +440,12 @@ Errors should classify the recovery path:
 - `needs_input`
 - `needs_human`
 - `internal_error`
+
+An offline `space.invite.create` prerequisite is `needs_service_online`, with
+`runtime.goOnline` as recovery, not `internal_error` or an unchanged retry. A
+source-blind restart probe exposed that earlier misclassification; the
+classifier correction requires a fresh built-surface retest before it counts as
+operational evidence.
 
 The serialized `ShellError` owns that classification together with its human
 message, recovery instruction, and technical detail. HTTP action results may

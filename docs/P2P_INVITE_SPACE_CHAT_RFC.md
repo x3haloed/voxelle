@@ -465,9 +465,27 @@ Unless specified, unknown fields in `body` **MUST** be ignored.
 - `text` (string): UTF-8 text
 - `attachments` (array, optional): implementation-defined descriptors (hashes, sizes, mime)
 - `mentions` (array, optional): stable member principal IDs
-- `thread_root_event_id` (string, optional): admitted message this reply is threaded to
+- `addressed_origin_session_ids` (array, optional): zero to 16 unique,
+  lexicographically sorted device-certified origin-session IDs used only as
+  recipient-side routing hints
+- `thread_root_event_id` (string, optional): root of the admitted flat thread
+- `in_reply_to_event_id` (string, required when `thread_root_event_id` is
+  present): exact admitted message answered by this post; it MUST be the root or another message sharing
+  `thread_root_event_id`, and MUST be included in the new event's causal parents
 - `client_request_id` (string, optional): 8--128 non-whitespace caller retry identity,
   scoped to author principal, device, room, and semantic payload
+
+`addressed_origin_session_ids` is signed ordinary message content, not an
+authorization or delivery mechanism. It grants no membership, room visibility,
+decryption, assignment, obligation, presence, handling, or correctness and is
+not confidential in a public room. A sender may copy, guess, omit, or falsely
+name a session ID. Only a local observation page authenticated as an origin
+session may derive `addressed_to_owner` by comparing its owner ID with this
+field; generic projections MUST NOT claim who received, observed, or accepted
+the message. Resident feeds remain complete and MUST NOT filter out messages
+that omit or address other sessions. In a private room the field exists only
+inside the encrypted semantic event and MUST be absent from the outer
+`ROOM_ENCRYPTED` carrier.
 
 `MSG_EDIT` body:
 - `target_event_id` (string): event being edited
@@ -482,7 +500,8 @@ Unless specified, unknown fields in `body` **MUST** be ignored.
 - `state` (string): `observed` | `handled`
 - `result_event_id` (string, optional): only with `handled`; MUST identify the
   asserting principal's visible admitted `MSG_POST` in the same room whose
-  `thread_root_event_id` is the target
+  `in_reply_to_event_id` is the target. The result and target may remain in one
+  flat thread; nested thread projection is not implied.
 
 Acknowledgements are participant assertions, not correctness proofs. Handled
 state is monotonic in projection. Concurrent handled results from separately
