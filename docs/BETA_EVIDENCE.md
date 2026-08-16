@@ -28,6 +28,10 @@ worktree and runs workspace formatting, strict all-target Clippy, the complete
 Rust and frontend suites, and the current RustSec advisory scan. Assembly calls
 this preflight itself and fails if `cargo-audit` or Node.js is unavailable; a
 missing scanner is not treated as a clean dependency result.
+The audit also denies soundness advisories. Its sole checked-in exception is
+the unpatched GTK3/GLib iterator advisory in Tauri's Linux-only backend; Linux
+is outside the beta platform envelope, and the exception remains named in
+`.cargo/audit.toml` so any new soundness warning still fails assembly.
 
 ## 1. Create the release-bound template
 

@@ -23,6 +23,6 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 node --test web/src/*.test.mjs
-cargo audit
+cargo audit --deny unsound
 
 printf 'Verified beta source commit %s\n' "$(git rev-parse HEAD)"
