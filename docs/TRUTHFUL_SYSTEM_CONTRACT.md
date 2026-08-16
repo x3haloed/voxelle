@@ -1371,10 +1371,19 @@ carry named product meaning:
   parallel representation before it removes one.
 
 Those are bounded revision or evidence questions, not unfinished local
-collapses. Workspace-wide formatting and lint are not claimed as green because
-the separate provenance-board crates have existing rustfmt drift and two new
-`manual_contains` warnings under Rust 1.96; the changed Voxelle authority crates
-are formatted and strict-lint clean. Windows first launch, non-loopback field
+collapses. Workspace-wide formatting and strict lint are green under Rust 1.96.
+The lint gate exposed positional event, message, and resident-page constructors
+that had grown past the warning-free interface bound as coordination metadata
+expanded; those boundaries now use named request records, and the complete
+workspace regression suite passes after the refactor. A current RustSec scan
+also exposed two high-severity `quick-xml` denial-of-service advisories plus
+patched `anyhow` and `rand` soundness warnings in the locked graph. Updating
+`plist`, `anyhow`, and `rand` removed every reported vulnerability and those two
+soundness warnings. Remaining audit warnings are inherited unmaintained Linux
+GTK3 dependencies, an affected Linux GLib iterator API, and yanked WebAssembly
+packages; Linux and browser protocol participation are outside the beta target
+envelope, but these warnings remain dependency-maintenance evidence rather than
+being described as a clean all-target advisory graph. Windows first launch, non-loopback field
 reachability, actual assistive-technology operation, and physical media devices
 remain the external gates already named in the evidence horizon, not locally
 completed claims. The release-bound beta receipt now requires those human
