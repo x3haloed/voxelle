@@ -2493,6 +2493,16 @@ mod tests {
             .unwrap_or_else(|error| panic!("read {}: {error}", contract_path.display()));
 
         assert_eq!(checked_in, shell_contract_typescript());
+        for required in [
+            "export type ResidentOwnerAttentionView =",
+            "export type ResidentOwnerAttentionState =",
+            "export type ResidentOwnerAttentionReason =",
+        ] {
+            assert!(
+                checked_in.contains(required),
+                "missing nested contract {required}"
+            );
+        }
     }
 
     #[test]

@@ -364,6 +364,19 @@ In-process page sessions and final commit tokens are also owner-bound, so a
 sibling origin cannot supersede paging or advance progress by copying a
 consumer ID or token.
 
+Each changed thread also derives `owner_attention` for that authenticated
+owner without creating another admitted fact or authority. A newly addressed
+message is `unreviewed`: review is requested, but work is not assigned or
+accepted. Only a continuing assertion submitted through that certified origin
+makes `work_actionable` true. Owner-origin observed, released, declined, and
+handled facts remain literal non-actionable dispositions; a later direct reply
+from another origin reopens review only when it explicitly addresses this
+owner. Principal `participant_actionability` remains a separate replicated
+projection and is never replaced by this local routing view. Historical
+terminal attention disappears behind this consumer's committed cursor, while
+continuing or overdue attention remains visible and supplies its next
+projection deadline even without a new admitted fact.
+
 `fact_high_water` and each thread's `last_fact_sequence` are durable,
 home-local first-admission ordinals. They are not SSE `current_sequence`, event
 order, wall-clock order, channel read state, acknowledgement, or protocol

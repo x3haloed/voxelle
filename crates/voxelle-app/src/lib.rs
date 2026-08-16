@@ -336,6 +336,42 @@ pub struct ResidentChangedThreadView {
     pub replies: Vec<MessageView>,
     pub addressed_to_owner: bool,
     pub addressed_event_ids: Vec<String>,
+    pub owner_attention: Vec<ResidentOwnerAttentionView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentOwnerAttentionView {
+    pub target_event_id: String,
+    pub state: ResidentOwnerAttentionState,
+    pub review_required: bool,
+    pub work_actionable: bool,
+    pub reasons: Vec<ResidentOwnerAttentionReason>,
+    pub basis_event_ids: Vec<String>,
+    pub result_event_ids: Vec<String>,
+    pub uncovered_reply_event_ids: Vec<String>,
+    #[ts(type = "number | null")]
+    pub next_projection_change_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidentOwnerAttentionState {
+    Unreviewed,
+    Observed,
+    Continuing,
+    Overdue,
+    Released,
+    Declined,
+    Handled,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidentOwnerAttentionReason {
+    AddressedUnreviewed,
+    Continuing,
+    AddressedReplyNotCovered,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -936,6 +972,9 @@ pub fn shell_contract_typescript() -> String {
         CommitResidentObservationRequest::decl(&cfg),
         ResidentObservationConsumerView::decl(&cfg),
         ResidentChangedThreadView::decl(&cfg),
+        ResidentOwnerAttentionView::decl(&cfg),
+        ResidentOwnerAttentionState::decl(&cfg),
+        ResidentOwnerAttentionReason::decl(&cfg),
         ResidentChangedThreadsPageView::decl(&cfg),
         ResidentObservationCommitView::decl(&cfg),
         ReactionView::decl(&cfg),
@@ -2911,11 +2950,17 @@ impl VoxelleHome {
             let projected_messages = project_messages(events, projection_ms);
             let latest_reply_by_root: BTreeMap<String, i64> = projected_messages
                 .iter()
-                .filter_map(|message| {
-                    message
-                        .thread_root_event_id
-                        .as_ref()
-                        .map(|root| (root.clone(), message.created_ms))
+                .flat_map(|message| {
+                    let mut targets = Vec::new();
+                    if let Some(root) = &message.thread_root_event_id {
+                        targets.push((root.clone(), message.created_ms));
+                    }
+                    if let Some(direct_parent) = &message.in_reply_to_event_id {
+                        if message.thread_root_event_id.as_ref() != Some(direct_parent) {
+                            targets.push((direct_parent.clone(), message.created_ms));
+                        }
+                    }
+                    targets
                 })
                 .fold(BTreeMap::new(), |mut latest, (root, created_ms)| {
                     latest
@@ -4734,6 +4779,16 @@ fn project_resident_changed_threads(
         .cloned()
         .map(|message| (message.event_id.clone(), message))
         .collect();
+    let post_sequence_by_id = events
+        .iter()
+        .filter(|sequenced| sequenced.event.kind == "MSG_POST")
+        .map(|sequenced| {
+            (
+                sequenced.event.event_id.clone(),
+                sequenced.local_fact_sequence,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let root_for_message: BTreeMap<String, String> = messages
         .iter()
         .map(|message| {
@@ -4783,7 +4838,6 @@ fn project_resident_changed_threads(
     }
     last_fact_by_root
         .into_iter()
-        .filter(|(_, sequence)| *sequence > committed_fact_sequence)
         .filter_map(|(root_event_id, last_fact_sequence)| {
             let root = by_id.get(&root_event_id)?.clone();
             let mut replies = replies_by_root.remove(&root_event_id).unwrap_or_default();
@@ -4795,16 +4849,30 @@ fn project_resident_changed_threads(
             let mut addressed_event_ids = std::iter::once(&root)
                 .chain(replies.iter())
                 .filter(|message| {
-                    message
-                        .addressed_origin_session_ids
-                        .iter()
-                        .any(|session_id| session_id == owner_origin_id)
+                    post_sequence_by_id
+                        .get(&message.event_id)
+                        .is_some_and(|sequence| *sequence > committed_fact_sequence)
+                        && message
+                            .addressed_origin_session_ids
+                            .iter()
+                            .any(|session_id| session_id == owner_origin_id)
                 })
                 .map(|message| message.event_id.clone())
                 .take(16)
                 .collect::<Vec<_>>();
             addressed_event_ids.sort();
             let addressed_to_owner = !addressed_event_ids.is_empty();
+            let owner_attention = project_resident_owner_attention(
+                &events,
+                &root,
+                &replies,
+                owner_origin_id,
+                committed_fact_sequence,
+                projection_ms,
+            );
+            if last_fact_sequence <= committed_fact_sequence && owner_attention.is_empty() {
+                return None;
+            }
             Some(ResidentChangedThreadView {
                 room_id: channel.room_id.clone(),
                 room_name: channel.name.clone(),
@@ -4814,9 +4882,183 @@ fn project_resident_changed_threads(
                 replies,
                 addressed_to_owner,
                 addressed_event_ids,
+                owner_attention,
             })
         })
         .collect()
+}
+
+fn project_resident_owner_attention(
+    sequenced_events: &[SequencedEvent],
+    root: &MessageView,
+    replies: &[MessageView],
+    owner_origin_id: &str,
+    committed_fact_sequence: u64,
+    projection_ms: i64,
+) -> Vec<ResidentOwnerAttentionView> {
+    let events = sequenced_events
+        .iter()
+        .map(|sequenced| &sequenced.event)
+        .collect::<Vec<_>>();
+    let by_id = events
+        .iter()
+        .map(|event| (event.event_id.clone(), *event))
+        .collect::<BTreeMap<_, _>>();
+    let sequence_by_id = sequenced_events
+        .iter()
+        .map(|sequenced| {
+            (
+                sequenced.event.event_id.clone(),
+                sequenced.local_fact_sequence,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let messages = std::iter::once(root).chain(replies.iter());
+    let mut attention = Vec::new();
+
+    for target in messages {
+        let initially_addressed = target
+            .addressed_origin_session_ids
+            .iter()
+            .any(|session_id| session_id == owner_origin_id);
+        let owner_dispositions = events
+            .iter()
+            .copied()
+            .filter(|event| {
+                matches!(event.kind.as_str(), "MSG_ACK" | "MSG_CONTINUATION")
+                    && string_event_body(event, "target_event_id") == target.event_id
+                    && event
+                        .origin
+                        .as_ref()
+                        .is_some_and(|origin| origin.session_cert.session_id == owner_origin_id)
+            })
+            .collect::<Vec<_>>();
+        if !initially_addressed && owner_dispositions.is_empty() {
+            continue;
+        }
+        let disposition_heads = causal_maxima(owner_dispositions.clone(), &by_id);
+        let mut uncovered_reply_event_ids = events
+            .iter()
+            .copied()
+            .filter(|reply| {
+                reply.kind == "MSG_POST"
+                    && string_event_body(reply, "in_reply_to_event_id") == target.event_id
+                    && reply
+                        .body
+                        .get("addressed_origin_session_ids")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|ids| {
+                            ids.iter().any(|id| id.as_str() == Some(owner_origin_id))
+                        })
+                    && reply
+                        .origin
+                        .as_ref()
+                        .is_none_or(|origin| origin.session_cert.session_id != owner_origin_id)
+                    && !disposition_heads
+                        .iter()
+                        .all(|head| event_is_ancestor(&reply.event_id, head, &by_id))
+            })
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>();
+        uncovered_reply_event_ids.sort();
+        uncovered_reply_event_ids.dedup();
+
+        let mut basis_event_ids = disposition_heads
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>();
+        if initially_addressed {
+            basis_event_ids.push(target.event_id.clone());
+        }
+        basis_event_ids.extend(uncovered_reply_event_ids.iter().cloned());
+        basis_event_ids.sort();
+        basis_event_ids.dedup();
+        let mut result_event_ids = disposition_heads
+            .iter()
+            .filter(|event| event.kind == "MSG_ACK")
+            .filter_map(|event| {
+                event
+                    .body
+                    .get("result_event_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<Vec<_>>();
+        result_event_ids.sort();
+        result_event_ids.dedup();
+
+        let (state, next_projection_change_ms) = if disposition_heads.len() > 1 {
+            (ResidentOwnerAttentionState::Conflict, None)
+        } else if let Some(head) = disposition_heads.first() {
+            match head.kind.as_str() {
+                "MSG_ACK" => match string_event_body(head, "state").as_str() {
+                    "handled" => (ResidentOwnerAttentionState::Handled, None),
+                    _ => (ResidentOwnerAttentionState::Observed, None),
+                },
+                _ => match string_event_body(head, "state").as_str() {
+                    "continuing" => {
+                        let expiry = head
+                            .body
+                            .get("lease_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|lease| i64::try_from(lease).ok())
+                            .and_then(|lease| head.created_ms.checked_add(lease));
+                        if expiry.is_some_and(|expiry| projection_ms < expiry) {
+                            (ResidentOwnerAttentionState::Continuing, expiry)
+                        } else {
+                            (ResidentOwnerAttentionState::Overdue, None)
+                        }
+                    }
+                    "released" => (ResidentOwnerAttentionState::Released, None),
+                    _ => (ResidentOwnerAttentionState::Declined, None),
+                },
+            }
+        } else {
+            (ResidentOwnerAttentionState::Unreviewed, None)
+        };
+        let changed_after_cursor = basis_event_ids.iter().any(|event_id| {
+            sequence_by_id
+                .get(event_id)
+                .is_some_and(|sequence| *sequence > committed_fact_sequence)
+        });
+        if !changed_after_cursor
+            && !matches!(
+                state,
+                ResidentOwnerAttentionState::Continuing | ResidentOwnerAttentionState::Overdue
+            )
+        {
+            continue;
+        }
+        let mut reasons = Vec::new();
+        if state == ResidentOwnerAttentionState::Unreviewed && initially_addressed {
+            reasons.push(ResidentOwnerAttentionReason::AddressedUnreviewed);
+        }
+        if state == ResidentOwnerAttentionState::Continuing {
+            reasons.push(ResidentOwnerAttentionReason::Continuing);
+        }
+        if !uncovered_reply_event_ids.is_empty() && !disposition_heads.is_empty() {
+            reasons.push(ResidentOwnerAttentionReason::AddressedReplyNotCovered);
+        }
+        attention.push(ResidentOwnerAttentionView {
+            target_event_id: target.event_id.clone(),
+            state,
+            review_required: reasons.iter().any(|reason| {
+                matches!(
+                    reason,
+                    ResidentOwnerAttentionReason::AddressedUnreviewed
+                        | ResidentOwnerAttentionReason::AddressedReplyNotCovered
+                )
+            }),
+            work_actionable: reasons.contains(&ResidentOwnerAttentionReason::Continuing),
+            reasons,
+            basis_event_ids,
+            result_event_ids,
+            uncovered_reply_event_ids,
+            next_projection_change_ms,
+        });
+    }
+    attention.sort_by(|left, right| left.target_event_id.cmp(&right.target_event_id));
+    attention
 }
 
 fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<MessageView> {
@@ -5059,12 +5301,23 @@ fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<Message
             _ => {}
         }
     }
-    let roots: Vec<String> = messages
+    let reply_targets: Vec<String> = messages
         .values()
-        .filter_map(|message| message.thread_root_event_id.clone())
+        .flat_map(|message| {
+            let mut targets = Vec::new();
+            if let Some(root) = &message.thread_root_event_id {
+                targets.push(root.clone());
+            }
+            if let Some(direct_parent) = &message.in_reply_to_event_id {
+                if message.thread_root_event_id.as_ref() != Some(direct_parent) {
+                    targets.push(direct_parent.clone());
+                }
+            }
+            targets
+        })
         .collect();
-    for root in roots {
-        if let Some(message) = messages.get_mut(&root) {
+    for target in reply_targets {
+        if let Some(message) = messages.get_mut(&target) {
             message.reply_count += 1;
         }
     }
@@ -5386,6 +5639,7 @@ fn uncovered_reply_event_ids(
             reply.kind == "MSG_POST"
                 && string_event_body(reply, "in_reply_to_event_id") == target_event_id
                 && !bound_result_ids.contains(&reply.event_id)
+                && !is_own_causally_later_explanation(reply, peer_id, disposition_heads, by_id)
                 && !disposition_heads
                     .iter()
                     .all(|head| event_is_ancestor(&reply.event_id, head, by_id))
@@ -5395,6 +5649,55 @@ fn uncovered_reply_event_ids(
     reply_ids.sort();
     reply_ids.dedup();
     reply_ids
+}
+
+fn is_own_causally_later_explanation(
+    reply: &EventV1,
+    peer_id: &str,
+    disposition_heads: &[&EventV1],
+    by_id: &BTreeMap<String, &EventV1>,
+) -> bool {
+    if reply.author_peer_id != peer_id
+        || disposition_heads.is_empty()
+        || !disposition_heads
+            .iter()
+            .all(|head| match head.kind.as_str() {
+                "MSG_ACK" => string_event_body(head, "state") == "handled",
+                "MSG_CONTINUATION" => matches!(
+                    string_event_body(head, "state").as_str(),
+                    "declined" | "released"
+                ),
+                _ => false,
+            })
+        || !disposition_heads
+            .iter()
+            .all(|head| event_is_ancestor(&head.event_id, reply, by_id))
+    {
+        return false;
+    }
+    let reply_session_id = reply
+        .origin
+        .as_ref()
+        .map(|origin| origin.session_cert.session_id.as_str());
+    let same_actor = disposition_heads.iter().all(|head| {
+        head.origin
+            .as_ref()
+            .map(|origin| origin.session_cert.session_id.as_str())
+            == reply_session_id
+    });
+    if !same_actor {
+        return false;
+    }
+    let explicitly_addressed_back = reply_session_id.is_some_and(|session_id| {
+        reply
+            .body
+            .get("addressed_origin_session_ids")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|value| value.as_str() == Some(session_id))
+    });
+    !explicitly_addressed_back
 }
 
 #[cfg(test)]
@@ -9701,6 +10004,93 @@ mod tests {
     }
 
     #[test]
+    fn own_later_decline_explanation_does_not_reawaken_but_other_actor_reply_does() {
+        let actor = PeerIdentity::generate().expect("actor");
+        let other = PeerIdentity::generate().expect("other");
+        let actor_delegation = || {
+            create_delegation(&actor, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("actor delegation")
+        };
+        let other_delegation = || {
+            create_delegation(&other, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("other delegation")
+        };
+        let target = create_event(&actor, actor_delegation(), "room:test", 500, "MSG_POST", vec![], serde_json::json!({"text":"delegated work","mentions":[],"thread_root_event_id":null,"in_reply_to_event_id":null})).expect("target");
+        let declined = create_event(&actor, actor_delegation(), "room:test", 100, "MSG_CONTINUATION", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"declined","lease_ms":null,"supersedes_event_ids":[],"client_request_id":"decline-own-explanation"})).expect("declined");
+        let own_reason = create_event(&actor, actor_delegation(), "room:test", 50, "MSG_POST", vec![declined.event_id.clone()], serde_json::json!({"text":"I cannot do this","mentions":[],"addressed_origin_session_ids":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id})).expect("own reason");
+        let expected = project_messages(
+            vec![target.clone(), declined.clone(), own_reason.clone()],
+            1_000,
+        );
+        for permutation in [
+            vec![own_reason.clone(), target.clone(), declined.clone()],
+            vec![declined.clone(), own_reason.clone(), target.clone()],
+            vec![declined.clone(), target.clone(), own_reason.clone()],
+        ] {
+            assert_eq!(expected, project_messages(permutation, 1_000));
+        }
+        let actionability = &expected
+            .iter()
+            .find(|message| message.event_id == target.event_id)
+            .expect("target projection")
+            .participant_actionability[0];
+        assert_eq!(
+            actionability.state,
+            MessageParticipantActionabilityState::Declined
+        );
+        assert!(!actionability.actionable);
+        assert!(actionability.uncovered_reply_event_ids.is_empty());
+
+        let other_reply = create_event(&other, other_delegation(), "room:test", 25, "MSG_POST", vec![declined.event_id.clone()], serde_json::json!({"text":"please reconsider","mentions":[],"addressed_origin_session_ids":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id})).expect("other reply");
+        let woken = project_messages(
+            vec![other_reply.clone(), own_reason, declined, target.clone()],
+            1_000,
+        );
+        let actionability = &woken
+            .iter()
+            .find(|message| message.event_id == target.event_id)
+            .expect("woken target")
+            .participant_actionability[0];
+        assert!(actionability.actionable);
+        assert_eq!(
+            actionability.uncovered_reply_event_ids,
+            vec![other_reply.event_id]
+        );
+
+        let session_capability = [0x44; 32];
+        let session_cert = create_origin_session_cert(
+            &actor,
+            &session_capability,
+            OriginSurfaceProtocolV1::Inhabitant,
+            Some("Actor".to_string()),
+            0,
+            i64::MAX,
+        )
+        .expect("origin cert");
+        let session_id = session_cert.session_id.clone();
+        let origin = |request_id: &str| FactOriginV1 {
+            session_cert: session_cert.clone(),
+            request_id: request_id.to_string(),
+        };
+        let addressed_decline = create_event_with_origin(&actor, actor_delegation(), "room:test", 10, "MSG_CONTINUATION", vec![target.event_id.clone()], Some(origin("addressed-decline")), serde_json::json!({"target_event_id":target.event_id,"state":"declined","lease_ms":null,"supersedes_event_ids":[],"client_request_id":"addressed-decline"})).expect("addressed decline");
+        let addressed_back = create_event_with_origin(&actor, actor_delegation(), "room:test", 5, "MSG_POST", vec![addressed_decline.event_id.clone()], Some(origin("addressed-back")), serde_json::json!({"text":"reconsider my decline","mentions":[],"addressed_origin_session_ids":[session_id],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id})).expect("addressed back");
+        let addressed_projection = project_messages(
+            vec![target.clone(), addressed_decline, addressed_back.clone()],
+            1_000,
+        );
+        let addressed_actionability = &addressed_projection
+            .iter()
+            .find(|message| message.event_id == target.event_id)
+            .expect("addressed target")
+            .participant_actionability[0];
+        assert!(addressed_actionability.actionable);
+        assert_eq!(
+            addressed_actionability.uncovered_reply_event_ids,
+            vec![addressed_back.event_id]
+        );
+    }
+
+    #[test]
     fn reply_coverage_is_causal_and_bound_results_are_covered() {
         let identity = PeerIdentity::generate().expect("identity");
         let delegation = || {
@@ -10281,6 +10671,33 @@ mod tests {
             })
             .expect("private result message")
             .event_id;
+        let private_channel = bob
+            .channels(Some(&room_id))
+            .expect("private channel projection")
+            .into_iter()
+            .find(|channel| channel.room_id == room_id)
+            .expect("private channel");
+        let private_high_water = bob
+            .open_store()
+            .expect("bob store")
+            .local_fact_high_water()
+            .expect("private high water");
+        let private_owner_items = project_resident_changed_threads(
+            bob.decrypted_room_events_with_sequence(&room_id)
+                .expect("decrypted private facts"),
+            now_ms(),
+            0,
+            private_high_water,
+            &private_channel,
+            &private_origin_id,
+        );
+        assert!(private_owner_items.iter().any(|item| {
+            item.owner_attention.iter().any(|attention| {
+                attention.target_event_id == private_result_id
+                    && attention.state == ResidentOwnerAttentionState::Unreviewed
+                    && attention.review_required
+            })
+        }));
         let private_ack = bob
             .acknowledge_message(&AcknowledgeMessageRequest {
                 target_event_id: sent.event_id.clone(),
@@ -10877,6 +11294,14 @@ mod tests {
             .init_home(InitHomeRequest { default_room: None })
             .expect("init");
         let general_room = initialized.home.expect("home").profile.default_room;
+        let human_origin = host
+            .issue_origin_context(
+                &[0x71; 32],
+                OriginSurfaceProtocolV1::NativeWebview,
+                Some("Human".to_string()),
+                "frontier-human-follow-up".to_string(),
+            )
+            .expect("human follow-up origin");
 
         let created = host
             .create_channel(CreateChannelRequest {
@@ -10982,15 +11407,18 @@ mod tests {
         .await
         .expect("handled general");
         let follow_up_event_id = host
-            .send_message(SendMessageRequest {
-                text: "human follow-up after handled".to_string(),
-                room: Some(general_room.clone()),
-                mentions: Vec::new(),
-                addressed_origin_session_ids: Vec::new(),
-                thread_root_event_id: Some(general_target.clone()),
-                in_reply_to_event_id: Some(general_target.clone()),
-                client_request_id: Some("frontier-general-follow-up-001".to_string()),
-            })
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "human follow-up after handled".to_string(),
+                    room: Some(general_room.clone()),
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: Some(general_target.clone()),
+                    in_reply_to_event_id: Some(general_target.clone()),
+                    client_request_id: Some("frontier-general-follow-up-001".to_string()),
+                },
+                &human_origin,
+            )
             .await
             .expect("follow-up after handled")
             .home
@@ -11585,15 +12013,23 @@ mod tests {
             commit_token: second_page.commit_token.expect("commit token"),
         })
         .expect("commit served high water");
-        let empty = host
+        let active_after_commit = host
             .resident_changed_threads(ResidentChangedThreadsRequest {
                 consumer_id: "resident:alpha".to_string(),
                 fact_high_water: None,
                 after_fact_sequence: None,
                 limit: None,
             })
-            .expect("empty after commit");
-        assert!(empty.items.is_empty());
+            .expect("active owner attention after commit");
+        assert_eq!(active_after_commit.items.len(), 1);
+        assert!(active_after_commit.items[0]
+            .owner_attention
+            .iter()
+            .any(|attention| {
+                attention.state == ResidentOwnerAttentionState::Continuing
+                    && attention.work_actionable
+                    && !attention.review_required
+            }));
         host.send_message(SendMessageRequest {
             text: "Human request after checkpoint".to_string(),
             room: None,
@@ -11623,11 +12059,14 @@ mod tests {
                 limit: None,
             })
             .expect("page after restart");
-        assert_eq!(after_restart.items.len(), 1);
-        assert_eq!(
-            after_restart.items[0].root.client_request_id.as_deref(),
-            Some("resident-thread-after-restart")
-        );
+        assert!(after_restart.items.iter().any(|item| {
+            item.root.client_request_id.as_deref() == Some("resident-thread-after-restart")
+        }));
+        assert!(after_restart.items.iter().any(|item| {
+            item.owner_attention
+                .iter()
+                .any(|attention| attention.state == ResidentOwnerAttentionState::Continuing)
+        }));
     }
 
     #[tokio::test]
@@ -11772,6 +12211,19 @@ mod tests {
             .expect_err("addressed retry conflict")
             .to_string()
             .contains("different message payload"));
+        host.update_message_continuation_with_origin(
+            UpdateMessageContinuationRequest {
+                target_event_id: addressed_event_id.clone(),
+                room: None,
+                state: MessageContinuationState::Declined,
+                lease_ms: None,
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "alpha-declines-addressed-001".to_string(),
+            },
+            &alpha,
+        )
+        .await
+        .expect("alpha declines for its own origin evidence");
 
         let alpha_changed = host
             .resident_changed_threads_with_origin(
@@ -11812,6 +12264,30 @@ mod tests {
             beta_item.addressed_event_ids,
             vec![addressed_event_id.clone()]
         );
+        assert_eq!(beta_item.owner_attention.len(), 1);
+        assert_eq!(
+            beta_item.owner_attention[0].state,
+            ResidentOwnerAttentionState::Unreviewed
+        );
+        assert!(beta_item.owner_attention[0].review_required);
+        assert!(!beta_item.owner_attention[0].work_actionable);
+        assert!(alpha_item.owner_attention.iter().any(|attention| {
+            attention.target_event_id == addressed_event_id
+                && attention.state == ResidentOwnerAttentionState::Declined
+        }));
+        host.update_message_continuation_with_origin(
+            UpdateMessageContinuationRequest {
+                target_event_id: addressed_event_id.clone(),
+                room: None,
+                state: MessageContinuationState::Declined,
+                lease_ms: None,
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "beta-declines-addressed-001".to_string(),
+            },
+            &beta,
+        )
+        .await
+        .expect("beta independently declines");
         drop(host);
 
         let mut restarted = VoxelleCommandHost::new(&home_root);
@@ -11847,6 +12323,14 @@ mod tests {
             .iter()
             .any(|item| item.addressed_to_owner
                 && item.addressed_event_ids.contains(&addressed_event_id)));
+        assert!(beta_restart_page.items.iter().any(|item| {
+            item.owner_attention.iter().any(|attention| {
+                attention.target_event_id == addressed_event_id
+                    && attention.state == ResidentOwnerAttentionState::Declined
+                    && !attention.review_required
+                    && !attention.work_actionable
+            })
+        }));
         restarted
             .open_resident_observation_with_origin(open.clone(), &alpha_after_restart)
             .expect("owner reopens after restart");
@@ -11860,7 +12344,8 @@ mod tests {
     #[tokio::test]
     async fn flat_thread_direct_reply_can_handle_an_addressed_delegation() {
         let dir = tempdir().expect("tempdir");
-        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
         host.init_home(InitHomeRequest { default_room: None })
             .expect("init");
         let human = host
@@ -12003,14 +12488,14 @@ mod tests {
             )
             .await
             .expect("handle exact delegation");
-        let delegation_view = handled
-            .home
-            .expect("home")
+        let handled_home = handled.home.expect("home");
+        let delegation_view = handled_home
             .room
             .messages
-            .into_iter()
+            .iter()
             .find(|message| message.event_id == delegation)
             .expect("delegation after handled");
+        assert_eq!(delegation_view.reply_count, 1);
         assert_eq!(delegation_view.acknowledgements.len(), 1);
         assert_eq!(
             delegation_view.acknowledgements[0].result_event_ids,
@@ -12036,6 +12521,25 @@ mod tests {
             invalid_root_error.contains("root message cannot name"),
             "unexpected error: {invalid_root_error}"
         );
+        drop(host);
+        let mut restarted = VoxelleCommandHost::new(&home_root);
+        let restart = restarted.snapshot().expect("restart snapshot");
+        let restart_home = restart.home.expect("restart home");
+        let delegation_view = restart_home
+            .room
+            .messages
+            .iter()
+            .find(|message| message.event_id == delegation)
+            .expect("restarted delegation");
+        assert_eq!(delegation_view.reply_count, 1);
+        let frontier = restart_home
+            .coordination_frontier
+            .items
+            .iter()
+            .find(|item| item.target_event_id == delegation)
+            .expect("delegation frontier");
+        assert_eq!(frontier.reply_count, 1);
+        assert!(frontier.latest_reply_ms.is_some());
     }
 
     #[test]

@@ -48,7 +48,13 @@ export type CommitResidentObservationRequest = { consumer_id: string, fact_high_
 
 export type ResidentObservationConsumerView = { consumer_id: string, start: ResidentObservationStartView, start_fact_sequence: number, created_ms: number, updated_ms: number, };
 
-export type ResidentChangedThreadView = { room_id: string, room_name: string, room_visibility: string, last_fact_sequence: number, root: MessageView, replies: Array<MessageView>, addressed_to_owner: boolean, addressed_event_ids: Array<string>, };
+export type ResidentChangedThreadView = { room_id: string, room_name: string, room_visibility: string, last_fact_sequence: number, root: MessageView, replies: Array<MessageView>, addressed_to_owner: boolean, addressed_event_ids: Array<string>, owner_attention: Array<ResidentOwnerAttentionView>, };
+
+export type ResidentOwnerAttentionView = { target_event_id: string, state: ResidentOwnerAttentionState, review_required: boolean, work_actionable: boolean, reasons: Array<ResidentOwnerAttentionReason>, basis_event_ids: Array<string>, result_event_ids: Array<string>, uncovered_reply_event_ids: Array<string>, next_projection_change_ms: number | null, };
+
+export type ResidentOwnerAttentionState = "unreviewed" | "observed" | "continuing" | "overdue" | "released" | "declined" | "handled" | "conflict";
+
+export type ResidentOwnerAttentionReason = "addressed_unreviewed" | "continuing" | "addressed_reply_not_covered";
 
 export type ResidentChangedThreadsPageView = { consumer_id: string, fact_high_water: number, room_ids: Array<string>, items: Array<ResidentChangedThreadView>, has_more: boolean, next_after_fact_sequence: number | null, commit_token: string | null, };
 

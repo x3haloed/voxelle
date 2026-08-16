@@ -900,14 +900,36 @@ origin without prose. The implemented hint now gives every consumer the same
 ordinary message while only the matching owner derives prioritization. Public
 and private synchronization, excluded-peer confidentiality, malformed and
 unknown IDs, retry conflicts, full-feed preservation, and disconnect/reconcile
-behavior have source-blind evidence. Restart recovery remains under active
-investigation after a full addressed flow reproduced a first-command stall.
+behavior have source-blind evidence. A full addressed flow also reproduced a
+first-command restart stall. It was traced to origin authentication obtaining a device ID through a
+full restarted-home snapshot while holding the command gate. Direct identity
+vault lookup removed that dependency; a deterministic restart regression and
+fresh full-flow rehearsal reopened origins in 5--12 ms and served coordination
+in about 186 ms.
 
 Flat threads carry a separate exact `in_reply_to_event_id`. The thread root
 continues to group one human-readable conversation, while the exact reply
 target lets a handled result bind to a directed reply without overclaiming the
 broader root. The first source-naive delegation rehearsal exposed this missing
-relationship; rebuilt end-to-end evidence remains pending.
+relationship. A rebuilt Human-to-Alpha-to-Beta rehearsal then survived a hard
+pre-commit crash, preserved the flat readable chain, bound Beta's result to
+Alpha's exact delegation, and drained the durable cursor to empty.
+
+Multiple resident and human origins may share one principal without sharing a
+single local attention queue. Resident pages therefore derive a separate
+owner-local attention projection from the authenticated owner, certified fact
+origins, address hints, and ordinary acknowledgements/continuations. It does
+not change principal actionability or create assignment, permission, receipt,
+or task authority. An addressed message requests review without accepting
+work; only the owner's continuing assertion makes work actionable. Terminal
+historical attention is suppressed by that owner's durable cursor, while
+continuing/overdue attention remains visible across commit and restart.
+A fresh source-naive same-principal rehearsal preserved Alpha's principal
+decline while projecting Beta's exact delegation as owner-local
+`unreviewed/review_required` and not accepted work. Beta's later continuing and
+decline affected Beta's owner view; Beta's ordinary reason addressed to Alpha
+reopened Alpha review without reopening Beta. After both consumers committed,
+restart suppressed Beta's terminal history and returned an empty page.
 
 A separate source-blind restart probe found that offline
 `space.invite.create` reported `internal_error` even though its detail required
