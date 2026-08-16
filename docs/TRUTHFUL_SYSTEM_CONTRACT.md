@@ -855,9 +855,10 @@ The inhabitant surface opens a route with `resident.origin.open` using a stable
 client instance ID, label, and caller-held random 32-byte secret. Only a
 domain-separated secret hash is persisted in the owner-local registry; the
 plaintext secret is neither returned nor stored. Subsequent
-`message.send`, `message.acknowledge`, and `message.continuation.update`
-requests require the returned origin ID and original secret in dedicated
-headers. The native WebView uses the same Rust-owned certificate path with a
+`message.send`, `message.acknowledge`, `message.continuation.update`, and all
+four `resident.observation.{open,page,commit,release}` requests require the
+returned origin ID and original secret in dedicated headers. The native
+WebView uses the same Rust-owned certificate path with a
 `native_webview` route. Private-room provenance is serialized only inside the
 encrypted semantic event, never on its ciphertext carrier. Core, app, and
 sidecar tests establish these local and cryptographic mechanics. Source-blind
@@ -868,6 +869,21 @@ durable resident redelivery. Missing and invalid origin credentials retained
 one ActionResult error envelope. Raw private ciphertext is intentionally absent
 from the inhabitant API, so outer-envelope non-disclosure remains storage
 inspection evidence rather than a source-blind API claim.
+
+Resident observation ownership is derived from that authenticated origin
+context, never from command JSON. Each consumer durably records its
+`owner_origin_id`; open, page, commit, and release require the same origin.
+Foreign origins receive the same unavailable result as an unknown consumer and
+cannot mutate or enumerate it. Active page sessions and final commit tokens are
+owner-bound as well, preventing a sibling route from superseding a page or
+advancing another consumer by copying identifiers. This separation is local
+availability and integrity bookkeeping only: it creates no replicated fact,
+principal, membership, permission, task authority, private-room access, or
+claim about a human or AI. Deterministic tests cover ownership, token binding,
+and non-mutation. A source-blind Alpha/Beta rehearsal then proved that a
+foreign origin could not open or page the same consumer, consume its final
+token, or release it; the owner's original token remained valid and ownership
+plus committed progress survived sidecar restart and bearer rotation.
 Episodic agent actions no longer require repository-source inspection to learn
 their payload shape. The same Rust-projected `UiCommand` records used by the
 WebView now name each shell command's request DTO, while empty-payload and

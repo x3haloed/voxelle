@@ -31,6 +31,7 @@ pub enum ResidentObservationStart {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResidentObservationConsumer {
     pub consumer_id: String,
+    pub owner_origin_id: String,
     pub start: ResidentObservationStart,
     pub start_fact_sequence: u64,
     pub created_ms: i64,
@@ -93,6 +94,7 @@ impl Store {
 
                 CREATE TABLE IF NOT EXISTS resident_observation_consumers (
                     consumer_id TEXT PRIMARY KEY NOT NULL,
+                    owner_origin_id TEXT NOT NULL,
                     start_policy TEXT NOT NULL,
                     start_fact_sequence INTEGER NOT NULL,
                     created_ms INTEGER NOT NULL,
@@ -323,17 +325,17 @@ impl Store {
     pub fn open_resident_observation_consumer(
         &self,
         consumer_id: &str,
+        owner_origin_id: &str,
         start: ResidentObservationStart,
         now_ms: i64,
     ) -> Result<ResidentObservationConsumer> {
         validate_consumer_id(consumer_id)?;
+        validate_owner_origin_id(owner_origin_id)?;
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
             .context("start resident observation open transaction")?;
         if let Some(existing) = load_resident_observation_consumer(&transaction, consumer_id)? {
-            if existing.start != start {
-                anyhow::bail!(
-                    "resident observation consumer already uses a different start policy"
-                );
+            if existing.owner_origin_id != owner_origin_id || existing.start != start {
+                anyhow::bail!("resident observation consumer is not open");
             }
             transaction
                 .commit()
@@ -359,11 +361,12 @@ impl Store {
             .execute(
                 r#"
                 INSERT INTO resident_observation_consumers
-                    (consumer_id, start_policy, start_fact_sequence, created_ms, updated_ms)
-                VALUES (?1, ?2, ?3, ?4, ?4)
+                    (consumer_id, owner_origin_id, start_policy, start_fact_sequence, created_ms, updated_ms)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?5)
                 "#,
                 params![
                     consumer_id,
+                    owner_origin_id,
                     resident_start_name(start),
                     u64_to_i64(start_fact_sequence)?,
                     now_ms
@@ -375,6 +378,7 @@ impl Store {
             .context("commit resident observation consumer")?;
         Ok(ResidentObservationConsumer {
             consumer_id: consumer_id.to_string(),
+            owner_origin_id: owner_origin_id.to_string(),
             start,
             start_fact_sequence,
             created_ms: now_ms,
@@ -385,18 +389,29 @@ impl Store {
     pub fn resident_observation_consumer(
         &self,
         consumer_id: &str,
+        owner_origin_id: &str,
     ) -> Result<Option<ResidentObservationConsumer>> {
         validate_consumer_id(consumer_id)?;
-        load_resident_observation_consumer(&self.conn, consumer_id)
+        validate_owner_origin_id(owner_origin_id)?;
+        Ok(load_resident_observation_consumer(&self.conn, consumer_id)?
+            .filter(|consumer| consumer.owner_origin_id == owner_origin_id))
     }
 
     pub fn resident_observation_checkpoint(
         &self,
         consumer_id: &str,
+        owner_origin_id: &str,
         room_id: &str,
     ) -> Result<Option<ResidentObservationCheckpoint>> {
         validate_consumer_id(consumer_id)?;
+        validate_owner_origin_id(owner_origin_id)?;
         validate_room_id(room_id)?;
+        if self
+            .resident_observation_consumer(consumer_id, owner_origin_id)?
+            .is_none()
+        {
+            anyhow::bail!("resident observation consumer is not open");
+        }
         self.conn
             .query_row(
                 r#"
@@ -425,12 +440,15 @@ impl Store {
     pub fn effective_resident_observation_sequence(
         &self,
         consumer_id: &str,
+        owner_origin_id: &str,
         room_id: &str,
     ) -> Result<u64> {
-        if let Some(checkpoint) = self.resident_observation_checkpoint(consumer_id, room_id)? {
+        if let Some(checkpoint) =
+            self.resident_observation_checkpoint(consumer_id, owner_origin_id, room_id)?
+        {
             return Ok(checkpoint.committed_fact_sequence);
         }
-        self.resident_observation_consumer(consumer_id)?
+        self.resident_observation_consumer(consumer_id, owner_origin_id)?
             .map(|consumer| consumer.start_fact_sequence)
             .ok_or_else(|| anyhow::anyhow!("resident observation consumer is not open"))
     }
@@ -438,15 +456,18 @@ impl Store {
     pub fn commit_resident_observation(
         &self,
         consumer_id: &str,
+        owner_origin_id: &str,
         room_id: &str,
         through_fact_sequence: u64,
         now_ms: i64,
     ) -> Result<ResidentObservationCheckpoint> {
         validate_consumer_id(consumer_id)?;
+        validate_owner_origin_id(owner_origin_id)?;
         validate_room_id(room_id)?;
         let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)
             .context("start resident observation commit transaction")?;
         let consumer = load_resident_observation_consumer(&transaction, consumer_id)?
+            .filter(|consumer| consumer.owner_origin_id == owner_origin_id)
             .ok_or_else(|| anyhow::anyhow!("resident observation consumer is not open"))?;
         let high_water = local_fact_high_water_in(&transaction)?;
         if through_fact_sequence > high_water {
@@ -524,13 +545,18 @@ impl Store {
         })
     }
 
-    pub fn release_resident_observation_consumer(&self, consumer_id: &str) -> Result<bool> {
+    pub fn release_resident_observation_consumer(
+        &self,
+        consumer_id: &str,
+        owner_origin_id: &str,
+    ) -> Result<bool> {
         validate_consumer_id(consumer_id)?;
+        validate_owner_origin_id(owner_origin_id)?;
         Ok(self
             .conn
             .execute(
-                "DELETE FROM resident_observation_consumers WHERE consumer_id = ?1",
-                params![consumer_id],
+                "DELETE FROM resident_observation_consumers WHERE consumer_id = ?1 AND owner_origin_id = ?2",
+                params![consumer_id, owner_origin_id],
             )
             .context("release resident observation consumer")?
             == 1)
@@ -598,6 +624,13 @@ fn validate_consumer_id(consumer_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_owner_origin_id(owner_origin_id: &str) -> Result<()> {
+    if owner_origin_id.is_empty() || owner_origin_id.len() > 256 {
+        anyhow::bail!("owner_origin_id must use 1-256 bytes");
+    }
+    Ok(())
+}
+
 fn validate_room_id(room_id: &str) -> Result<()> {
     if room_id.is_empty() || room_id.len() > MAX_ROOM_ID_BYTES {
         anyhow::bail!("room_id must use 1-{MAX_ROOM_ID_BYTES} bytes");
@@ -645,7 +678,7 @@ fn load_resident_observation_consumer(
 ) -> Result<Option<ResidentObservationConsumer>> {
     conn.query_row(
         r#"
-        SELECT start_policy, start_fact_sequence, created_ms, updated_ms
+        SELECT owner_origin_id, start_policy, start_fact_sequence, created_ms, updated_ms
         FROM resident_observation_consumers
         WHERE consumer_id = ?1
         "#,
@@ -653,25 +686,29 @@ fn load_resident_observation_consumer(
         |row| {
             Ok((
                 row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
+                row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
                 row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
             ))
         },
     )
     .optional()
     .context("load resident observation consumer")?
-    .map(|(start, start_fact_sequence, created_ms, updated_ms)| {
-        Ok(ResidentObservationConsumer {
-            consumer_id: consumer_id.to_string(),
-            start: parse_resident_start(&start)?,
-            start_fact_sequence: start_fact_sequence
-                .try_into()
-                .context("resident start sequence is negative")?,
-            created_ms,
-            updated_ms,
-        })
-    })
+    .map(
+        |(owner_origin_id, start, start_fact_sequence, created_ms, updated_ms)| {
+            Ok(ResidentObservationConsumer {
+                consumer_id: consumer_id.to_string(),
+                owner_origin_id,
+                start: parse_resident_start(&start)?,
+                start_fact_sequence: start_fact_sequence
+                    .try_into()
+                    .context("resident start sequence is negative")?,
+                created_ms,
+                updated_ms,
+            })
+        },
+    )
     .transpose()
 }
 
@@ -832,6 +869,7 @@ mod tests {
             let from_now = store
                 .open_resident_observation_consumer(
                     "watch:alpha",
+                    "origin:alpha",
                     ResidentObservationStart::FromNow,
                     1_100,
                 )
@@ -840,36 +878,78 @@ mod tests {
             let from_beginning = store
                 .open_resident_observation_consumer(
                     "watch:beta",
+                    "origin:beta",
                     ResidentObservationStart::FromBeginning,
                     1_100,
                 )
                 .expect("open from beginning");
             assert_eq!(from_beginning.start_fact_sequence, 0);
+            assert_eq!(from_beginning.owner_origin_id, "origin:beta");
+            assert!(store
+                .open_resident_observation_consumer(
+                    "watch:beta",
+                    "origin:intruder",
+                    ResidentObservationStart::FromBeginning,
+                    1_150,
+                )
+                .expect_err("owner collision is hidden")
+                .to_string()
+                .contains("not open"));
+            assert!(store
+                .resident_observation_consumer("watch:beta", "origin:intruder")
+                .expect("hidden lookup")
+                .is_none());
+            assert!(store
+                .commit_resident_observation(
+                    "watch:beta",
+                    "origin:intruder",
+                    "room:general",
+                    1,
+                    1_175,
+                )
+                .expect_err("foreign commit rejected")
+                .to_string()
+                .contains("not open"));
+            assert!(!store
+                .release_resident_observation_consumer("watch:beta", "origin:intruder")
+                .expect("foreign release is hidden"));
+            assert!(store
+                .resident_observation_consumer("watch:beta", "origin:beta")
+                .expect("owner lookup")
+                .is_some());
             assert_eq!(
                 store
-                    .effective_resident_observation_sequence("watch:alpha", "room:general")
+                    .effective_resident_observation_sequence(
+                        "watch:alpha",
+                        "origin:alpha",
+                        "room:general"
+                    )
                     .expect("alpha effective sequence"),
                 1
             );
             assert_eq!(
                 store
-                    .effective_resident_observation_sequence("watch:beta", "room:general")
+                    .effective_resident_observation_sequence(
+                        "watch:beta",
+                        "origin:beta",
+                        "room:general"
+                    )
                     .expect("beta effective sequence"),
                 0
             );
             store
-                .commit_resident_observation("watch:beta", "room:general", 1, 1_200)
+                .commit_resident_observation("watch:beta", "origin:beta", "room:general", 1, 1_200)
                 .expect("commit beta");
             store
-                .commit_resident_observation("watch:beta", "room:general", 1, 1_300)
+                .commit_resident_observation("watch:beta", "origin:beta", "room:general", 1, 1_300)
                 .expect("idempotent beta commit");
             assert!(store
-                .commit_resident_observation("watch:beta", "room:general", 0, 1_400)
+                .commit_resident_observation("watch:beta", "origin:beta", "room:general", 0, 1_400)
                 .expect_err("reject regression")
                 .to_string()
                 .contains("cannot move backwards"));
             assert!(store
-                .commit_resident_observation("watch:beta", "room:general", 2, 1_400)
+                .commit_resident_observation("watch:beta", "origin:beta", "room:general", 2, 1_400)
                 .expect_err("reject future checkpoint")
                 .to_string()
                 .contains("exceeds local fact high water"));
@@ -878,34 +958,35 @@ mod tests {
         let reopened = Store::open(&path).expect("reopen");
         assert_eq!(
             reopened
-                .resident_observation_checkpoint("watch:beta", "room:general")
+                .resident_observation_checkpoint("watch:beta", "origin:beta", "room:general")
                 .expect("beta checkpoint")
                 .expect("beta checkpoint present")
                 .committed_fact_sequence,
             1
         );
         assert!(reopened
-            .resident_observation_checkpoint("watch:alpha", "room:general")
+            .resident_observation_checkpoint("watch:alpha", "origin:alpha", "room:general")
             .expect("alpha checkpoint")
             .is_none());
         assert!(reopened
             .open_resident_observation_consumer(
                 "watch:alpha",
+                "origin:alpha",
                 ResidentObservationStart::FromBeginning,
                 2_000,
             )
             .expect_err("start policy is immutable")
             .to_string()
-            .contains("different start policy"));
+            .contains("not open"));
         assert!(reopened
-            .release_resident_observation_consumer("watch:beta")
+            .release_resident_observation_consumer("watch:beta", "origin:beta")
             .expect("release beta"));
         assert!(reopened
-            .resident_observation_checkpoint("watch:beta", "room:general")
-            .expect("released checkpoint")
+            .resident_observation_consumer("watch:beta", "origin:beta")
+            .expect("released consumer")
             .is_none());
         assert!(!reopened
-            .release_resident_observation_consumer("watch:beta")
+            .release_resident_observation_consumer("watch:beta", "origin:beta")
             .expect("release beta again"));
     }
 
@@ -915,6 +996,7 @@ mod tests {
         assert!(store
             .open_resident_observation_consumer(
                 "contains whitespace",
+                "origin:test",
                 ResidentObservationStart::FromBeginning,
                 1_000,
             )
@@ -925,6 +1007,7 @@ mod tests {
             store
                 .open_resident_observation_consumer(
                     &format!("resident-{index}"),
+                    "origin:test",
                     ResidentObservationStart::FromBeginning,
                     1_000,
                 )
@@ -933,6 +1016,7 @@ mod tests {
         assert!(store
             .open_resident_observation_consumer(
                 "resident-over-limit",
+                "origin:test",
                 ResidentObservationStart::FromBeginning,
                 1_000,
             )

@@ -174,8 +174,10 @@ or persists the plaintext secret. Missing credentials and invalid credentials
 remain distinguishable as `origin_required` and the deliberately generic
 `origin_authentication_failed` respectively.
 
-Exactly `message.send`, `message.acknowledge`, and
-`message.continuation.update` require this resident origin authentication. The
+Exactly seven commands require this resident origin authentication:
+`message.send`, `message.acknowledge`, `message.continuation.update`,
+`resident.observation.open`, `resident.observation.page`,
+`resident.observation.commit`, and `resident.observation.release`. The
 native WebView issues the same device-certified provenance with
 `surface_protocol: native_webview`; CLI/default native paths remain explicit
 device-certified routes rather than silently impersonating a resident. The
@@ -336,6 +338,15 @@ high water and exact next sequence while `has_more` is true. Roots and their
 ordinary replies span the exact accessible room set captured by the first
 page. The final page alone returns a one-use commit token.
 
+Every observation consumer has an `owner_origin_id` derived exclusively from
+the authenticated `OriginContext` supplied beside the command. It is never
+accepted from JSON. The same authenticated origin must perform open, page,
+commit, and release. A different or missing origin sees the consumer as
+unavailable and cannot learn whether it exists; the failure is non-mutating.
+In-process page sessions and final commit tokens are also owner-bound, so a
+sibling origin cannot supersede paging or advance progress by copying a
+consumer ID or token.
+
 `fact_high_water` and each thread's `last_fact_sequence` are durable,
 home-local first-admission ordinals. They are not SSE `current_sequence`, event
 order, wall-clock order, channel read state, acknowledgement, or protocol
@@ -349,7 +360,13 @@ marks a channel read, publishes an acknowledgement, changes continuation,
 proves handling or correctness, synchronizes peers, or emits global
 `snapshot.changed`. `resident.observation.release` explicitly deletes only
 that local consumer and its progress. Consumer IDs are local namespaces, not
-principals, devices, credentials, or actor identities.
+principals, devices, credentials, or actor identities. Ownership prevents
+sibling local sessions from interfering; it remains local bookkeeping and
+grants no protocol, room, task, membership, or decryption authority. Unit and
+integration tests cover the binding and non-mutation rules. A source-blind
+two-origin rehearsal verified collision, page, copied-token, and release
+isolation before and after restart; foreign release remained the documented
+idempotent `false` without revealing or changing owner state.
 
 Origin is device-certified route provenance, not proof that the route is a
 natural person, an AI, the displayed label, or a correct actor. A device can
@@ -358,7 +375,7 @@ allows a sibling process to use that route. In private rooms the origin and
 request ID are encrypted inside the semantic inner event; the retained outer
 `ROOM_ENCRYPTED` carrier exposes none of them. Source and deterministic tests
 cover certification, projection, restart-stable hashed-secret authentication,
-the three command gates, and private outer-envelope omission. Source-blind
+the seven command gates, and private outer-envelope omission. Source-blind
 rehearsals verified distinct sibling sessions, uniform ActionResult recovery,
 remote public/private propagation, simultaneous restart, and durable resident
 redelivery. The API intentionally provides no raw-ciphertext view, so outer

@@ -47,6 +47,10 @@ const ORIGIN_REQUIRED_COMMANDS: &[&str] = &[
     "message.send",
     "message.acknowledge",
     "message.continuation.update",
+    "resident.observation.open",
+    "resident.observation.page",
+    "resident.observation.commit",
+    "resident.observation.release",
 ];
 
 #[derive(Debug, Parser)]
@@ -294,7 +298,7 @@ impl DiscoveryView {
                 secret_requirement: "caller-generated 32 random bytes encoded as unpadded base64url; Voxelle never returns or persists the plaintext secret".to_string(),
                 retry: "reuse the identical client_instance_id, secret, and label to recover the same origin_id after response loss or process restart; a changed label is rejected and a wrong secret never identifies the existing session".to_string(),
                 required_commands: ORIGIN_REQUIRED_COMMANDS.iter().map(|value| (*value).to_string()).collect(),
-                missing_or_invalid: "missing credentials return origin_required; unknown origins and wrong secrets return the same origin_authentication_failed response".to_string(),
+                missing_or_invalid: "missing credentials return an ActionResult error with detail origin_required; unknown origins and wrong secrets return the same ActionResult error with detail origin_authentication_failed".to_string(),
             },
             command_semantics: vec![
                 CommandSemanticsView {
@@ -309,23 +313,23 @@ impl DiscoveryView {
                 },
                 CommandSemanticsView {
                     command_id: "resident.observation.open".to_string(),
-                    retry: "idempotent only for the same consumer_id and immutable start policy; choose from_beginning to receive retained prior facts or from_now to begin after current local admission".to_string(),
-                    observation: "returns local consumer metadata only; it does not read, acknowledge, synchronize, publish, or grant protocol authority".to_string(),
+                    retry: "idempotent only for the same authenticated origin session, consumer_id, and immutable start policy; another origin cannot open or supersede that consumer_id; choose from_beginning to receive retained prior facts or from_now to begin after current local admission".to_string(),
+                    observation: "binds local consumer progress to the authenticated origin session and returns local metadata only; ownership grants no principal, actor, device, or protocol authority and does not read, acknowledge, synchronize, or publish".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "resident.observation.page".to_string(),
                     retry: "before commit, refetch from the first page after process restart; within one process continue only with the exact fact_high_water and next_after_fact_sequence returned by the preceding page; starting a fresh first page supersedes every prior page session and final token for that consumer".to_string(),
-                    observation: "returns at-least-once changed ordinary thread projections across the exact accessible room set captured by the first page; the final page alone carries a one-use commit_token".to_string(),
+                    observation: "only the owning authenticated origin can page; a foreign origin sees the consumer as unavailable. Returns at-least-once changed ordinary thread projections across the exact accessible room set captured by the first page; the final page alone carries a one-use commit_token".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "resident.observation.commit".to_string(),
                     retry: "a successful commit is durable; if the response is lost, refetch the feed because the one-use token may already be consumed".to_string(),
-                    observation: "requires the final served commit_token and matching fact_high_water; advances only this consumer in the rooms that were served, emits no global snapshot change, and does not mark read, acknowledge, handle, or prove correctness".to_string(),
+                    observation: "requires the owning authenticated origin, final served commit_token, and matching fact_high_water; a foreign origin cannot consume the token. Advances only this consumer in served rooms and does not mark read, acknowledge, handle, or prove correctness".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "resident.observation.release".to_string(),
                     retry: "idempotent; false means the consumer was already absent".to_string(),
-                    observation: "deletes only local consumer progress; reopening requires an explicit start policy and changes no conversation or protocol fact".to_string(),
+                    observation: "only the owning authenticated origin can delete local consumer progress; a foreign origin receives false and cannot affect it. Reopening requires an explicit start policy and changes no conversation or protocol fact".to_string(),
                 },
                 CommandSemanticsView {
                     command_id: "message.acknowledge".to_string(),
@@ -363,7 +367,7 @@ impl DiscoveryView {
             },
             resident_observation_semantics: ResidentObservationSemanticsView {
                 delivery: "at least once until a fully served page set is committed; crash or restart before commit causes safe rereading, so actions must remain idempotent".to_string(),
-                consumer_id: "caller-chosen stable local namespace, not a principal, device, credential, actor, or protocol identity; independent consumers on one home have independent progress".to_string(),
+                consumer_id: "caller-chosen stable local namespace owned by the authenticated origin session that first opens it; another origin cannot open, supersede, page, commit, or release the same consumer_id. The consumer remains local bookkeeping, not a principal, device, credential, actor, or protocol authority".to_string(),
                 counters: "fact_high_water and last_fact_sequence are durable home-local first-admission ordinals; they are not SSE current_sequence, wall-clock order, event IDs, room read cursors, acknowledgements, or replicated protocol facts".to_string(),
                 stream: "SSE current_sequence is only a process-local wake and reconciliation fence; after every process restart or reconnect, fetch resident.observation.page using the stable consumer_id and never use current_sequence as a durable cursor".to_string(),
                 page: "the first page omits fact_high_water and after_fact_sequence; continue with both exact returned values while has_more; after process restart begin again; full ordinary roots and replies are returned, and truncated message fields retain their existing open-before-action semantics; an empty final page may be left uncommitted when the consumer already has no items to examine".to_string(),
@@ -607,10 +611,19 @@ async fn run_command(
     origin: Option<OriginContext>,
 ) -> ActionResult {
     let activity_cursor = shell.activity_cursor().await;
-    if let Some(result) = shell
-        .execute_resident_command(command_id, payload.clone())
-        .await
-    {
+    let resident_result = match origin.clone() {
+        Some(origin) => {
+            shell
+                .execute_resident_command_with_origin(command_id, payload.clone(), origin)
+                .await
+        }
+        None => {
+            shell
+                .execute_resident_command(command_id, payload.clone())
+                .await
+        }
+    };
+    if let Some(result) = resident_result {
         let activity_items = shell.activity_items_after(activity_cursor).await;
         return match result {
             Ok(value) => ActionResult {
@@ -1128,6 +1141,26 @@ mod tests {
         headers
     }
 
+    async fn certified_origin(
+        shell: &ShellState,
+        registry_path: &FsPath,
+        device_id: &str,
+        session: &ResidentOriginSessionView,
+        secret: &str,
+        request_id: &str,
+    ) -> OriginContext {
+        let (capability, label) = authenticate_origin(
+            registry_path,
+            device_id,
+            &origin_headers(&session.origin_id, secret),
+        )
+        .expect("authenticate origin");
+        shell
+            .issue_inhabitant_origin_context(&capability, label, request_id.to_string())
+            .await
+            .expect("certify origin")
+    }
+
     #[test]
     fn authorization_requires_exact_bearer_token() {
         let mut headers = HeaderMap::new();
@@ -1335,7 +1368,7 @@ mod tests {
             "Bearer test-bearer".parse().expect("bearer"),
         );
         let response = command(
-            State(state),
+            State(state.clone()),
             Path("message.send".to_string()),
             headers,
             Json(serde_json::json!({
@@ -1349,6 +1382,273 @@ mod tests {
         .await
         .into_response();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("missing-origin body");
+        let body: Value = serde_json::from_slice(&body).expect("ActionResult JSON");
+        assert_eq!(body["ok"], false);
+        assert_eq!(body["command_id"], "message.send");
+        assert_eq!(body["error"]["detail"], "origin_required");
+
+        let observation = command(
+            State(state.clone()),
+            Path("resident.observation.open".to_string()),
+            HeaderMap::new(),
+            Json(serde_json::json!({
+                "consumer_id":"must-not-open",
+                "start":"from_now"
+            })),
+        )
+        .await
+        .into_response();
+        assert_eq!(observation.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(observation.into_body(), 64 * 1024)
+            .await
+            .expect("observation missing-origin body");
+        let body: Value = serde_json::from_slice(&body).expect("ActionResult JSON");
+        assert_eq!(body["command_id"], "resident.observation.open");
+        assert_eq!(body["error"]["detail"], "origin_required");
+
+        let device_id = state.shell.current_device_id().await.expect("device");
+        let opened = open_origin_session(
+            &state.origin_registry_path,
+            &device_id,
+            OpenResidentOriginRequest {
+                client_instance_id: "wrong-secret-session".to_string(),
+                secret: test_secret(0x41),
+                label: "Wrong-secret fixture".to_string(),
+            },
+        )
+        .expect("open origin");
+        let wrong = command(
+            State(state),
+            Path("resident.observation.open".to_string()),
+            origin_headers(&opened.origin_id, &test_secret(0x42)),
+            Json(serde_json::json!({
+                "consumer_id":"must-not-open",
+                "start":"from_now"
+            })),
+        )
+        .await
+        .into_response();
+        assert_eq!(wrong.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(wrong.into_body(), 64 * 1024)
+            .await
+            .expect("wrong-origin body");
+        let body: Value = serde_json::from_slice(&body).expect("ActionResult JSON");
+        assert_eq!(body["command_id"], "resident.observation.open");
+        assert_eq!(body["error"]["detail"], "origin_authentication_failed");
+    }
+
+    #[tokio::test]
+    async fn observation_consumer_is_owned_by_authenticated_origin_across_restart() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let registry_path = home.join(ORIGIN_REGISTRY_FILE);
+        let shell = ShellState::new(&home);
+        assert!(
+            run_command(
+                &shell,
+                "home.init",
+                serde_json::json!({"default_room": null}),
+                None,
+            )
+            .await
+            .ok
+        );
+        let device_id = shell.current_device_id().await.expect("device");
+        let alpha_secret = test_secret(0x31);
+        let beta_secret = test_secret(0x32);
+        let alpha_session = open_origin_session(
+            &registry_path,
+            &device_id,
+            OpenResidentOriginRequest {
+                client_instance_id: "observation-alpha".to_string(),
+                secret: alpha_secret.clone(),
+                label: "Alpha".to_string(),
+            },
+        )
+        .expect("alpha session");
+        let beta_session = open_origin_session(
+            &registry_path,
+            &device_id,
+            OpenResidentOriginRequest {
+                client_instance_id: "observation-beta".to_string(),
+                secret: beta_secret.clone(),
+                label: "Beta".to_string(),
+            },
+        )
+        .expect("beta session");
+        let open_payload = serde_json::json!({
+            "consumer_id": "shared-observer",
+            "start": "from_beginning"
+        });
+        let alpha_open = run_command(
+            &shell,
+            "resident.observation.open",
+            open_payload.clone(),
+            Some(
+                certified_origin(
+                    &shell,
+                    &registry_path,
+                    &device_id,
+                    &alpha_session,
+                    &alpha_secret,
+                    "alpha-open-001",
+                )
+                .await,
+            ),
+        )
+        .await;
+        assert!(alpha_open.ok);
+
+        let beta_open = run_command(
+            &shell,
+            "resident.observation.open",
+            open_payload,
+            Some(
+                certified_origin(
+                    &shell,
+                    &registry_path,
+                    &device_id,
+                    &beta_session,
+                    &beta_secret,
+                    "beta-open-001",
+                )
+                .await,
+            ),
+        )
+        .await;
+        assert!(!beta_open.ok);
+        let page_payload = serde_json::json!({
+            "consumer_id": "shared-observer",
+            "fact_high_water": null,
+            "after_fact_sequence": null,
+            "limit": 20
+        });
+        let beta_page = run_command(
+            &shell,
+            "resident.observation.page",
+            page_payload.clone(),
+            Some(
+                certified_origin(
+                    &shell,
+                    &registry_path,
+                    &device_id,
+                    &beta_session,
+                    &beta_secret,
+                    "beta-page-001",
+                )
+                .await,
+            ),
+        )
+        .await;
+        assert!(!beta_page.ok);
+        let alpha_page = run_command(
+            &shell,
+            "resident.observation.page",
+            page_payload,
+            Some(
+                certified_origin(
+                    &shell,
+                    &registry_path,
+                    &device_id,
+                    &alpha_session,
+                    &alpha_secret,
+                    "alpha-page-001",
+                )
+                .await,
+            ),
+        )
+        .await;
+        assert!(alpha_page.ok);
+        let page = alpha_page.snapshot.expect("page");
+        let commit_payload = serde_json::json!({
+            "consumer_id": "shared-observer",
+            "fact_high_water": page["fact_high_water"],
+            "commit_token": page["commit_token"]
+        });
+        let beta_commit = run_command(
+            &shell,
+            "resident.observation.commit",
+            commit_payload.clone(),
+            Some(
+                certified_origin(
+                    &shell,
+                    &registry_path,
+                    &device_id,
+                    &beta_session,
+                    &beta_secret,
+                    "beta-commit-001",
+                )
+                .await,
+            ),
+        )
+        .await;
+        assert!(!beta_commit.ok);
+        let beta_release = run_command(
+            &shell,
+            "resident.observation.release",
+            serde_json::json!({"consumer_id":"shared-observer"}),
+            Some(
+                certified_origin(
+                    &shell,
+                    &registry_path,
+                    &device_id,
+                    &beta_session,
+                    &beta_secret,
+                    "beta-release-001",
+                )
+                .await,
+            ),
+        )
+        .await;
+        assert!(beta_release.ok);
+        assert_eq!(beta_release.snapshot, Some(Value::Bool(false)));
+        let alpha_commit = run_command(
+            &shell,
+            "resident.observation.commit",
+            commit_payload,
+            Some(
+                certified_origin(
+                    &shell,
+                    &registry_path,
+                    &device_id,
+                    &alpha_session,
+                    &alpha_secret,
+                    "alpha-commit-001",
+                )
+                .await,
+            ),
+        )
+        .await;
+        assert!(alpha_commit.ok);
+        drop(shell);
+
+        let restarted = ShellState::new(&home);
+        let (capability, label) = authenticate_origin(
+            &registry_path,
+            &restarted.current_device_id().await.expect("restart device"),
+            &origin_headers(&alpha_session.origin_id, &alpha_secret),
+        )
+        .expect("restart authenticate");
+        let alpha_after_restart = restarted
+            .issue_inhabitant_origin_context(&capability, label, "alpha-restart-001".to_string())
+            .await
+            .expect("restart certify");
+        assert!(
+            run_command(
+                &restarted,
+                "resident.observation.open",
+                serde_json::json!({
+                    "consumer_id":"shared-observer",
+                    "start":"from_beginning"
+                }),
+                Some(alpha_after_restart),
+            )
+            .await
+            .ok
+        );
     }
 
     #[test]

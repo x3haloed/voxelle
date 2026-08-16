@@ -220,6 +220,10 @@ Peer availability JSON is attacker-controlled routing input, not membership. The
 Origin-specific attacker stories include a sibling resident guessing or
 reusing another session ID, stealing its plaintext secret, spoofing a trusted
 human/agent display label, or racing the same client instance across restart.
+A sibling may also copy a resident observation consumer ID, page cursor, high
+water, or commit token to suppress or advance another resident's work, or may
+place a forged `owner_origin_id` in JSON hoping it overrides authenticated
+transport context.
 The authorized device itself can fabricate any origin it certifies. A process
 that can read or replace `.voxelle-inhabitant-origins.json` may learn labels,
 IDs, client-instance names, and stored secret hashes, corrupt availability, or
@@ -232,9 +236,15 @@ The owner-local origin registry rejects symlink targets, uses owner-only mode
 where supported, writes through a fresh temporary file, stores a
 domain-separated hash rather than the secret, binds records to the current
 device, and compares hashes without early exit. Wrong and unknown credentials
-share one response. Only message send, acknowledgement, and continuation
-updates require origin headers today; the launch bearer still authorizes every
-other command. Origin labels are presentation claims, not verified identities.
+share one response. Message send, acknowledgement, continuation, and all four
+resident observation commands require origin headers; the launch bearer still
+authorizes other commands. Observation ownership comes only from authenticated
+origin context, never JSON; foreign access is indistinguishable from an unknown
+consumer and cannot mutate its cursor, page session, or token. These controls
+prevent cooperative sibling interference but do not survive theft of the
+owning origin secret. Origin labels are presentation claims, not verified
+identities. A source-blind two-origin restart rehearsal verified collision,
+copied-token, page, and release isolation without mutating the owner's cursor.
 
 **Review focus.** Loopback is a reachability restriction, not an authorization credential. Non-loopback binding should require an explicit security mode with authentication, origin protections, TLS as appropriate, and clear warnings; otherwise it should be refused. Discovery files should not contain secrets and should have safe permissions. Request/body/concurrency limits and cancellation must be explicit. Snapshot-before-action is a consistency aid, not authorization; high-impact commands need attribution and may need optimistic state/version checks.
 

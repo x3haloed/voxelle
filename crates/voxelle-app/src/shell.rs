@@ -201,32 +201,57 @@ impl ShellState {
         command_id: &str,
         payload: serde_json::Value,
     ) -> Option<ShellResult<serde_json::Value>> {
+        if !matches!(
+            command_id,
+            "resident.observation.open"
+                | "resident.observation.page"
+                | "resident.observation.commit"
+                | "resident.observation.release"
+        ) {
+            return None;
+        }
+        let origin = match self.host.lock().await.default_origin_context() {
+            Ok(origin) => origin,
+            Err(error) => {
+                return Some(Err(ShellError::for_command(command_id, error)));
+            }
+        };
+        self.execute_resident_command_with_origin(command_id, payload, origin)
+            .await
+    }
+
+    pub async fn execute_resident_command_with_origin(
+        &self,
+        command_id: &str,
+        payload: serde_json::Value,
+        origin: OriginContext,
+    ) -> Option<ShellResult<serde_json::Value>> {
         let mut host = self.host.lock().await;
         let result: ShellResult<serde_json::Value> = match command_id {
             "resident.observation.open" => {
                 parse_request_for(command_id, payload).and_then(|request| {
-                    host.open_resident_observation(request)
+                    host.open_resident_observation_with_origin(request, &origin)
                         .map_err(|error| ShellError::for_command(command_id, error))
                         .and_then(serialize_resident_result)
                 })
             }
             "resident.observation.page" => {
                 parse_request_for(command_id, payload).and_then(|request| {
-                    host.resident_changed_threads(request)
+                    host.resident_changed_threads_with_origin(request, &origin)
                         .map_err(|error| ShellError::for_command(command_id, error))
                         .and_then(serialize_resident_result)
                 })
             }
             "resident.observation.commit" => {
                 parse_request_for(command_id, payload).and_then(|request| {
-                    host.commit_resident_observation(request)
+                    host.commit_resident_observation_with_origin(request, &origin)
                         .map_err(|error| ShellError::for_command(command_id, error))
                         .and_then(serialize_resident_result)
                 })
             }
             "resident.observation.release" => {
                 parse_request_for(command_id, payload).and_then(|request| {
-                    host.release_resident_observation(request)
+                    host.release_resident_observation_with_origin(request, &origin)
                         .map_err(|error| ShellError::for_command(command_id, error))
                         .and_then(serialize_resident_result)
                 })

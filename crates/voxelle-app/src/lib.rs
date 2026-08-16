@@ -91,7 +91,6 @@ fn resolve_home_root_from(
 #[derive(Debug, Clone)]
 pub struct VoxelleHome {
     root: PathBuf,
-    default_origin_capability: [u8; 32],
 }
 
 /// Trusted caller provenance supplied beside, never inside, semantic command payloads.
@@ -107,6 +106,10 @@ impl OriginContext {
 
     fn fact_origin(&self) -> &FactOriginV1 {
         &self.fact_origin
+    }
+
+    fn owner_origin_id(&self) -> &str {
+        &self.fact_origin.session_cert.session_id
     }
 }
 
@@ -1120,8 +1123,8 @@ pub struct VoxelleCommandHost {
     update_phase: String,
     peer_health_failures: BTreeMap<(String, String, PeerHealthOperation), PeerHealthFailure>,
     sync_evidence: SyncEvidenceView,
-    resident_page_progress: BTreeMap<String, ResidentPageProgress>,
-    resident_commit_tokens: BTreeMap<String, (String, u64, Vec<String>)>,
+    resident_page_progress: BTreeMap<(String, String), ResidentPageProgress>,
+    resident_commit_tokens: BTreeMap<String, (String, String, u64, Vec<String>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1655,10 +1658,7 @@ pub struct RoomTimelineView {
 
 impl VoxelleHome {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root: root.into(),
-            default_origin_capability: rand::random(),
-        }
+        Self { root: root.into() }
     }
 
     pub fn issue_origin_context(
@@ -1685,8 +1685,13 @@ impl VoxelleHome {
     }
 
     fn default_origin_context(&self) -> Result<OriginContext> {
+        let identity = self.load_identity()?;
+        let mut digest = Sha256::new();
+        digest.update(b"voxelle-default-origin-v1\0");
+        digest.update(identity.device.secret_key_b64().as_bytes());
+        let capability: [u8; 32] = digest.finalize().into();
         self.issue_origin_context(
-            &self.default_origin_capability,
+            &capability,
             OriginSurfaceProtocolV1::Cli,
             Some("Native/CLI session".to_string()),
             format!(
@@ -2619,9 +2624,11 @@ impl VoxelleHome {
     pub fn open_resident_observation(
         &self,
         request: &OpenResidentObservationRequest,
+        origin: &OriginContext,
     ) -> Result<ResidentObservationConsumerView> {
         let consumer = self.open_store()?.open_resident_observation_consumer(
             &request.consumer_id,
+            origin.owner_origin_id(),
             request.start.into(),
             now_ms(),
         )?;
@@ -2642,6 +2649,7 @@ impl VoxelleHome {
     pub fn resident_changed_threads(
         &self,
         consumer_id: &str,
+        owner_origin_id: &str,
         fact_high_water: u64,
         after_fact_sequence: Option<u64>,
         limit: usize,
@@ -2649,7 +2657,10 @@ impl VoxelleHome {
         room_ids: &[String],
     ) -> Result<ResidentChangedThreadsPageView> {
         let store = self.open_store()?;
-        if store.resident_observation_consumer(consumer_id)?.is_none() {
+        if store
+            .resident_observation_consumer(consumer_id, owner_origin_id)?
+            .is_none()
+        {
             anyhow::bail!("resident observation consumer is not open");
         }
         let current_high_water = store.local_fact_high_water()?;
@@ -2671,7 +2682,11 @@ impl VoxelleHome {
             let Some(channel) = channels.get(room_id) else {
                 continue;
             };
-            let committed = store.effective_resident_observation_sequence(consumer_id, room_id)?;
+            let committed = store.effective_resident_observation_sequence(
+                consumer_id,
+                owner_origin_id,
+                room_id,
+            )?;
             let events = self.decrypted_room_events_with_sequence(room_id)?;
             items.extend(project_resident_changed_threads(
                 events,
@@ -2707,12 +2722,19 @@ impl VoxelleHome {
     pub fn commit_resident_observation(
         &self,
         consumer_id: &str,
+        owner_origin_id: &str,
         fact_high_water: u64,
         room_ids: &[String],
     ) -> Result<ResidentObservationCommitView> {
         let store = self.open_store()?;
         for room_id in room_ids {
-            store.commit_resident_observation(consumer_id, room_id, fact_high_water, now_ms())?;
+            store.commit_resident_observation(
+                consumer_id,
+                owner_origin_id,
+                room_id,
+                fact_high_water,
+                now_ms(),
+            )?;
         }
         Ok(ResidentObservationCommitView {
             consumer_id: consumer_id.to_string(),
@@ -2721,9 +2743,13 @@ impl VoxelleHome {
         })
     }
 
-    pub fn release_resident_observation(&self, consumer_id: &str) -> Result<bool> {
+    pub fn release_resident_observation(
+        &self,
+        consumer_id: &str,
+        owner_origin_id: &str,
+    ) -> Result<bool> {
         self.open_store()?
-            .release_resident_observation_consumer(consumer_id)
+            .release_resident_observation_consumer(consumer_id, owner_origin_id)
     }
 
     pub fn mark_read(&self, room: Option<&str>) -> Result<()> {
@@ -5667,10 +5693,25 @@ impl VoxelleCommandHost {
         &mut self,
         request: OpenResidentObservationRequest,
     ) -> Result<ResidentObservationConsumerView> {
-        let consumer = self.home.open_resident_observation(&request)?;
-        self.resident_page_progress.remove(&request.consumer_id);
+        let origin = self.default_origin_context()?;
+        self.open_resident_observation_with_origin(request, &origin)
+    }
+
+    pub fn open_resident_observation_with_origin(
+        &mut self,
+        request: OpenResidentObservationRequest,
+        origin: &OriginContext,
+    ) -> Result<ResidentObservationConsumerView> {
+        let consumer = self.home.open_resident_observation(&request, origin)?;
+        let key = (
+            request.consumer_id.clone(),
+            origin.owner_origin_id().to_string(),
+        );
+        self.resident_page_progress.remove(&key);
         self.resident_commit_tokens
-            .retain(|_, (consumer_id, _, _)| consumer_id != &request.consumer_id);
+            .retain(|_, (consumer_id, owner_origin_id, _, _)| {
+                consumer_id != &request.consumer_id || owner_origin_id != origin.owner_origin_id()
+            });
         Ok(consumer)
     }
 
@@ -5678,6 +5719,25 @@ impl VoxelleCommandHost {
         &mut self,
         request: ResidentChangedThreadsRequest,
     ) -> Result<ResidentChangedThreadsPageView> {
+        let origin = self.default_origin_context()?;
+        self.resident_changed_threads_with_origin(request, &origin)
+    }
+
+    pub fn resident_changed_threads_with_origin(
+        &mut self,
+        request: ResidentChangedThreadsRequest,
+        origin: &OriginContext,
+    ) -> Result<ResidentChangedThreadsPageView> {
+        let owner_origin_id = origin.owner_origin_id().to_string();
+        if self
+            .home
+            .open_store()?
+            .resident_observation_consumer(&request.consumer_id, &owner_origin_id)?
+            .is_none()
+        {
+            anyhow::bail!("resident observation consumer is not open");
+        }
+        let progress_key = (request.consumer_id.clone(), owner_origin_id.clone());
         let limit = request
             .limit
             .unwrap_or(MAX_RESIDENT_CHANGED_THREADS_PAGE)
@@ -5687,7 +5747,7 @@ impl VoxelleCommandHost {
                 if request.after_fact_sequence.is_some() {
                     anyhow::bail!("the first resident page must omit after_fact_sequence");
                 }
-                self.resident_page_progress.remove(&request.consumer_id);
+                self.resident_page_progress.remove(&progress_key);
                 (
                     self.home.open_store()?.local_fact_high_water()?,
                     self.home
@@ -5700,7 +5760,7 @@ impl VoxelleCommandHost {
             Some(fact_high_water) => {
                 let progress = self
                     .resident_page_progress
-                    .get(&request.consumer_id)
+                    .get(&progress_key)
                     .ok_or_else(|| anyhow::anyhow!("resident page session is unavailable"))?;
                 if progress.fact_high_water != fact_high_water
                     || progress.next_after_fact_sequence != request.after_fact_sequence
@@ -5712,6 +5772,7 @@ impl VoxelleCommandHost {
         };
         let mut page = self.home.resident_changed_threads(
             &request.consumer_id,
+            &owner_origin_id,
             fact_high_water,
             request.after_fact_sequence,
             limit,
@@ -5720,7 +5781,7 @@ impl VoxelleCommandHost {
         )?;
         if page.has_more {
             self.resident_page_progress.insert(
-                request.consumer_id,
+                progress_key,
                 ResidentPageProgress {
                     fact_high_water,
                     next_after_fact_sequence: page.next_after_fact_sequence,
@@ -5728,15 +5789,18 @@ impl VoxelleCommandHost {
                 },
             );
         } else {
-            self.resident_page_progress.remove(&request.consumer_id);
+            self.resident_page_progress.remove(&progress_key);
             self.resident_commit_tokens
-                .retain(|_, (consumer_id, _, _)| consumer_id != &request.consumer_id);
+                .retain(|_, (consumer_id, token_owner, _, _)| {
+                    consumer_id != &request.consumer_id || token_owner != &owner_origin_id
+                });
             let token =
                 base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 24]>());
             self.resident_commit_tokens.insert(
                 token.clone(),
                 (
                     request.consumer_id.clone(),
+                    owner_origin_id,
                     fact_high_water,
                     page.room_ids.clone(),
                 ),
@@ -5750,18 +5814,31 @@ impl VoxelleCommandHost {
         &mut self,
         request: CommitResidentObservationRequest,
     ) -> Result<ResidentObservationCommitView> {
-        let Some((consumer_id, fact_high_water, room_ids)) = self
+        let origin = self.default_origin_context()?;
+        self.commit_resident_observation_with_origin(request, &origin)
+    }
+
+    pub fn commit_resident_observation_with_origin(
+        &mut self,
+        request: CommitResidentObservationRequest,
+        origin: &OriginContext,
+    ) -> Result<ResidentObservationCommitView> {
+        let Some((consumer_id, owner_origin_id, fact_high_water, room_ids)) = self
             .resident_commit_tokens
             .get(&request.commit_token)
             .cloned()
         else {
             anyhow::bail!("resident commit token is unavailable or already used");
         };
-        if consumer_id != request.consumer_id || fact_high_water != request.fact_high_water {
-            anyhow::bail!("resident commit token does not match the served snapshot");
+        if consumer_id != request.consumer_id
+            || owner_origin_id != origin.owner_origin_id()
+            || fact_high_water != request.fact_high_water
+        {
+            anyhow::bail!("resident commit token is unavailable or already used");
         }
         let committed = self.home.commit_resident_observation(
             &request.consumer_id,
+            origin.owner_origin_id(),
             request.fact_high_water,
             &room_ids,
         )?;
@@ -5773,12 +5850,27 @@ impl VoxelleCommandHost {
         &mut self,
         request: ReleaseResidentObservationRequest,
     ) -> Result<bool> {
+        let origin = self.default_origin_context()?;
+        self.release_resident_observation_with_origin(request, &origin)
+    }
+
+    pub fn release_resident_observation_with_origin(
+        &mut self,
+        request: ReleaseResidentObservationRequest,
+        origin: &OriginContext,
+    ) -> Result<bool> {
         let released = self
             .home
-            .release_resident_observation(&request.consumer_id)?;
-        self.resident_page_progress.remove(&request.consumer_id);
+            .release_resident_observation(&request.consumer_id, origin.owner_origin_id())?;
+        let progress_key = (
+            request.consumer_id.clone(),
+            origin.owner_origin_id().to_string(),
+        );
+        self.resident_page_progress.remove(&progress_key);
         self.resident_commit_tokens
-            .retain(|_, (consumer_id, _, _)| consumer_id != &request.consumer_id);
+            .retain(|_, (consumer_id, owner_origin_id, _, _)| {
+                consumer_id != &request.consumer_id || owner_origin_id != origin.owner_origin_id()
+            });
         Ok(released)
     }
 
@@ -11413,6 +11505,135 @@ mod tests {
             after_restart.items[0].root.client_request_id.as_deref(),
             Some("resident-thread-after-restart")
         );
+    }
+
+    #[tokio::test]
+    async fn resident_observation_is_owned_by_origin_across_collisions_and_restart() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let alpha_capability = [0x11; 32];
+        let beta_capability = [0x22; 32];
+        let mut host = VoxelleCommandHost::new(&home_root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let alpha = host
+            .issue_origin_context(
+                &alpha_capability,
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Alpha".to_string()),
+                "alpha-open".to_string(),
+            )
+            .expect("alpha origin");
+        let beta = host
+            .issue_origin_context(
+                &beta_capability,
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Beta".to_string()),
+                "beta-open".to_string(),
+            )
+            .expect("beta origin");
+        let open = OpenResidentObservationRequest {
+            consumer_id: "shared-consumer".to_string(),
+            start: ResidentObservationStartView::FromBeginning,
+        };
+        host.open_resident_observation_with_origin(open.clone(), &alpha)
+            .expect("alpha open");
+        let alpha_page = host
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: open.consumer_id.clone(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &alpha,
+            )
+            .expect("alpha page");
+        let alpha_token = alpha_page.commit_token.expect("alpha token");
+
+        assert!(host
+            .open_resident_observation_with_origin(open.clone(), &beta)
+            .expect_err("beta collision")
+            .to_string()
+            .contains("not open"));
+        assert!(host
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: open.consumer_id.clone(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &beta,
+            )
+            .expect_err("beta page")
+            .to_string()
+            .contains("not open"));
+        assert!(host
+            .commit_resident_observation_with_origin(
+                CommitResidentObservationRequest {
+                    consumer_id: open.consumer_id.clone(),
+                    fact_high_water: alpha_page.fact_high_water,
+                    commit_token: alpha_token.clone(),
+                },
+                &beta,
+            )
+            .expect_err("beta commit")
+            .to_string()
+            .contains("unavailable"));
+        assert!(!host
+            .release_resident_observation_with_origin(
+                ReleaseResidentObservationRequest {
+                    consumer_id: open.consumer_id.clone(),
+                },
+                &beta,
+            )
+            .expect("foreign release is hidden"));
+        host.commit_resident_observation_with_origin(
+            CommitResidentObservationRequest {
+                consumer_id: open.consumer_id.clone(),
+                fact_high_water: alpha_page.fact_high_water,
+                commit_token: alpha_token,
+            },
+            &alpha,
+        )
+        .expect("alpha token survives foreign attempts");
+
+        host.open_resident_observation_with_origin(
+            OpenResidentObservationRequest {
+                consumer_id: "beta-independent".to_string(),
+                start: ResidentObservationStartView::FromNow,
+            },
+            &beta,
+        )
+        .expect("independent beta consumer");
+        drop(host);
+
+        let mut restarted = VoxelleCommandHost::new(&home_root);
+        let alpha_after_restart = restarted
+            .issue_origin_context(
+                &alpha_capability,
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Alpha".to_string()),
+                "alpha-restart".to_string(),
+            )
+            .expect("alpha restart origin");
+        let beta_after_restart = restarted
+            .issue_origin_context(
+                &beta_capability,
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Beta".to_string()),
+                "beta-restart".to_string(),
+            )
+            .expect("beta restart origin");
+        restarted
+            .open_resident_observation_with_origin(open.clone(), &alpha_after_restart)
+            .expect("owner reopens after restart");
+        assert!(restarted
+            .open_resident_observation_with_origin(open, &beta_after_restart)
+            .expect_err("foreign owner remains rejected after restart")
+            .to_string()
+            .contains("not open"));
     }
 
     #[test]
