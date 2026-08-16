@@ -18,8 +18,8 @@ use voxelle_core::{
     accept_event, create_delegation, create_event, create_event_with_origin,
     create_origin_session_cert, create_space, create_space_invite_event, derive_governance_state,
     space_from_genesis, topo_sort_deterministic, validate_room_event_semantics, validate_space_at,
-    validate_space_invite_at, ChannelVisibility, EventV1, FactOriginV1, IdentityProofV1,
-    OriginSurfaceProtocolV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
+    validate_space_invite_at, ChannelVisibility, EventDraft, EventV1, FactOriginV1,
+    IdentityProofV1, OriginSurfaceProtocolV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
@@ -303,6 +303,16 @@ pub struct ResidentChangedThreadsRequest {
     #[ts(type = "number | null")]
     pub after_fact_sequence: Option<u64>,
     pub limit: Option<usize>,
+}
+
+struct ResidentChangedThreadsProjection<'a> {
+    consumer_id: &'a str,
+    owner_origin_id: &'a str,
+    fact_high_water: u64,
+    after_fact_sequence: Option<u64>,
+    limit: usize,
+    projection_ms: i64,
+    room_ids: &'a [String],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -2217,58 +2227,42 @@ impl VoxelleHome {
     }
 
     pub fn send_message(&self, text: &str, room: Option<&str>) -> Result<EventV1> {
-        self.send_message_with_metadata(text, room, Vec::new(), Vec::new(), None, None, None)
+        self.send_message_with_metadata(SendMessageRequest {
+            text: text.to_string(),
+            room: room.map(str::to_string),
+            mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
+            thread_root_event_id: None,
+            in_reply_to_event_id: None,
+            client_request_id: None,
+        })
     }
 
-    pub fn send_message_with_metadata(
-        &self,
-        text: &str,
-        room: Option<&str>,
-        mentions: Vec<String>,
-        addressed_origin_session_ids: Vec<String>,
-        thread_root_event_id: Option<String>,
-        in_reply_to_event_id: Option<String>,
-        client_request_id: Option<String>,
-    ) -> Result<EventV1> {
+    pub fn send_message_with_metadata(&self, request: SendMessageRequest) -> Result<EventV1> {
         let origin = self.default_origin_context()?;
-        self.send_message_with_metadata_and_origin(
-            text,
-            room,
-            mentions,
-            addressed_origin_session_ids,
-            thread_root_event_id,
-            in_reply_to_event_id,
-            client_request_id,
-            Some(&origin),
-        )
+        self.send_message_with_metadata_and_origin(request, Some(&origin))
     }
 
     pub fn send_message_with_metadata_and_origin(
         &self,
-        text: &str,
-        room: Option<&str>,
-        mentions: Vec<String>,
-        mut addressed_origin_session_ids: Vec<String>,
-        thread_root_event_id: Option<String>,
-        in_reply_to_event_id: Option<String>,
-        client_request_id: Option<String>,
+        mut request: SendMessageRequest,
         origin: Option<&OriginContext>,
     ) -> Result<EventV1> {
-        addressed_origin_session_ids.sort();
-        addressed_origin_session_ids.dedup();
-        if addressed_origin_session_ids.len() > 16 {
+        request.addressed_origin_session_ids.sort();
+        request.addressed_origin_session_ids.dedup();
+        if request.addressed_origin_session_ids.len() > 16 {
             anyhow::bail!("a message may address at most 16 origin sessions");
         }
         self.create_room_event_with_origin(
-            room,
+            request.room.as_deref(),
             "MSG_POST",
             serde_json::json!({
-                "text": text,
-                "mentions": mentions,
-                "addressed_origin_session_ids": addressed_origin_session_ids,
-                "thread_root_event_id": thread_root_event_id,
-                "in_reply_to_event_id": in_reply_to_event_id,
-                "client_request_id": client_request_id,
+                "text": request.text,
+                "mentions": request.mentions,
+                "addressed_origin_session_ids": request.addressed_origin_session_ids,
+                "thread_root_event_id": request.thread_root_event_id,
+                "in_reply_to_event_id": request.in_reply_to_event_id,
+                "client_request_id": request.client_request_id,
             }),
             origin,
         )
@@ -2710,16 +2704,19 @@ impl VoxelleHome {
         })
     }
 
-    pub fn resident_changed_threads(
+    fn resident_changed_threads(
         &self,
-        consumer_id: &str,
-        owner_origin_id: &str,
-        fact_high_water: u64,
-        after_fact_sequence: Option<u64>,
-        limit: usize,
-        projection_ms: i64,
-        room_ids: &[String],
+        request: ResidentChangedThreadsProjection<'_>,
     ) -> Result<ResidentChangedThreadsPageView> {
+        let ResidentChangedThreadsProjection {
+            consumer_id,
+            owner_origin_id,
+            fact_high_water,
+            after_fact_sequence,
+            limit,
+            projection_ms,
+            room_ids,
+        } = request;
         let store = self.open_store()?;
         if store
             .resident_observation_consumer(consumer_id, owner_origin_id)?
@@ -3549,12 +3546,14 @@ impl VoxelleHome {
                 created_ms + 30 * 24 * 60 * 60_000,
                 vec![delegation_scope.to_string()],
             )?,
-            room,
-            created_ms,
-            kind,
-            parents.clone(),
-            origin.map(|origin| origin.fact_origin().clone()),
-            body.clone(),
+            EventDraft {
+                room_id: room.to_string(),
+                created_ms,
+                kind: kind.to_string(),
+                parents: parents.clone(),
+                origin: origin.map(|origin| origin.fact_origin().clone()),
+                body: body.clone(),
+            },
         )?;
         let governance = store.room_events(&config.space.governance_room_id)?;
         let state = derive_governance_state(&governance, &config.room_context(), created_ms);
@@ -6145,15 +6144,17 @@ impl VoxelleCommandHost {
                 (fact_high_water, progress.room_ids.clone())
             }
         };
-        let mut page = self.home.resident_changed_threads(
-            &request.consumer_id,
-            &owner_origin_id,
-            fact_high_water,
-            request.after_fact_sequence,
-            limit,
-            now_ms(),
-            &room_ids,
-        )?;
+        let mut page = self
+            .home
+            .resident_changed_threads(ResidentChangedThreadsProjection {
+                consumer_id: &request.consumer_id,
+                owner_origin_id: &owner_origin_id,
+                fact_high_water,
+                after_fact_sequence: request.after_fact_sequence,
+                limit,
+                projection_ms: now_ms(),
+                room_ids: &room_ids,
+            })?;
         if page.has_more {
             self.resident_page_progress.insert(
                 progress_key,
@@ -6505,7 +6506,10 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.addressed_origin_session_ids.sort();
         request.addressed_origin_session_ids.dedup();
-        let room = request.room.as_deref().or(self.selected_room_id.as_deref());
+        if request.room.is_none() {
+            request.room = self.selected_room_id.clone();
+        }
+        let room = request.room.as_deref();
         if let Some(client_request_id) = request.client_request_id.as_deref() {
             if client_request_id.len() < 8
                 || client_request_id.len() > 128
@@ -6544,16 +6548,9 @@ impl VoxelleCommandHost {
                 return self.snapshot();
             }
         }
-        let event = self.home.send_message_with_metadata_and_origin(
-            &request.text,
-            room,
-            request.mentions,
-            request.addressed_origin_session_ids,
-            request.thread_root_event_id,
-            request.in_reply_to_event_id,
-            request.client_request_id,
-            Some(origin),
-        )?;
+        let event = self
+            .home
+            .send_message_with_metadata_and_origin(request, Some(origin))?;
         self.push_activity(
             ServiceActivityLevel::Info,
             format!("sent message {}", event.event_id),
@@ -10072,8 +10069,32 @@ mod tests {
             session_cert: session_cert.clone(),
             request_id: request_id.to_string(),
         };
-        let addressed_decline = create_event_with_origin(&actor, actor_delegation(), "room:test", 10, "MSG_CONTINUATION", vec![target.event_id.clone()], Some(origin("addressed-decline")), serde_json::json!({"target_event_id":target.event_id,"state":"declined","lease_ms":null,"supersedes_event_ids":[],"client_request_id":"addressed-decline"})).expect("addressed decline");
-        let addressed_back = create_event_with_origin(&actor, actor_delegation(), "room:test", 5, "MSG_POST", vec![addressed_decline.event_id.clone()], Some(origin("addressed-back")), serde_json::json!({"text":"reconsider my decline","mentions":[],"addressed_origin_session_ids":[session_id],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id})).expect("addressed back");
+        let addressed_decline = create_event_with_origin(
+            &actor,
+            actor_delegation(),
+            EventDraft {
+                room_id: "room:test".to_string(),
+                created_ms: 10,
+                kind: "MSG_CONTINUATION".to_string(),
+                parents: vec![target.event_id.clone()],
+                origin: Some(origin("addressed-decline")),
+                body: serde_json::json!({"target_event_id":target.event_id,"state":"declined","lease_ms":null,"supersedes_event_ids":[],"client_request_id":"addressed-decline"}),
+            },
+        )
+        .expect("addressed decline");
+        let addressed_back = create_event_with_origin(
+            &actor,
+            actor_delegation(),
+            EventDraft {
+                room_id: "room:test".to_string(),
+                created_ms: 5,
+                kind: "MSG_POST".to_string(),
+                parents: vec![addressed_decline.event_id.clone()],
+                origin: Some(origin("addressed-back")),
+                body: serde_json::json!({"text":"reconsider my decline","mentions":[],"addressed_origin_session_ids":[session_id],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id}),
+            },
+        )
+        .expect("addressed back");
         let addressed_projection = project_messages(
             vec![target.clone(), addressed_decline, addressed_back.clone()],
             1_000,
@@ -10647,15 +10668,15 @@ mod tests {
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x33_u8; 32])
         );
         let private_result = bob
-            .send_message_with_metadata(
-                "private ordinary result",
-                Some(&room_id),
-                Vec::new(),
-                vec![private_origin_id.clone()],
-                Some(sent.event_id.clone()),
-                Some(sent.event_id.clone()),
-                Some("private-result-001".to_string()),
-            )
+            .send_message_with_metadata(SendMessageRequest {
+                text: "private ordinary result".to_string(),
+                room: Some(room_id.clone()),
+                mentions: Vec::new(),
+                addressed_origin_session_ids: vec![private_origin_id.clone()],
+                thread_root_event_id: Some(sent.event_id.clone()),
+                in_reply_to_event_id: Some(sent.event_id.clone()),
+                client_request_id: Some("private-result-001".to_string()),
+            })
             .expect("bob private result");
         assert_eq!(private_result.kind, "ROOM_ENCRYPTED");
         assert!(!serde_json::to_string(&private_result)

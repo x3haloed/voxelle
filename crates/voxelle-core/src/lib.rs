@@ -1151,34 +1151,55 @@ pub fn create_event(
     body: serde_json::Value,
 ) -> Result<EventV1> {
     create_event_with_origin(
-        identity, delegation, room_id, created_ms, kind, parents, None, body,
+        identity,
+        delegation,
+        EventDraft {
+            room_id: room_id.into(),
+            created_ms,
+            kind: kind.into(),
+            parents,
+            origin: None,
+            body,
+        },
     )
+}
+
+#[derive(Clone, Debug)]
+pub struct EventDraft {
+    pub room_id: String,
+    pub created_ms: i64,
+    pub kind: String,
+    pub parents: Vec<String>,
+    pub origin: Option<FactOriginV1>,
+    pub body: serde_json::Value,
 }
 
 pub fn create_event_with_origin(
     identity: &PeerIdentity,
     delegation: DelegationCertV1,
-    room_id: impl Into<String>,
-    created_ms: i64,
-    kind: impl Into<String>,
-    parents: Vec<String>,
-    origin: Option<FactOriginV1>,
-    body: serde_json::Value,
+    draft: EventDraft,
 ) -> Result<EventV1> {
-    let mut parents = parents;
+    let EventDraft {
+        room_id,
+        created_ms,
+        kind,
+        mut parents,
+        origin,
+        body,
+    } = draft;
     parents.sort();
     parents.dedup();
     validate_event_parents(&parents)?;
 
     let unsigned = EventUnsigned {
         v: 1,
-        room_id: room_id.into(),
+        room_id,
         author_peer_id: identity.peer_id.clone(),
         author_device_id: identity.device.id.clone(),
         author_device_pub: identity.device.spki_b64.clone(),
         delegation_sig: delegation.sig.clone(),
         created_ms,
-        kind: kind.into(),
+        kind,
         parents,
         origin,
         body,
@@ -3356,15 +3377,17 @@ mod tests {
                 vec!["room:post".to_string()],
             )
             .expect("delegation"),
-            "room:origin",
-            created_ms,
-            "MSG_POST",
-            vec![],
-            Some(FactOriginV1 {
-                session_cert: cert,
-                request_id: "request-origin-001".to_string(),
-            }),
-            body,
+            EventDraft {
+                room_id: "room:origin".to_string(),
+                created_ms,
+                kind: "MSG_POST".to_string(),
+                parents: vec![],
+                origin: Some(FactOriginV1 {
+                    session_cert: cert,
+                    request_id: "request-origin-001".to_string(),
+                }),
+                body,
+            },
         )
         .expect("origin event")
     }
