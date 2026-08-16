@@ -40,6 +40,9 @@ if [ -e "$output_dir" ]; then
   printf 'refusing to reuse release output directory: %s\n' "$output_dir" >&2
   exit 1
 fi
+
+"$repo_dir/scripts/verify-beta-source.sh"
+
 mkdir -m 700 "$output_dir"
 
 macos_output="$output_dir/$(basename -- "$macos_dmg")"

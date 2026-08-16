@@ -23,6 +23,12 @@ beta.3 artifacts predate the current human-UX branch and must not be reused as
 evidence for its behavior; assemble a new signed generation before recording
 the distribution, Windows, field, human, or custody sections for this code.
 
+Before release assembly, `scripts/verify-beta-source.sh` requires a clean
+worktree and runs workspace formatting, strict all-target Clippy, the complete
+Rust and frontend suites, and the current RustSec advisory scan. Assembly calls
+this preflight itself and fails if `cargo-audit` or Node.js is unavailable; a
+missing scanner is not treated as a clean dependency result.
+
 ## 1. Create the release-bound template
 
 From the reviewed source checkout, use the release manifest downloaded through
