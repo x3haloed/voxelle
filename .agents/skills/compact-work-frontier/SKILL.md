@@ -18,6 +18,8 @@ Remove:
 - Superseded beliefs.
 - Stale plans and architectural choices masquerading as discoveries.
 - Generic advice that does not distinguish this task.
+- Scores, rankings, comparisons, and derived conclusions whose meaning depended on a displaced evaluation regime.
+- Old evaluator prompts, regime histories, or transition narration that no longer changes a future decision.
 
 Retain and sharpen:
 
@@ -25,9 +27,13 @@ Retain and sharpen:
 - Evidence-backed goal invariants that remain decision-relevant.
 - Material unresolved prediction errors.
 - Explicit uncertainty when evidence has not resolved it.
+- The active evaluation regime and its evaluator-independent anchors when evaluation remains a live concern.
+- Raw evidence that remains valid across evaluation transitions, but only when a pointer is needed to prevent unsupported belief or repeated rediscovery.
 
 Merge overlapping items, use the smallest statement that preserves decision value, and keep evidence pointers only where needed to prevent unsupported belief. Do not claim resolution merely to make the frontier smaller.
 
-When the frontier is persisted, update the existing file in place. Preserve the canonical section order—`Outcome`, `Goal invariants`, `Prediction errors`—and leave an empty section rather than removing the schema. Do not create an archive, history file, or replacement frontier during compaction.
+Preserve the canonical section order—`Outcome`, `Goal invariants`, `Evaluation regime`, `Prediction errors`—and leave an empty section rather than removing the schema.
+
+After an evaluation-regime transition, verify that no stale score or ranking from the displaced regime remains positioned as current evidence. Raw artifacts and observations may survive; their old criterion-dependent interpretation may not.
 
 After compaction, verify that a fresh agent could use the outcome, repository, and frontier to choose a useful next move without inheriting the prior agent's narrative.

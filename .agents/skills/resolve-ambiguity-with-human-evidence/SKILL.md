@@ -19,6 +19,16 @@ Proceed only when all are true:
 
 If the user has already specified the desired behavior, implement it. If the uncertainty is ordinary correctness, test it. If the answers would not change a decision, continue without an experiment.
 
+## Assign the evidence role
+
+Before staging the observation, state whether the human evidence will:
+
+- explore or shape a candidate direction;
+- judge an artifact under the active evaluation regime;
+- or serve as evaluator-independent anchor evidence for comparing evaluation regimes.
+
+Do not use the same human observations both to construct a challenger evaluation regime and to claim held-out validation of that challenger when a separate check is practical. Reserve examples, participants, tasks, or decisions for the promotion comparison when evaluator evolution is the pending decision.
+
 ## Design the smallest faithful evaluation
 
 Work backward from the discriminating observation:
@@ -54,3 +64,7 @@ After the observation:
 5. Verify the integrated result independently in the real system.
 
 Completing the evaluation resolves an ambiguity; it does not complete the corresponding product work. Only the lesson should normally survive the experiment.
+
+Preserve the raw human observation independently of any rubric-derived score. If the evaluation regime later changes, retain the observation but discard or recompute only the conclusions that depended on the displaced rubric.
+
+When human evidence reveals that the current evaluation regime systematically disagrees with the experience it was meant to represent, route the discrepancy through `$resolve-prediction-errors` and then `$evolve-evaluation-regime`.

@@ -18,6 +18,17 @@ Add only evidence-backed properties that are constitutive of success.
   **Evidence:**
 -->
 
+## Evaluation regime
+
+<!--
+Leave this section empty unless the way candidate work is judged is itself a live, revisable part of the project.
+
+- **Epoch:** A short identifier for the active frozen regime.
+- **Active criterion:** The current operational procedure for distinguishing better work from worse work.
+- **Anchors:** Evaluator-independent checks that gate any replacement.
+- **Dependent evidence:** The scope of scores, rankings, or conclusions that would become stale if the regime changed.
+-->
+
 ## Prediction errors
 
 <!--

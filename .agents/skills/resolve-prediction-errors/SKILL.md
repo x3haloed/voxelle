@@ -11,10 +11,11 @@ Difficulty making progress is a valid observation when it exposes a falsified ex
 
 1. State the expected result precisely enough to be falsifiable.
 2. State the observed result and its evidence.
-3. Identify the smallest assumption or model now in doubt. Do not force a cause before evidence supports one.
+3. Identify the smallest assumption or model now in doubt. Ask whether it belongs primarily to the artifact, the environment, or the active evaluation regime. Do not force a cause before evidence supports one.
 4. Decide whether the discrepancy can change future work. If not, correct the ordinary error and continue without frontier residue.
 5. When competing explanations matter, run the cheapest safe experiment that distinguishes them.
 6. Keep the prediction error open while the discrepancy remains materially unexplained.
+7. When trusted reality contradicts the evaluator’s ranking, determine whether the evaluator is saturated, gameable, miscalibrated, or blind to a relevant success dimension. Preserve the raw observation and invoke `$evolve-evaluation-regime` at a checkpoint rather than moving the goalposts inside the current comparison.
 
 Record an open item compactly:
 
@@ -42,3 +43,4 @@ When understood:
 - Put implementation knowledge into code, tests, tooling, or documentation where it belongs. When authorized and useful, remove the evidenced source of recurring friction rather than preserving a workaround.
 - Invoke `$discover-goal-invariants` only if the evidence reveals a property constitutive of the desired outcome.
 - Otherwise retain no frontier residue unless the learning can still change a future decision.
+- If an evaluation regime is displaced, remove or invalidate derived scores and rankings that depended on it while retaining the raw artifacts and observations.
