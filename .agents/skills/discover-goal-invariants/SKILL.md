@@ -30,6 +30,14 @@ Bad: `Keep the code maintainable.`
 
 The good example constrains the future experience of changing the project. The bad example is too vague to test or guide a tradeoff.
 
+## Distinguish success from evaluation
+
+A goal invariant changes the working model of what success requires. An evaluation regime changes how evidence operationalizes and measures that model. Do not substitute one for the other.
+
+A reviewer rubric, benchmark weight, test threshold, or scoring prompt is normally part of the evaluation regime, not a goal invariant. Conversely, an observable property may be a real invariant even when the current evaluator cannot yet measure it.
+
+After admitting, revising, or removing an invariant, inspect whether the active evaluation regime can distinguish work that preserves it from work that violates it. If not, invoke `$evolve-evaluation-regime` at a boundary. Do not silently alter the current criterion during an unfinished candidate comparison.
+
 ## Record the learning
 
 Write the smallest durable statement that future work should optimize or preserve. Add a brief evidence pointer only when the claim would otherwise become unsupported or ambiguous.
