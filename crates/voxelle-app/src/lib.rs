@@ -22,7 +22,7 @@ use voxelle_core::{
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
-    QuicNode, RoomSync, ServedPeerRequest,
+    QuicNode, ReticulumNode, RoomSync, ServedPeerRequest, TransportKind,
 };
 use voxelle_store::Store;
 use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
@@ -769,25 +769,30 @@ impl VoxelleServiceEvent {
         match self {
             VoxelleServiceEvent::Served(served) => match served.as_ref() {
                 ServedPeerRequest::Diagnostic(report) if report.reachable => {
-                    let remote = report
-                        .remote
-                        .as_ref()
-                        .map(|remote| short_peer_label(&remote.peer_id))
-                        .unwrap_or_else(|| "peer".to_string());
-                    format!("served diagnostic: {remote} reached this home")
-                }
-                ServedPeerRequest::Diagnostic(report) => {
-                    format!(
-                        "served diagnostic: unreachable ({})",
-                        report.error.as_deref().unwrap_or("no error detail")
-                    )
-                }
-                ServedPeerRequest::RoomSync(sync) => {
-                    let truncated = if sync.truncated { ", truncated" } else { "" };
-                    format!(
-                        "served sync: room {}, offered {}, accepted {}, rejected {} event(s){}",
-                        sync.room_id,
-                        sync.offered,
+            let remote = report
+                .remote
+                .as_ref()
+                .map(|remote| short_peer_label(&remote.peer_id))
+                .unwrap_or_else(|| "peer".to_string());
+            format!(
+                "served diagnostic: {remote} reached this home via path={}",
+                VoxelleHome::transport_path_label_for_transport(report.transport)
+            )
+        }
+        ServedPeerRequest::Diagnostic(report) => {
+            format!(
+                "served diagnostic: unreachable via path={} ({})",
+                VoxelleHome::transport_path_label_for_transport(report.transport),
+                report.error.as_deref().unwrap_or("no error detail")
+            )
+        }
+        ServedPeerRequest::RoomSync(sync) => {
+            let truncated = if sync.truncated { ", truncated" } else { "" };
+            format!(
+                "served sync via path={}: room {}, offered {}, accepted {}, rejected {} event(s){}",
+                VoxelleHome::transport_path_label_for_transport(TransportKind::Quic),
+                sync.room_id,
+                sync.offered,
                         sync.accepted_from_remote,
                         sync.rejected_from_remote,
                         truncated
@@ -812,8 +817,10 @@ pub struct OnlineHome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerSyncReport {
+    pub transport: TransportKind,
     pub governance: SyncStats,
     pub room: SyncStats,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
@@ -842,6 +849,7 @@ pub struct ServiceActivityItem {
 #[serde(rename_all = "snake_case")]
 pub enum ServiceActivityLevel {
     Info,
+    Warn,
     Error,
 }
 
@@ -1109,6 +1117,56 @@ pub struct RoomTimelineView {
 }
 
 impl VoxelleHome {
+    fn transport_label() -> &'static str {
+        "QUIC"
+    }
+
+    fn transport_path_label_for_transport(transport: TransportKind) -> &'static str {
+        match transport {
+            TransportKind::Quic => "quic",
+            TransportKind::Reticulum => "reticulum",
+            TransportKind::Unknown => "unknown",
+        }
+    }
+
+    fn transport_fallback_enabled(&self) -> bool {
+        matches!(
+            self.ui_preferences()
+                .ok()
+                .and_then(|preferences| preferences.behaviors.get("network.transport.fallback.enabled").cloned()),
+            Some(UiBehaviorValue::Bool(true))
+        )
+    }
+
+    fn transport_fallback_link_name(&self) -> Option<String> {
+        match self.ui_preferences() {
+            Ok(preferences) => match preferences.behaviors.get("network.transport.fallback.display_name") {
+                Some(UiBehaviorValue::Text(value)) if !value.trim().is_empty() => {
+                    Some(value.clone())
+                }
+                _ => None,
+            },
+            Err(_) => None,
+        }
+    }
+
+    fn transport_fallback_endpoint(&self) -> Option<SocketAddr> {
+        match self.ui_preferences() {
+            Ok(preferences) => match preferences.behaviors.get("network.transport.fallback.endpoint") {
+                Some(UiBehaviorValue::Text(value)) => {
+                    let trimmed = value.trim();
+                    if trimmed.is_empty() {
+                        None
+                    } else {
+                        trimmed.parse().ok()
+                    }
+                }
+                _ => None,
+            },
+            Err(_) => None,
+        }
+    }
+
     pub fn new(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
@@ -1213,6 +1271,10 @@ impl VoxelleHome {
     }
 
     pub fn network_health_view(&self, online: Option<&OnlineHome>) -> Result<NetworkHealthView> {
+        let transport_fallback_enabled = self.transport_fallback_enabled();
+        let transport_fallback_link = self.transport_fallback_link_name();
+        let transport_fallback_endpoint = self.transport_fallback_endpoint();
+
         let home_status = match self.load_config() {
             Ok(config) => NetworkHealthRow::working(
                 "home",
@@ -1458,6 +1520,56 @@ impl VoxelleHome {
         .related_view("network.health")
         .related_view("service.activity");
 
+        let transport_status = if online.is_some() {
+            NetworkHealthRow::working(
+                "transport",
+                "Transport",
+                format!(
+                    "Primary transport is {}.",
+                    Self::transport_label()
+                ),
+            )
+            .related_view("runtime.status")
+            .related_view("network.health")
+        } else {
+            NetworkHealthRow::unknown(
+                "transport",
+                "Transport",
+                "Transport state is visible once the service is online.",
+                Some("runtime.goOnline"),
+            )
+            .related_view("runtime.status")
+            .related_view("network.health")
+            .related_command("runtime.goOnline")
+        };
+        let fallback_status = if transport_fallback_enabled {
+            match (transport_fallback_link, transport_fallback_endpoint) {
+                (Some(name), Some(endpoint)) => NetworkHealthRow::working(
+                    "fallback",
+                    "Fallback",
+                    format!("Fallback transport {name} is configured as {endpoint}."),
+                )
+                .related_command("ui.preference.set"),
+                _ => NetworkHealthRow::needs_attention(
+                    "fallback",
+                    "Fallback",
+                    "Fallback transport is enabled but not fully configured.",
+                    Some("network.transport.fallback.display_name"),
+                ),
+            }
+            .related_view("runtime.status")
+            .related_view("network.health")
+            .related_command("ui.preference.set")
+        } else {
+            NetworkHealthRow::working(
+                "fallback",
+                "Fallback",
+                "Fallback transport is disabled in preferences.",
+            )
+            .related_view("runtime.status")
+            .related_view("network.health")
+        };
+
         Ok(NetworkHealthView {
             rows: vec![
                 home_status,
@@ -1471,6 +1583,8 @@ impl VoxelleHome {
                 peer_status,
                 reachability_status,
                 sync_status,
+                transport_status,
+                fallback_status,
             ],
         })
     }
@@ -2959,10 +3073,44 @@ impl VoxelleHome {
         let identity = self.load_identity()?;
         let certificate = self.load_certificate()?;
         let node = QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
-        Ok(node.diagnose_peer(&peer.endpoint).await)
+        let report = node.diagnose_peer(&peer.endpoint).await;
+        if report.reachable || !self.transport_fallback_enabled() || self.transport_fallback_link_name().is_none()
+        {
+            return Ok(report);
+        }
+
+        self.diagnose_peer_via_reticulum(peer).await
     }
 
-    pub async fn sync_peer(&self, peer: &PeerRecord, max_events: usize) -> Result<PeerSyncReport> {
+    async fn diagnose_peer_via_reticulum(&self, peer: &PeerRecord) -> Result<PeerReachabilityReport> {
+        peer.validate()?;
+        let display_name = self
+            .transport_fallback_link_name()
+            .unwrap_or_else(|| "configured fallback".to_string());
+        let fallback_addr = self
+            .transport_fallback_endpoint()
+            .context("fallback transport endpoint is not configured")?;
+        let identity = self.load_identity()?;
+        let certificate = self.load_certificate()?;
+        let node = ReticulumNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
+        let mut fallback_endpoint = peer.endpoint.clone();
+        fallback_endpoint.addr = fallback_addr;
+        fallback_endpoint.transport = TransportKind::Reticulum;
+        let mut report = node.diagnose_peer(&fallback_endpoint).await;
+        report.transport = TransportKind::Reticulum;
+        if !report.reachable {
+            report.error = Some(format!(
+                "fallback transport {display_name} is configured but request failed"
+            ));
+        }
+        Ok(report)
+    }
+
+    pub async fn sync_peer(
+        &self,
+        peer: &PeerRecord,
+        max_events: usize,
+    ) -> Result<PeerSyncReport> {
         peer.validate()?;
         let config = self.load_config()?;
         if peer.space_id != config.space.space_id
@@ -2989,7 +3137,7 @@ impl VoxelleHome {
         let limits = SyncLimits {
             max_events_per_batch: max_events,
         };
-        let governance = node
+        let governance = match node
             .sync_room_once(
                 &mut store,
                 RoomSync {
@@ -3000,7 +3148,27 @@ impl VoxelleHome {
                     limits,
                 },
             )
-            .await?;
+            .await
+        {
+            Ok(governance) => governance,
+            Err(error)
+                if self.transport_fallback_enabled()
+                    && self.transport_fallback_link_name().is_some()
+                    && self.transport_fallback_endpoint().is_some()
+                    && Self::sync_fallback_candidate(&error)
+            => {
+                return Ok(match self.sync_peer_via_reticulum(peer, max_events).await {
+                    Ok(report) => report,
+                    Err(error) => PeerSyncReport {
+                        transport: TransportKind::Reticulum,
+                        governance: SyncStats::default(),
+                        room: SyncStats::default(),
+                        error: Some(error.to_string()),
+                    },
+                });
+                }
+            Err(error) => return Err(error),
+        };
         self.import_private_room_keys()?;
         let governance_events = store.room_events(&peer.governance_room_id)?;
         let state = derive_governance_state(&governance_events, &context, now_ms());
@@ -3032,7 +3200,100 @@ impl VoxelleHome {
             merge_stats(&mut room, next);
         }
 
-        Ok(PeerSyncReport { governance, room })
+        Ok(PeerSyncReport {
+            transport: TransportKind::Quic,
+            governance,
+            room,
+            error: None,
+        })
+    }
+
+    fn sync_fallback_candidate(error: &anyhow::Error) -> bool {
+        let message = error.to_string().to_ascii_lowercase();
+        message.contains("timed out")
+            || message.contains("connect")
+            || message.contains("connection")
+            || message.contains("closed")
+    }
+
+    async fn sync_peer_via_reticulum(
+        &self,
+        peer: &PeerRecord,
+        max_events: usize,
+    ) -> Result<PeerSyncReport> {
+        peer.validate()?;
+        let display_name = self
+            .transport_fallback_link_name()
+            .unwrap_or_else(|| "configured fallback".to_string());
+        let fallback_addr = self
+            .transport_fallback_endpoint()
+            .context(format!(
+                "fallback transport {display_name} is enabled but no endpoint is configured"
+            ))?;
+        let identity = self.load_identity()?;
+        let local_peer_id = identity.peer_id.clone();
+        let certificate = self.load_certificate()?;
+        let mut store = self.open_store()?;
+        let node = ReticulumNode::bind_ipv6_loopback_with_certificate(identity, certificate)?;
+        let mut endpoint = peer.endpoint.clone();
+        endpoint.addr = fallback_addr;
+        endpoint.transport = TransportKind::Reticulum;
+        let context = RoomContext::for_space(
+            peer.authority_peer_id.clone(),
+            peer.governance_room_id.clone(),
+        );
+        let limits = SyncLimits {
+            max_events_per_batch: max_events,
+        };
+        let governance = node
+            .sync_room_once(
+                &mut store,
+                RoomSync {
+                    remote: &endpoint,
+                    room_id: &peer.governance_room_id,
+                    context: &context,
+                    now_ms: now_ms(),
+                    limits,
+                },
+            )
+            .await?;
+        self.import_private_room_keys()?;
+        let governance_events = store.room_events(&peer.governance_room_id)?;
+        let state = derive_governance_state(&governance_events, &context, now_ms());
+        let mut room = SyncStats::default();
+        let mut room_ids: Vec<String> = state
+            .channels
+            .values()
+            .filter(|channel| {
+                voxelle_core::channel_allows_peer(channel, &local_peer_id)
+                    && voxelle_core::channel_allows_peer(channel, &peer.endpoint.peer_id)
+            })
+            .map(|channel| channel.room_id.clone())
+            .collect();
+        room_ids.sort();
+        room_ids.dedup();
+        for room_id in room_ids {
+            let next = node
+                .sync_room_once(
+                    &mut store,
+                    RoomSync {
+                        remote: &endpoint,
+                        room_id: &room_id,
+                        context: &context,
+                        now_ms: now_ms(),
+                        limits,
+                    },
+                )
+                .await?;
+            merge_stats(&mut room, next);
+        }
+
+        Ok(PeerSyncReport {
+            transport: TransportKind::Reticulum,
+            governance,
+            room,
+            error: None,
+        })
     }
 
     fn load_identity(&self) -> Result<PeerIdentity> {
@@ -4047,16 +4308,18 @@ impl VoxelleCommandHost {
             .clone()
             .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
         let report = self.home.diagnose_peer(&peer).await?;
+        let transport = VoxelleHome::transport_path_label_for_transport(report.transport);
         if report.reachable {
             self.push_activity(
                 ServiceActivityLevel::Info,
-                format!("diagnostic reached {label}"),
+                format!("diagnostic reached {label} via path={transport}"),
             );
         } else {
             self.push_activity(
                 ServiceActivityLevel::Error,
                 format!(
-                    "diagnostic failed for {label}: {}",
+                    "diagnostic failed for {label} via path={}: {}",
+                    transport,
                     report.error.as_deref().unwrap_or("no error detail")
                 ),
             );
@@ -4072,13 +4335,21 @@ impl VoxelleCommandHost {
             .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
         let max_events = request.max_events.unwrap_or(64);
         let report = self.home.sync_peer(&peer, max_events).await?;
+        let transport = VoxelleHome::transport_path_label_for_transport(report.transport);
         self.push_activity(
             ServiceActivityLevel::Info,
             format!(
-                "synced {label}: governance accepted {}, room accepted {}",
+                "synced {label} via path={}: governance accepted {}, room accepted {}",
+                transport,
                 report.governance.accepted, report.room.accepted
             ),
         );
+        if let Some(error) = report.error.as_deref() {
+            self.push_activity(
+                ServiceActivityLevel::Warn,
+                format!("sync warning for {label} via path={transport}: {error}"),
+            );
+        }
         self.snapshot()
     }
 
@@ -4104,20 +4375,31 @@ impl VoxelleCommandHost {
                 .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
             match sync {
                 Ok(report) => {
+                    let transport = VoxelleHome::transport_path_label_for_transport(report.transport);
                     let received = report.governance.accepted + report.room.accepted;
                     let pushed = report.governance.remote_accepted + report.room.remote_accepted;
+                    if let Some(error) = report.error.as_deref() {
+                        self.push_activity(
+                            ServiceActivityLevel::Warn,
+                            format!("automatic sync with {label} via path={transport}: {error}"),
+                        );
+                    }
                     if received > 0 || pushed > 0 {
                         self.push_activity(
                             ServiceActivityLevel::Info,
                             format!(
-                                "automatic sync with {label}: received {received}, pushed {pushed}"
+                                "automatic sync with {label} via path={}: received {received}, pushed {pushed}",
+                                transport
                             ),
                         );
                     }
                 }
                 Err(error) => self.push_activity(
                     ServiceActivityLevel::Error,
-                    format!("automatic sync could not reach {label}: {error}"),
+                    format!(
+                        "automatic sync could not reach {label} via path={}: {error}",
+                        VoxelleHome::transport_path_label_for_transport(TransportKind::Unknown)
+                    ),
                 ),
             }
         }
@@ -5534,6 +5816,24 @@ fn default_behaviors() -> Vec<UiBehavior> {
             "Start Online On Launch",
             UiBehaviorValue::Bool(false),
             &["runtime.status"],
+        ),
+        behavior(
+            "network.transport.fallback.enabled",
+            "Enable Optional Fallback Transport",
+            UiBehaviorValue::Bool(false),
+            &["runtime.status", "network.health"],
+        ),
+        behavior(
+            "network.transport.fallback.display_name",
+            "Fallback Transport Display Name",
+            UiBehaviorValue::Text(String::new()),
+            &["runtime.status", "network.health"],
+        ),
+        behavior(
+            "network.transport.fallback.endpoint",
+            "Fallback Transport Endpoint",
+            UiBehaviorValue::Text(String::new()),
+            &["runtime.status", "network.health"],
         ),
     ]
 }
@@ -7197,7 +7497,7 @@ mod tests {
         assert!(alice_after_serving
             .service_activity
             .iter()
-            .any(|item| item.summary.starts_with("served sync:")));
+            .any(|item| item.summary.starts_with("served sync")));
         alice.stop_service().expect("stop");
     }
 
@@ -7306,6 +7606,230 @@ mod tests {
                 .as_slice(),
             &["runtime.goOnline".to_string()]
         );
+    }
+
+    #[test]
+    fn network_health_view_includes_transport_and_fallback_rows() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+
+        let health = home.network_health_view(None).expect("health");
+        assert_eq!(
+            network_health_status(&health, "transport"),
+            NetworkHealthStatus::Unknown
+        );
+        assert_eq!(
+            network_health_status(&health, "fallback"),
+            NetworkHealthStatus::Working
+        );
+        assert_eq!(
+            network_health_row(&health, "fallback")
+                .summary
+                .as_str(),
+            "Fallback transport is disabled in preferences."
+        );
+    }
+
+    #[test]
+    fn transport_fallback_pref_switches_health_row_state() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+        home.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.enabled".to_string(),
+            value: UiBehaviorValue::Bool(true),
+        })
+        .expect("enable fallback preference");
+
+        let health = home.network_health_view(None).expect("health");
+        let fallback_row = network_health_row(&health, "fallback");
+        assert_eq!(fallback_row.status, NetworkHealthStatus::NeedsAttention);
+        assert_eq!(
+            fallback_row.primary_action.as_deref(),
+            Some("network.transport.fallback.enabled")
+        );
+    }
+
+    #[test]
+    fn transport_fallback_configured_row_is_working() {
+        let dir = tempdir().expect("tempdir");
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).expect("init");
+        home.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.enabled".to_string(),
+            value: UiBehaviorValue::Bool(true),
+        })
+        .expect("enable fallback preference");
+        home.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.display_name".to_string(),
+            value: UiBehaviorValue::Text("reticulum-test-link".to_string()),
+        })
+        .expect("set fallback name");
+        home.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.endpoint".to_string(),
+            value: UiBehaviorValue::Text("[::1]:4444".to_string()),
+        })
+        .expect("set fallback endpoint");
+
+        let health = home.network_health_view(None).expect("health");
+        let fallback_row = network_health_row(&health, "fallback");
+        assert_eq!(fallback_row.status, NetworkHealthStatus::Working);
+        assert!(fallback_row
+            .summary
+            .contains("Fallback transport reticulum-test-link is configured"));
+    }
+
+    #[tokio::test]
+    async fn peer_transport_reports_reticulum_path_when_fallback_enabled() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        bob.init(DEFAULT_ROOM_ID).expect("bob init");
+
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let peer_record = service
+            .online()
+            .peer_record(Some("Alice".to_string()), None)
+            .expect("peer record");
+        service.stop().expect("stop alice");
+
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.enabled".to_string(),
+            value: UiBehaviorValue::Bool(true),
+        })
+        .expect("enable fallback");
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.display_name".to_string(),
+            value: UiBehaviorValue::Text("reticulum-test-link".to_string()),
+        })
+        .expect("set fallback name");
+
+        let diagnostic = bob.diagnose_peer(&peer_record).await.expect("diagnose");
+        assert_eq!(diagnostic.transport, TransportKind::Reticulum);
+        assert!(!diagnostic.reachable);
+        assert!(diagnostic.error.as_deref().unwrap_or("").contains("reticulum-test-link"));
+    }
+
+    #[tokio::test]
+    async fn peer_sync_uses_reticulum_transport_after_quic_fallback() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        bob.init(DEFAULT_ROOM_ID).expect("bob init");
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let record = service
+            .online()
+            .peer_record(Some("Alice".to_string()), None)
+            .expect("peer record");
+        service.stop().expect("stop alice");
+
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.enabled".to_string(),
+            value: UiBehaviorValue::Bool(true),
+        })
+        .expect("enable fallback");
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.display_name".to_string(),
+            value: UiBehaviorValue::Text("reticulum-test-link".to_string()),
+        })
+        .expect("set fallback name");
+
+        let report = bob.sync_peer(&record, 64).await.expect("fallback sync attempt");
+        assert_eq!(report.transport, TransportKind::Reticulum);
+        assert_eq!(report.governance.accepted, 0);
+        assert_eq!(report.room.accepted, 0);
+        assert!(report
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("reticulum-test-link"));
+    }
+
+    #[tokio::test]
+    async fn peer_sync_uses_fallback_endpoint_as_reticulum_path() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        bob.init(DEFAULT_ROOM_ID).expect("bob init");
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let fallback_addr = service.online().endpoint.addr;
+        let mut record = service
+            .online()
+            .peer_record(Some("Alice".to_string()), None)
+            .expect("peer record");
+        record.endpoint.addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 1);
+
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.enabled".to_string(),
+            value: UiBehaviorValue::Bool(true),
+        })
+        .expect("enable fallback");
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.display_name".to_string(),
+            value: UiBehaviorValue::Text("reticulum-test-link".to_string()),
+        })
+        .expect("set fallback name");
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.endpoint".to_string(),
+            value: UiBehaviorValue::Text(fallback_addr.to_string()),
+        })
+        .expect("set fallback endpoint");
+
+        let report = bob.sync_peer(&record, 64).await.expect("fallback sync attempt");
+        assert_eq!(report.transport, TransportKind::Reticulum);
+        assert!(report.governance.accepted >= 1);
+    }
+
+    #[tokio::test]
+    async fn peer_diagnose_uses_fallback_endpoint_when_primary_fails() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        bob.init(DEFAULT_ROOM_ID).expect("bob init");
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("alice service");
+        let fallback_addr = service.online().endpoint.addr;
+        let mut record = service
+            .online()
+            .peer_record(Some("Alice".to_string()), None)
+            .expect("peer record");
+        record.endpoint.addr = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 1);
+
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.enabled".to_string(),
+            value: UiBehaviorValue::Bool(true),
+        })
+        .expect("enable fallback");
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.display_name".to_string(),
+            value: UiBehaviorValue::Text("reticulum-test-link".to_string()),
+        })
+        .expect("set fallback name");
+        bob.set_ui_preference(SetUiPreferenceRequest::Behavior {
+            id: "network.transport.fallback.endpoint".to_string(),
+            value: UiBehaviorValue::Text(fallback_addr.to_string()),
+        })
+        .expect("set fallback endpoint");
+
+        let report = bob.diagnose_peer(&record).await.expect("fallback diagnose");
+        assert_eq!(report.transport, TransportKind::Reticulum);
+        assert!(report.reachable);
     }
 
     #[tokio::test]
@@ -7472,6 +7996,8 @@ mod tests {
             panic!("expected service event");
         };
         assert!(matches!(event, VoxelleServiceEvent::Served(_)));
+        let summary = event.summary();
+        assert!(summary.contains("path=quic"));
         assert!(event.summary().starts_with("served "));
         service.stop().expect("stop service");
     }

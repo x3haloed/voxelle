@@ -48,6 +48,20 @@ pub struct AuthenticatedPeer {
     pub quic_cert_fingerprint: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum TransportKind {
+    Quic,
+    Reticulum,
+    Unknown,
+}
+
+impl Default for TransportKind {
+    fn default() -> Self {
+        Self::Quic
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthenticatedConnection {
     _endpoint_guard: Option<quinn::Endpoint>,
@@ -60,6 +74,8 @@ pub struct PeerEndpoint {
     pub v: u8,
     #[ts(type = "string")]
     pub addr: SocketAddr,
+    #[serde(default)]
+    pub transport: TransportKind,
     pub peer_id: String,
     pub device_id: String,
     pub quic_cert_der_b64: String,
@@ -77,6 +93,8 @@ pub struct LocalReachabilityReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PeerReachabilityReport {
+    #[serde(default)]
+    pub transport: TransportKind,
     pub endpoint: PeerEndpoint,
     pub reachable: bool,
     pub remote: Option<AuthenticatedPeer>,
@@ -261,6 +279,7 @@ impl QuicNode {
         Ok(PeerEndpoint {
             v: 1,
             addr: advertised_addr,
+            transport: TransportKind::Quic,
             peer_id: self.identity.peer_id.clone(),
             device_id: self.identity.device.id.clone(),
             quic_cert_der_b64: self.certificate.cert_der_b64.clone(),
@@ -722,6 +741,7 @@ impl QuicNode {
         )
         .await?;
         Ok(PeerReachabilityReport {
+            transport: TransportKind::Quic,
             endpoint: self.peer_endpoint(self.local_addr()?)?,
             reachable: true,
             remote: Some(remote),
@@ -732,12 +752,13 @@ impl QuicNode {
     pub async fn diagnose_peer(&self, endpoint: &PeerEndpoint) -> PeerReachabilityReport {
         match self.diagnose_peer_result(endpoint).await {
             Ok(report) => report,
-            Err(error) => PeerReachabilityReport {
-                endpoint: endpoint.clone(),
-                reachable: false,
-                remote: None,
-                error: Some(error.to_string()),
-            },
+        Err(error) => PeerReachabilityReport {
+            transport: TransportKind::Quic,
+            endpoint: endpoint.clone(),
+            reachable: false,
+            remote: None,
+            error: Some(error.to_string()),
+        },
         }
     }
 
@@ -790,6 +811,7 @@ impl QuicNode {
             .connection
             .close(0u32.into(), b"diagnostic done");
         Ok(PeerReachabilityReport {
+            transport: TransportKind::Quic,
             endpoint: endpoint.clone(),
             reachable: pong.reachable,
             remote: Some(authenticated.remote),
@@ -898,6 +920,36 @@ impl QuicCertificate {
                 .decode(&self.private_key_pkcs8_der_b64)
                 .context("decode QUIC private key DER")?,
         ))
+    }
+}
+
+#[derive(Debug)]
+pub struct ReticulumNode {
+    quic: QuicNode,
+}
+
+impl ReticulumNode {
+    pub fn bind_ipv6_loopback_with_certificate(
+        identity: PeerIdentity,
+        certificate: QuicCertificate,
+    ) -> Result<Self> {
+        Ok(Self {
+            quic: QuicNode::bind_ipv6_loopback_with_certificate(identity, certificate)?,
+        })
+    }
+
+    pub async fn diagnose_peer(&self, endpoint: &PeerEndpoint) -> PeerReachabilityReport {
+        let mut report = self.quic.diagnose_peer(endpoint).await;
+        report.transport = TransportKind::Reticulum;
+        report
+    }
+
+    pub async fn sync_room_once(
+        &self,
+        source: &mut Store,
+        request: RoomSync<'_>,
+    ) -> Result<SyncStats> {
+        self.quic.sync_room_once(source, request).await
     }
 }
 
@@ -1214,7 +1266,21 @@ mod tests {
             serialize_json_bounded(&candidate, two_size)
         })
         .expect("prefix");
-        assert_eq!(count, 2);
+            assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn peer_endpoint_defaults_to_quic_transport() {
+        let endpoint: PeerEndpoint = serde_json::from_value(serde_json::json!({
+            "v": 1,
+            "addr": "[::1]:1234",
+            "peer_id": "peer",
+            "device_id": "device",
+            "quic_cert_der_b64": "",
+            "quic_cert_fingerprint": "",
+        }))
+        .expect("deserialize peer endpoint");
+        assert_eq!(endpoint.transport, TransportKind::Quic);
     }
 
     fn member_join(identity: &PeerIdentity) -> EventV1 {

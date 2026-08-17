@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde = "1"
 serde_json = "1"
 voxelle-core = { path = "../voxelle-core" }
