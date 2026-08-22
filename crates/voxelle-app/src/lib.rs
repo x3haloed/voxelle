@@ -4754,8 +4754,16 @@ fn validate_product_generation(generation: &ProductGenerationV1) -> Result<()> {
         || generation.component.source.len() > 256 * 1024
         || generation.component.styles.is_empty()
         || generation.component.styles.len() > 256 * 1024
-        || generation.component.source.chars().any(|character| character == '\0')
-        || generation.component.styles.chars().any(|character| character == '\0')
+        || generation
+            .component
+            .source
+            .chars()
+            .any(|character| character == '\0')
+        || generation
+            .component
+            .styles
+            .chars()
+            .any(|character| character == '\0')
     {
         anyhow::bail!("product component source is empty, oversized, or contains NUL");
     }

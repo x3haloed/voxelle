@@ -301,7 +301,10 @@ mod tests {
             .await
             .expect("activate first generation");
         assert_eq!(first.product_generation.active_sequence, 1);
-        assert!(first.product_component.source.contains("signed generation: Refresh Live"));
+        assert!(first
+            .product_component
+            .source
+            .contains("signed generation: Refresh Live"));
         assert_eq!(
             first
                 .ui_ontology
@@ -331,7 +334,10 @@ mod tests {
             .await
             .expect("reload persisted generation");
         assert_eq!(persisted.product_generation.active_sequence, 1);
-        assert!(persisted.product_component.source.contains("signed generation: Refresh Live"));
+        assert!(persisted
+            .product_component
+            .source
+            .contains("signed generation: Refresh Live"));
         assert_eq!(
             persisted
                 .ui_ontology
@@ -357,7 +363,10 @@ mod tests {
             .await
             .expect("rollback generation");
         assert_eq!(rolled_back.product_generation.active_sequence, 1);
-        assert!(rolled_back.product_component.source.contains("signed generation: Refresh Live"));
+        assert!(rolled_back
+            .product_component
+            .source
+            .contains("signed generation: Refresh Live"));
         assert_eq!(
             rolled_back
                 .ui_ontology

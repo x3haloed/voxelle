@@ -197,6 +197,15 @@ physical cameras, assistive-technology combinations, and operating-system
 unsigned-install policy variants require external runners or machines. Claims
 cover them only after those artifacts or runtimes are actually exercised.
 
+On 2026-08-22, a fresh accelerated Ubuntu 24.04 ARM64 VM exercised the tracked
+source at commit `f5ef3b9`: all 100 Rust workspace tests, strict workspace
+Clippy, all 20 browser-shell behavior tests under explicit ESM semantics, and
+an optimized workspace build passed against the native Linux WebKitGTK
+dependency graph. Four resulting release executables were inspected as AArch64
+ELF artifacts. This is Linux build and behavior evidence only; it does not add
+a Linux distribution artifact to the negotiated product envelope or satisfy
+the native Windows x86-64 first-launch gate.
+
 ## Construction And Verification Order
 
 1. Carry one identity through loss, recovery, rotation, revocation, remote

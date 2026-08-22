@@ -280,8 +280,14 @@ fn validate_windows(windows: &WindowsEvidenceV1, manifest: &ReleaseManifestV1) -
     )?;
     require_text("Windows first-launch timestamp", &windows.first_launch_utc)?;
     require_text("Windows operator", &windows.operator)?;
-    if !windows.os_product_name.to_ascii_lowercase().contains("windows") {
-        return Err(anyhow!("Windows smoke receipt must identify a Windows OS product"));
+    if !windows
+        .os_product_name
+        .to_ascii_lowercase()
+        .contains("windows")
+    {
+        return Err(anyhow!(
+            "Windows smoke receipt must identify a Windows OS product"
+        ));
     }
     if windows.architecture != "X64" {
         return Err(anyhow!(
@@ -292,7 +298,9 @@ fn validate_windows(windows: &WindowsEvidenceV1, manifest: &ReleaseManifestV1) -
         .installed_executable_name
         .eq_ignore_ascii_case("voxelle-tauri-host.exe")
     {
-        return Err(anyhow!("Windows smoke receipt does not identify the Voxelle executable"));
+        return Err(anyhow!(
+            "Windows smoke receipt does not identify the Voxelle executable"
+        ));
     }
     if !windows.process_started || !windows.main_window_visible {
         return Err(anyhow!(
