@@ -430,6 +430,12 @@ fieldset[aria-invalid="true"] {
   gap: 2px;
 }
 
+.recovery-setup-actions {
+  display: flex !important;
+  flex: 0 0 auto;
+  gap: 8px !important;
+}
+
 .connection-center {
   position: fixed;
   z-index: 80;
@@ -529,6 +535,21 @@ fieldset[aria-invalid="true"] {
   padding: clamp(16px, 2.5vw, 24px);
   border: 1px solid var(--panel-border);
   background: var(--panel-background);
+}
+
+.device-link-choice {
+  grid-column: 1 / -1;
+  border-color: var(--activity-info);
+  background: color-mix(in srgb, var(--panel-background) 94%, var(--activity-info));
+}
+
+.emergency-recovery {
+  max-width: 760px;
+}
+
+.emergency-recovery[open] {
+  display: grid;
+  gap: 12px;
 }
 
 .onboarding-choice > .command-button,

@@ -285,10 +285,20 @@ function recoverySetupPrompt() {
     element(
       "p",
       "summary",
-      "Save an offline recovery kit. It is the only supported path back to the same principal after local loss.",
+      "Save an emergency recovery kit for local loss. Do not use it to add another device; linked devices have their own revocable keys.",
     ),
   );
-  prompt.append(copy, commandButton("identity.recovery.export"));
+  const actions = element("div", "recovery-setup-actions");
+  const addDevice = actionButton("Set up another device", () => {
+    rememberFocusReturn();
+    uiState.connectionOpen = false;
+    uiState.utilityOpen = "devices";
+    render();
+  });
+  const saveRecovery = commandButton("identity.recovery.export");
+  saveRecovery.textContent = "Save emergency recovery kit";
+  actions.append(addDevice, saveRecovery);
+  prompt.append(copy, actions);
   return prompt;
 }
 
@@ -416,7 +426,7 @@ function header(snapshot) {
     actions.append(
       connectionCenterButton(snapshot),
       actionButton("Invite someone", openInviteUtility),
-      utilityButton("devices", `Devices · ${snapshot.home.devices?.items.length ?? 1}`),
+      utilityButton("devices", `Your devices · ${snapshot.home.devices?.items.length ?? 1}`),
       utilityButton("people", `People · ${snapshot.home.profiles.length}`),
       utilityButton(
         "notifications",
@@ -616,11 +626,11 @@ function onboardingExperience(snapshot) {
   const intro = element("div", "onboarding-intro");
   intro.append(
     element("p", "eyebrow", "Private communication, owned by its members"),
-    element("h2", "", "How would you like to begin?"),
+    element("h2", "", "Set up this device"),
     element(
       "p",
       "summary",
-      "Voxelle creates identity and space authority on your devices. No Voxelle service owns your account, membership, messages, or recovery.",
+      "Choose whether this device should become another device for an identity you already use, or begin a different identity.",
     ),
   );
   intro.querySelector("h2").id = "onboarding-title";
@@ -636,9 +646,10 @@ function onboardingExperience(snapshot) {
   create.append(commandButton("home.init"));
 
   const link = onboardingChoice(
-    "Use my existing identity",
-    "Authorize this as another device for you. Your existing device stays authorized, and this device creates its own private key.",
+    "Use my existing identity on this device",
+    "Start here on the fresh device. It creates its own private key; a device that is already you will review and authorize it.",
   );
+  link.classList.add("device-link-choice");
   const deviceName = document.createElement("input");
   deviceName.type = "text";
   deviceName.maxLength = 80;
@@ -652,16 +663,16 @@ function onboardingExperience(snapshot) {
   const deviceNameField = element("label", "field");
   deviceNameField.append(element("span", "", "Name this device"), deviceName);
   const requestButton = commandButton("identity.device.request");
-  requestButton.textContent = "1. Save approval request";
+  requestButton.textContent = "1. Save request on this device";
   const finishButton = commandButton("identity.device.accept");
-  finishButton.textContent = "3. Open authorization package";
+  finishButton.textContent = "3. Open authorization package here";
   link.append(
     deviceNameField,
     requestButton,
     element(
       "p",
       "recovery-note",
-      "2. On a device that is already you, open Devices → Add another device and approve the request. Bring the encrypted authorization package back here.",
+      "2. Move the request to a device that is already you. There, open Your devices → Approve a new device request, review it, and save the authorization package. Bring that package back here.",
     ),
     finishButton,
   );
@@ -742,11 +753,15 @@ function onboardingExperience(snapshot) {
   joinForm.append(inviteFile, pasteLabel, inviteSource, inviteReview, joinButton, fileChoice);
   join.append(joinForm);
 
-  const recover = onboardingChoice(
-    "Recover my identity",
-    "Use an offline recovery kit after losing a device or local state. Recovery preserves your principal, rotates authority to this device, and resynchronizes retained history.",
-  );
+  const recover = element("details", "advanced-details emergency-recovery");
   recover.append(
+    disclosureSummary("Lost access to every authorized device?"),
+    element("h3", "", "Emergency identity recovery"),
+    element(
+      "p",
+      "summary",
+      "This is not device linking. Use it only after losing a device or its local state: recovery rotates authority to this device and revokes the devices that were previously authorized.",
+    ),
     element(
       "p",
       "recovery-note",
@@ -755,8 +770,8 @@ function onboardingExperience(snapshot) {
     commandButton("identity.recovery.restore"),
   );
 
-  choices.append(create, link, join, recover);
-  section.append(intro, choices);
+  choices.append(link, create, join);
+  section.append(intro, choices, recover);
   return section;
 }
 
@@ -1501,16 +1516,16 @@ function identityDevicesView(snapshot) {
   }
   const intro = element("div", "identity-devices-intro");
   intro.append(
-    element("h3", "", "Devices that can be you"),
+    element("h3", "", "Use Voxelle on another device"),
     element(
       "p",
       "summary",
-      "A linked device uses its own key as the same principal. Linking does not copy your root or offline recovery capability, and revoking one device does not change who you are.",
+      "First, choose Use my existing identity on the fresh device and save its request. Move that request here to authorize the device with its own revocable key. Recovery kits are not used for linking.",
     ),
   );
   if (devices.can_authorize) {
     const approve = commandButton("identity.device.approve");
-    approve.textContent = "Add another device";
+    approve.textContent = "Approve a new device request…";
     intro.append(approve);
   } else {
     intro.append(element(
@@ -1519,6 +1534,7 @@ function identityDevicesView(snapshot) {
       "This linked device can act as you, but it does not hold identity authority. Start approval on the device where you created or recovered this identity.",
     ));
   }
+  intro.append(element("h3", "identity-device-list-title", "Authorized devices"));
   const list = element("div", "identity-device-list");
   for (const device of devices.items) {
     const card = element("article", "identity-device-card");

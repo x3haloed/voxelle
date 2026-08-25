@@ -261,9 +261,14 @@ may advance through ordinary synchronization; receivers still require a
 monotonic proof and current Device authorization. Rust regressions carry this
 path through restart, ordinary posting, a later proof extension, signed
 revocation, and refusal by the revoked Device. The native surface exposes the
-flow through a top-level Devices destination and the fresh-home setup choices;
-packaged assistive-technology and cross-machine comprehension remain lived
-beta evidence rather than completed claims.
+flow through a top-level Your Devices destination and a fresh-home setup path
+that separates ordinary linking from destructive identity recovery. On
+2026-08-25 a person completed the full request, authorization-package, and
+acceptance handoff with a real fresh second device; the receiving surface ended
+with **This device is now you. Your other authorized devices will still work.**
+This is lived evidence for the ordinary two-device causal path and its
+comprehension, not yet packaged assistive-technology or cross-platform
+evidence.
 
 The human recovery handoff now follows that authority result instead of falling
 through silently to conversation. A successful restore announces that authority

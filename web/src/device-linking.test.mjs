@@ -21,17 +21,24 @@ const baseContext = {
 };
 
 test("fresh setup exposes the complete same-identity device handoff", () => {
-  assert.match(source, /Use my existing identity/);
-  assert.match(source, /1\. Save approval request/);
-  assert.match(source, /Devices → Add another device/);
-  assert.match(source, /3\. Open authorization package/);
+  assert.match(source, /Use my existing identity on this device/);
+  assert.match(source, /1\. Save request on this device/);
+  assert.match(source, /Your devices → Approve a new device request/);
+  assert.match(source, /3\. Open authorization package here/);
   assert.match(source, /This device is now you\. Your other authorized devices still work\./);
 });
 
+test("fresh setup separates device linking from destructive recovery", () => {
+  assert.match(source, /Lost access to every authorized device\?/);
+  assert.match(source, /This is not device linking/);
+  assert.match(source, /recovery rotates authority to this device and revokes the devices that were previously authorized/);
+});
+
 test("ordinary conversation exposes devices without hiding them under recovery", () => {
-  assert.match(source, /utilityButton\("devices", `Devices ·/);
-  assert.match(source, /Devices that can be you/);
-  assert.match(source, /does not copy your root or offline recovery capability/);
+  assert.match(source, /utilityButton\("devices", `Your devices ·/);
+  assert.match(source, /Use Voxelle on another device/);
+  assert.match(source, /Approve a new device request…/);
+  assert.match(source, /Recovery kits are not used for linking/);
   assert.match(source, /Recovery stays separate from linked devices/);
 });
 
