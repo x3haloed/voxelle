@@ -221,7 +221,7 @@ mod tests {
             vec![],
             json!({
                 "peer_id": identity.peer_id,
-                "peer_pub": identity.peer.spki_b64,
+                "peer_pub": identity.current_root_public_b64().expect("root public key"),
                 "encryption_pub": identity.encryption_public_b64(),
             }),
         )

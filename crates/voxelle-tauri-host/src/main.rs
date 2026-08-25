@@ -4,7 +4,7 @@ use rand::RngCore;
 use serde_json::Value;
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
-use voxelle_app::{ShellError, ShellSnapshotView, ShellState};
+use voxelle_app::{DeviceLinkRequestFileV1, ShellError, ShellSnapshotView, ShellState};
 
 struct DesktopShellState {
     shell: ShellState,
@@ -36,7 +36,9 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             execute_shell_command,
-            choose_recovery_kit_path
+            choose_recovery_kit_path,
+            choose_device_link_path,
+            inspect_device_link_request
         ])
         .run(tauri::generate_context!())
         .expect("run Voxelle Tauri host");
@@ -69,6 +71,74 @@ async fn choose_recovery_kit_path(mode: String) -> Result<Option<String>, ShellE
         }
     };
     Ok(selection.map(|file| file.path().to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+async fn choose_device_link_path(mode: String) -> Result<Option<String>, ShellError> {
+    let (title, filter_name, extensions, save_name, save) = match mode.as_str() {
+        "save_request" => (
+            "Save Device Approval Request",
+            "Voxelle device request",
+            &["voxlink"] as &[_],
+            Some("voxelle-device.voxlink"),
+            true,
+        ),
+        "open_request" => (
+            "Choose Device Approval Request",
+            "Voxelle device request",
+            &["voxlink"] as &[_],
+            None,
+            false,
+        ),
+        "save_package" => (
+            "Save Device Authorization Package",
+            "Voxelle device authorization",
+            &["voxdevice"] as &[_],
+            Some("voxelle-authorization.voxdevice"),
+            true,
+        ),
+        "open_package" => (
+            "Choose Device Authorization Package",
+            "Voxelle device authorization",
+            &["voxdevice"] as &[_],
+            None,
+            false,
+        ),
+        _ => {
+            return Err(ShellError {
+                message: "Voxelle could not open the device-link file chooser.".to_string(),
+                recovery: voxelle_app::ShellRecovery::InternalError,
+                recovery_message: "Close this window, reopen Voxelle, and try again.".to_string(),
+                detail: format!("unknown device-link file dialog mode {mode}"),
+            })
+        }
+    };
+    let dialog = rfd::AsyncFileDialog::new()
+        .add_filter(filter_name, extensions)
+        .set_title(title);
+    let selection = if save {
+        dialog
+            .set_file_name(save_name.unwrap_or("voxelle-device"))
+            .save_file()
+            .await
+    } else {
+        dialog.pick_file().await
+    };
+    Ok(selection.map(|file| file.path().to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+fn inspect_device_link_request(path: String) -> Result<DeviceLinkRequestFileV1, ShellError> {
+    voxelle_app::read_device_link_request_file(std::path::Path::new(&path)).map_err(|error| {
+        ShellError {
+            message: "Voxelle could not read that device approval request.".to_string(),
+            recovery: voxelle_app::ShellRecovery::NeedsHuman,
+            recovery_message:
+                "Choose the unchanged .voxlink file created on the device you want to add."
+                    .to_string(),
+            detail: format!("{error:#}"),
+        }
+    })
 }
 
 #[tauri::command]

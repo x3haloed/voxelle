@@ -55,6 +55,14 @@ class TauriShellClient {
   async chooseRecoveryKitPath(mode) {
     return await this.invoke("choose_recovery_kit_path", { mode });
   }
+
+  async chooseDeviceLinkPath(mode) {
+    return await this.invoke("choose_device_link_path", { mode });
+  }
+
+  async inspectDeviceLinkRequest(path) {
+    return await this.invoke("inspect_device_link_request", { path });
+  }
 }
 
 class PreviewShellClient {
@@ -91,6 +99,14 @@ class PreviewShellClient {
   }
 
   async chooseRecoveryKitPath() {
+    return null;
+  }
+
+  async chooseDeviceLinkPath() {
+    return null;
+  }
+
+  async inspectDeviceLinkRequest() {
     return null;
   }
 }

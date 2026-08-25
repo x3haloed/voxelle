@@ -404,7 +404,7 @@ fn member_join(identity: &PeerIdentity) -> Result<voxelle_core::EventV1> {
         vec![],
         serde_json::json!({
             "peer_id": identity.peer_id,
-            "peer_pub": identity.peer.spki_b64,
+            "peer_pub": identity.current_root_public_b64()?,
             "encryption_pub": identity.encryption_public_b64(),
         }),
     )

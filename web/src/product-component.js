@@ -87,6 +87,9 @@ const uiState = {
   lastCallHeartbeatMs: 0,
   preparingHomeRecovery: false,
   homeRecoveryNotice: "",
+  deviceNameDraft: "",
+  revokingIdentityDeviceId: "",
+  deviceApprovalDraft: null,
 };
 const focusCoordinator = new FocusSurfaceCoordinator(
   document,
@@ -100,6 +103,7 @@ compactTransientQuery?.addEventListener?.("change", handleCompactTransientChange
 
 const viewRenderers = {
   "profile.summary": profileSummaryView,
+  "identity.devices": identityDevicesView,
   "identity.recovery": identityRecoveryView,
   "runtime.status": runtimeStatusView,
   "network.health": networkHealthView,
@@ -210,7 +214,9 @@ function render() {
     ...(modalOwnsError ? [] : [globalErrorBanner()]),
     globalProgressBanner(),
     globalStatusBanner(),
-    ...(currentSnapshot.home && !currentSnapshot.home.recovery.kit_exported
+    ...(currentSnapshot.home
+      && currentSnapshot.home.recovery.available
+      && !currentSnapshot.home.recovery.kit_exported
       ? [recoverySetupPrompt()]
       : []),
     ...(uiState.connectionOpen && currentSnapshot.home
@@ -410,6 +416,7 @@ function header(snapshot) {
     actions.append(
       connectionCenterButton(snapshot),
       actionButton("Invite someone", openInviteUtility),
+      utilityButton("devices", `Devices · ${snapshot.home.devices?.items.length ?? 1}`),
       utilityButton("people", `People · ${snapshot.home.profiles.length}`),
       utilityButton(
         "notifications",
@@ -492,6 +499,11 @@ function utilityButton(kind, label) {
 
 function utilityCenter(snapshot, kind) {
   const definitions = {
+    devices: {
+      title: "Your devices",
+      summary: "Devices authorized to act as you. Each device has its own key and can be revoked independently.",
+      render: () => identityDevicesView(snapshot),
+    },
     people: {
       title: "People",
       summary: "Your profile, members, and invitations for this space.",
@@ -623,6 +635,37 @@ function onboardingExperience(snapshot) {
   );
   create.append(commandButton("home.init"));
 
+  const link = onboardingChoice(
+    "Use my existing identity",
+    "Authorize this as another device for you. Your existing device stays authorized, and this device creates its own private key.",
+  );
+  const deviceName = document.createElement("input");
+  deviceName.type = "text";
+  deviceName.maxLength = 80;
+  deviceName.id = "device-name";
+  deviceName.placeholder = "e.g. Work laptop";
+  deviceName.value = uiState.deviceNameDraft;
+  deviceName.setAttribute("aria-label", "Name this device");
+  deviceName.addEventListener("input", () => {
+    uiState.deviceNameDraft = deviceName.value;
+  });
+  const deviceNameField = element("label", "field");
+  deviceNameField.append(element("span", "", "Name this device"), deviceName);
+  const requestButton = commandButton("identity.device.request");
+  requestButton.textContent = "1. Save approval request";
+  const finishButton = commandButton("identity.device.accept");
+  finishButton.textContent = "3. Open authorization package";
+  link.append(
+    deviceNameField,
+    requestButton,
+    element(
+      "p",
+      "recovery-note",
+      "2. On a device that is already you, open Devices → Add another device and approve the request. Bring the encrypted authorization package back here.",
+    ),
+    finishButton,
+  );
+
   const join = onboardingChoice(
     "Join with an invite",
     "Paste the invitation message your friend sent you. Voxelle will verify it before joining.",
@@ -712,7 +755,7 @@ function onboardingExperience(snapshot) {
     commandButton("identity.recovery.restore"),
   );
 
-  choices.append(create, join, recover);
+  choices.append(create, link, join, recover);
   section.append(intro, choices);
   return section;
 }
@@ -865,6 +908,21 @@ function blockingModalOwnsError() {
 }
 
 function activeConsequentialReview() {
+  if (uiState.deviceApprovalDraft) {
+    return {
+      key: `device-approval:${uiState.deviceApprovalDraft.preview.request_id}`,
+      selector: ".device-approval-confirmation",
+      cancel: cancelDeviceApproval,
+    };
+  }
+  if (uiState.revokingIdentityDeviceId) {
+    const deviceId = uiState.revokingIdentityDeviceId;
+    return {
+      key: `device-revoke:${deviceId}`,
+      selector: ".device-revoke-confirmation",
+      cancel: cancelIdentityDeviceRevocation,
+    };
+  }
   if (uiState.revokingInviteId) {
     const inviteId = uiState.revokingInviteId;
     return {
@@ -1434,10 +1492,152 @@ function profileSummaryView(snapshot) {
   return fragment;
 }
 
+function identityDevicesView(snapshot) {
+  const fragment = document.createDocumentFragment();
+  const devices = snapshot.home?.devices;
+  if (!devices) {
+    fragment.append(element("p", "summary", "Finish setup before managing identity devices."));
+    return fragment;
+  }
+  const intro = element("div", "identity-devices-intro");
+  intro.append(
+    element("h3", "", "Devices that can be you"),
+    element(
+      "p",
+      "summary",
+      "A linked device uses its own key as the same principal. Linking does not copy your root or offline recovery capability, and revoking one device does not change who you are.",
+    ),
+  );
+  if (devices.can_authorize) {
+    const approve = commandButton("identity.device.approve");
+    approve.textContent = "Add another device";
+    intro.append(approve);
+  } else {
+    intro.append(element(
+      "p",
+      "recovery-note",
+      "This linked device can act as you, but it does not hold identity authority. Start approval on the device where you created or recovered this identity.",
+    ));
+  }
+  const list = element("div", "identity-device-list");
+  for (const device of devices.items) {
+    const card = element("article", "identity-device-card");
+    const copy = element("div", "identity-device-copy");
+    copy.append(
+      element("strong", "", device.name),
+      element(
+        "p",
+        "summary",
+        device.current
+          ? "You are using this device now."
+          : `Authorized ${formatDeviceAuthorizationTime(device.authorized_ms)}.`,
+      ),
+      element("code", "device-id", device.device_id),
+    );
+    card.append(copy);
+    if (!device.current && devices.can_authorize) {
+      card.append(actionButton("Revoke…", () => {
+        uiState.revokingIdentityDeviceId = device.device_id;
+        render();
+      }));
+    }
+    list.append(card);
+  }
+  fragment.append(intro, list);
+  if (uiState.deviceApprovalDraft) {
+    fragment.append(deviceApprovalConfirmation(uiState.deviceApprovalDraft));
+  }
+  const revoking = devices.items.find((device) =>
+    device.device_id === uiState.revokingIdentityDeviceId
+  );
+  if (revoking) fragment.append(identityDeviceRevokeConfirmation(revoking));
+  return fragment;
+}
+
+function identityDeviceRevokeConfirmation(device) {
+  const { backdrop, dialog } = consequentialAlertDialog(
+    "device-revoke-confirmation",
+    `Revoke ${device.name}`,
+  );
+  const revoke = commandButton("identity.device.revoke", { device_id: device.device_id });
+  revoke.textContent = "Revoke this device";
+  revoke.dataset.dialogInitialFocus = "true";
+  dialog.append(
+    element("h3", "", `Revoke ${device.name}?`),
+    element(
+      "p",
+      "summary",
+      "This device will stop being able to act as you after peers learn the signed revocation. Your principal and other devices remain unchanged.",
+    ),
+    definitionGrid([["Device key", device.device_id]]),
+    revoke,
+    actionButton("Keep device", cancelIdentityDeviceRevocation),
+  );
+  return backdrop;
+}
+
+function cancelIdentityDeviceRevocation() {
+  uiState.revokingIdentityDeviceId = "";
+  render();
+}
+
+function deviceApprovalConfirmation(draft) {
+  const { backdrop, dialog } = consequentialAlertDialog(
+    "device-approval-confirmation",
+    `Authorize ${draft.preview.device_name} as you`,
+  );
+  const authorize = commandButton("identity.device.approve", {
+    request_path: draft.requestPath,
+    confirmed: true,
+  });
+  authorize.textContent = "Authorize this device";
+  authorize.dataset.dialogInitialFocus = "true";
+  dialog.append(
+    element("h3", "", `Authorize ${draft.preview.device_name} as you?`),
+    element(
+      "p",
+      "summary",
+      "The device will act as your existing principal with its own key. It will not receive your identity root or offline recovery capability, and you can revoke it later.",
+    ),
+    definitionGrid([
+      ["Device", draft.preview.device_name],
+      ["Device key", draft.preview.device_id],
+      ["Requested", formatDeviceAuthorizationTime(draft.preview.created_ms)],
+    ]),
+    authorize,
+    actionButton("Cancel", cancelDeviceApproval),
+  );
+  return backdrop;
+}
+
+function cancelDeviceApproval() {
+  uiState.deviceApprovalDraft = null;
+  render();
+}
+
+function formatDeviceAuthorizationTime(value) {
+  if (!Number.isFinite(value) || value <= 0) return "at an unknown time";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "at an unknown time" : date.toLocaleString();
+}
+
 function identityRecoveryView(snapshot) {
   const fragment = document.createDocumentFragment();
   if (snapshot.home) {
     const recovery = snapshot.home.recovery;
+    if (!recovery.available) {
+      const unavailable = element("div", "recovery-warning");
+      unavailable.append(
+        element("h3", "", "Recovery stays separate from linked devices"),
+        element(
+          "p",
+          "summary",
+          "This device can act as you, but it does not hold the offline recovery capability. Use the device where you created or recovered this identity to save a fresh kit, or keep your existing offline kit protected.",
+        ),
+      );
+      fragment.append(unavailable);
+      return fragment;
+    }
     const warning = element("div", "recovery-warning");
     warning.append(
       element(
@@ -4315,6 +4515,58 @@ async function runCommand(command, payload) {
           max_events_per_peer: payload?.max_events_per_peer ?? 4096,
         });
         uiState.status = "Identity recovered on this device. Authority from previous devices was revoked. Save a fresh offline recovery kit now.";
+        return;
+      }
+      case "identity.device.request": {
+        const name = uiState.deviceNameDraft.trim();
+        if (!name) {
+          setUserError("Name this device before saving its approval request.", "device-name");
+          return;
+        }
+        const path = payload?.path ?? await shell.chooseDeviceLinkPath?.("save_request");
+        if (!path) return;
+        currentSnapshot = await shell.execute(command, { path, device_name: name });
+        uiState.status = "Approval request saved. Open Devices → Add another device on a device that is already you.";
+        return;
+      }
+      case "identity.device.approve": {
+        if (!currentSnapshot.home?.devices.can_authorize) {
+          throw new Error("This linked device does not hold identity authority. Approve from the device where you created or recovered the identity.");
+        }
+        const requestPath = payload?.request_path ?? await shell.chooseDeviceLinkPath?.("open_request");
+        if (!requestPath) return;
+        if (!payload?.confirmed) {
+          const preview = await shell.inspectDeviceLinkRequest?.(requestPath);
+          if (!preview) return;
+          uiState.deviceApprovalDraft = { requestPath, preview };
+          uiState.utilityOpen = "devices";
+          render();
+          return;
+        }
+        const packagePath = payload?.package_path ?? await shell.chooseDeviceLinkPath?.("save_package");
+        if (!packagePath) return;
+        currentSnapshot = await shell.execute(command, {
+          request_path: requestPath,
+          package_path: packagePath,
+        });
+        uiState.deviceApprovalDraft = null;
+        uiState.status = "Device authorized. Take the encrypted authorization package back to the requesting device.";
+        return;
+      }
+      case "identity.device.accept": {
+        const path = payload?.path ?? await shell.chooseDeviceLinkPath?.("open_package");
+        if (!path) return;
+        currentSnapshot = await shell.execute(command, {
+          path,
+          max_events_per_peer: payload?.max_events_per_peer ?? 4096,
+        });
+        uiState.status = "This device is now you. Your other authorized devices still work.";
+        return;
+      }
+      case "identity.device.revoke": {
+        currentSnapshot = await shell.execute(command, payload);
+        uiState.revokingIdentityDeviceId = "";
+        uiState.status = "Device revoked. Voxelle is sharing the signed identity update with ordinary peers.";
         return;
       }
       case "peer.import": {

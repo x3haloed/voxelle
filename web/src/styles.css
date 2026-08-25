@@ -516,7 +516,7 @@ fieldset[aria-invalid="true"] {
 
 .onboarding-choices {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr));
   gap: 16px;
 }
 
@@ -1194,6 +1194,33 @@ textarea {
   margin-bottom: 12px;
   padding: 10px 12px;
   border: 1px solid var(--activity-error);
+}
+
+.identity-devices-intro,
+.identity-device-list,
+.identity-device-copy,
+.device-revoke-confirmation {
+  display: grid;
+  gap: 8px;
+}
+
+.identity-devices-intro {
+  margin-bottom: 16px;
+}
+
+.identity-device-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--panel-border);
+}
+
+.identity-device-card .device-id {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
 }
 
 .workflow-row {

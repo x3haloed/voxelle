@@ -15,11 +15,13 @@ use std::sync::Arc;
 use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
-    accept_event, create_delegation, create_event, create_event_with_origin,
-    create_origin_session_cert, create_space, create_space_invite_event, derive_governance_state,
-    space_from_genesis, topo_sort_deterministic, validate_room_event_semantics, validate_space_at,
-    validate_space_invite_at, ChannelVisibility, EventDraft, EventV1, FactOriginV1,
-    IdentityProofV1, OriginSurfaceProtocolV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
+    accept_event, append_identity_change, create_delegation, create_delegation_for_device,
+    create_event, create_event_with_origin, create_origin_session_cert, create_space,
+    create_space_invite_event, derive_governance_state, derive_identity_state, id_from_spki_der,
+    identity_proof_extends, space_from_genesis, topo_sort_deterministic,
+    validate_room_event_semantics, validate_space_at, validate_space_invite_at, ChannelVisibility,
+    EventDraft, EventV1, FactOriginV1, IdentityChangeAuthor, IdentityChangeKind, IdentityProofV1,
+    Keypair, OriginSurfaceProtocolV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
@@ -45,6 +47,8 @@ const READ_STATE: &str = "rooms.read";
 const ROOM_KEYS_STATE: &str = "rooms.keys.encrypted";
 const UI_PREFERENCES_STATE: &str = "ui.preferences";
 const RECOVERY_HEALTH_STATE: &str = "identity.recovery_health";
+const DEVICE_NAMES_STATE: &str = "identity.device_names";
+const DEVICE_LINK_PENDING_FILE: &str = "device-link-pending.json";
 const SERVICE_BINDING_STATE: &str = "runtime.service_binding";
 const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
 const MAX_KNOWN_PEERS: usize = 128;
@@ -143,24 +147,35 @@ pub struct IdentityFile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct IdentitySecretsV1 {
     v: u8,
-    root_secret_b64: String,
+    #[serde(default)]
+    root_secret_b64: Option<String>,
     device_secret_b64: String,
-    recovery_secret_b64: String,
+    #[serde(default)]
+    recovery_secret_b64: Option<String>,
     proof: IdentityProofV1,
     peer_id: String,
     device_id: String,
+    #[serde(default)]
+    device_delegation: Option<voxelle_core::DelegationCertV1>,
+    #[serde(default)]
+    member_encryption_secret_b64: Option<String>,
 }
 
 impl IdentitySecretsV1 {
     fn from_identity(identity: &PeerIdentity) -> Self {
         Self {
             v: 1,
-            root_secret_b64: identity.peer.secret_key_b64(),
+            root_secret_b64: identity.peer.as_ref().map(|key| key.secret_key_b64()),
             device_secret_b64: identity.device.secret_key_b64(),
-            recovery_secret_b64: identity.recovery.secret_key_b64(),
+            recovery_secret_b64: identity.recovery.as_ref().map(|key| key.secret_key_b64()),
             proof: identity.proof.clone(),
             peer_id: identity.peer_id.clone(),
             device_id: identity.device.id.clone(),
+            device_delegation: identity.device_delegation.clone(),
+            member_encryption_secret_b64: Some(
+                base64::engine::general_purpose::STANDARD
+                    .encode(identity.member_encryption_secret_bytes()),
+            ),
         }
     }
 
@@ -168,12 +183,40 @@ impl IdentitySecretsV1 {
         if self.v != 1 {
             anyhow::bail!("unsupported identity version {}", self.v);
         }
-        let identity = PeerIdentity::from_secret_keys_b64(
-            &self.root_secret_b64,
-            &self.device_secret_b64,
-            &self.recovery_secret_b64,
-            self.proof.clone(),
-        )?;
+        let identity = match (&self.root_secret_b64, &self.recovery_secret_b64) {
+            (Some(root), Some(recovery)) => PeerIdentity::from_secret_keys_b64(
+                root,
+                &self.device_secret_b64,
+                recovery,
+                self.proof.clone(),
+            )?,
+            (None, None) => {
+                let secret: [u8; 32] = base64::engine::general_purpose::STANDARD
+                    .decode(
+                        self.member_encryption_secret_b64
+                            .as_deref()
+                            .ok_or_else(|| {
+                                anyhow::anyhow!(
+                                    "linked identity is missing its member encryption key"
+                                )
+                            })?,
+                    )
+                    .context("decode linked member encryption key")?
+                    .try_into()
+                    .map_err(|_| {
+                        anyhow::anyhow!("linked member encryption key must be 32 bytes")
+                    })?;
+                PeerIdentity::from_authorized_device_b64(
+                    &self.device_secret_b64,
+                    self.proof.clone(),
+                    self.device_delegation.clone().ok_or_else(|| {
+                        anyhow::anyhow!("linked identity is missing its device delegation")
+                    })?,
+                    secret,
+                )?
+            }
+            _ => anyhow::bail!("identity authority secrets are incomplete"),
+        };
         if identity.peer_id != self.peer_id || identity.device.id != self.device_id {
             anyhow::bail!("identity metadata does not match signed identity proof");
         }
@@ -745,6 +788,81 @@ struct RecoveryPayloadV1 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceLinkRequestFileV1 {
+    pub v: u8,
+    pub request_id: String,
+    pub device_id: String,
+    pub device_pub_b64: String,
+    pub handoff_pub_b64: String,
+    pub device_name: String,
+    pub created_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PendingDeviceLinkSecretsV1 {
+    v: u8,
+    request: DeviceLinkRequestFileV1,
+    device_secret_b64: String,
+    handoff_secret_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PendingDeviceLinkFileV1 {
+    v: u8,
+    nonce_b64: String,
+    ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceLinkPackageV1 {
+    pub v: u8,
+    pub request_id: String,
+    pub sender_ephemeral_pub_b64: String,
+    pub nonce_b64: String,
+    pub ciphertext_b64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct DeviceLinkPayloadV1 {
+    v: u8,
+    request: DeviceLinkRequestFileV1,
+    identity_proof: IdentityProofV1,
+    delegation: voxelle_core::DelegationCertV1,
+    member_encryption_secret_b64: String,
+    space: SpaceV1,
+    retained_events: Vec<EventV1>,
+    known_peers: Vec<PeerRecord>,
+    ui_preferences: UiPreferences,
+    read_state: ReadStateFile,
+    room_keys: RoomKeysV1,
+    device_names: DeviceNamesV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DeviceNamesV1 {
+    v: u8,
+    names: BTreeMap<String, String>,
+}
+
+impl Default for DeviceNamesV1 {
+    fn default() -> Self {
+        Self {
+            v: 1,
+            names: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceLinkReport {
+    pub profile: ProfileSummary,
+    pub peers_attempted: usize,
+    pub peers_reached: usize,
+    pub events_recovered: usize,
+    pub peer_errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RecoveryReport {
     pub profile: ProfileSummary,
     pub peers_attempted: usize,
@@ -1049,12 +1167,18 @@ pub fn shell_contract_typescript() -> String {
         JoinSpaceRequest::decl(&cfg),
         ExportRecoveryKitRequest::decl(&cfg),
         RestoreRecoveryKitRequest::decl(&cfg),
+        CreateDeviceLinkRequest::decl(&cfg),
+        ApproveDeviceLinkRequest::decl(&cfg),
+        AcceptDeviceLinkRequest::decl(&cfg),
+        RevokeIdentityDeviceRequest::decl(&cfg),
         PeerCommandRequest::decl(&cfg),
         SetUiPreferenceRequest::decl(&cfg),
         SetWorkbenchLayoutRequest::decl(&cfg),
         InstallProductUpdateRequest::decl(&cfg),
         InstallTrustTransitionRequest::decl(&cfg),
         RecoveryHealthView::decl(&cfg),
+        IdentityDevicesView::decl(&cfg),
+        IdentityDeviceView::decl(&cfg),
         HomeScreenView::decl(&cfg),
         NetworkHealthView::decl(&cfg),
         NetworkHealthRow::decl(&cfg),
@@ -1268,7 +1392,7 @@ pub struct PeerSyncReport {
 pub struct ShellSnapshotView {
     #[ts(type = "string")]
     pub home_root: PathBuf,
-    pub home: Option<HomeScreenView>,
+    pub home: Option<Box<HomeScreenView>>,
     pub home_error: Option<ShellError>,
     pub network_health: NetworkHealthView,
     pub ui_ontology: UiOntologyView,
@@ -1571,6 +1695,33 @@ pub struct RestoreRecoveryKitRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CreateDeviceLinkRequest {
+    #[ts(type = "string")]
+    pub path: PathBuf,
+    pub device_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ApproveDeviceLinkRequest {
+    #[ts(type = "string")]
+    pub request_path: PathBuf,
+    #[ts(type = "string")]
+    pub package_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AcceptDeviceLinkRequest {
+    #[ts(type = "string")]
+    pub path: PathBuf,
+    pub max_events_per_peer: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RevokeIdentityDeviceRequest {
+    pub device_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct PeerCommandRequest {
     pub peer_id: String,
     pub device_id: String,
@@ -1605,6 +1756,7 @@ pub struct HomeScreenView {
     pub space: SpaceSummaryView,
     pub profile: ProfileSummary,
     pub recovery: RecoveryHealthView,
+    pub devices: IdentityDevicesView,
     pub runtime: RuntimeStatusView,
     pub invite: Option<InviteExchangeView>,
     pub active_invites: Vec<ActiveInviteView>,
@@ -1616,6 +1768,23 @@ pub struct HomeScreenView {
     pub coordination_frontier: CoordinationFrontierView,
     pub call: CallView,
     pub room: RoomTimelineView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct IdentityDevicesView {
+    pub can_authorize: bool,
+    pub current_device_id: String,
+    pub items: Vec<IdentityDeviceView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct IdentityDeviceView {
+    pub device_id: String,
+    pub name: String,
+    pub current: bool,
+    #[ts(type = "number")]
+    pub authorized_ms: i64,
+    pub expires_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1635,6 +1804,7 @@ pub struct ActiveInviteView {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct RecoveryHealthView {
+    pub available: bool,
     pub kit_exported: bool,
     pub last_exported_ms: Option<i64>,
 }
@@ -1925,6 +2095,7 @@ impl VoxelleHome {
             },
             profile: self.profile_summary()?,
             recovery: self.recovery_health()?,
+            devices: self.identity_devices()?,
             runtime,
             invite,
             active_invites: self.active_invites()?,
@@ -1946,18 +2117,86 @@ impl VoxelleHome {
         })
     }
 
+    pub fn identity_devices(&self) -> Result<IdentityDevicesView> {
+        let identity = self.load_identity()?;
+        let state = derive_identity_state(&identity.proof)?;
+        let names = self.device_names()?;
+        let mut authorized_ms = BTreeMap::new();
+        for change in &identity.proof.changes {
+            match &change.kind {
+                IdentityChangeKind::DeviceAuthorize { device_id, .. } => {
+                    authorized_ms.insert(device_id.clone(), change.created_ms);
+                }
+                IdentityChangeKind::DeviceRevoke { device_id } => {
+                    authorized_ms.remove(device_id);
+                }
+                _ => {}
+            }
+        }
+        let mut items = state
+            .devices
+            .into_iter()
+            .map(|(device_id, authorization)| {
+                let current = device_id == identity.device.id;
+                IdentityDeviceView {
+                    name: names.names.get(&device_id).cloned().unwrap_or_else(|| {
+                        if current {
+                            "This device".to_string()
+                        } else {
+                            format!("Device {}", short_peer_label(&device_id))
+                        }
+                    }),
+                    authorized_ms: authorized_ms.get(&device_id).copied().unwrap_or_default(),
+                    expires_ms: authorization.expires_ms,
+                    device_id,
+                    current,
+                }
+            })
+            .collect::<Vec<_>>();
+        items.sort_by(|left, right| {
+            right
+                .current
+                .cmp(&left.current)
+                .then(left.authorized_ms.cmp(&right.authorized_ms))
+                .then(left.device_id.cmp(&right.device_id))
+        });
+        Ok(IdentityDevicesView {
+            can_authorize: identity.has_identity_authority(),
+            current_device_id: identity.device.id,
+            items,
+        })
+    }
+
+    fn device_names(&self) -> Result<DeviceNamesV1> {
+        let names: DeviceNamesV1 = self.local_state(DEVICE_NAMES_STATE)?.unwrap_or_default();
+        if names.v != 1 {
+            anyhow::bail!("unsupported device names version {}", names.v);
+        }
+        Ok(names)
+    }
+
+    fn set_device_name(&self, device_id: &str, name: &str) -> Result<()> {
+        validate_device_name(name)?;
+        let mut names = self.device_names()?;
+        names.names.insert(device_id.to_string(), name.to_string());
+        self.put_local_state(DEVICE_NAMES_STATE, &names)
+    }
+
     pub fn recovery_health(&self) -> Result<RecoveryHealthView> {
+        let available = self.load_identity()?.recovery.is_some();
         let persisted = self.local_state::<RecoveryHealthV1>(RECOVERY_HEALTH_STATE)?;
         if let Some(health) = persisted {
             if health.v != 1 {
                 anyhow::bail!("unsupported recovery health version {}", health.v);
             }
             return Ok(RecoveryHealthView {
+                available,
                 kit_exported: true,
                 last_exported_ms: Some(health.last_exported_ms),
             });
         }
         Ok(RecoveryHealthView {
+            available,
             kit_exported: false,
             last_exported_ms: None,
         })
@@ -3956,7 +4195,7 @@ impl VoxelleHome {
 
     pub fn recovery_kit(&self) -> Result<RecoveryKitV1> {
         let identity = self.load_identity()?;
-        let card = identity.recovery_card();
+        let card = identity.try_recovery_card()?;
         let config = self.load_config()?;
         let governance_events = self
             .open_store()?
@@ -4112,6 +4351,263 @@ impl VoxelleHome {
             events_pushed,
             peer_errors,
         })
+    }
+
+    pub fn create_device_link_request(
+        &self,
+        request: &CreateDeviceLinkRequest,
+    ) -> Result<DeviceLinkRequestFileV1> {
+        if self.path("identity.json").exists() || self.local_state_exists(HOME_SELECTION_STATE)? {
+            anyhow::bail!("a device-link request requires a fresh Voxelle home");
+        }
+        validate_device_name(&request.device_name)?;
+        let device = Keypair::generate()?;
+        let handoff_secret = X25519Secret::random_from_rng(rand::rngs::OsRng);
+        let handoff_public = X25519PublicKey::from(&handoff_secret);
+        let link_request = DeviceLinkRequestFileV1 {
+            v: 1,
+            request_id: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(rand::random::<[u8; 24]>()),
+            device_id: device.id.clone(),
+            device_pub_b64: device.spki_b64.clone(),
+            handoff_pub_b64: base64::engine::general_purpose::STANDARD
+                .encode(handoff_public.as_bytes()),
+            device_name: request.device_name.trim().to_string(),
+            created_ms: now_ms(),
+        };
+        validate_device_link_request(&link_request)?;
+        ensure_private_dir(&self.root)?;
+        let pending = PendingDeviceLinkSecretsV1 {
+            v: 1,
+            request: link_request.clone(),
+            device_secret_b64: device.secret_key_b64(),
+            handoff_secret_b64: base64::engine::general_purpose::STANDARD
+                .encode(handoff_secret.to_bytes()),
+        };
+        write_pending_device_link(&self.path(DEVICE_LINK_PENDING_FILE), &pending)?;
+        write_json(&request.path, &link_request)?;
+        Ok(link_request)
+    }
+
+    pub fn approve_device_link(
+        &self,
+        request: &ApproveDeviceLinkRequest,
+    ) -> Result<DeviceLinkPackageV1> {
+        let link_request = read_device_link_request_file(&request.request_path)?;
+        let mut identity = self.load_identity()?;
+        let root = identity.peer.clone().ok_or_else(|| {
+            anyhow::anyhow!("this device can use the identity but cannot authorize another device")
+        })?;
+        let state = derive_identity_state(&identity.proof)?;
+        match state.devices.get(&link_request.device_id) {
+            Some(existing) if existing.device_pub == link_request.device_pub_b64 => {}
+            Some(_) => anyhow::bail!("device request conflicts with an existing device id"),
+            None => {
+                append_identity_change(
+                    &mut identity.proof,
+                    &root,
+                    IdentityChangeAuthor::Root,
+                    IdentityChangeKind::DeviceAuthorize {
+                        device_id: link_request.device_id.clone(),
+                        device_pub: link_request.device_pub_b64.clone(),
+                        scopes: identity_device_scopes(),
+                        expires_ms: i64::MAX,
+                    },
+                    now_ms(),
+                )?;
+                update_identity_vault(&self.path("identity.json"), &identity)?;
+                self.publish_identity_update()?;
+            }
+        }
+        self.set_device_name(&link_request.device_id, &link_request.device_name)?;
+        let identity = self.load_identity()?;
+        let delegation = create_delegation_for_device(
+            &identity,
+            &link_request.device_id,
+            &link_request.device_pub_b64,
+            link_request.created_ms.saturating_sub(10 * 60_000),
+            i64::MAX,
+            identity_device_scopes(),
+        )?;
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let governance_state =
+            derive_governance_state(&governance, &config.room_context(), now_ms());
+        let mut retained_events = governance;
+        for room_id in governance_state.channels.keys() {
+            retained_events.extend(store.room_events(room_id)?);
+        }
+        retained_events.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+        retained_events.dedup_by(|left, right| left.event_id == right.event_id);
+        let payload = DeviceLinkPayloadV1 {
+            v: 1,
+            request: link_request.clone(),
+            identity_proof: identity.proof.clone(),
+            delegation,
+            member_encryption_secret_b64: base64::engine::general_purpose::STANDARD
+                .encode(identity.member_encryption_secret_bytes()),
+            space: config.space,
+            retained_events,
+            known_peers: self.known_peers()?,
+            ui_preferences: self.ui_preferences()?,
+            read_state: self.read_state()?,
+            room_keys: self.room_keys()?,
+            device_names: self.device_names()?,
+        };
+        let package = encrypt_device_link_payload(&link_request, &payload)?;
+        write_secret_json(&request.package_path, &package)?;
+        Ok(package)
+    }
+
+    pub async fn accept_device_link(
+        &self,
+        request: &AcceptDeviceLinkRequest,
+    ) -> Result<DeviceLinkReport> {
+        if self.path("identity.json").exists() || self.local_state_exists(HOME_SELECTION_STATE)? {
+            anyhow::bail!("device linking requires a fresh Voxelle home");
+        }
+        let max_events = request.max_events_per_peer.unwrap_or(4096);
+        if max_events == 0 {
+            anyhow::bail!("max_events_per_peer must be positive");
+        }
+        let pending_path = self.path(DEVICE_LINK_PENDING_FILE);
+        let pending = read_pending_device_link(&pending_path)?;
+        let package: DeviceLinkPackageV1 = read_json(&request.path)?;
+        let payload = decrypt_device_link_payload(&pending, &package)?;
+        if payload.v != 1 || payload.request != pending.request {
+            anyhow::bail!("device authorization does not match this device's request");
+        }
+        validate_space_at(&payload.space, now_ms())?;
+        for peer in &payload.known_peers {
+            peer.validate()?;
+        }
+        validate_ui_preferences(&payload.ui_preferences)?;
+        validate_device_names(&payload.device_names)?;
+        let member_secret: [u8; 32] = base64::engine::general_purpose::STANDARD
+            .decode(&payload.member_encryption_secret_b64)
+            .context("decode linked member encryption key")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("linked member encryption key must be 32 bytes"))?;
+        let identity = PeerIdentity::from_authorized_device_b64(
+            &pending.device_secret_b64,
+            payload.identity_proof.clone(),
+            payload.delegation.clone(),
+            member_secret,
+        )?;
+        if identity.device.id != pending.request.device_id {
+            anyhow::bail!("device authorization targets a different device key");
+        }
+
+        ensure_private_dir(&self.root)?;
+        write_identity_vault(&self.path("identity.json"), &identity)?;
+        self.put_local_state(
+            KNOWN_PEERS_STATE,
+            &KnownPeersFile {
+                v: 1,
+                peers: payload.known_peers.clone(),
+            },
+        )?;
+        self.write_ui_preferences(&payload.ui_preferences)?;
+        self.put_local_state(READ_STATE, &payload.read_state)?;
+        self.write_room_keys(&payload.room_keys)?;
+        self.put_local_state(DEVICE_NAMES_STATE, &payload.device_names)?;
+        self.load_or_create_certificate()?;
+        let config = HomeConfig {
+            space: payload.space.clone(),
+        };
+        let store = self.open_store()?;
+        self.ensure_space_genesis(&store, &config)?;
+        self.put_local_state(
+            HOME_SELECTION_STATE,
+            &HomeSelectionV1 {
+                v: 1,
+                space_genesis_event_id: config.space.genesis.event_id.clone(),
+            },
+        )?;
+        let by_id: BTreeMap<String, EventV1> = payload
+            .retained_events
+            .iter()
+            .cloned()
+            .map(|event| (event.event_id.clone(), event))
+            .collect();
+        let mut events_recovered = 0;
+        for event_id in topo_sort_deterministic(&payload.retained_events) {
+            if store.has_event(&event_id)? {
+                continue;
+            }
+            let event = by_id
+                .get(&event_id)
+                .ok_or_else(|| anyhow::anyhow!("linked event disappeared"))?;
+            let mut accepted_events = store.room_events(&config.space.governance_room_id)?;
+            if event.room_id != config.space.governance_room_id {
+                accepted_events.extend(store.room_events(&event.room_id)?);
+            }
+            let accepted = accept_event(event, &accepted_events, &config.room_context(), now_ms())
+                .map_err(|error| anyhow::anyhow!("linked retained event rejected: {error:?}"))?;
+            store.insert_accepted_event(accepted, now_ms())?;
+            events_recovered += 1;
+        }
+
+        let mut peers_reached = 0;
+        let mut peer_errors = Vec::new();
+        for peer in &payload.known_peers {
+            match self.sync_peer(peer, max_events).await {
+                Ok(report) => {
+                    peers_reached += 1;
+                    events_recovered += report.governance.accepted + report.room.accepted;
+                }
+                Err(error) => peer_errors.push(format!(
+                    "{}: {error:#}",
+                    peer.label.as_deref().unwrap_or("unlabelled peer")
+                )),
+            }
+        }
+        self.ensure_identity_announcement(&store, &identity, &config)?;
+        fs::remove_file(&pending_path).with_context(|| {
+            format!(
+                "remove completed device-link request {}",
+                pending_path.display()
+            )
+        })?;
+        Ok(DeviceLinkReport {
+            profile: self.profile_summary()?,
+            peers_attempted: payload.known_peers.len(),
+            peers_reached,
+            events_recovered,
+            peer_errors,
+        })
+    }
+
+    pub fn revoke_identity_device(&self, device_id: &str) -> Result<()> {
+        let mut identity = self.load_identity()?;
+        if device_id == identity.device.id {
+            anyhow::bail!("you cannot revoke the device you are currently using");
+        }
+        let root = identity.peer.clone().ok_or_else(|| {
+            anyhow::anyhow!("this device can use the identity but cannot revoke another device")
+        })?;
+        if !derive_identity_state(&identity.proof)?
+            .devices
+            .contains_key(device_id)
+        {
+            anyhow::bail!("device is not currently authorized");
+        }
+        append_identity_change(
+            &mut identity.proof,
+            &root,
+            IdentityChangeAuthor::Root,
+            IdentityChangeKind::DeviceRevoke {
+                device_id: device_id.to_string(),
+            },
+            now_ms(),
+        )?;
+        update_identity_vault(&self.path("identity.json"), &identity)?;
+        let mut names = self.device_names()?;
+        names.names.remove(device_id);
+        self.put_local_state(DEVICE_NAMES_STATE, &names)?;
+        self.publish_identity_update()?;
+        Ok(())
     }
 
     pub fn create_space_invite(
@@ -4498,7 +4994,27 @@ impl VoxelleHome {
     }
 
     fn load_identity(&self) -> Result<PeerIdentity> {
-        read_identity_vault(&self.path("identity.json"))
+        let path = self.path("identity.json");
+        let mut identity = read_identity_vault(&path)?;
+        if self.path("store.sqlite3").exists() {
+            if let Some(latest) = self
+                .open_store()?
+                .latest_identity_proof(&identity.peer_id)?
+            {
+                if latest != identity.proof && identity_proof_extends(&identity.proof, &latest)? {
+                    let state = derive_identity_state(&latest)?;
+                    if !state.devices.contains_key(&identity.device.id) {
+                        anyhow::bail!("this device has been revoked from the identity");
+                    }
+                    identity.proof = latest;
+                    if let Some(delegation) = identity.device_delegation.as_mut() {
+                        delegation.identity_proof = identity.proof.clone();
+                    }
+                    update_identity_vault(&path, &identity)?;
+                }
+            }
+        }
+        Ok(identity)
     }
 
     fn load_certificate(&self) -> Result<QuicCertificate> {
@@ -4608,7 +5124,7 @@ impl VoxelleHome {
             store.room_heads(&config.space.governance_room_id)?,
             serde_json::json!({
                 "peer_id": identity.peer_id,
-                "peer_pub": identity.peer.spki_b64,
+                "peer_pub": identity.current_root_public_b64()?,
                 "encryption_pub": identity_encryption_public_b64(identity)?,
                 "invite_id": invite_id,
             }),
@@ -4658,6 +5174,18 @@ impl VoxelleHome {
             .map_err(|error| anyhow::anyhow!("identity announcement rejected: {error:?}"))?;
         store.insert_accepted_event(accepted, now_ms())?;
         Ok(())
+    }
+
+    fn publish_identity_update(&self) -> Result<EventV1> {
+        let identity = self.load_identity()?;
+        self.create_room_event(
+            None,
+            "IDENTITY_UPDATE",
+            serde_json::json!({
+                "peer_id": identity.peer_id,
+                "device_id": identity.device.id,
+            }),
+        )
     }
 }
 
@@ -6494,6 +7022,77 @@ impl VoxelleCommandHost {
         })
     }
 
+    pub fn create_device_link_request(
+        &mut self,
+        request: CreateDeviceLinkRequest,
+    ) -> Result<ShellSnapshotView> {
+        let link = self.home.create_device_link_request(&request)?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("created a device-link request for {}", link.device_name),
+        );
+        self.snapshot()
+    }
+
+    pub async fn approve_device_link(
+        &mut self,
+        request: ApproveDeviceLinkRequest,
+    ) -> Result<ShellSnapshotView> {
+        let package = self.home.approve_device_link(&request)?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "authorized a new identity device for request {}",
+                short_peer_label(&package.request_id)
+            ),
+        );
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn accept_device_link(
+        &mut self,
+        request: AcceptDeviceLinkRequest,
+    ) -> Result<ShellSnapshotView> {
+        if self.service.is_some() {
+            anyhow::bail!("device linking requires the local service to be offline");
+        }
+        let report = self.home.accept_device_link(&request).await?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "linked this device to the existing identity; reached {}/{} peer(s) and recovered {} event(s)",
+                report.peers_reached, report.peers_attempted, report.events_recovered
+            ),
+        );
+        for error in report.peer_errors {
+            self.push_activity(
+                ServiceActivityLevel::Error,
+                format!("device-link peer unavailable: {error}"),
+            );
+        }
+        self.start_service(StartServiceRequest {
+            bind: None,
+            advertise: None,
+        })
+    }
+
+    pub async fn revoke_identity_device(
+        &mut self,
+        request: RevokeIdentityDeviceRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.revoke_identity_device(&request.device_id)?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "revoked identity device {}",
+                short_peer_label(&request.device_id)
+            ),
+        );
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
     pub async fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
         let origin = self.default_origin_context()?;
         self.send_message_with_origin(request, &origin).await
@@ -7194,7 +7793,7 @@ impl VoxelleCommandHost {
         let product_generation = self.product_generation_status()?;
         Ok(ShellSnapshotView {
             home_root: self.home.root.clone(),
-            home,
+            home: home.map(Box::new),
             home_error,
             network_health,
             ui_ontology,
@@ -8072,10 +8671,17 @@ fn default_views() -> Vec<UiView> {
             "Local peer and device identity",
         ),
         hidden_ui_view(
+            "identity.devices",
+            "Devices",
+            "sidebar",
+            1,
+            "Devices authorized to act as your identity",
+        ),
+        hidden_ui_view(
             "identity.recovery",
             "Identity Recovery",
             "sidebar",
-            1,
+            2,
             "Offline recovery kit export and fresh-device identity restoration",
         ),
         hidden_ui_view(
@@ -8110,21 +8716,21 @@ fn default_views() -> Vec<UiView> {
             "invite.exchange",
             "Invite People",
             "sidebar",
-            2,
+            3,
             "Signed membership invitations with optional manual peer setup",
         ),
         hidden_ui_view(
             "peer.list",
             "Connections",
             "sidebar",
-            3,
+            4,
             "Known ordinary peers with diagnostics and synchronization controls",
         ),
         ui_view(
             "channel.list",
             "Channels",
             "sidebar",
-            4,
+            5,
             "Public and private conversation channels",
         ),
         hidden_ui_view(
@@ -8257,6 +8863,34 @@ fn default_commands() -> Vec<UiCommand> {
             "Restore the same principal on a fresh device, revoke old devices, and resynchronize",
             None,
             true,
+        ),
+        shell_command(
+            "identity.device.request",
+            "Use My Identity on This Device",
+            "Create a public request that an existing identity-authority device can approve",
+            None,
+            true,
+        ),
+        shell_command(
+            "identity.device.approve",
+            "Approve Another Device",
+            "Authorize a fresh device as the same principal without transferring root or recovery authority",
+            None,
+            true,
+        ),
+        shell_command(
+            "identity.device.accept",
+            "Finish Linking This Device",
+            "Open the matching encrypted authorization package on the requesting device",
+            None,
+            true,
+        ),
+        shell_command(
+            "identity.device.revoke",
+            "Revoke Identity Device",
+            "Remove a device's authority from the signed identity proof",
+            None,
+            false,
         ),
         shell_command(
             "message.send",
@@ -9183,6 +9817,214 @@ fn identity_encryption_public_b64(identity: &PeerIdentity) -> Result<String> {
     Ok(identity.encryption_public_b64())
 }
 
+fn identity_device_scopes() -> Vec<String> {
+    vec![
+        "room:governance".to_string(),
+        "room:join".to_string(),
+        "room:post".to_string(),
+        "room:call".to_string(),
+    ]
+}
+
+fn validate_device_name(name: &str) -> Result<()> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed.chars().count() > 80 || trimmed.chars().any(char::is_control) {
+        anyhow::bail!("device name must be 1 to 80 visible characters");
+    }
+    Ok(())
+}
+
+fn validate_device_names(names: &DeviceNamesV1) -> Result<()> {
+    if names.v != 1 || names.names.len() > 256 {
+        anyhow::bail!("device name metadata is invalid");
+    }
+    for (device_id, name) in &names.names {
+        if device_id.len() > 256 || device_id.chars().any(char::is_control) {
+            anyhow::bail!("device name metadata contains an invalid device id");
+        }
+        validate_device_name(name)?;
+    }
+    Ok(())
+}
+
+fn validate_device_link_request(request: &DeviceLinkRequestFileV1) -> Result<()> {
+    if request.v != 1 {
+        anyhow::bail!("unsupported device-link request version {}", request.v);
+    }
+    validate_device_name(&request.device_name)?;
+    let device_spki = base64::engine::general_purpose::STANDARD
+        .decode(&request.device_pub_b64)
+        .context("decode requested device public key")?;
+    if id_from_spki_der(&device_spki)? != request.device_id {
+        anyhow::bail!("device-link request id does not match its public key");
+    }
+    let handoff = base64::engine::general_purpose::STANDARD
+        .decode(&request.handoff_pub_b64)
+        .context("decode device-link handoff public key")?;
+    if handoff.len() != 32 {
+        anyhow::bail!("device-link handoff public key must be 32 bytes");
+    }
+    let request_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(&request.request_id)
+        .context("decode device-link request id")?;
+    if request_id.len() != 24 {
+        anyhow::bail!("device-link request id must be 24 bytes");
+    }
+    if request.created_ms > now_ms().saturating_add(5 * 60_000) {
+        anyhow::bail!("device-link request timestamp is too far in the future");
+    }
+    Ok(())
+}
+
+fn device_link_key(shared: &[u8; 32], request: &DeviceLinkRequestFileV1) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"voxelle/device-link-key/v1\0");
+    digest.update(shared);
+    digest.update(request.request_id.as_bytes());
+    digest.update(request.device_id.as_bytes());
+    digest.finalize().into()
+}
+
+fn device_link_aad(request: &DeviceLinkRequestFileV1) -> String {
+    format!(
+        "voxelle/device-link-package/v1\n{}\n{}",
+        request.request_id, request.device_id
+    )
+}
+
+fn write_pending_device_link(path: &Path, pending: &PendingDeviceLinkSecretsV1) -> Result<()> {
+    let key = identity_vault_key(path, true)?;
+    let cipher = XChaCha20Poly1305::new((&key).into());
+    let mut nonce = [0_u8; 24];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let plaintext = serde_json::to_vec(pending).context("serialize pending device-link secrets")?;
+    let ciphertext = cipher
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &plaintext,
+                aad: b"voxelle/device-link-pending/v1",
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("encrypt pending device-link secrets"))?;
+    write_secret_json(
+        path,
+        &PendingDeviceLinkFileV1 {
+            v: 1,
+            nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+            ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+        },
+    )
+}
+
+fn read_pending_device_link(path: &Path) -> Result<PendingDeviceLinkSecretsV1> {
+    let file: PendingDeviceLinkFileV1 = read_json(path).with_context(|| {
+        "create a device-link request on this device before opening an authorization package"
+    })?;
+    if file.v != 1 {
+        anyhow::bail!("unsupported pending device-link version {}", file.v);
+    }
+    let nonce: [u8; 24] = base64::engine::general_purpose::STANDARD
+        .decode(&file.nonce_b64)
+        .context("decode pending device-link nonce")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("pending device-link nonce must be 24 bytes"))?;
+    let ciphertext = base64::engine::general_purpose::STANDARD
+        .decode(&file.ciphertext_b64)
+        .context("decode pending device-link ciphertext")?;
+    let key = identity_vault_key(path, false)?;
+    let plaintext = XChaCha20Poly1305::new((&key).into())
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &ciphertext,
+                aad: b"voxelle/device-link-pending/v1",
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("pending device-link authentication failed"))?;
+    let pending: PendingDeviceLinkSecretsV1 =
+        serde_json::from_slice(&plaintext).context("parse pending device-link secrets")?;
+    validate_device_link_request(&pending.request)?;
+    Ok(pending)
+}
+
+fn encrypt_device_link_payload(
+    request: &DeviceLinkRequestFileV1,
+    payload: &DeviceLinkPayloadV1,
+) -> Result<DeviceLinkPackageV1> {
+    let recipient: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(&request.handoff_pub_b64)
+        .context("decode device-link recipient public key")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("device-link recipient public key must be 32 bytes"))?;
+    let sender_secret = X25519Secret::random_from_rng(rand::rngs::OsRng);
+    let sender_public = X25519PublicKey::from(&sender_secret);
+    let shared = sender_secret.diffie_hellman(&X25519PublicKey::from(recipient));
+    let key = device_link_key(shared.as_bytes(), request);
+    let mut nonce = [0_u8; 24];
+    rand::rngs::OsRng.fill_bytes(&mut nonce);
+    let plaintext = serde_json::to_vec(payload).context("serialize device-link payload")?;
+    let aad = device_link_aad(request);
+    let ciphertext = XChaCha20Poly1305::new((&key).into())
+        .encrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &plaintext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("encrypt device authorization package"))?;
+    Ok(DeviceLinkPackageV1 {
+        v: 1,
+        request_id: request.request_id.clone(),
+        sender_ephemeral_pub_b64: base64::engine::general_purpose::STANDARD
+            .encode(sender_public.as_bytes()),
+        nonce_b64: base64::engine::general_purpose::STANDARD.encode(nonce),
+        ciphertext_b64: base64::engine::general_purpose::STANDARD.encode(ciphertext),
+    })
+}
+
+fn decrypt_device_link_payload(
+    pending: &PendingDeviceLinkSecretsV1,
+    package: &DeviceLinkPackageV1,
+) -> Result<DeviceLinkPayloadV1> {
+    if package.v != 1 || package.request_id != pending.request.request_id {
+        anyhow::bail!("device authorization package does not match the pending request");
+    }
+    let sender: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(&package.sender_ephemeral_pub_b64)
+        .context("decode device-link sender public key")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("device-link sender public key must be 32 bytes"))?;
+    let handoff: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(&pending.handoff_secret_b64)
+        .context("decode pending device-link secret")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("pending device-link secret must be 32 bytes"))?;
+    let nonce: [u8; 24] = base64::engine::general_purpose::STANDARD
+        .decode(&package.nonce_b64)
+        .context("decode device-link package nonce")?
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("device-link package nonce must be 24 bytes"))?;
+    let ciphertext = base64::engine::general_purpose::STANDARD
+        .decode(&package.ciphertext_b64)
+        .context("decode device-link package ciphertext")?;
+    let secret = X25519Secret::from(handoff);
+    let shared = secret.diffie_hellman(&X25519PublicKey::from(sender));
+    let key = device_link_key(shared.as_bytes(), &pending.request);
+    let aad = device_link_aad(&pending.request);
+    let plaintext = XChaCha20Poly1305::new((&key).into())
+        .decrypt(
+            XNonce::from_slice(&nonce),
+            chacha20poly1305::aead::Payload {
+                msg: &ciphertext,
+                aad: aad.as_bytes(),
+            },
+        )
+        .map_err(|_| anyhow::anyhow!("device authorization package authentication failed"))?;
+    serde_json::from_slice(&plaintext).context("parse device authorization payload")
+}
+
 fn room_key_wrap_key(shared: &[u8; 32], room_id: &str, epoch: u64, peer_id: &str) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(b"voxelle/room-key-wrap/v1\0");
@@ -9381,10 +10223,36 @@ pub fn write_identity_vault(path: &Path, identity: &PeerIdentity) -> Result<()> 
     write_json(path, &IdentityFile::encrypt(identity, &key)?)
 }
 
+fn update_identity_vault(path: &Path, identity: &PeerIdentity) -> Result<()> {
+    if !path.exists() {
+        anyhow::bail!("identity vault does not exist");
+    }
+    let key = identity_vault_key(path, false)?;
+    let encrypted = IdentityFile::encrypt(identity, &key)?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("identity.json");
+    let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 12]>());
+    let replacement = path.with_file_name(format!(".{file_name}.{nonce}.replacement"));
+    write_new_private_json(&replacement, &encrypted)?;
+    if let Err(error) = fs::rename(&replacement, path) {
+        let _ = fs::remove_file(&replacement);
+        return Err(error).with_context(|| format!("replace {}", path.display()));
+    }
+    Ok(())
+}
+
 pub fn read_identity_vault(path: &Path) -> Result<PeerIdentity> {
     let file: IdentityFile = read_json(path)?;
     let key = identity_vault_key(path, false)?;
     file.decrypt(&key)
+}
+
+pub fn read_device_link_request_file(path: &Path) -> Result<DeviceLinkRequestFileV1> {
+    let request: DeviceLinkRequestFileV1 = read_json(path)?;
+    validate_device_link_request(&request)?;
+    Ok(request)
 }
 
 // The explicit returns keep mutually exclusive target/test cfg branches legible.
@@ -10277,9 +11145,15 @@ mod tests {
         assert!(!raw.contains("root_secret_b64"));
         assert!(!raw.contains("device_secret_b64"));
         assert!(!raw.contains("recovery_secret_b64"));
-        assert!(!raw.contains(&identity.peer.secret_key_b64()));
+        assert!(!raw.contains(&identity.peer.as_ref().expect("root").secret_key_b64()));
         assert!(!raw.contains(&identity.device.secret_key_b64()));
-        assert!(!raw.contains(&identity.recovery.secret_key_b64()));
+        assert!(!raw.contains(
+            &identity
+                .recovery
+                .as_ref()
+                .expect("recovery")
+                .secret_key_b64()
+        ));
     }
 
     #[test]
@@ -10375,6 +11249,119 @@ mod tests {
         other.init(DEFAULT_ROOM_ID).expect("other init");
         let wrong_card = other.recovery_kit().expect("other kit").card;
         assert!(decrypt_recovery_capsule(&wrong_card, &kit.capsule).is_err());
+    }
+
+    #[tokio::test]
+    async fn fresh_device_links_as_same_principal_without_root_or_recovery_and_is_revocable() {
+        let dir = tempdir().expect("tempdir");
+        let authority = VoxelleHome::new(dir.path().join("authority"));
+        let linked = VoxelleHome::new(dir.path().join("linked"));
+        let authority_profile = authority.init(DEFAULT_ROOM_ID).expect("authority init");
+        authority
+            .send_message("history before linking", None)
+            .expect("authority history");
+        let request_path = dir.path().join("device.voxlink");
+        let package_path = dir.path().join("authorization.voxdevice");
+        let request = linked
+            .create_device_link_request(&CreateDeviceLinkRequest {
+                path: request_path.clone(),
+                device_name: "Travel Mac".to_string(),
+            })
+            .expect("create device request");
+        let request_json = fs::read_to_string(&request_path).expect("read public request");
+        assert!(request_json.contains(&request.device_pub_b64));
+        assert!(!request_json.contains("secret"));
+
+        let authority_identity = authority.load_identity().expect("authority identity");
+        authority
+            .approve_device_link(&ApproveDeviceLinkRequest {
+                request_path,
+                package_path: package_path.clone(),
+            })
+            .expect("approve device");
+        let package_json = fs::read_to_string(&package_path).expect("read package");
+        assert!(!package_json.contains(
+            &authority_identity
+                .peer
+                .as_ref()
+                .expect("root")
+                .secret_key_b64()
+        ));
+        assert!(!package_json.contains(
+            &authority_identity
+                .recovery
+                .as_ref()
+                .expect("recovery")
+                .secret_key_b64()
+        ));
+
+        let report = linked
+            .accept_device_link(&AcceptDeviceLinkRequest {
+                path: package_path,
+                max_events_per_peer: Some(64),
+            })
+            .await
+            .expect("accept authorization");
+        assert_eq!(report.profile.peer_id, authority_profile.peer_id);
+        assert_ne!(report.profile.device_id, authority_profile.device_id);
+        assert!(linked
+            .read_messages(None)
+            .expect("linked history")
+            .iter()
+            .any(|message| message.text == "history before linking"));
+        let linked_identity = read_identity_vault(&linked.path("identity.json"))
+            .expect("read linked identity after restart");
+        assert!(!linked_identity.has_identity_authority());
+        assert!(linked_identity.peer.is_none());
+        assert!(linked_identity.recovery.is_none());
+        linked
+            .send_message("from linked device", None)
+            .expect("linked device posts normally");
+
+        let devices = authority.identity_devices().expect("authority devices");
+        assert_eq!(devices.items.len(), 2);
+        assert!(devices.can_authorize);
+        assert!(devices
+            .items
+            .iter()
+            .any(|device| device.name == "Travel Mac"));
+        authority
+            .revoke_identity_device(&report.profile.device_id)
+            .expect("revoke linked device");
+        let authority_config = authority.load_config().expect("authority config");
+        let revocation = authority
+            .open_store()
+            .expect("authority store")
+            .room_events(&authority_config.space.default_room_id)
+            .expect("authority room")
+            .into_iter()
+            .max_by_key(|event| event.delegation.identity_proof.changes.len())
+            .expect("revocation identity update");
+        let linked_store = linked.open_store().expect("linked store");
+        let linked_config = linked.load_config().expect("linked config");
+        let mut accepted_events = linked_store
+            .room_events(&linked_config.space.governance_room_id)
+            .expect("linked governance");
+        accepted_events.extend(
+            linked_store
+                .room_events(&linked_config.space.default_room_id)
+                .expect("linked room"),
+        );
+        let accepted = accept_event(
+            &revocation,
+            &accepted_events,
+            &linked_config.room_context(),
+            now_ms(),
+        )
+        .expect("revocation update is admitted");
+        linked_store
+            .insert_accepted_event(accepted, now_ms())
+            .expect("retain revocation update");
+        assert!(linked
+            .send_message("after revocation", None)
+            .expect_err("revoked device cannot post")
+            .to_string()
+            .contains("revoked"));
     }
 
     #[tokio::test]

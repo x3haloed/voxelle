@@ -66,6 +66,8 @@ const HOME_COMMANDS = new Set([
   "space.invite.create",
   "invite.copy",
   "identity.recovery.export",
+  "identity.device.approve",
+  "identity.device.revoke",
   "channel.create",
   "channel.markRead",
   "profile.update",
@@ -102,6 +104,12 @@ export function paletteCommandAvailability(commandId, context) {
   }
   if (commandId === "identity.recovery.restore" && context.hasHomeError) {
     return { available: false, reason: "Prepare the damaged home for recovery first" };
+  }
+  if (["identity.device.request", "identity.device.accept"].includes(commandId) && context.hasHome) {
+    return { available: false, reason: "This device already belongs to an identity" };
+  }
+  if (["identity.device.request", "identity.device.accept"].includes(commandId) && context.hasHomeError) {
+    return { available: false, reason: "Resolve or archive the damaged home first" };
   }
   if (commandId === "runtime.goOffline" && !context.runtimeOnline) {
     return { available: false, reason: "The peer service is already offline" };

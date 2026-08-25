@@ -37,6 +37,10 @@ pub fn shell_command_payload(command_id: &str) -> Option<ShellCommandPayload> {
         "space.join" => Typed("JoinSpaceRequest"),
         "identity.recovery.export" => Typed("ExportRecoveryKitRequest"),
         "identity.recovery.restore" => Typed("RestoreRecoveryKitRequest"),
+        "identity.device.request" => Typed("CreateDeviceLinkRequest"),
+        "identity.device.approve" => Typed("ApproveDeviceLinkRequest"),
+        "identity.device.accept" => Typed("AcceptDeviceLinkRequest"),
+        "identity.device.revoke" => Typed("RevokeIdentityDeviceRequest"),
         "message.send" => Typed("SendMessageRequest"),
         "message.acknowledge" => Typed("AcknowledgeMessageRequest"),
         "message.continuation.update" => Typed("UpdateMessageContinuationRequest"),
@@ -338,6 +342,10 @@ impl ShellState {
             "space.join" => host.join_space(parse_request(payload)?).await,
             "identity.recovery.export" => host.export_recovery_kit(parse_request(payload)?),
             "identity.recovery.restore" => host.restore_recovery_kit(parse_request(payload)?).await,
+            "identity.device.request" => host.create_device_link_request(parse_request(payload)?),
+            "identity.device.approve" => host.approve_device_link(parse_request(payload)?).await,
+            "identity.device.accept" => host.accept_device_link(parse_request(payload)?).await,
+            "identity.device.revoke" => host.revoke_identity_device(parse_request(payload)?).await,
             "message.send" => match origin.as_ref() {
                 Some(origin) => {
                     host.send_message_with_origin(parse_request(payload)?, origin)
@@ -548,6 +556,13 @@ fn command_error_presentation(
             "Voxelle could not complete identity recovery.",
             ShellRecovery::NeedsHuman,
             "Use the original offline recovery kit in a fresh Voxelle home. Keep the kit private and do not edit it.",
+        );
+    }
+    if command_id.starts_with("identity.device.") {
+        return (
+            "Voxelle could not complete device linking.",
+            ShellRecovery::NeedsHuman,
+            "Keep the request on the new device, use an authorized device to approve it, then open the matching authorization package on the new device.",
         );
     }
     if command_id == "peer.import" {

@@ -185,6 +185,7 @@ A view is a concrete surface that occupies a place.
 Current registered views:
 
 - `profile.summary`
+- `identity.devices`
 - `identity.recovery`
 - `runtime.status`
 - `network.health`
@@ -204,7 +205,7 @@ Current registered views:
 
 The default workbench keeps conversation, people, invitation, and attention
 surfaces visible. Recovery, runtime, network-health, field-test, product-update,
-role-management, and service-activity views start hidden but remain dockable
+device-management, role-management, and service-activity views start hidden but remain dockable
 and are reachable through Edit layout. Product Updates is also directly
 reachable from More because update discovery, verification, activation,
 rollback, and release-trust review must not depend on editing the workbench.
@@ -399,6 +400,8 @@ Current command families:
   `runtime.goOffline`;
 - admission: `space.invite.create`, `space.invite.revoke`, `space.join`,
   `invite.copy`;
+- identity devices: `identity.device.request`, `identity.device.approve`,
+  `identity.device.accept`, `identity.device.revoke`;
 - identity recovery: `identity.recovery.export`, `identity.recovery.restore`;
 - channels and attention: `channel.create`, `channel.select`,
   `channel.markRead`, `channel.rotateKey`;

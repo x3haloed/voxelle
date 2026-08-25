@@ -184,6 +184,14 @@ export type ExportRecoveryKitRequest = { path: string, };
 
 export type RestoreRecoveryKitRequest = { path: string, max_events_per_peer: number | null, };
 
+export type CreateDeviceLinkRequest = { path: string, device_name: string, };
+
+export type ApproveDeviceLinkRequest = { request_path: string, package_path: string, };
+
+export type AcceptDeviceLinkRequest = { path: string, max_events_per_peer: number | null, };
+
+export type RevokeIdentityDeviceRequest = { device_id: string, };
+
 export type PeerCommandRequest = { peer_id: string, device_id: string, max_events: number | null, };
 
 export type SetUiPreferenceRequest = { "kind": "semantic_token", id: string, value: string, } | { "kind": "metric", id: string, value: number, } | { "kind": "behavior", id: string, value: UiBehaviorValue, };
@@ -194,9 +202,13 @@ export type InstallProductUpdateRequest = { package_json: string, };
 
 export type InstallTrustTransitionRequest = { transition_json: string, };
 
-export type RecoveryHealthView = { kit_exported: boolean, last_exported_ms: bigint | null, };
+export type RecoveryHealthView = { available: boolean, kit_exported: boolean, last_exported_ms: bigint | null, };
 
-export type HomeScreenView = { space: SpaceSummaryView, profile: ProfileSummary, recovery: RecoveryHealthView, runtime: RuntimeStatusView, invite: InviteExchangeView | null, active_invites: Array<ActiveInviteView>, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, coordination_frontier: CoordinationFrontierView, call: CallView, room: RoomTimelineView, };
+export type IdentityDevicesView = { can_authorize: boolean, current_device_id: string, items: Array<IdentityDeviceView>, };
+
+export type IdentityDeviceView = { device_id: string, name: string, current: boolean, authorized_ms: number, expires_ms: bigint, };
+
+export type HomeScreenView = { space: SpaceSummaryView, profile: ProfileSummary, recovery: RecoveryHealthView, devices: IdentityDevicesView, runtime: RuntimeStatusView, invite: InviteExchangeView | null, active_invites: Array<ActiveInviteView>, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, coordination_frontier: CoordinationFrontierView, call: CallView, room: RoomTimelineView, };
 
 export type NetworkHealthView = { rows: Array<NetworkHealthRow>, };
 

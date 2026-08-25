@@ -107,14 +107,27 @@ A delegation certificate binds a Device public key to a Principal.
 Delegation certificates are JSON objects with fields:
 
 - `v` (number): MUST be `1`
-- `principal_id` (string): the Principal ID
-- `principal_pub` (string): SPKI DER Base64
+- `peer_id` (string): the durable Principal ID
+- `peer_pub` (string): SPKI DER Base64 for the root that authorized the Device
+- `identity_proof` (object): the current ordered identity proof
 - `device_pub` (string): SPKI DER Base64
 - `device_id` (string): derived like `principal_id` from `device_pub` (same scheme)
-- `not_before_ts` (number): Unix ms
-- `expires_ts` (number): Unix ms
+- `not_before_ms` (number): Unix ms
+- `expires_ms` (number): Unix ms
 - `scopes` (array of strings): capability scopes (see below)
 - `sig` (string): Base64 Ed25519 signature by the Principal root key
+
+The ordered `identity_proof` is a refreshable validation carrier, not part of
+the root signature over the stable delegation fields. A Device that does not
+hold the Principal root can therefore replace the carried proof with a later
+valid extension learned through ordinary synchronization. Verifiers **MUST**
+validate the complete proof, require the Device to remain authorized in its
+current derived state, and require `peer_pub` to be the root that authored the
+surviving `DEVICE_AUTHORIZE` change for that Device. A proof stale relative to
+the verifier's retained identity head **MUST** be rejected. This preserves
+ordinary linked-device operation across later device additions while making a
+retained `DEVICE_REVOKE` effective without giving every Device root or recovery
+authority.
 
 Delegation `scopes` are **device-local restrictions**: they limit what the Principal allows that Device to do.
 
@@ -313,18 +326,22 @@ All integers are encoded as decimal ASCII with no leading `+` and no leading zer
 
 **Delegation certificate signature input**
 
-Prefix: `p2pspace/delegation/v0\n`
+Prefix: `voxelle/delegation/v1\n`
 
 Netstrings, in order:
 1. `v`
-2. `principal_id`
-3. `principal_pub`
+2. `peer_id`
+3. `peer_pub`
 4. `device_id`
 5. `device_pub`
-6. `not_before_ts`
-7. `expires_ts`
+6. `not_before_ms`
+7. `expires_ms`
 8. `count(scopes)`
 9. each scope string in `scopes`, in order
+
+`identity_proof` is deliberately excluded from this signature input. Its
+ordered changes carry their own root or recovery signatures and are validated
+as described in §5.2.
 
 **Space genesis signature input**
 

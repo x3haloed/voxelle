@@ -72,10 +72,12 @@ impl Keypair {
 #[derive(Debug, Clone)]
 pub struct PeerIdentity {
     pub peer_id: String,
-    pub peer: Keypair,
+    pub peer: Option<Keypair>,
     pub device: Keypair,
-    pub recovery: Keypair,
+    pub recovery: Option<Keypair>,
     pub proof: IdentityProofV1,
+    pub device_delegation: Option<DelegationCertV1>,
+    member_encryption_secret: [u8; 32],
 }
 
 impl PeerIdentity {
@@ -105,12 +107,15 @@ impl PeerIdentity {
             },
             created_ms,
         )?;
+        let member_encryption_secret = member_encryption_secret_from_recovery(&recovery);
         Ok(Self {
             peer_id,
-            peer,
+            peer: Some(peer),
             device,
-            recovery,
+            recovery: Some(recovery),
             proof,
+            device_delegation: None,
+            member_encryption_secret,
         })
     }
 
@@ -139,26 +144,80 @@ impl PeerIdentity {
         }
         Ok(Self {
             peer_id: state.peer_id,
-            peer,
+            peer: Some(peer),
             device,
-            recovery,
+            member_encryption_secret: member_encryption_secret_from_recovery(&recovery),
+            recovery: Some(recovery),
             proof,
+            device_delegation: None,
         })
     }
 
+    pub fn from_authorized_device_b64(
+        device_secret_b64: &str,
+        proof: IdentityProofV1,
+        mut delegation: DelegationCertV1,
+        member_encryption_secret: [u8; 32],
+    ) -> Result<Self> {
+        let device = Keypair::from_secret_key_b64(device_secret_b64)?;
+        let state = derive_identity_state(&proof)?;
+        let authorization = state
+            .devices
+            .get(&device.id)
+            .ok_or_else(|| anyhow!("identity device is not authorized"))?;
+        if authorization.device_pub != device.spki_b64 {
+            return Err(anyhow!("identity device secret does not match proof"));
+        }
+        delegation.identity_proof = proof.clone();
+        validate_delegation_at(
+            &delegation,
+            &state.peer_id,
+            &device.id,
+            "room:post",
+            delegation.not_before_ms,
+        )?;
+        Ok(Self {
+            peer_id: state.peer_id,
+            peer: None,
+            device,
+            recovery: None,
+            proof,
+            device_delegation: Some(delegation),
+            member_encryption_secret,
+        })
+    }
+
+    pub fn has_identity_authority(&self) -> bool {
+        self.peer.is_some()
+    }
+
+    pub fn current_root_public_b64(&self) -> Result<String> {
+        Ok(derive_identity_state(&self.proof)?.root_pub)
+    }
+
+    pub fn member_encryption_secret_bytes(&self) -> [u8; 32] {
+        self.member_encryption_secret
+    }
+
     pub fn recovery_card(&self) -> RecoveryCardV1 {
-        RecoveryCardV1 {
+        self.try_recovery_card()
+            .expect("recovery card requires local recovery authority")
+    }
+
+    pub fn try_recovery_card(&self) -> Result<RecoveryCardV1> {
+        let recovery = self
+            .recovery
+            .as_ref()
+            .ok_or_else(|| anyhow!("recovery capability is not present on this linked device"))?;
+        Ok(RecoveryCardV1 {
             v: 1,
             genesis: self.proof.genesis.clone(),
-            recovery_secret_b64: self.recovery.secret_key_b64(),
-        }
+            recovery_secret_b64: recovery.secret_key_b64(),
+        })
     }
 
     pub fn encryption_secret_bytes(&self) -> [u8; 32] {
-        let mut digest = Sha256::new();
-        digest.update(b"voxelle/member-encryption-key/v1\0");
-        digest.update(self.recovery.signing_key.to_bytes());
-        digest.finalize().into()
+        self.member_encryption_secret
     }
 
     pub fn encryption_public_b64(&self) -> String {
@@ -220,12 +279,21 @@ impl PeerIdentity {
         let state = derive_identity_state(&proof)?;
         Ok(Self {
             peer_id: state.peer_id,
-            peer,
+            member_encryption_secret: member_encryption_secret_from_recovery(&recovery),
+            peer: Some(peer),
             device,
-            recovery,
+            recovery: Some(recovery),
             proof,
+            device_delegation: None,
         })
     }
+}
+
+fn member_encryption_secret_from_recovery(recovery: &Keypair) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"voxelle/member-encryption-key/v1\0");
+    digest.update(recovery.signing_key.to_bytes());
+    digest.finalize().into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -821,6 +889,33 @@ pub fn identity_proof_extends(
     Ok(candidate.changes[..known.changes.len()] == known.changes)
 }
 
+fn authorization_root_for_device(
+    proof: &IdentityProofV1,
+    device_id: &str,
+) -> Result<Option<String>> {
+    derive_identity_state(proof)?;
+    let mut current_root = proof.genesis.initial_root_pub.clone();
+    let mut authorizing_root = None;
+    for change in &proof.changes {
+        match &change.kind {
+            IdentityChangeKind::RootRotate { new_root_pub } => {
+                current_root = new_root_pub.clone();
+            }
+            IdentityChangeKind::DeviceAuthorize {
+                device_id: authorized,
+                ..
+            } if authorized == device_id => {
+                authorizing_root = Some(current_root.clone());
+            }
+            IdentityChangeKind::DeviceRevoke { device_id: revoked } if revoked == device_id => {
+                authorizing_root = None;
+            }
+            _ => {}
+        }
+    }
+    Ok(authorizing_root)
+}
+
 pub fn append_identity_change(
     proof: &mut IdentityProofV1,
     signer: &Keypair,
@@ -903,15 +998,56 @@ pub fn create_delegation(
     expires_ms: i64,
     scopes: Vec<String>,
 ) -> Result<DelegationCertV1> {
+    if identity.peer.is_none() {
+        let mut delegation = identity
+            .device_delegation
+            .clone()
+            .ok_or_else(|| anyhow!("linked device delegation is unavailable"))?;
+        if not_before_ms < delegation.not_before_ms || expires_ms > delegation.expires_ms {
+            return Err(anyhow!(
+                "requested lifetime exceeds linked device delegation"
+            ));
+        }
+        if scopes
+            .iter()
+            .any(|scope| !delegation.scopes.iter().any(|allowed| allowed == scope))
+        {
+            return Err(anyhow!("delegation requests an unauthorized device scope"));
+        }
+        delegation.identity_proof = identity.proof.clone();
+        return Ok(delegation);
+    }
+    create_delegation_for_device(
+        identity,
+        &identity.device.id,
+        &identity.device.spki_b64,
+        not_before_ms,
+        expires_ms,
+        scopes,
+    )
+}
+
+pub fn create_delegation_for_device(
+    identity: &PeerIdentity,
+    device_id: &str,
+    device_pub: &str,
+    not_before_ms: i64,
+    expires_ms: i64,
+    scopes: Vec<String>,
+) -> Result<DelegationCertV1> {
     let state = derive_identity_state(&identity.proof)?;
-    if state.peer_id != identity.peer_id || state.root_pub != identity.peer.spki_b64 {
+    let peer = identity
+        .peer
+        .as_ref()
+        .ok_or_else(|| anyhow!("identity root authority is unavailable on this device"))?;
+    if state.peer_id != identity.peer_id || state.root_pub != peer.spki_b64 {
         return Err(anyhow!("identity does not match current proof"));
     }
     let device = state
         .devices
-        .get(&identity.device.id)
+        .get(device_id)
         .ok_or_else(|| anyhow!("device is not authorized by identity proof"))?;
-    if device.device_pub != identity.device.spki_b64 {
+    if device.device_pub != device_pub {
         return Err(anyhow!("device key does not match identity proof"));
     }
     if expires_ms > device.expires_ms {
@@ -923,10 +1059,9 @@ pub fn create_delegation(
     let unsigned = DelegationUnsigned {
         v: 1,
         peer_id: identity.peer_id.clone(),
-        peer_pub: identity.peer.spki_b64.clone(),
-        identity_proof: identity.proof.clone(),
-        device_id: identity.device.id.clone(),
-        device_pub: identity.device.spki_b64.clone(),
+        peer_pub: peer.spki_b64.clone(),
+        device_id: device_id.to_string(),
+        device_pub: device_pub.to_string(),
         not_before_ms,
         expires_ms,
         scopes,
@@ -936,13 +1071,13 @@ pub fn create_delegation(
         v: unsigned.v,
         peer_id: unsigned.peer_id,
         peer_pub: unsigned.peer_pub,
-        identity_proof: unsigned.identity_proof,
+        identity_proof: identity.proof.clone(),
         device_id: unsigned.device_id,
         device_pub: unsigned.device_pub,
         not_before_ms: unsigned.not_before_ms,
         expires_ms: unsigned.expires_ms,
         scopes: unsigned.scopes,
-        sig: identity.peer.sign(&sig_input),
+        sig: peer.sign(&sig_input),
     })
 }
 
@@ -979,9 +1114,11 @@ pub fn validate_delegation_at(
     if identity_state.peer_id != delegation.peer_id {
         return Err(anyhow!("delegation peer_id does not match identity proof"));
     }
-    if identity_state.root_pub != delegation.peer_pub {
+    if authorization_root_for_device(&delegation.identity_proof, &delegation.device_id)?.as_deref()
+        != Some(delegation.peer_pub.as_str())
+    {
         return Err(anyhow!(
-            "delegation peer_pub is not the current identity root"
+            "delegation was not issued by the device-authorizing root"
         ));
     }
     let authorization = identity_state
@@ -1014,7 +1151,6 @@ pub fn validate_delegation_at(
         v: delegation.v,
         peer_id: delegation.peer_id.clone(),
         peer_pub: delegation.peer_pub.clone(),
-        identity_proof: delegation.identity_proof.clone(),
         device_id: delegation.device_id.clone(),
         device_pub: delegation.device_pub.clone(),
         not_before_ms: delegation.not_before_ms,
@@ -2727,7 +2863,6 @@ struct DelegationUnsigned {
     v: u8,
     peer_id: String,
     peer_pub: String,
-    identity_proof: IdentityProofV1,
     device_id: String,
     device_pub: String,
     not_before_ms: i64,
@@ -2827,7 +2962,6 @@ fn delegation_signature_input(unsigned: &DelegationUnsigned) -> Result<Vec<u8>> 
     w.write_int(unsigned.v.into())?;
     w.write_str(&unsigned.peer_id)?;
     w.write_str(&unsigned.peer_pub)?;
-    w.write_bytes(&jcs_bytes(&unsigned.identity_proof)?)?;
     w.write_str(&unsigned.device_id)?;
     w.write_str(&unsigned.device_pub)?;
     w.write_int(unsigned.not_before_ms)?;
@@ -3030,7 +3164,7 @@ mod tests {
             vec![],
             json!({
                 "peer_id": identity.peer_id,
-                "peer_pub": identity.peer.spki_b64,
+                "peer_pub": identity.current_root_public_b64().expect("root public key"),
                 "encryption_pub": test_encryption_pub(),
             }),
         )
@@ -3348,18 +3482,111 @@ mod tests {
         let identity = PeerIdentity::generate().expect("identity");
 
         assert!(identity.peer_id.starts_with("p:"));
-        assert!(identity.peer.id.starts_with("ed25519:"));
+        assert!(identity
+            .peer
+            .as_ref()
+            .expect("root")
+            .id
+            .starts_with("ed25519:"));
         assert!(identity.device.id.starts_with("ed25519:"));
-        assert_ne!(identity.peer_id, identity.peer.id);
-        assert_ne!(identity.peer.id, identity.device.id);
+        assert_ne!(identity.peer_id, identity.peer.as_ref().expect("root").id);
+        assert_ne!(identity.peer.as_ref().expect("root").id, identity.device.id);
         assert_eq!(
-            identity.peer.id,
-            id_from_spki_der(&identity.peer.spki_der).expect("peer id")
+            identity.peer.as_ref().expect("root").id,
+            id_from_spki_der(&identity.peer.as_ref().expect("root").spki_der).expect("peer id")
         );
         assert_eq!(
             identity.device.id,
             id_from_spki_der(&identity.device.spki_der).expect("device id")
         );
+    }
+
+    #[test]
+    fn linked_device_refreshes_identity_proof_without_receiving_root_or_recovery_authority() {
+        let mut authority = PeerIdentity::generate_at(1_000).expect("authority identity");
+        let linked_key = Keypair::generate().expect("linked device key");
+        append_identity_change(
+            &mut authority.proof,
+            authority.peer.as_ref().expect("root"),
+            IdentityChangeAuthor::Root,
+            IdentityChangeKind::DeviceAuthorize {
+                device_id: linked_key.id.clone(),
+                device_pub: linked_key.spki_b64.clone(),
+                scopes: default_device_scopes(),
+                expires_ms: i64::MAX,
+            },
+            2_000,
+        )
+        .expect("authorize linked device");
+        let delegation = create_delegation_for_device(
+            &authority,
+            &linked_key.id,
+            &linked_key.spki_b64,
+            1_900,
+            i64::MAX,
+            default_device_scopes(),
+        )
+        .expect("linked delegation");
+        let mut linked = PeerIdentity::from_authorized_device_b64(
+            &linked_key.secret_key_b64(),
+            authority.proof.clone(),
+            delegation,
+            authority.member_encryption_secret_bytes(),
+        )
+        .expect("linked identity");
+        assert!(!linked.has_identity_authority());
+        assert!(linked.peer.is_none());
+        assert!(linked.recovery.is_none());
+
+        let third = Keypair::generate().expect("third device key");
+        append_identity_change(
+            &mut authority.proof,
+            authority.peer.as_ref().expect("root"),
+            IdentityChangeAuthor::Root,
+            IdentityChangeKind::DeviceAuthorize {
+                device_id: third.id,
+                device_pub: third.spki_b64,
+                scopes: default_device_scopes(),
+                expires_ms: i64::MAX,
+            },
+            3_000,
+        )
+        .expect("authorize later device");
+        linked.proof = authority.proof.clone();
+        let event = create_event(
+            &linked,
+            create_delegation(&linked, 2_900, 4_000, vec!["room:post".to_string()])
+                .expect("refreshed linked delegation"),
+            "room:test",
+            3_100,
+            "MSG_POST",
+            vec![],
+            json!({"text":"still linked"}),
+        )
+        .expect("linked event");
+        validate_event_at(&event, "room:post", 3_100).expect("linked event validates");
+
+        append_identity_change(
+            &mut authority.proof,
+            authority.peer.as_ref().expect("root"),
+            IdentityChangeAuthor::Root,
+            IdentityChangeKind::DeviceRevoke {
+                device_id: linked.device.id.clone(),
+            },
+            3_200,
+        )
+        .expect("revoke linked device");
+        linked.proof = authority.proof.clone();
+        let revoked = create_delegation(&linked, 3_100, 4_000, vec!["room:post".to_string()])
+            .expect("stored delegation can carry refreshed proof");
+        assert!(validate_delegation_at(
+            &revoked,
+            &linked.peer_id,
+            &linked.device.id,
+            "room:post",
+            3_300,
+        )
+        .is_err());
     }
 
     fn origin_event(
@@ -3506,7 +3733,7 @@ mod tests {
     fn recovery_rotates_root_revokes_old_devices_and_preserves_principal() {
         let original = PeerIdentity::generate_at(1_000).expect("original identity");
         let original_peer_id = original.peer_id.clone();
-        let original_root_id = original.peer.id.clone();
+        let original_root_id = original.peer.as_ref().expect("root").id.clone();
         let original_device_id = original.device.id.clone();
         let card = original.recovery_card();
 
@@ -3515,7 +3742,7 @@ mod tests {
         let recovered_state = derive_identity_state(&recovered.proof).expect("recovered state");
 
         assert_eq!(recovered.peer_id, original_peer_id);
-        assert_ne!(recovered.peer.id, original_root_id);
+        assert_ne!(recovered.peer.as_ref().expect("root").id, original_root_id);
         assert!(!recovered_state.devices.contains_key(&original_device_id));
         assert!(recovered_state.devices.contains_key(&recovered.device.id));
         assert!(identity_proof_extends(&original.proof, &recovered.proof).expect("extension"));
@@ -3539,7 +3766,7 @@ mod tests {
         let mut proof = identity.proof.clone();
         let result = append_identity_change(
             &mut proof,
-            &identity.recovery,
+            identity.recovery.as_ref().expect("recovery"),
             IdentityChangeAuthor::Recovery,
             IdentityChangeKind::DeviceAuthorize {
                 device_id: unauthorized_device.id,
@@ -3593,7 +3820,7 @@ mod tests {
             vec![invite.event_id.clone()],
             json!({
                 "peer_id": member.peer_id,
-                "peer_pub": member.peer.spki_b64,
+                "peer_pub": member.current_root_public_b64().expect("root public key"),
                 "encryption_pub": test_encryption_pub(),
             }),
         )
@@ -3618,7 +3845,7 @@ mod tests {
             vec![invite.event_id.clone()],
             json!({
                 "peer_id": member.peer_id,
-                "peer_pub": member.peer.spki_b64,
+                "peer_pub": member.current_root_public_b64().expect("root public key"),
                 "encryption_pub": test_encryption_pub(),
                 "invite_id": invite.event_id,
             }),
@@ -3650,7 +3877,7 @@ mod tests {
             vec![invite.event_id.clone()],
             json!({
                 "peer_id": member.peer_id,
-                "peer_pub": member.peer.spki_b64,
+                "peer_pub": member.current_root_public_b64().expect("root public key"),
                 "encryption_pub": test_encryption_pub(),
                 "invite_id": invite.event_id,
             }),

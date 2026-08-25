@@ -248,6 +248,23 @@ lost home through an ordinary retaining peer into a fresh home, propagates the
 new head back, and proves that the retaining peer rejects a newly signed event
 from the lost device.
 
+Same-principal device linking has crossed its serialized authority gate. A
+fresh home creates its Device key and an ephemeral handoff key locally, exports
+only a bounded public `.voxlink` request, and retains the private half in an
+authenticated local vault. An identity-authority Device appends the root-signed
+`DEVICE_AUTHORIZE` change and returns a request-bound encrypted `.voxdevice`
+package. Import installs only the new Device key, its root-issued delegation,
+the member-encryption capability, the current ordered proof, and retained Space
+state: it does not install the Principal root or recovery secrets. Delegation
+signatures bind the stable authorization fields while the carried ordered proof
+may advance through ordinary synchronization; receivers still require a
+monotonic proof and current Device authorization. Rust regressions carry this
+path through restart, ordinary posting, a later proof extension, signed
+revocation, and refusal by the revoked Device. The native surface exposes the
+flow through a top-level Devices destination and the fresh-home setup choices;
+packaged assistive-technology and cross-machine comprehension remain lived
+beta evidence rather than completed claims.
+
 The human recovery handoff now follows that authority result instead of falling
 through silently to conversation. A successful restore announces that authority
 from previous devices was revoked and focuses the fresh recovery-kit action;
