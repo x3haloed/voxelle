@@ -56,6 +56,15 @@ The script refuses non-Windows and non-x64 hosts, checks the installer SHA-256
 against the signed template, launches the installed executable, and requires a
 live process with a visible titled main window. It leaves Voxelle open for
 human inspection and writes a new evidence file without changing the template.
+The default visible-window deadline is 30 seconds. A deliberately slow runner,
+such as full-system x86-64 emulation, may pass a longer bounded deadline with
+`-WindowTimeoutSeconds SECONDS` (maximum 600); record that runner condition with
+the supporting evidence rather than treating emulation speed as product speed.
+
+The signed `v0.1.0-beta.3` installer completed this step on 2026-08-24 in an
+x86-64 Windows 11 guest under QEMU TCG. Its release-bound receipt and screenshot
+are retained outside the disposable guest. This is not current-source native
+build evidence and does not complete the field-test or custody sections below.
 
 ## 3. Record the three-machine field test
 

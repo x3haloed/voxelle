@@ -2,7 +2,9 @@
 
 Status: executable maximum-admissible browser boundary implemented and verified
 through signed packaged-native activation, failure recovery, rollback, and
-restart on macOS; native Windows lived verification remains external.
+restart on macOS; the signed `v0.1.0-beta.3` Windows installer has crossed a
+native first-launch gate, while current-source Windows component-swap
+verification remains external.
 
 ## Claim
 
@@ -140,6 +142,7 @@ The mounted packaged app used a fresh home and completed these real UI paths:
 
 Together with the workspace preservation suite and component-host failure tests,
 this closes the local macOS evidence for the 93.2% browser-runtime ownership
-claim. Windows native first-launch and non-loopback multi-machine evidence remain
-bounded external beta gates; neither changes which code owns the component
-boundary.
+claim. The signed `v0.1.0-beta.3` installer has separate native Windows
+first-launch evidence. Current-source Windows component-swap verification and
+non-loopback multi-machine evidence remain bounded external gates; neither
+changes which code owns the component boundary.

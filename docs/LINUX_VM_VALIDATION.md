@@ -43,7 +43,9 @@ question for this commit and architecture. It does not claim a supported Linux
 installer, a lived Linux GUI launch, x86-64 Linux behavior, non-loopback field
 reachability, physical media behavior, or any Windows result.
 
-The remaining Windows beta gate requires native x86-64 Windows and a visible
-first launch of the signed NSIS artifact. The Apple Silicon host can accelerate
-Windows ARM64 only, while `record-windows-beta-smoke.ps1` rejects non-x64
-hosts. An ARM VM therefore cannot honestly satisfy that gate.
+The signed `v0.1.0-beta.3` NSIS artifact subsequently crossed its native x86-64
+Windows first-launch gate under full-system QEMU TCG. That release-specific
+receipt does not supply current-source native Windows build/package evidence.
+Multi-threaded TCG produced repeatable compiler access violations in unrelated
+dependencies, while single-threaded TCG was not a practical build runner; a
+reliable external x86-64 Windows runner is still required for that claim.

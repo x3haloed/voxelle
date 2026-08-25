@@ -206,6 +206,18 @@ ELF artifacts. This is Linux build and behavior evidence only; it does not add
 a Linux distribution artifact to the negotiated product envelope or satisfy
 the native Windows x86-64 first-launch gate.
 
+On 2026-08-24, an x86-64 Windows 11 guest under full-system QEMU TCG verified
+the authenticated `v0.1.0-beta.3` manifest and installer digest, installed the
+exact signed-release NSIS asset, and presented Voxelle's titled main window.
+The release-bound receipt and screenshot are retained outside the disposable
+guest. This closes first launch for that signed release only. It does not prove
+that the current source builds natively on Windows: Rust 1.98 subsequently
+crashed with `STATUS_ACCESS_VIOLATION` in unrelated dependencies under
+multi-threaded TCG, while single-threaded TCG could not provide a practical
+Windows build runner. Current-source native Windows build/package evidence,
+non-loopback field reachability, physical media, and signing-secret custody
+remain outside the completed evidence horizon.
+
 ## Construction And Verification Order
 
 1. Carry one identity through loss, recovery, rotation, revocation, remote
@@ -276,8 +288,10 @@ durable admission path.
 The unsigned install path has also crossed a native artifact gate: Tauri emits
 an ad-hoc-signed universal macOS DMG (arm64 plus x86_64) and is configured for a
 Windows NSIS artifact, with SHA-256 manifests and narrow per-app Gatekeeper and
-SmartScreen instructions. A native Windows build and first launch still require
-the external Windows runner named in the evidence horizon.
+SmartScreen instructions. The signed `v0.1.0-beta.3` Windows artifact crossed
+its native first-launch gate on the external runner named in the evidence
+horizon; a native build and package of the current source still require a
+reliable external Windows runner.
 
 The workbench risk has crossed its first lived gate. Every Rust-registered view
 can move among all five docks by drag/drop or an accessible selector, reorder,
@@ -365,6 +379,8 @@ Those are bounded revision or evidence questions, not unfinished local
 collapses. Workspace-wide formatting and lint are not claimed as green because
 the separate provenance-board crates have existing rustfmt drift and two new
 `manual_contains` warnings under Rust 1.96; the changed Voxelle authority crates
-are formatted and strict-lint clean. Windows first launch, non-loopback field
-reachability, and physical media devices remain the external gates already
-named in the evidence horizon, not locally completed claims.
+are formatted and strict-lint clean. The signed `v0.1.0-beta.3` Windows first
+launch is complete; current-source native Windows build/package evidence,
+non-loopback field reachability, physical media devices, and signing-secret
+custody remain the external gates already named in the evidence horizon, not
+locally completed claims.

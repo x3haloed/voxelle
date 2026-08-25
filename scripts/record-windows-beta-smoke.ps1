@@ -3,7 +3,8 @@ param(
   [Parameter(Mandatory = $true)][string]$Output,
   [Parameter(Mandatory = $true)][string]$Installer,
   [Parameter(Mandatory = $true)][string]$InstalledExecutable,
-  [Parameter(Mandatory = $true)][string]$Operator
+  [Parameter(Mandatory = $true)][string]$Operator,
+  [ValidateRange(1, 600)][int]$WindowTimeoutSeconds = 30
 )
 
 $ErrorActionPreference = "Stop"
@@ -44,7 +45,7 @@ if ($architecture -ne "X64") {
 }
 
 $process = Start-Process -FilePath $InstalledExecutable -PassThru
-$deadline = [DateTime]::UtcNow.AddSeconds(30)
+$deadline = [DateTime]::UtcNow.AddSeconds($WindowTimeoutSeconds)
 $windowVisible = $false
 while ([DateTime]::UtcNow -lt $deadline) {
   Start-Sleep -Milliseconds 500
@@ -58,7 +59,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
   }
 }
 if (-not $windowVisible) {
-  throw "Voxelle stayed alive but did not present a visible main window within 30 seconds"
+  throw "Voxelle stayed alive but did not present a visible main window within $WindowTimeoutSeconds seconds"
 }
 
 $currentVersion = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion"
