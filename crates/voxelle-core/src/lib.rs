@@ -1518,6 +1518,12 @@ pub fn derive_governance_state(
                 if event.author_peer_id != context.authority_peer_id {
                     continue;
                 }
+                // Early spaces did not persist a separate MEMBER_JOIN for the
+                // creating authority. The signed genesis still establishes
+                // that principal as the space's first member; without this
+                // projection, peers reject valid authority room facts from
+                // those retained spaces as NotMember.
+                state.members.insert(event.author_peer_id.clone());
                 let Some(room_id) = string_body_field(event, "default_room_id") else {
                     continue;
                 };
@@ -4080,6 +4086,27 @@ mod tests {
 
         let event = message(&member, 1_100, vec![]);
         accept_event(&event, &[join], &context, 1_100).expect("message accepted");
+    }
+
+    #[test]
+    fn space_genesis_implicitly_admits_its_authority_as_a_member() {
+        let authority = PeerIdentity::generate_at(900).expect("authority");
+        let space = create_space(&authority, "Friends", "general", 1_000).expect("space");
+        let context =
+            RoomContext::for_space(authority.peer_id.clone(), space.governance_room_id.clone());
+        let event = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:post".to_string()]),
+            &space.default_room_id,
+            1_100,
+            "MSG_POST",
+            vec![],
+            json!({ "text": "authority message" }),
+        )
+        .expect("authority message");
+
+        accept_event(&event, &[space.genesis], &context, 1_100)
+            .expect("space authority is an implicit member");
     }
 
     #[test]

@@ -11486,6 +11486,34 @@ mod tests {
             .iter()
             .any(|message| message.text == "hello after one-action join"));
 
+        let bob_message = alice
+            .read_messages(None)
+            .expect("alice messages after Bob sync")
+            .into_iter()
+            .find(|message| message.text == "hello after one-action join")
+            .expect("Bob message is visible to Alice");
+        alice
+            .send_message_with_metadata(SendMessageRequest {
+                text: "reply after Bob sync".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: Some(bob_message.event_id.clone()),
+                in_reply_to_event_id: Some(bob_message.event_id),
+                client_request_id: None,
+            })
+            .expect("Alice reply");
+        let pulled = bob
+            .sync_peer(&bootstrap, 64)
+            .await
+            .expect("pull reply from inviter");
+        assert!(pulled.room.accepted >= 1, "{pulled:?}");
+        assert!(bob
+            .read_messages(None)
+            .expect("bob messages")
+            .iter()
+            .any(|message| message.text == "reply after Bob sync"));
+
         let mut tampered = invite.clone();
         tampered.space.name = "Mallory's Space".to_string();
         assert!(tampered.validate_at(now_ms()).is_err());
