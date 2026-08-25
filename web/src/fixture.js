@@ -12,6 +12,10 @@ export const fixtureSnapshot = {
       default_room: "room:general",
       authority_peer_id: "ed25519:alice000000000000000000000000000000000000000000000000",
     },
+    recovery: {
+      kit_exported: false,
+      last_exported_ms: null,
+    },
     runtime: {
       state: "online",
       listen_addr: "[::1]:49152",
@@ -23,11 +27,14 @@ export const fixtureSnapshot = {
     },
     invite: {
       peer_record_json:
-        '{\n  "v": 1,\n  "label": "Alice",\n  "default_room": "room:general",\n  "endpoint": {\n    "v": 1,\n    "addr": "[::1]:49152",\n    "peer_id": "ed25519:alice000000000000000000000000000000000000000000000000",\n    "device_id": "ed25519:device0000000000000000000000000000000000000000000000",\n    "quic_cert_der_b64": "sample",\n    "quic_cert_fingerprint": "sha256:sample"\n  }\n}\n',
+        '{\n  "v": 1,\n  "label": "Alice",\n  "space_id": "s:preview",\n  "governance_room_id": "s:preview:governance",\n  "default_room": "room:general",\n  "authority_peer_id": "p:preview-alice",\n  "endpoint": {\n    "v": 1,\n    "addr": "[::1]:49152",\n    "peer_id": "ed25519:alice000000000000000000000000000000000000000000000000",\n    "device_id": "ed25519:device0000000000000000000000000000000000000000000000",\n    "quic_cert_der_b64": "sample",\n    "quic_cert_fingerprint": "sha256:sample"\n  }\n}\n',
       peer_record: {
         v: 1,
         label: "Alice",
+        space_id: "s:preview",
+        governance_room_id: "s:preview:governance",
         default_room: "room:general",
+        authority_peer_id: "p:preview-alice",
         endpoint: {
           v: 1,
           addr: "[::1]:49152",
@@ -38,6 +45,12 @@ export const fixtureSnapshot = {
         },
       },
     },
+    active_invites: [{
+      invite_id: "evt:preview-active-invite",
+      created_ms: 1760000000000,
+      expires_ms: 2000000000000,
+      author_peer_id: "ed25519:alice000000000000000000000000000000000000000000000000",
+    }],
     peers: [
       {
         label: "Peer 5b2a91c840e2",
@@ -46,12 +59,49 @@ export const fixtureSnapshot = {
         addr: "[::1]:49153",
         default_room: "room:general",
       },
+      {
+        label: "Carol",
+        peer_id: "ed25519:carol000000000000000000000000000000000000000000000000",
+        device_id: "ed25519:caroldevice00000000000000000000000000000000000000000",
+        addr: "[fd00::23]:49154",
+        default_room: "room:general",
+      },
     ],
-    channels: [{ room_id: "room:general", name: "general", topic: "", visibility: "public", selected: true, unread_count: 0 }],
-    roles: [],
-    profiles: [],
-    notifications: [],
-    call: { call_id: "", participants: [], signals: [] },
+    channels: [
+      { room_id: "room:general", name: "general", topic: "", visibility: "public", key_epoch: 0, private_member_count: 0, selected: true, unread_count: 0 },
+      { room_id: "room:plans", name: "plans", topic: "Private weekend planning", visibility: "private", key_epoch: 2, private_member_count: 2, selected: false, unread_count: 0 },
+    ],
+    roles: [{
+      role_id: "role:moderator-preview",
+      name: "Moderator",
+      permissions: ["message:moderate", "message:pin"],
+      member_count: 1,
+    }],
+    profiles: [
+      {
+        peer_id: "ed25519:alice000000000000000000000000000000000000000000000000",
+        display_name: "Alice",
+        about: "Building a private place for friends.",
+        banned: false,
+        role_ids: ["role:moderator-preview"],
+      },
+      {
+        peer_id: "ed25519:peer5b2a91c840e200000000000000000000000000000000000000",
+        display_name: "Bob",
+        about: "Here for the weekend plans.",
+        banned: false,
+        role_ids: [],
+      },
+    ],
+    notifications: [
+      {
+        event_id: "evt_02",
+        room_id: "room:general",
+        author_peer_id: "ed25519:peer5b2a91c840e200000000000000000000000000000000000000",
+        summary: "Bob mentioned you: Does Saturday afternoon work?",
+      },
+    ],
+    call: { call_id: "", participants: [], participant_video: {}, signals: [] },
     room: {
       room_id: "room:general",
       messages: [
@@ -68,6 +118,44 @@ export const fixtureSnapshot = {
           pinned: false,
           reactions: [],
           attachments: [],
+        },
+        {
+          event_id: "evt_02",
+          created_ms: 1760000180000,
+          author_peer_id: "ed25519:peer5b2a91c840e200000000000000000000000000000000000000",
+          text: "@Alice Does Saturday afternoon work?",
+          edited_ms: null,
+          redacted: false,
+          mentions: ["ed25519:alice000000000000000000000000000000000000000000000000"],
+          thread_root_event_id: null,
+          reply_count: 0,
+          pinned: false,
+          reactions: [{
+            emoji: "👍",
+            peer_ids: ["ed25519:alice000000000000000000000000000000000000000000000000"],
+          }],
+          attachments: [],
+        },
+        {
+          event_id: "evt_attachment",
+          created_ms: 1760000240000,
+          author_peer_id: "ed25519:alice000000000000000000000000000000000000000000000000",
+          text: "",
+          edited_ms: null,
+          redacted: false,
+          mentions: [],
+          thread_root_event_id: null,
+          reply_count: 0,
+          pinned: false,
+          reactions: [],
+          attachments: [{
+            event_id: "evt_attachment",
+            filename: "weekend-plan.txt",
+            mime: "text/plain",
+            sha256: "sha256:preview",
+            size_bytes: 12,
+            data_b64: "U2F0dXJkYXkgMnBt",
+          }],
         },
       ],
     },

@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   filterPaletteCommands,
   moveView,
+  paletteCommandAvailability,
   placementsFromViews,
   setViewVisible,
   shiftView,
@@ -52,4 +53,125 @@ test("palette search and registry shortcuts use command metadata", () => {
     { key: "p", metaKey: false, ctrlKey: true, shiftKey: true, altKey: false },
     "Mod+Shift+P",
   ));
+});
+
+test("palette availability explains causal prerequisites without changing command ids", () => {
+  const fresh = {
+    hasHome: false,
+    hasHomeError: false,
+    runtimeOnline: false,
+    hasInvite: false,
+    hasKnownPeer: false,
+    joinedCall: false,
+    callFull: false,
+    updateAuthenticationAvailable: false,
+    hasAvailableUpdate: false,
+    hasStagedUpdate: false,
+    hasPreviousGeneration: false,
+  };
+  assert.deepEqual(paletteCommandAvailability("channel.create", fresh), {
+    available: false,
+    reason: "Create, join, or recover a space first",
+  });
+  assert.deepEqual(paletteCommandAvailability("message.composer.focus", fresh), {
+    available: false,
+    reason: "Create, join, or recover a space first",
+  });
+  assert.equal(paletteCommandAvailability("space.join", fresh).available, true);
+  assert.deepEqual(paletteCommandAvailability("product.update.check", fresh), {
+    available: false,
+    reason: "No trusted release root is available",
+  });
+  assert.equal(paletteCommandAvailability("product.update.discardStaged", fresh).available, false);
+  assert.equal(paletteCommandAvailability("product.update.rollback", fresh).available, false);
+
+  const active = {
+    hasHome: true,
+    hasHomeError: false,
+    runtimeOnline: true,
+    hasInvite: false,
+    hasKnownPeer: true,
+    joinedCall: false,
+    callFull: false,
+    updateAuthenticationAvailable: true,
+    hasAvailableUpdate: false,
+    hasStagedUpdate: false,
+    hasPreviousGeneration: false,
+  };
+  assert.equal(paletteCommandAvailability("space.join", active).available, false);
+  assert.equal(paletteCommandAvailability("identity.recovery.restore", active).available, false);
+  assert.equal(paletteCommandAvailability("invite.copy", active).reason, "Create a signed invite first");
+  assert.equal(
+    paletteCommandAvailability("peer.diagnose", { ...active, hasKnownPeer: false }).reason,
+    "Join with an invite or import peer availability first",
+  );
+  assert.equal(
+    paletteCommandAvailability("peer.sync", { ...active, hasKnownPeer: false }).available,
+    false,
+  );
+  assert.equal(paletteCommandAvailability("peer.sync", active).available, true);
+  assert.equal(paletteCommandAvailability("channel.create", active).available, true);
+  assert.deepEqual(paletteCommandAvailability("runtime.goOnline", active), {
+    available: false,
+    reason: "The peer service is already online; use Connection & sync to reconfigure it",
+  });
+  assert.equal(
+    paletteCommandAvailability("runtime.goOnline", { ...active, runtimeOnline: false }).available,
+    true,
+  );
+  assert.equal(paletteCommandAvailability("runtime.goOffline", active).available, true);
+  assert.equal(paletteCommandAvailability("message.composer.focus", active).available, true);
+  assert.equal(
+    paletteCommandAvailability("call.microphone.toggle", active).reason,
+    "Join this room's call first",
+  );
+  assert.equal(
+    paletteCommandAvailability("call.microphone.toggle", { ...active, joinedCall: true }).available,
+    true,
+  );
+  assert.equal(
+    paletteCommandAvailability("call.camera.toggle", active).reason,
+    "Join this room's call first",
+  );
+  assert.equal(
+    paletteCommandAvailability("call.camera.toggle", { ...active, joinedCall: true }).available,
+    true,
+  );
+  assert.deepEqual(
+    paletteCommandAvailability("call.join", { ...active, joinedCall: true }),
+    { available: false, reason: "You are already in this room's call" },
+  );
+  assert.deepEqual(
+    paletteCommandAvailability("call.join", { ...active, callFull: true }),
+    { available: false, reason: "This room's direct call is full" },
+  );
+  assert.deepEqual(paletteCommandAvailability("product.update.stageAvailable", active), {
+    available: false,
+    reason: "Check for a signed update first",
+  });
+  assert.equal(
+    paletteCommandAvailability("product.update.stageAvailable", {
+      ...active,
+      hasAvailableUpdate: true,
+    }).available,
+    true,
+  );
+  assert.deepEqual(paletteCommandAvailability("product.update.activateStaged", active), {
+    available: false,
+    reason: "Download and stage a signed update first",
+  });
+  assert.equal(
+    paletteCommandAvailability("product.update.activateStaged", {
+      ...active,
+      hasStagedUpdate: true,
+    }).available,
+    true,
+  );
+  assert.equal(
+    paletteCommandAvailability("product.update.rollback", {
+      ...active,
+      hasPreviousGeneration: true,
+    }).available,
+    true,
+  );
 });

@@ -60,6 +60,111 @@ export function filterPaletteCommands(commands, query) {
     });
 }
 
+const HOME_COMMANDS = new Set([
+  "runtime.goOnline",
+  "runtime.goOffline",
+  "space.invite.create",
+  "invite.copy",
+  "identity.recovery.export",
+  "channel.create",
+  "channel.markRead",
+  "profile.update",
+  "role.create",
+  "message.search",
+  "message.composer.focus",
+  "call.join",
+  "call.leave",
+  "call.microphone.toggle",
+  "call.camera.toggle",
+  "peer.import",
+  "peer.diagnose",
+  "peer.sync",
+]);
+
+export function paletteCommandAvailability(commandId, context) {
+  if (HOME_COMMANDS.has(commandId) && !context.hasHome) {
+    return { available: false, reason: "Create, join, or recover a space first" };
+  }
+  if (commandId === "home.init" && context.hasHome) {
+    return { available: false, reason: "This device already has an active home" };
+  }
+  if (commandId === "home.init" && context.hasHomeError) {
+    return { available: false, reason: "Resolve or archive the damaged home first" };
+  }
+  if (commandId === "space.join" && context.hasHome) {
+    return { available: false, reason: "Joining requires a fresh Voxelle home" };
+  }
+  if (commandId === "space.join" && context.hasHomeError) {
+    return { available: false, reason: "Archive the damaged home before joining" };
+  }
+  if (commandId === "identity.recovery.restore" && context.hasHome) {
+    return { available: false, reason: "Recovery requires a fresh Voxelle home" };
+  }
+  if (commandId === "identity.recovery.restore" && context.hasHomeError) {
+    return { available: false, reason: "Prepare the damaged home for recovery first" };
+  }
+  if (commandId === "runtime.goOffline" && !context.runtimeOnline) {
+    return { available: false, reason: "The peer service is already offline" };
+  }
+  if (commandId === "runtime.goOnline" && context.runtimeOnline) {
+    return {
+      available: false,
+      reason: "The peer service is already online; use Connection & sync to reconfigure it",
+    };
+  }
+  if (commandId === "invite.copy" && !context.hasInvite) {
+    return { available: false, reason: "Create a signed invite first" };
+  }
+  if (
+    ["peer.diagnose", "peer.sync"].includes(commandId)
+    && !context.hasKnownPeer
+  ) {
+    return {
+      available: false,
+      reason: "Join with an invite or import peer availability first",
+    };
+  }
+  if (commandId === "call.join" && context.joinedCall) {
+    return { available: false, reason: "You are already in this room's call" };
+  }
+  if (commandId === "call.join" && context.callFull) {
+    return { available: false, reason: "This room's direct call is full" };
+  }
+  if (commandId === "call.leave" && !context.joinedCall) {
+    return { available: false, reason: "You are not in this room's call" };
+  }
+  if (commandId === "call.microphone.toggle" && !context.joinedCall) {
+    return { available: false, reason: "Join this room's call first" };
+  }
+  if (commandId === "call.camera.toggle" && !context.joinedCall) {
+    return { available: false, reason: "Join this room's call first" };
+  }
+  if (
+    [
+      "product.update.check",
+      "product.update.stageAvailable",
+      "product.update.install",
+      "product.update.rotateTrust",
+    ].includes(commandId)
+    && !context.updateAuthenticationAvailable
+  ) {
+    return { available: false, reason: "No trusted release root is available" };
+  }
+  if (commandId === "product.update.stageAvailable" && !context.hasAvailableUpdate) {
+    return { available: false, reason: "Check for a signed update first" };
+  }
+  if (
+    ["product.update.activateStaged", "product.update.discardStaged"].includes(commandId)
+    && !context.hasStagedUpdate
+  ) {
+    return { available: false, reason: "Download and stage a signed update first" };
+  }
+  if (commandId === "product.update.rollback" && !context.hasPreviousGeneration) {
+    return { available: false, reason: "No previous verified product generation is available" };
+  }
+  return { available: true, reason: "" };
+}
+
 export function shortcutMatches(event, shortcut) {
   if (!shortcut) {
     return false;

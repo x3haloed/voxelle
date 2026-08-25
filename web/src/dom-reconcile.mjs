@@ -5,6 +5,13 @@ function renderKey(node) {
     : null;
 }
 
+/** @param {Node | null | undefined} node */
+function actionKey(node) {
+  return node?.nodeType === 1
+    ? /** @type {Element} */ (node).getAttribute("data-action-key")
+    : null;
+}
+
 /** @param {Node | undefined} current @param {Node} desired */
 function compatible(current, desired) {
   if (!current || current.nodeType !== desired.nodeType) return false;
@@ -14,12 +21,16 @@ function compatible(current, desired) {
   ) return false;
   const currentKey = renderKey(current);
   const desiredKey = renderKey(desired);
-  return currentKey || desiredKey ? currentKey === desiredKey : true;
+  if (currentKey || desiredKey) return currentKey === desiredKey;
+  const currentAction = actionKey(current);
+  const desiredAction = actionKey(desired);
+  return currentAction || desiredAction ? currentAction === desiredAction : true;
 }
 
 /** @param {Element} current @param {Element} desired */
 function syncAttributes(current, desired) {
-  const preserveOpen = current.tagName === "DETAILS";
+  const preserveOpen = current.tagName === "DETAILS"
+    && desired.getAttribute("data-sync-open") !== "true";
   const desiredNames = new Set();
   for (const attribute of desired.attributes) {
     desiredNames.add(attribute.name);
@@ -37,7 +48,8 @@ function syncAttributes(current, desired) {
 /** @param {Element} current @param {Element} desired */
 function syncControlState(current, desired) {
   if (!["INPUT", "TEXTAREA", "SELECT"].includes(current.tagName)) return;
-  if (current.ownerDocument?.activeElement === current) return;
+  const syncFocusedValue = desired.getAttribute("data-sync-focused-value") === "true";
+  if (current.ownerDocument?.activeElement === current && !syncFocusedValue) return;
   const currentControl = /** @type {HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement} */ (current);
   const desiredControl = /** @type {HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement} */ (desired);
   if (currentControl.value !== desiredControl.value) currentControl.value = desiredControl.value;

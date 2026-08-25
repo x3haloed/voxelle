@@ -15,6 +15,7 @@ pub struct BetaEvidenceV1 {
     pub distribution: DistributionEvidenceV1,
     pub windows: WindowsEvidenceV1,
     pub field: FieldEvidenceV1,
+    pub human: HumanEvidenceV1,
     pub custody: CustodyEvidenceV1,
 }
 
@@ -85,6 +86,44 @@ pub struct MessageReceiptV1 {
     pub author_role: String,
     pub message_marker: String,
     pub visible_on_roles: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HumanEvidenceV1 {
+    pub executed_utc: String,
+    pub operator: String,
+    pub assistive_technology: AssistiveTechnologyEvidenceV1,
+    pub media: MediaEvidenceV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssistiveTechnologyEvidenceV1 {
+    pub platform: String,
+    pub technology: String,
+    pub keyboard_only: bool,
+    pub fresh_setup: bool,
+    pub invite_join: bool,
+    pub conversation: bool,
+    pub recovery: bool,
+    pub customization: bool,
+    pub degraded_connection: bool,
+    pub compact_window_navigation: bool,
+    pub media_controls: bool,
+    pub microphone_toggle_controls: bool,
+    pub camera_toggle_controls: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MediaEvidenceV1 {
+    pub participant_roles: Vec<String>,
+    pub physical_microphone_capture: bool,
+    pub physical_camera_capture: bool,
+    pub permission_denial_recovery: bool,
+    pub direct_audio_observed_by_all: bool,
+    pub direct_video_observed_by_all: bool,
+    pub direct_connection_state_visible: bool,
+    pub leave_stopped_capture: bool,
+    pub missing_peer_state_visible: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,6 +225,36 @@ pub fn template(
                 })
                 .collect(),
         },
+        human: HumanEvidenceV1 {
+            executed_utc: String::new(),
+            operator: String::new(),
+            assistive_technology: AssistiveTechnologyEvidenceV1 {
+                platform: String::new(),
+                technology: String::new(),
+                keyboard_only: false,
+                fresh_setup: false,
+                invite_join: false,
+                conversation: false,
+                recovery: false,
+                customization: false,
+                degraded_connection: false,
+                compact_window_navigation: false,
+                media_controls: false,
+                microphone_toggle_controls: false,
+                camera_toggle_controls: false,
+            },
+            media: MediaEvidenceV1 {
+                participant_roles: Vec::new(),
+                physical_microphone_capture: false,
+                physical_camera_capture: false,
+                permission_denial_recovery: false,
+                direct_audio_observed_by_all: false,
+                direct_video_observed_by_all: false,
+                direct_connection_state_visible: false,
+                leave_stopped_capture: false,
+                missing_peer_state_visible: false,
+            },
+        },
         custody: CustodyEvidenceV1 {
             release_key_id: release_key.key_id.clone(),
             recovery_key_id: recovery_key.key_id.clone(),
@@ -207,6 +276,57 @@ pub fn validate(
     roots: &[TrustedReleaseKey],
     expected_commit: &str,
 ) -> Result<()> {
+    validate_release_identity(evidence, manifest, expected_commit)?;
+    validate_distribution(&evidence.distribution, manifest)?;
+    validate_windows(&evidence.windows, manifest)?;
+    validate_field(&evidence.field)?;
+    validate_human(&evidence.human, &evidence.field)?;
+    validate_custody(&evidence.custody, manifest, roots)?;
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct EvidenceStatus {
+    pub section: &'static str,
+    pub error: Option<String>,
+}
+
+pub fn status(
+    evidence: &BetaEvidenceV1,
+    manifest: &ReleaseManifestV1,
+    roots: &[TrustedReleaseKey],
+    expected_commit: &str,
+) -> Vec<EvidenceStatus> {
+    [
+        (
+            "release identity",
+            validate_release_identity(evidence, manifest, expected_commit),
+        ),
+        (
+            "distribution",
+            validate_distribution(&evidence.distribution, manifest),
+        ),
+        ("Windows", validate_windows(&evidence.windows, manifest)),
+        ("field", validate_field(&evidence.field)),
+        ("human", validate_human(&evidence.human, &evidence.field)),
+        (
+            "custody",
+            validate_custody(&evidence.custody, manifest, roots),
+        ),
+    ]
+    .into_iter()
+    .map(|(section, result)| EvidenceStatus {
+        section,
+        error: result.err().map(|error| error.to_string()),
+    })
+    .collect()
+}
+
+fn validate_release_identity(
+    evidence: &BetaEvidenceV1,
+    manifest: &ReleaseManifestV1,
+    expected_commit: &str,
+) -> Result<()> {
     if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
         return Err(anyhow!(
             "unsupported beta evidence format {}",
@@ -223,10 +343,80 @@ pub fn validate(
             "beta evidence source commit does not match the expected commit"
         ));
     }
-    validate_distribution(&evidence.distribution, manifest)?;
-    validate_windows(&evidence.windows, manifest)?;
-    validate_field(&evidence.field)?;
-    validate_custody(&evidence.custody, manifest, roots)?;
+    Ok(())
+}
+
+pub fn record_human(evidence: &mut BetaEvidenceV1, human: HumanEvidenceV1) -> Result<()> {
+    if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
+        return Err(anyhow!(
+            "unsupported beta evidence format {}",
+            evidence.format
+        ));
+    }
+    validate_human(&human, &evidence.field)?;
+    evidence.human = human;
+    Ok(())
+}
+
+pub fn record_field(evidence: &mut BetaEvidenceV1, field: FieldEvidenceV1) -> Result<()> {
+    if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
+        return Err(anyhow!(
+            "unsupported beta evidence format {}",
+            evidence.format
+        ));
+    }
+    validate_field(&field)?;
+    evidence.field = field;
+    Ok(())
+}
+
+pub fn record_distribution(
+    evidence: &mut BetaEvidenceV1,
+    distribution: DistributionEvidenceV1,
+    manifest: &ReleaseManifestV1,
+) -> Result<()> {
+    if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
+        return Err(anyhow!(
+            "unsupported beta evidence format {}",
+            evidence.format
+        ));
+    }
+    if evidence.release_id != manifest.release_id || evidence.sequence != manifest.sequence {
+        return Err(anyhow!(
+            "beta evidence does not identify the signed release"
+        ));
+    }
+    validate_distribution(&distribution, manifest)?;
+    evidence.distribution = distribution;
+    Ok(())
+}
+
+pub fn record_custody(
+    evidence: &mut BetaEvidenceV1,
+    mut custody: CustodyEvidenceV1,
+    manifest: &ReleaseManifestV1,
+    roots: &[TrustedReleaseKey],
+) -> Result<()> {
+    if evidence.format != BETA_EVIDENCE_FORMAT_V1 {
+        return Err(anyhow!(
+            "unsupported beta evidence format {}",
+            evidence.format
+        ));
+    }
+    if evidence.release_id != manifest.release_id || evidence.sequence != manifest.sequence {
+        return Err(anyhow!(
+            "beta evidence does not identify the signed release"
+        ));
+    }
+    custody.release_key_id =
+        key_for_id_and_role(roots, &manifest.signer_key_id, ReleaseKeyRole::Release)?
+            .key_id
+            .clone();
+    custody.recovery_key_id = one_key_for_role(roots, ReleaseKeyRole::Recovery)?
+        .key_id
+        .clone();
+    validate_custody(&custody, manifest, roots)?;
+    evidence.custody = custody;
     Ok(())
 }
 
@@ -387,6 +577,69 @@ fn validate_field(field: &FieldEvidenceV1) -> Result<()> {
     Ok(())
 }
 
+fn validate_human(human: &HumanEvidenceV1, field: &FieldEvidenceV1) -> Result<()> {
+    require_text("human-test timestamp", &human.executed_utc)?;
+    require_text("human-test operator", &human.operator)?;
+
+    let assistive = &human.assistive_technology;
+    if assistive.platform != "macOS" && assistive.platform != "Windows" {
+        return Err(anyhow!(
+            "assistive-technology evidence must identify macOS or Windows"
+        ));
+    }
+    require_specific_text("assistive technology", &assistive.technology)?;
+    if !(assistive.keyboard_only
+        && assistive.fresh_setup
+        && assistive.invite_join
+        && assistive.conversation
+        && assistive.recovery
+        && assistive.customization
+        && assistive.degraded_connection
+        && assistive.compact_window_navigation
+        && assistive.media_controls
+        && assistive.microphone_toggle_controls
+        && assistive.camera_toggle_controls)
+    {
+        return Err(anyhow!(
+            "keyboard-only assistive-technology evidence must complete setup, join, conversation, recovery, customization, degraded-connection, compact-window navigation, media-control, microphone-toggle, and camera-toggle paths"
+        ));
+    }
+
+    let media = &human.media;
+    if !(2..=field.machines.len()).contains(&media.participant_roles.len()) {
+        return Err(anyhow!(
+            "physical media evidence requires at least two field-test machines"
+        ));
+    }
+    let field_roles: BTreeSet<&str> = field
+        .machines
+        .iter()
+        .map(|machine| machine.role.as_str())
+        .collect();
+    let media_roles: BTreeSet<&str> = media.participant_roles.iter().map(String::as_str).collect();
+    if media_roles.len() != media.participant_roles.len()
+        || !media_roles.iter().all(|role| field_roles.contains(role))
+    {
+        return Err(anyhow!(
+            "media participant roles must be distinct machines from the field receipt"
+        ));
+    }
+    if !(media.physical_microphone_capture
+        && media.physical_camera_capture
+        && media.permission_denial_recovery
+        && media.direct_audio_observed_by_all
+        && media.direct_video_observed_by_all
+        && media.direct_connection_state_visible
+        && media.leave_stopped_capture
+        && media.missing_peer_state_visible)
+    {
+        return Err(anyhow!(
+            "physical media evidence must cover capture, permission recovery, direct audio/video, connection state, leave cleanup, and missing-peer state"
+        ));
+    }
+    Ok(())
+}
+
 fn validate_custody(
     custody: &CustodyEvidenceV1,
     manifest: &ReleaseManifestV1,
@@ -472,6 +725,17 @@ fn key_for_id_and_role<'a>(
 fn require_text(label: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() || value.len() > 512 {
         return Err(anyhow!("{label} must be present and bounded"));
+    }
+    Ok(())
+}
+
+fn require_specific_text(label: &str, value: &str) -> Result<()> {
+    require_text(label, value)?;
+    if matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "none" | "n/a" | "na" | "unknown"
+    ) {
+        return Err(anyhow!("{label} must identify the tool actually used"));
     }
     Ok(())
 }
@@ -593,6 +857,36 @@ mod tests {
                     })
                     .collect(),
             },
+            human: HumanEvidenceV1 {
+                executed_utc: "2026-08-14T21:30:00Z".to_string(),
+                operator: "operator".to_string(),
+                assistive_technology: AssistiveTechnologyEvidenceV1 {
+                    platform: "macOS".to_string(),
+                    technology: "VoiceOver".to_string(),
+                    keyboard_only: true,
+                    fresh_setup: true,
+                    invite_join: true,
+                    conversation: true,
+                    recovery: true,
+                    customization: true,
+                    degraded_connection: true,
+                    compact_window_navigation: true,
+                    media_controls: true,
+                    microphone_toggle_controls: true,
+                    camera_toggle_controls: true,
+                },
+                media: MediaEvidenceV1 {
+                    participant_roles: vec!["A".to_string(), "B".to_string()],
+                    physical_microphone_capture: true,
+                    physical_camera_capture: true,
+                    permission_denial_recovery: true,
+                    direct_audio_observed_by_all: true,
+                    direct_video_observed_by_all: true,
+                    direct_connection_state_visible: true,
+                    leave_stopped_capture: true,
+                    missing_peer_state_visible: true,
+                },
+            },
             custody: CustodyEvidenceV1 {
                 release_key_id: "release".to_string(),
                 recovery_key_id: "recovery".to_string(),
@@ -617,6 +911,138 @@ mod tests {
             "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f",
         )
         .expect("valid evidence");
+    }
+
+    #[test]
+    fn status_reports_every_invalid_section_in_one_pass() {
+        let mut evidence = valid();
+        evidence.source_commit = "wrong".to_string();
+        evidence.distribution.live_activation = false;
+        evidence.windows.main_window_visible = false;
+        evidence.field.machines[0].advertise_addr = "[::1]:47000".to_string();
+        evidence.human.assistive_technology.recovery = false;
+        evidence.custody.restore_tested = false;
+
+        let observed = status(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f",
+        );
+
+        assert_eq!(observed.len(), 6);
+        assert!(observed.iter().all(|item| item.error.is_some()));
+        assert_eq!(observed[0].section, "release identity");
+        assert_eq!(observed[5].section, "custody");
+    }
+
+    #[test]
+    fn status_marks_complete_evidence_as_ready() {
+        let observed = status(
+            &valid(),
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f",
+        );
+
+        assert!(observed.iter().all(|item| item.error.is_none()));
+    }
+
+    #[test]
+    fn human_recorder_validates_before_replacing_the_template_section() {
+        let complete = valid();
+        let observed = complete.human.clone();
+        let mut receipt = complete.clone();
+        receipt.human.operator.clear();
+        receipt.human.assistive_technology.recovery = false;
+
+        record_human(&mut receipt, observed.clone()).expect("record valid human evidence");
+        assert_eq!(receipt.human.operator, "operator");
+        assert!(receipt.human.assistive_technology.recovery);
+        assert_eq!(receipt.human.media.participant_roles, vec!["A", "B"]);
+
+        let mut refused = observed;
+        refused.media.physical_camera_capture = false;
+        let retained_operator = receipt.human.operator.clone();
+        assert!(record_human(&mut receipt, refused).is_err());
+        assert_eq!(receipt.human.operator, retained_operator);
+        assert!(receipt.human.media.physical_camera_capture);
+    }
+
+    #[test]
+    fn field_recorder_validates_before_replacing_the_template_section() {
+        let complete = valid();
+        let observed = complete.field.clone();
+        let mut receipt = complete.clone();
+        receipt.field.operator.clear();
+        receipt.field.a_to_b_sync = false;
+
+        record_field(&mut receipt, observed.clone()).expect("record valid field evidence");
+        assert_eq!(receipt.field.operator, "operator");
+        assert!(receipt.field.a_to_b_sync);
+        assert_eq!(receipt.field.machines[2].role, "C");
+
+        let mut refused = observed;
+        refused.machines[2].advertise_addr = "[::1]:47000".to_string();
+        let retained_operator = receipt.field.operator.clone();
+        assert!(record_field(&mut receipt, refused).is_err());
+        assert_eq!(receipt.field.operator, retained_operator);
+        assert_ne!(receipt.field.machines[2].advertise_addr, "[::1]:47000");
+    }
+
+    #[test]
+    fn distribution_recorder_binds_the_manifest_before_replacing_the_section() {
+        let complete = valid();
+        let observed = complete.distribution.clone();
+        let mut receipt = complete.clone();
+        receipt.distribution.operator.clear();
+        receipt.distribution.live_activation = false;
+
+        record_distribution(&mut receipt, observed.clone(), &manifest())
+            .expect("record valid distribution evidence");
+        assert_eq!(receipt.distribution.operator, "operator");
+        assert!(receipt.distribution.live_activation);
+
+        let mut refused = observed;
+        refused.github_release_url =
+            "https://github.com/x3haloed/voxelle/releases/tag/wrong".to_string();
+        let retained_operator = receipt.distribution.operator.clone();
+        assert!(record_distribution(&mut receipt, refused, &manifest()).is_err());
+        assert_eq!(receipt.distribution.operator, retained_operator);
+        assert!(receipt.distribution.live_activation);
+
+        let mut wrong_receipt = receipt.clone();
+        wrong_receipt.sequence += 1;
+        assert!(
+            record_distribution(&mut wrong_receipt, complete.distribution, &manifest()).is_err()
+        );
+    }
+
+    #[test]
+    fn custody_recorder_derives_capability_ids_before_replacing_the_section() {
+        let complete = valid();
+        let mut observed = complete.custody.clone();
+        observed.release_key_id.clear();
+        observed.recovery_key_id.clear();
+        let mut receipt = complete.clone();
+        receipt.custody.operator.clear();
+        receipt.custody.restore_tested = false;
+
+        record_custody(&mut receipt, observed.clone(), &manifest(), &roots())
+            .expect("record valid custody evidence");
+        assert_eq!(receipt.custody.release_key_id, "release");
+        assert_eq!(receipt.custody.recovery_key_id, "recovery");
+        assert!(receipt.custody.restore_tested);
+
+        let mut refused = observed;
+        refused.recovery_storage = refused.release_storage.clone();
+        let retained_operator = receipt.custody.operator.clone();
+        assert!(record_custody(&mut receipt, refused, &manifest(), &roots()).is_err());
+        assert_eq!(receipt.custody.operator, retained_operator);
+        assert_ne!(
+            receipt.custody.release_storage,
+            receipt.custody.recovery_storage
+        );
     }
 
     #[test]
@@ -653,6 +1079,92 @@ mod tests {
 
         let mut evidence = valid();
         evidence.windows.main_window_visible = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.assistive_technology.recovery = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence
+            .human
+            .assistive_technology
+            .compact_window_navigation = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence
+            .human
+            .assistive_technology
+            .microphone_toggle_controls = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.assistive_technology.camera_toggle_controls = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.assistive_technology.technology = "none".to_string();
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.media.physical_camera_capture = false;
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.media.participant_roles = vec!["A".to_string(), "A".to_string()];
+        assert!(validate(
+            &evidence,
+            &manifest(),
+            &roots(),
+            "3a3b6234cdf0b8a4ccf727f7eb8774696bbafa0f"
+        )
+        .is_err());
+
+        let mut evidence = valid();
+        evidence.human.media.participant_roles = vec!["A".to_string(), "D".to_string()];
         assert!(validate(
             &evidence,
             &manifest(),

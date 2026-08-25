@@ -1,15 +1,29 @@
-import { fixtureSnapshot } from "./fixture.js?v=component1";
-
 /**
  * @typedef {import("./shell-contract").ShellSnapshotView} ShellSnapshotView
  */
 
-export function createShellClient() {
+export async function createShellClient() {
   const invoke = tauriInvoke();
   if (invoke) {
     return new TauriShellClient(invoke, "tauri");
   }
-  return new PreviewShellClient(structuredClone(fixtureSnapshot), "preview");
+  const fixtureUrl = new URL("./fixture.js", import.meta.url);
+  fixtureUrl.searchParams.set("preview", String(Date.now()));
+  const { fixtureSnapshot } = await import(fixtureUrl.href);
+  const snapshot = structuredClone(fixtureSnapshot);
+  const preview = new URLSearchParams(window.location?.search ?? "").get("preview");
+  if (preview === "fresh") {
+    snapshot.home = null;
+    snapshot.home_error = null;
+  } else if (preview === "damaged") {
+    snapshot.home = null;
+    snapshot.home_error = {
+      message: "The encrypted local identity could not be opened.",
+      recovery_message: "Retain this local state for diagnosis, or prepare the device only if you have the offline recovery kit for this identity.",
+      detail: "bounded preview: encrypted identity unavailable",
+    };
+  }
+  return new PreviewShellClient(snapshot, "preview");
 }
 
 class TauriShellClient {
@@ -37,6 +51,10 @@ class TauriShellClient {
       await this.invoke("execute_shell_command", { commandId: command, payload })
     );
   }
+
+  async chooseRecoveryKitPath(mode) {
+    return await this.invoke("choose_recovery_kit_path", { mode });
+  }
 }
 
 class PreviewShellClient {
@@ -55,15 +73,25 @@ class PreviewShellClient {
    */
   async execute(command) {
     if (command !== "shell.refresh") {
-      throw new Error(
-        `Preview only; launch the desktop app to run ${command}.`,
+      const error = Object.assign(
+        new Error(`Preview only; launch the desktop app to run ${command}.`),
+        {
+          recovery: "needs_human",
+          recovery_message: "Launch the native desktop app to perform actions through the local Voxelle authority.",
+          detail: `standalone preview refused semantic command ${command}`,
+        },
       );
+      throw error;
     }
     return this.current;
   }
 
   async onSnapshotInvalidated() {
     return () => {};
+  }
+
+  async chooseRecoveryKitPath() {
+    return null;
   }
 }
 

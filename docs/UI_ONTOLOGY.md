@@ -94,6 +94,64 @@ should automate those mechanisms through the Rust-owned command path, then
 surface topology, degraded states, diagnostics, and manual control when they are
 needed. Convenience must not make a provider authoritative or irreplaceable.
 
+The same progression applies to identity and invitations. Ordinary profile,
+member, invite, and connection views lead with human names, goals, and outcomes.
+Raw principal and device identifiers, signed invite payloads, peer records,
+addresses, and manual synchronization remain reachable through explicit
+advanced details for diagnosis and intervention. Those disclosures project the
+same Rust-owned state and invoke the same semantic commands; they are not a
+parallel authority path.
+
+Advanced connection addressing names the complete input unit: a bracketed IPv6
+socket with its port. Empty Bind and Advertise values retain automatic local
+setup. Locally knowable edge whitespace, control characters, malformed IPv6,
+missing ports, and ports above 65,535 keep **Go Online** from invoking the
+command; Connection & sync opens, describes the exact field, and focuses it.
+Rust's typed `SocketAddr` deserialization and native service startup remain the
+authority for accepted network configuration and reachability.
+
+Governance follows the same rule. Role creation exposes named, bounded
+permission choices; role assignment, ban, and unban controls lead with member
+and role names while stable principal and role IDs remain command payloads.
+When current members share a display name case-insensitively, member cards,
+mention choices, Ban/Unban, and role assignment append the same bounded stable
+member marker so the person can follow the intended principal through review
+and confirmation. Duplicate role names receive the parallel stable role marker
+on their cards, member-management controls, assignment actions, and reviews.
+Unique member and role names remain uncluttered.
+The UI projects assignments and bans from the admitted governance state rather
+than reconstructing authorization. Removing a ban is described precisely: it
+permits a principal to use a valid invite again, but does not itself restore
+membership.
+
+Duplicate channel names follow the same stable-target rule. A shortest unique
+room-ID suffix appears only for case-insensitive collisions and remains
+consistent across the channel card, Select and key-rotation controls, header,
+timeline, composer target, retained-search results, and notification actions.
+Complete room IDs remain the command and projection authority.
+
+The initialized default is a conversation workspace rather than a dashboard of
+all registered views. Channels, the selected conversation, its composer, and
+direct media remain in the workbench. Focused header surfaces expose people and
+invitations, notifications, local search, and connection health. Their
+underlying named views remain registered, dockable, and restorable through Edit
+layout so the focused presentation does not narrow the ontology.
+
+At compact window widths, presentation may stack the named places so the
+selected conversation and composer remain operable before secondary surfaces.
+This responsive projection must not rewrite persisted `place_id`, order, or
+visibility state, and it must not create a compact-only command path. Header
+actions and transient Connection and utility surfaces remain inside the
+scrollbar-safe containing width without requiring horizontal scrolling. Header
+actions and composer controls use bounded two-column projections at compact
+widths so routine navigation and composition do not each consume a full row or
+impose an intrinsic minimum wider than the conversation.
+When that width can no longer preserve a genuinely nonmodal panel beside a
+wrapped header, Connection and utility surfaces become viewport-contained
+modals without changing their view or command identities. Their `aria-modal`
+state follows the same compact media query, Tab remains within visible controls,
+and Escape returns to the invoking header action.
+
 ## 3. Primitive Categories
 
 ### 3.1 Places
@@ -127,8 +185,10 @@ A view is a concrete surface that occupies a place.
 Current registered views:
 
 - `profile.summary`
+- `identity.recovery`
 - `runtime.status`
 - `network.health`
+- `product.update`
 - `invite.exchange`
 - `peer.list`
 - `field.test`
@@ -142,6 +202,189 @@ Current registered views:
 - `call.mesh`
 - `service.activity`
 
+The default workbench keeps conversation, people, invitation, and attention
+surfaces visible. Recovery, runtime, network-health, field-test, product-update,
+role-management, and service-activity views start hidden but remain dockable
+and are reachable through Edit layout. Product Updates is also directly
+reachable from More because update discovery, verification, activation,
+rollback, and release-trust review must not depend on editing the workbench.
+A compact Connection surface projects the
+same Rust-owned network-health rows when topology or synchronization needs
+attention; it does not create a second health model in the frontend.
+
+Transient panels and modal command surfaces preserve keyboard location: focus
+moves into a newly opened surface, modal Tab navigation remains contained, and
+closing returns focus to the invoking control when it still exists. Modal focus
+order excludes controls inside collapsed disclosures while keeping
+the disclosure summary itself reachable. Snapshot
+refreshes do not make the entire application a live region; only bounded status
+and alert surfaces announce changes to assistive technology.
+While a semantic command is in flight, one bounded status surface names the
+operation using that command's Rust-supplied label, the active workflow reports itself busy,
+and the initiating control keeps the same contextual operation name. Completion
+or failure removes that progress state and follows the ordinary focus and error
+paths; the frontend does not invent a second command lifecycle.
+Repeated controls expose enough visible row context in their accessible names
+to identify the target without reconstructing it from DOM position. Channel
+actions include the channel name and privacy where relevant; message action
+disclosures include the author and a bounded content or attachment preview.
+Member and role disclosures include their visible names, invite revocation
+includes the displayed expiry, and visible reaction controls include the
+message author and bounded content context.
+
+This naming changes presentation only: stable command IDs and payloads remain
+the semantic authority.
+
+Every native disclosure summary exposes a button role and an `aria-expanded`
+value synchronized with its owning `details` element. Enter and Space both
+toggle the same native disclosure. The shared presentation helper discovers
+its parent after insertion so hidden or conditional surfaces do not carry a
+second manually coordinated owner reference.
+
+Reconciliation distinguishes native user-owned disclosure state from
+product-controlled disclosure state. Uncontrolled details preserve a person's
+expanded choice across snapshot publication. Profile editing, peer import,
+channel creation and private options, role-member confirmation, and role
+creation explicitly synchronize `open`, so successful completion, cancellation,
+or an inapplicable option can close them. This marker controls presentation only;
+it does not admit a form or alter any semantic command.
+
+When a successful semantic command replaces its initiating surface, the
+coordinator rejects the document root as a meaningful origin and selects a
+causal fallback. Fresh creation, join, or identity restoration focuses recovery
+setup; successful recovery-kit export or channel creation focuses the message
+composer. Accepted channel selection exposes the Rust-selected row as the
+current location and moves focus there after its Select button disappears.
+These are presentation destinations after Rust acceptance, not alternate
+command completion state.
+
+Installing a selected product package, activating a staged generation, rolling
+back, and rotating release-signing trust all enter one modal confirmation path
+whether invoked from their view or the command palette. The review names the
+running/staged generation where applicable, explains whether product-generation
+or future release-key authority changes, traps modal focus, and returns focus on
+cancel. Missing package or trust-transition input routes palette users to the
+same Product Updates surface and required field. Confirmation never substitutes
+for native-kernel authentication or activation.
+
+Update commands expose the Rust-projected lifecycle prerequisite before
+invocation. Discovery and authenticated package or trust submission require an
+available trusted release root; download and stage requires a discovered signed
+release; activation and discard require a staged generation; rollback requires
+a previous verified generation. The view and command palette share those
+availability reasons without changing the stable command vocabulary or treating
+frontend state as update authority.
+
+Portable `.voxupdate` packages and `.voxtrust` transitions lead with named file
+actions. Complete JSON text remains behind explicit disclosure for text-only
+handoffs. Before confirmation, bounded frontend parsing presents release,
+sequence, channel, minimum-kernel, signer, and key-set-change claims as
+untrusted; malformed, oversized, or unknown-format input remains explicit.
+Those previews neither reject nor authorize an artifact. The original bytes
+continue to the native kernel's signature, role, sequence, downgrade, format,
+size, compatibility, and resulting-trust-set checks.
+
+Command failures lead with a bounded human explanation and a concrete recovery
+action. Rust-owned recovery categories travel with the same serialized command
+result used by every consumer; implementation paths and error chains remain
+available only under explicit technical details and never become the recovery
+authority.
+Before the product component loads, an initial snapshot failure uses the same
+structured explanation and technical-detail separation. It focuses a **Try
+Again** action that retries the unchanged native snapshot request in place and
+states that retry does not delete, archive, or replace local state. Technical
+details remain an Enter/Space-operable disclosure with explicit expanded state.
+Dismissal keeps keyboard location causal: validation returns to its repaired
+control, a surviving initiating command regains focus inside the current
+transient surface, and a removed origin falls back within that surface or to the
+ordinary composer/header. Removing a notice never leaves focus on a detached
+button or moves it behind an open surface.
+Error and success dismissal retain the same visible verb but carry distinct
+frontend action identities. A stable capture handler owns dismissal rather than
+a transient reconciled button, and semantic action identity reacquires an
+initiating control when reconciliation has replaced its DOM node.
+Ordinary correctable validation failures use `needs_input`, so invalid names,
+message content, attachments, profile fields, reactions, and empty searches do
+not masquerade as product defects. Authority, connectivity, home, and internal
+failures retain their distinct recovery meanings.
+When a form can identify an incomplete prerequisite before submission, its
+presentation names the failing control, marks it invalid, associates one inline
+repair message, and returns keyboard focus there. This does not admit the input
+or replace Rust validation; a completed form still invokes the same semantic
+command and authoritative decision path. Editing that exact field clears the
+stale presentation error; unrelated edits do not, and later Rust or
+infrastructure failures do not inherit a frontend field marker.
+
+Failed peer diagnosis and synchronization remain current-session observations
+in the Rust command host rather than disappearing with an error banner. They
+replace the corresponding health row with `broken`, name the affected ordinary
+peer, and carry the exact stable command plus peer/device payload needed to
+retry. The ordinary header counts the broken row; a successful operation against
+that same peer clears it. These observations report availability only and do
+not alter membership, authority, or retained facts.
+
+Frontend-only commands still require truthful completion evidence. In
+particular, `invite.copy` waits for the operating-system clipboard write before
+announcing a dismissible success status. An unavailable or rejected clipboard
+is a structured `needs_human` failure with a manual path through the complete
+Signed invite details; absence of the browser API never counts as success.
+
+Fresh onboarding leads with choosing a `.voxinvite` file, progressively
+discloses raw JSON paste as a text-handoff fallback, and previews bounded claims
+from either source:
+space name and stable ID, claimed authority, expiry, and included ordinary-peer
+count. It labels those values as untrusted, explains that an unbound bearer
+invite may be reused until expiry or revocation, and warns about locally visible
+expiry or envelope conflicts. The preview neither admits nor rejects anything;
+`space.join` still sends the original bytes to Rust for signature, genesis,
+governance, expiry, and bootstrap validation.
+
+Invite creation offers bounded one-hour, one-day, seven-day, and thirty-day
+expiry choices, states the selected signed bearer-capability window before
+creation, and names that an unbound bearer is not strictly single-use. The
+shared Rust command accepts only 1 minute through 30 days and refuses rather
+than silently changing an out-of-range caller request.
+The People surface projects active invitations from Rust's admitted governance
+state rather than remembering frontend actions. `space.invite.revoke` carries
+the stable invite event ID through the ordinary signed-governance admission and
+peer-sync path. When human-formatted expiries collide, the row action and review
+append the shortest unique invite-ID suffix; unique expiries remain uncluttered.
+Revocation requires an explicit alert-dialog confirmation that
+names the stale-partition limitation; cancel returns focus to the originating
+invite row.
+
+Join failure copy follows the authoritative cause. Revoked and expired invites
+ask for a new signed invite, malformed invite material asks for a complete
+`.voxinvite`, and an already-initialized home names the separate-fresh-home
+requirement. Unknown local failures remain internal. The frontend preserves
+Rust's structured recovery category and technical detail without exposing the
+detail as the human summary.
+
+An existing but unreadable local home is not presented as fresh onboarding.
+Rust reports a structured `home_error`; the shell explains the damage, keeps
+technical detail disclosure explicit, and requires confirmation before
+`home.archiveForRecovery` moves local identity, device certificate, and SQLite
+state into a private archive. The transition never deletes those files and does
+not move product-update trust state. Once Rust reports a genuinely fresh home,
+focus moves to `identity.recovery.restore` so the offline kit remains the one
+path that preserves principal continuity.
+The archive confirmation is a modal alert dialog: focus begins on the explicit
+archive action, Tab and Shift+Tab remain within Archive and Cancel, and Escape
+or Cancel returns focus to **Prepare This Device for Recovery…** without
+invoking Rust. A bounded `?preview=damaged` state makes this presentation
+reproducible while the preview shell continues to refuse every semantic action.
+
+Until a recovery-kit export succeeds, the ordinary shell shows a compact
+recovery setup prompt. The durable health marker records only completion time,
+never recovery bytes or their filesystem location. After export, the prompt
+recedes and the Identity Recovery view remains available through Edit layout
+for intentionally creating a fresh offline copy. Successful identity
+restoration announces that authority from previous devices was revoked, moves
+keyboard focus to the required fresh-kit action, and keeps that action as the
+status-dismissal fallback. Once saved, the recovery view shows the recorded save
+time and labels the renewal action **Save a fresh recovery kit**; neither
+presentation retains or reveals the selected path.
+
 Views should be bound to app-layer ViewModels or commands. They should not
 assemble protocol, store, sync, or network concepts directly.
 
@@ -151,19 +394,24 @@ A command is a user-invokable action with a stable ID.
 
 Current command families:
 
-- shell/home/runtime: `shell.refresh`, `home.init`, `runtime.goOnline`,
+- shell/home/runtime: `shell.refresh`, `home.init`,
+  `home.archiveForRecovery`, `runtime.goOnline`,
   `runtime.goOffline`;
-- admission: `space.invite.create`, `space.join`, `invite.copy`;
+- admission: `space.invite.create`, `space.invite.revoke`, `space.join`,
+  `invite.copy`;
+- identity recovery: `identity.recovery.export`, `identity.recovery.restore`;
 - channels and attention: `channel.create`, `channel.select`,
   `channel.markRead`, `channel.rotateKey`;
 - messages: `message.send`, `message.edit`, `message.redact`,
   `reaction.add`, `reaction.remove`, `pin.add`, `pin.remove`,
-  `attachment.add`, `message.search`, `message.composer.focus`;
+  `attachment.add`, `message.search`, `message.open`,
+  `message.composer.focus`;
 - people and governance: `profile.update`, `role.create`, `role.grant`,
   `role.revoke`, `member.ban`, `member.unban`;
-- calls: `call.join`, `call.signal`, `call.heartbeat`, `call.leave`;
+- calls: `call.join`, `call.signal`, `call.media`, `call.heartbeat`,
+  `call.leave`, `call.microphone.toggle`, `call.camera.toggle`;
 - peers: `peer.import`, `peer.diagnose`, `peer.sync`;
-- workbench/preferences: `ui.preference.set`, `workbench.layout.save`,
+- workbench/preferences: `ui.preference.set`, `ui.preferences.reset`, `workbench.layout.save`,
   `workbench.layout.reset`, `workbench.commandPalette.open`.
 
 Commands should be reachable from more than one surface over time:
@@ -174,6 +422,204 @@ Commands should be reachable from more than one surface over time:
 - automation or scripting later
 
 The command ID is the durable concept. The button is only one affordance.
+
+The human command palette remains a projection of the complete Rust-owned
+registry, but invocation is contextual. Commands whose causal prerequisite is
+absent stay visible and disabled with a concrete reason—for example, channel
+creation or composer focus before a home exists, or identity restoration on an
+active home. A direct shortcut reaches this same disabled palette result instead
+of closing the palette and silently targeting a surface that does not exist.
+Commands requiring human draft context do not submit empty retained frontend
+state: Join Space focuses invite selection, Create Channel opens and focuses
+the channel form, Update Profile and Create Role open their exact People
+disclosures, and Search Messages opens its focused search field. Each form
+invokes the same stable semantic command with an explicit payload only when the
+person submits it. Shortcut invocation uses the same availability decision.
+
+Create-channel and create-role disclosures name themselves as opening their
+respective creation form, distinct from the inner **Create Channel** and
+**Create Role** semantic submit actions. Expanded state remains on the opener;
+only the submit action can carry the completed draft to Rust admission.
+
+Manual diagnosis and synchronization expose an explicit, disposable target
+selection over Rust-projected ordinary peer records. The selector names the
+peer and shows its address, principal, and device; each action carries that
+exact principal/device tuple to `peer.diagnose` or `peer.sync`, and the Field
+Test view evaluates peer-named activity for the selected target. Selection does
+not import availability, grant membership, or become routing authority.
+
+When no ordinary peer record exists, Diagnose Peer and Sync Peer are unavailable
+in both the command palette and re-entrant health rows with the prerequisite
+**Join with an invite or import peer availability first**. Import Peer remains
+available and leads to the shared bounded review. This prevents a targetless
+frontend invocation without treating availability as membership or authority.
+
+The command palette exposes only the runtime transition that can presently
+complete: Go Offline while the service is online, or Go Online while it is
+offline. When already online, Go Online instead names Connection & sync as the
+place for explicit Bind or Advertise reconfiguration. The in-form action remains
+available there because it carries the visible drafts through the same command.
+
+`peer.import` requires visible draft context. Invoking it from the palette,
+Network Health, or Field Test with no draft opens and focuses one shared
+Connection & sync form instead of submitting empty state. The form bounds and
+previews untrusted label, address, principal, device, and space claims, keeps
+Import disabled for incomplete current-format JSON, and sends the complete raw
+record to Rust for authoritative validation. A foreign-space warning explains
+that availability is not membership and synchronization will still reject an
+authority mismatch. After admission, the imported principal/device tuple
+becomes the explicit manual target; optional auto-sync therefore cannot drift
+to an older stored peer.
+
+Message composition and inline editing expose one locally knowable admission
+prerequisite before invocation: Send or Save remains disabled while its draft is
+empty, edge-whitespace, null-containing, or longer than 4,000 Unicode
+characters. A visible Unicode-aware counter and inline guidance explain the
+current draft; typing valid content or inserting a named mention enables it,
+while clearing the draft disables it again. Enter, the visible buttons, and form
+submission use the same shared predicate, while Rust remains
+authoritative for message bounds, membership, permissions, mentions, and
+creation-time validity.
+
+Retained search likewise disables **Search Messages** for empty,
+control-containing, or more than 1,024 Unicode characters and reenables it as
+the person types valid visible terms. Inline live guidance names the correction;
+leading and trailing whitespace remains valid because Rust trims it. Rust owns
+the same finite query bound and remains the authority for index scope,
+accessible channels, and returned retained facts. Profile editing
+uses the complementary correction pattern: submitting an empty display name
+marks, describes, and focuses that field, and editing it clears only the stale
+validation presentation. Profile, channel, and role names share one advisory
+draft check for the Rust-admitted name shape: nonempty, no leading or trailing
+space, no control characters, and at most 80 Unicode characters. Each form
+names and focuses its own correction; Rust still independently validates the
+submitted fact. Optional About and Topic fields use the same correction path
+for their respective Rust bounds of 512 and 1,024 Unicode characters and for
+control-character exclusion; empty optional values remain valid.
+
+Message reply and edit affordances remain inside the conversation surface.
+Selecting Reply establishes local composer context, but the accepted action is
+still `message.send` with the root event ID in its payload. Inline editing and
+its Enter/save or Escape/cancel keyboard paths invoke `message.edit` only when
+the person commits. Draft context is disposable presentation state; it never
+becomes a parallel message or thread authority.
+
+When the same author has identical bounded visible message context more than
+once, controls append the shortest unique event-ID suffix. That context remains
+consistent across reactions, downloads, Message actions, Reply, Edit, Delete,
+and deletion review. Unique message contexts remain uncluttered, and commands
+continue to carry complete event IDs.
+
+Mention composition leads with current display names. The composer and inline
+editor insert a visible `@name`, then carry the corresponding stable peer IDs
+through `message.send` or `message.edit`. A typed name resolves automatically
+only when unambiguous; duplicate display names require the member picker, which
+disambiguates the choice without making raw IDs the ordinary interaction.
+
+Each projected search result and mention notification is an affordance over
+`message.open`. Rust validates that the retained event belongs to an accessible
+channel, marks that channel read, and returns a bounded conversation projection
+anchored on the selected event—even when it predates the ordinary latest-message
+window. The frontend closes the transient surface and focuses the returned
+message; it does not maintain read state, reconstruct history, or infer result
+validity.
+
+Consequential inline reviews share one interaction boundary for invitation
+revocation, private-channel key rotation, member bans, role changes, message or
+attachment deletion, and attachment sharing. Each review appears above an
+interaction-blocking backdrop, exposes a modal alert dialog, focuses its exact
+semantic action, contains both Tab directions, suppresses unrelated shortcuts,
+and cancels with Escape. Cancel and completion still return to the stable row
+or originating attachment affordance named below. This shared presentation
+boundary never combines the distinct Rust commands or their authority effects.
+If Rust rejects an action, the unchanged review retains authority context and
+renders the structured human summary, recovery action, and technical disclosure
+inside the active modal rather than behind its backdrop. Focus moves to
+**Dismiss**; dismissing only the error returns focus to the exact semantic retry
+action. Damaged-home, customization-reset, and product-update confirmations use
+the same modal error ownership without sharing their command semantics.
+
+Banning a member requires an explicit focused confirmation that states the
+authority loss, retained-history behavior, and fresh-invite requirement before
+invoking `member.ban`. Canceling or completing the action restores a stable
+keyboard location in the member row. The confirmation does not predict or
+project governance state; the Rust snapshot remains authoritative.
+
+Granting or revoking a role likewise requires a focused confirmation that names
+the member, role, direction of change, and human-readable permissions gained or
+lost. It states that other roles remain unchanged, then invokes only
+`role.grant` or `role.revoke`. Canceling or completing restores focus to the
+stable role row; accepted Rust governance remains the only assignment truth.
+
+Private-channel rows project the admitted key epoch and current private-member
+count from Rust. Key rotation is not a one-click toggle: its focused
+confirmation states that the new epoch is packaged only for the current
+private members, protects future content after admission, and cannot erase old
+ciphertext, keys, or plaintext already retained. Canceling or completing the
+semantic `channel.rotateKey` action returns focus to the stable channel row;
+the frontend never generates or predicts key material.
+
+The call mesh projects each active participant's accepted camera intent from
+Rust alongside liveness. Heartbeats may extend participation but do not erase
+the most recent admitted join mode. A voice-only peer receives an explicit
+voice tile and accessible label rather than an empty video element; camera
+participants receive a video element only after the local direct WebRTC state
+is connected. Until then the tile visibly says **Connecting directly**; after a
+failed or disconnected connection it says **Direct connection unavailable**
+instead of presenting camera intent as received media. Each interrupted tile
+states that Voxelle is still trying and gives a conditional leave-and-rejoin
+path; each terminally failed tile directly gives that recovery action. Keeping
+guidance on the participant tile preserves attribution when more than one of
+the four direct connections degrades. Connection wording remains separately
+derived from local WebRTC state, and neither presentation grants room
+participation or signaling authority.
+Pre-join controls also follow the projected four-person envelope. Once four
+participants occupy the deterministic call projection, both visible join
+choices remain present but disabled with a full-call explanation. If the local
+principal is already admitted, the ordinary surface replaces Join with in-call
+controls. The palette and direct Join shortcut use those same projected facts:
+they describe either **already in this room's call** or **direct call is full**
+instead of starting redundant capture. Rust admission remains authoritative if
+projected state changes between presentation and invocation.
+Once joined, `call.microphone.toggle` changes only the enabled state of the
+WebView's local audio tracks. The in-call button and command palette invoke that
+same frontend command ID, and the local tile names **Microphone on** or
+**Microphone muted**. A missing track remains explicit and directs the person
+to leave and rejoin; muting never writes a room fact, changes participation, or
+claims anything about a remote connection.
+`call.camera.toggle` similarly changes only already captured local video tracks,
+but it also publishes the resulting boolean camera intent through the hidden
+`call.media` shell command. That signed `CALL_MEDIA` fact is admitted only for an
+active participant, does not refresh liveness or alter membership, and drives
+the remote participant label. If no camera track was captured, the command
+directs the person to leave and rejoin with camera; it does not silently request
+new capture or claim that renegotiation succeeded.
+
+Projected reaction and pin state determines whether the visible action invokes
+the add or remove command; the frontend does not guess a toggle result. Because
+the semantic command and listener change after acceptance, reconciliation still
+replaces that control. A separate presentation-only focus key reacquires the
+exact reaction or pin control after the returned snapshot, with the stable
+message row as fallback when removing the last visible reaction removes its
+chip. Repeated reaction and pin controls name the author and bounded message or
+attachment context. Message deletion is a separate confirmed step that states
+the retained signed-tombstone effect before invoking `message.redact`.
+
+Choosing a file does not publish it. The composer first shows a focused review
+of the filename, Rust-enforced size envelope, claimed type, selected channel,
+projected audience, and retained-copy limitation. Only **Share file** invokes
+`attachment.add`; cancel discards the frontend draft and returns focus to the
+single visible file-picker affordance. Accepted attachments project their
+authoritative decoded size and download metadata without an empty message or an
+inapplicable Edit action. Deleting an attachment invokes the same admitted
+`message.redact` tombstone path as a post; it hides the projected bytes but does
+not promise erasure from accepted history or recipient copies.
+Before reading selected bytes, the frontend gives corrective rename guidance
+when the filename cannot satisfy Rust's nonempty, trimmed, control-free,
+255-Unicode-character shape. Empty or unusable browser MIME metadata degrades to
+`application/octet-stream` in the visible review rather than inventing a type or
+creating an unfixable rejection. Rust independently validates filename, MIME,
+decoded bytes, size, and hash at admission.
 
 ### 3.4 Semantic Tokens
 
@@ -204,6 +650,14 @@ Initial tokens:
 - `message.remote.background`
 - `activity.info`
 - `activity.error`
+
+Default surface tokens that sit behind system-derived text remain
+color-scheme-aware. In particular, own and remote message backgrounds derive
+from `Canvas`, `CanvasText`, and `LinkText` so the default conversation remains
+legible in both supported system schemes while retaining the same stable,
+user-editable token IDs. Online/reachable and error/unreachable foreground
+tokens likewise keep separate light and dark defaults instead of assuming a
+light canvas.
 
 Each token should eventually expose:
 
@@ -273,10 +727,22 @@ Initial editing surfaces:
 - behavior settings
 - peer/display settings
 
-The command palette and layout editor now exist. Token, metric, and behavior
-values are persisted through the Rust preference authority and are reachable
-through the workbench's Customize surface. Renderer replacement remains a
-named future editing surface rather than a claimed implementation.
+The command palette and layout editor now exist. The workbench's focused
+Customize surface presents everyday behavior first, with bounded choices for
+values such as timestamp style. Advanced appearance and spacing remain
+discoverable in the same surface with their stable semantic IDs. Token, metric,
+and behavior drafts enable their contextual Save action only after diverging
+from the projected value. In-progress values remain frontend draft state across
+ordinary refreshes and focused review/cancellation until the person saves,
+reverts, or abandons the surface, then persist through the Rust preference authority.
+`ui.preferences.reset` first reviews that appearance, spacing, behavior, and
+workbench placement or visibility will all return to defaults while protocol
+state remains untouched; only its explicit confirmation reaches that same Rust
+authority. The narrower `workbench.layout.reset` retains its distinct command
+and reviews only the default dock placement and visibility transition while
+stating that appearance, spacing, and behavior remain unchanged. Renderer
+replacement remains a named future editing surface rather than a claimed
+implementation.
 
 ## 4. Primitive Record Shape
 

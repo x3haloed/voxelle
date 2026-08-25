@@ -544,6 +544,33 @@ pub struct DelegationCertV1 {
     pub sig: String,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OriginSurfaceProtocolV1 {
+    NativeWebview,
+    Inhabitant,
+    Cli,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OriginSessionCertV1 {
+    pub v: u8,
+    pub session_id: String,
+    pub surface_protocol: OriginSurfaceProtocolV1,
+    pub display_label: Option<String>,
+    pub issuer_peer_id: String,
+    pub issuer_device_id: String,
+    pub issued_ms: i64,
+    pub expires_ms: i64,
+    pub device_sig: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FactOriginV1 {
+    pub session_cert: OriginSessionCertV1,
+    pub request_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventV1 {
     pub v: u8,
@@ -556,6 +583,8 @@ pub struct EventV1 {
     pub created_ms: i64,
     pub kind: String,
     pub parents: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<FactOriginV1>,
     pub body: serde_json::Value,
     pub sig: String,
 }
@@ -1000,6 +1029,118 @@ pub fn validate_delegation_at(
     .context("delegation signature invalid")
 }
 
+const MAX_ORIGIN_DISPLAY_LABEL_CHARS: usize = 80;
+const MIN_ORIGIN_REQUEST_ID_BYTES: usize = 8;
+const MAX_ORIGIN_REQUEST_ID_BYTES: usize = 128;
+
+pub fn create_origin_session_cert(
+    identity: &PeerIdentity,
+    session_capability: &[u8; 32],
+    surface_protocol: OriginSurfaceProtocolV1,
+    display_label: Option<String>,
+    issued_ms: i64,
+    expires_ms: i64,
+) -> Result<OriginSessionCertV1> {
+    if issued_ms > expires_ms {
+        return Err(anyhow!(
+            "origin session certificate expires before issuance"
+        ));
+    }
+    validate_origin_display_label(display_label.as_deref())?;
+    let unsigned = OriginSessionCertUnsigned {
+        v: 1,
+        session_id: format!("os:{}", base64url_sha256(session_capability)),
+        surface_protocol,
+        display_label,
+        issuer_peer_id: identity.peer_id.clone(),
+        issuer_device_id: identity.device.id.clone(),
+        issued_ms,
+        expires_ms,
+    };
+    let device_sig = identity
+        .device
+        .sign(&origin_session_cert_signature_input(&unsigned)?);
+    Ok(OriginSessionCertV1 {
+        v: unsigned.v,
+        session_id: unsigned.session_id,
+        surface_protocol: unsigned.surface_protocol,
+        display_label: unsigned.display_label,
+        issuer_peer_id: unsigned.issuer_peer_id,
+        issuer_device_id: unsigned.issuer_device_id,
+        issued_ms: unsigned.issued_ms,
+        expires_ms: unsigned.expires_ms,
+        device_sig,
+    })
+}
+
+fn validate_fact_origin_at(
+    origin: &FactOriginV1,
+    event: &EventV1,
+    device_spki: &[u8],
+) -> Result<()> {
+    let cert = &origin.session_cert;
+    if cert.v != 1 {
+        return Err(anyhow!("origin session certificate v must be 1"));
+    }
+    if cert.issuer_peer_id != event.author_peer_id {
+        return Err(anyhow!("origin session issuer peer mismatch"));
+    }
+    if cert.issuer_device_id != event.author_device_id {
+        return Err(anyhow!("origin session issuer device mismatch"));
+    }
+    if cert.issued_ms > cert.expires_ms {
+        return Err(anyhow!(
+            "origin session certificate expires before issuance"
+        ));
+    }
+    if event.created_ms < cert.issued_ms || event.created_ms > cert.expires_ms {
+        return Err(anyhow!(
+            "origin session certificate is not valid at event creation"
+        ));
+    }
+    validate_origin_session_id(&cert.session_id)?;
+    validate_origin_display_label(cert.display_label.as_deref())?;
+    validate_origin_request_id(&origin.request_id)?;
+    let unsigned = OriginSessionCertUnsigned::from(cert);
+    verify_signature(
+        &ed25519_public_key_from_spki_der(device_spki)?,
+        &origin_session_cert_signature_input(&unsigned)?,
+        &cert.device_sig,
+    )
+    .context("origin session device signature invalid")
+}
+
+fn validate_origin_session_id(session_id: &str) -> Result<()> {
+    let encoded = session_id
+        .strip_prefix("os:")
+        .ok_or_else(|| anyhow!("origin session_id is invalid"))?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(encoded)
+        .context("decode origin session_id")?;
+    if decoded.len() != 32 {
+        return Err(anyhow!("origin session_id must contain a 32-byte digest"));
+    }
+    Ok(())
+}
+
+fn validate_origin_display_label(display_label: Option<&str>) -> Result<()> {
+    if display_label.is_some_and(|label| {
+        label.trim() != label || !valid_short_text(label, MAX_ORIGIN_DISPLAY_LABEL_CHARS)
+    }) {
+        return Err(anyhow!("origin display_label is invalid"));
+    }
+    Ok(())
+}
+
+fn validate_origin_request_id(request_id: &str) -> Result<()> {
+    if !(MIN_ORIGIN_REQUEST_ID_BYTES..=MAX_ORIGIN_REQUEST_ID_BYTES).contains(&request_id.len())
+        || request_id.chars().any(char::is_whitespace)
+    {
+        return Err(anyhow!("origin request_id is invalid"));
+    }
+    Ok(())
+}
+
 pub fn create_event(
     identity: &PeerIdentity,
     delegation: DelegationCertV1,
@@ -1009,21 +1150,58 @@ pub fn create_event(
     parents: Vec<String>,
     body: serde_json::Value,
 ) -> Result<EventV1> {
-    let mut parents = parents;
+    create_event_with_origin(
+        identity,
+        delegation,
+        EventDraft {
+            room_id: room_id.into(),
+            created_ms,
+            kind: kind.into(),
+            parents,
+            origin: None,
+            body,
+        },
+    )
+}
+
+#[derive(Clone, Debug)]
+pub struct EventDraft {
+    pub room_id: String,
+    pub created_ms: i64,
+    pub kind: String,
+    pub parents: Vec<String>,
+    pub origin: Option<FactOriginV1>,
+    pub body: serde_json::Value,
+}
+
+pub fn create_event_with_origin(
+    identity: &PeerIdentity,
+    delegation: DelegationCertV1,
+    draft: EventDraft,
+) -> Result<EventV1> {
+    let EventDraft {
+        room_id,
+        created_ms,
+        kind,
+        mut parents,
+        origin,
+        body,
+    } = draft;
     parents.sort();
     parents.dedup();
     validate_event_parents(&parents)?;
 
     let unsigned = EventUnsigned {
         v: 1,
-        room_id: room_id.into(),
+        room_id,
         author_peer_id: identity.peer_id.clone(),
         author_device_id: identity.device.id.clone(),
         author_device_pub: identity.device.spki_b64.clone(),
         delegation_sig: delegation.sig.clone(),
         created_ms,
-        kind: kind.into(),
+        kind,
         parents,
+        origin,
         body,
     };
     let sig_input = event_signature_input(&unsigned)?;
@@ -1039,6 +1217,7 @@ pub fn create_event(
         created_ms: unsigned.created_ms,
         kind: unsigned.kind,
         parents: unsigned.parents,
+        origin: unsigned.origin,
         body: unsigned.body,
         sig: identity.device.sign(&sig_input),
     })
@@ -1065,6 +1244,9 @@ pub fn validate_event_at(event: &EventV1, required_scope: &str, now_ms: i64) -> 
     if event.delegation.device_pub != event.author_device_pub {
         return Err(anyhow!("event author_device_pub does not match delegation"));
     }
+    if let Some(origin) = &event.origin {
+        validate_fact_origin_at(origin, event, &device_spki)?;
+    }
 
     let mut parents = event.parents.clone();
     parents.sort();
@@ -1084,6 +1266,7 @@ pub fn validate_event_at(event: &EventV1, required_scope: &str, now_ms: i64) -> 
         created_ms: event.created_ms,
         kind: event.kind.clone(),
         parents: event.parents.clone(),
+        origin: event.origin.clone(),
         body: event.body.clone(),
     };
     let sig_input = event_signature_input(&unsigned)?;
@@ -1163,7 +1346,7 @@ pub fn accept_event<'a>(
                 return Err(AcceptError::PrivateRoom);
             }
         }
-        validate_room_event_body(event, accepted_room_events, &state, context)?;
+        validate_room_event_body(event, accepted_room_events, &state, context, now_ms)?;
         Ok(AcceptedEvent { event })
     }
 }
@@ -1756,6 +1939,7 @@ fn validate_room_event_body(
     accepted_events: &[EventV1],
     state: &GovernanceState,
     context: &RoomContext,
+    now_ms: i64,
 ) -> AcceptResult<()> {
     let body_size = serde_json::to_vec(&event.body)
         .map_err(|error| AcceptError::Invalid(error.to_string()))?
@@ -1793,16 +1977,74 @@ fn validate_room_event_body(
                 return Err(AcceptError::Invalid("MSG_POST text is invalid".to_string()));
             }
             validate_mentions(event)?;
+            validate_addressed_origin_session_ids(event)?;
+            if let Some(client_request_id) = string_body_field(event, "client_request_id") {
+                if !valid_short_text(&client_request_id, 128)
+                    || client_request_id.len() < 8
+                    || client_request_id.chars().any(char::is_whitespace)
+                {
+                    return Err(AcceptError::Invalid(
+                        "MSG_POST client_request_id is invalid".to_string(),
+                    ));
+                }
+                if accepted_events.iter().any(|candidate| {
+                    candidate.room_id == event.room_id
+                        && candidate.author_peer_id == event.author_peer_id
+                        && candidate.delegation.device_id == event.delegation.device_id
+                        && candidate.kind == "MSG_POST"
+                        && string_body_field(candidate, "client_request_id")
+                            == Some(client_request_id.clone())
+                }) {
+                    return Err(AcceptError::Invalid(
+                        "MSG_POST client_request_id was already admitted".to_string(),
+                    ));
+                }
+            }
             if let Some(thread_root) = string_body_field(event, "thread_root_event_id") {
-                if !accepted_events.iter().any(|candidate| {
+                let root_exists = accepted_events.iter().any(|candidate| {
                     candidate.room_id == event.room_id
                         && candidate.event_id == thread_root
                         && candidate.kind == "MSG_POST"
-                }) {
+                        && string_body_field(candidate, "thread_root_event_id").is_none()
+                });
+                if !root_exists {
                     return Err(AcceptError::Invalid(
                         "thread root does not exist".to_string(),
                     ));
                 }
+                if let Some(in_reply_to) = string_body_field(event, "in_reply_to_event_id") {
+                    let reply_target = accepted_events.iter().find(|candidate| {
+                        candidate.room_id == event.room_id
+                            && candidate.event_id == in_reply_to
+                            && candidate.kind == "MSG_POST"
+                    });
+                    if !reply_target.is_some_and(|candidate| {
+                        candidate.event_id == thread_root
+                            || string_body_field(candidate, "thread_root_event_id")
+                                == Some(thread_root.clone())
+                    }) {
+                        return Err(AcceptError::Invalid(
+                            "in-reply-to target is not in the same flat thread".to_string(),
+                        ));
+                    }
+                    if !event.parents.iter().any(|parent| parent == &in_reply_to) {
+                        return Err(AcceptError::Invalid(
+                            "in-reply-to target must be a causal parent".to_string(),
+                        ));
+                    }
+                } else {
+                    return Err(AcceptError::Invalid(
+                        "thread reply must name an in-reply-to target".to_string(),
+                    ));
+                }
+            } else if event
+                .body
+                .get("in_reply_to_event_id")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(AcceptError::Invalid(
+                    "root message cannot name an in-reply-to target".to_string(),
+                ));
             }
         }
         "MSG_EDIT" => {
@@ -1830,11 +2072,155 @@ fn validate_room_event_body(
         }
         "MSG_REDACT" => {
             let original = target("MSG_REDACT")?;
-            if original.kind != "MSG_POST"
+            if !matches!(original.kind.as_str(), "MSG_POST" | "ATTACHMENT_ADD")
                 || (original.author_peer_id != event.author_peer_id
                     && !peer_has_permission(state, context, author, PERMISSION_MESSAGE_MODERATE))
             {
                 return Err(AcceptError::NotAuthorized);
+            }
+        }
+        "MSG_ACK" => {
+            require_post()?;
+            let acknowledged = target("MSG_ACK")?;
+            if !matches!(acknowledged.kind.as_str(), "MSG_POST" | "ATTACHMENT_ADD") {
+                return Err(AcceptError::Invalid(
+                    "MSG_ACK target is not a message".to_string(),
+                ));
+            }
+            let state = string_body_field(event, "state");
+            if !matches!(state.as_deref(), Some("observed" | "handled")) {
+                return Err(AcceptError::Invalid("MSG_ACK state is invalid".to_string()));
+            }
+            let result_event_id = string_body_field(event, "result_event_id");
+            if state.as_deref() == Some("observed") && result_event_id.is_some() {
+                return Err(AcceptError::Invalid(
+                    "observed MSG_ACK cannot name a result".to_string(),
+                ));
+            }
+            if let Some(result_event_id) = result_event_id {
+                let result = accepted_events
+                    .iter()
+                    .find(|candidate| {
+                        candidate.room_id == event.room_id && candidate.event_id == result_event_id
+                    })
+                    .ok_or_else(|| {
+                        AcceptError::Invalid("MSG_ACK result does not exist".to_string())
+                    })?;
+                if state.as_deref() != Some("handled")
+                    || result.kind != "MSG_POST"
+                    || result.author_peer_id != event.author_peer_id
+                    || string_body_field(result, "in_reply_to_event_id")
+                        != Some(acknowledged.event_id.clone())
+                    || accepted_events.iter().any(|candidate| {
+                        candidate.room_id == event.room_id
+                            && candidate.kind == "MSG_REDACT"
+                            && string_body_field(candidate, "target_event_id")
+                                == Some(result.event_id.clone())
+                    })
+                {
+                    return Err(AcceptError::Invalid(
+                        "MSG_ACK result must be the handler's visible admitted threaded reply"
+                            .to_string(),
+                    ));
+                }
+            }
+        }
+        "MSG_CONTINUATION" => {
+            require_post()?;
+            if event.created_ms > now_ms {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION timestamp is in the future".to_string(),
+                ));
+            }
+            let target_message = target("MSG_CONTINUATION")?;
+            if target_message.kind != "MSG_POST" {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION target is not a message".to_string(),
+                ));
+            }
+            let state = string_body_field(event, "state");
+            let lease_ms = event
+                .body
+                .get("lease_ms")
+                .and_then(serde_json::Value::as_u64);
+            match state.as_deref() {
+                Some("continuing") if matches!(lease_ms, Some(60_000..=604_800_000)) => {}
+                Some("released" | "declined") if lease_ms.is_none() => {}
+                _ => {
+                    return Err(AcceptError::Invalid(
+                        "MSG_CONTINUATION state or lease_ms is invalid".to_string(),
+                    ))
+                }
+            }
+            let client_request_id =
+                string_body_field(event, "client_request_id").ok_or_else(|| {
+                    AcceptError::Invalid(
+                        "MSG_CONTINUATION client_request_id is missing".to_string(),
+                    )
+                })?;
+            if !valid_short_text(&client_request_id, 128)
+                || client_request_id.len() < 8
+                || client_request_id.chars().any(char::is_whitespace)
+            {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION client_request_id is invalid".to_string(),
+                ));
+            }
+            if accepted_events.iter().any(|candidate| {
+                candidate.room_id == event.room_id
+                    && candidate.author_peer_id == event.author_peer_id
+                    && candidate.delegation.device_id == event.delegation.device_id
+                    && candidate.kind == "MSG_CONTINUATION"
+                    && string_body_field(candidate, "client_request_id")
+                        == Some(client_request_id.clone())
+            }) {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION client_request_id was already admitted".to_string(),
+                ));
+            }
+            let supersedes = event
+                .body
+                .get("supersedes_event_ids")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| {
+                    AcceptError::Invalid(
+                        "MSG_CONTINUATION supersedes_event_ids is invalid".to_string(),
+                    )
+                })?;
+            if supersedes.len() > 16
+                || supersedes.iter().any(|id| id.as_str().is_none())
+                || supersedes
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != supersedes.len()
+            {
+                return Err(AcceptError::Invalid(
+                    "MSG_CONTINUATION supersedes_event_ids is invalid".to_string(),
+                ));
+            }
+            for superseded_id in supersedes.iter().filter_map(serde_json::Value::as_str) {
+                let superseded = accepted_events
+                    .iter()
+                    .find(|candidate| {
+                        candidate.room_id == event.room_id && candidate.event_id == superseded_id
+                    })
+                    .ok_or_else(|| {
+                        AcceptError::Invalid(
+                            "MSG_CONTINUATION superseded fact does not exist".to_string(),
+                        )
+                    })?;
+                if superseded.kind != "MSG_CONTINUATION"
+                    || superseded.author_peer_id != event.author_peer_id
+                    || string_body_field(superseded, "target_event_id")
+                        != Some(target_message.event_id.clone())
+                {
+                    return Err(AcceptError::Invalid(
+                        "MSG_CONTINUATION may supersede only this participant's facts for the same message"
+                            .to_string(),
+                    ));
+                }
             }
         }
         "REACTION_ADD" | "REACTION_REMOVE" => {
@@ -1948,6 +2334,30 @@ fn validate_room_event_body(
                 .contains(author)
             {
                 return Err(AcceptError::NotAuthorized);
+            }
+        }
+        "CALL_MEDIA" => {
+            require_post()?;
+            let call_id = string_body_field(event, "call_id")
+                .ok_or_else(|| AcceptError::Invalid("call_id missing".to_string()))?;
+            if !valid_short_text(&call_id, 128)
+                || !active_call_participants(
+                    accepted_events,
+                    &event.room_id,
+                    &call_id,
+                    event.created_ms,
+                )
+                .contains(author)
+            {
+                return Err(AcceptError::NotAuthorized);
+            }
+            if event
+                .body
+                .get("video")
+                .and_then(serde_json::Value::as_bool)
+                .is_none()
+            {
+                return Err(AcceptError::Invalid("call video flag missing".to_string()));
             }
         }
         "CALL_OFFER" | "CALL_ANSWER" | "CALL_ICE" => {
@@ -2079,7 +2489,7 @@ pub fn validate_room_event_semantics(
             return Err(AcceptError::PrivateRoom);
         }
     }
-    validate_room_event_body(event, accepted_events, &state, context)
+    validate_room_event_body(event, accepted_events, &state, context, now_ms)
 }
 
 fn validate_mentions(event: &EventV1) -> AcceptResult<()> {
@@ -2097,6 +2507,57 @@ fn validate_mentions(event: &EventV1) -> AcceptResult<()> {
         })
     {
         return Err(AcceptError::Invalid("mentions are invalid".to_string()));
+    }
+    Ok(())
+}
+
+fn validate_addressed_origin_session_ids(event: &EventV1) -> AcceptResult<()> {
+    let Some(value) = event.body.get("addressed_origin_session_ids") else {
+        return Ok(());
+    };
+    let ids = value.as_array().ok_or_else(|| {
+        AcceptError::Invalid("MSG_POST addressed_origin_session_ids is invalid".to_string())
+    })?;
+    if ids.len() > 16 {
+        return Err(AcceptError::Invalid(
+            "MSG_POST addressed_origin_session_ids exceeds 16 entries".to_string(),
+        ));
+    }
+    let mut unique = BTreeSet::new();
+    for value in ids {
+        let id = value.as_str().ok_or_else(|| {
+            AcceptError::Invalid("MSG_POST addressed_origin_session_ids is invalid".to_string())
+        })?;
+        let encoded = id.strip_prefix("os:").ok_or_else(|| {
+            AcceptError::Invalid(
+                "MSG_POST addressed_origin_session_ids contains an invalid origin session ID"
+                    .to_string(),
+            )
+        })?;
+        let decoded = Some(encoded)
+            .and_then(|encoded| {
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(encoded)
+                    .ok()
+            })
+            .filter(|decoded| decoded.len() == 32)
+            .ok_or_else(|| {
+                AcceptError::Invalid(
+                    "MSG_POST addressed_origin_session_ids contains an invalid origin session ID"
+                        .to_string(),
+                )
+            })?;
+        if base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&decoded) != encoded {
+            return Err(AcceptError::Invalid(
+                "MSG_POST addressed_origin_session_ids contains a non-canonical origin session ID"
+                    .to_string(),
+            ));
+        }
+        if !unique.insert(decoded) {
+            return Err(AcceptError::Invalid(
+                "MSG_POST addressed_origin_session_ids contains duplicates".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -2329,7 +2790,35 @@ struct EventUnsigned {
     created_ms: i64,
     kind: String,
     parents: Vec<String>,
+    origin: Option<FactOriginV1>,
     body: serde_json::Value,
+}
+
+#[derive(Debug)]
+struct OriginSessionCertUnsigned {
+    v: u8,
+    session_id: String,
+    surface_protocol: OriginSurfaceProtocolV1,
+    display_label: Option<String>,
+    issuer_peer_id: String,
+    issuer_device_id: String,
+    issued_ms: i64,
+    expires_ms: i64,
+}
+
+impl From<&OriginSessionCertV1> for OriginSessionCertUnsigned {
+    fn from(value: &OriginSessionCertV1) -> Self {
+        Self {
+            v: value.v,
+            session_id: value.session_id.clone(),
+            surface_protocol: value.surface_protocol,
+            display_label: value.display_label.clone(),
+            issuer_peer_id: value.issuer_peer_id.clone(),
+            issuer_device_id: value.issuer_device_id.clone(),
+            issued_ms: value.issued_ms,
+            expires_ms: value.expires_ms,
+        }
+    }
 }
 
 fn delegation_signature_input(unsigned: &DelegationUnsigned) -> Result<Vec<u8>> {
@@ -2347,6 +2836,20 @@ fn delegation_signature_input(unsigned: &DelegationUnsigned) -> Result<Vec<u8>> 
     for scope in &unsigned.scopes {
         w.write_str(scope)?;
     }
+    Ok(w.into_inner())
+}
+
+fn origin_session_cert_signature_input(unsigned: &OriginSessionCertUnsigned) -> Result<Vec<u8>> {
+    let mut w = NetstringWriter::new(Vec::new());
+    w.write_prefix("voxelle/origin-session-cert/v1\n")?;
+    w.write_int(unsigned.v.into())?;
+    w.write_str(&unsigned.session_id)?;
+    w.write_bytes(&jcs_bytes(&unsigned.surface_protocol)?)?;
+    w.write_bytes(&jcs_bytes(&unsigned.display_label)?)?;
+    w.write_str(&unsigned.issuer_peer_id)?;
+    w.write_str(&unsigned.issuer_device_id)?;
+    w.write_int(unsigned.issued_ms)?;
+    w.write_int(unsigned.expires_ms)?;
     Ok(w.into_inner())
 }
 
@@ -2392,6 +2895,7 @@ fn event_signature_input(unsigned: &EventUnsigned) -> Result<Vec<u8>> {
     for parent in &unsigned.parents {
         w.write_str(parent)?;
     }
+    w.write_bytes(&jcs_bytes(&unsigned.origin)?)?;
     w.write_bytes(&jcs_bytes(&unsigned.body)?)?;
     Ok(w.into_inner())
 }
@@ -2547,6 +3051,167 @@ mod tests {
     }
 
     #[test]
+    fn addressed_origin_session_ids_are_bounded_unique_and_canonical() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let canonical = format!(
+            "os:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([3_u8; 32])
+        );
+        let event_with = |ids: serde_json::Value| {
+            create_event(
+                &identity,
+                delegation_for(&identity, vec!["room:post".to_string()]),
+                "room:general",
+                1_000,
+                "MSG_POST",
+                vec![],
+                json!({"text": "hello", "addressed_origin_session_ids": ids}),
+            )
+            .expect("message")
+        };
+
+        validate_addressed_origin_session_ids(&event_with(json!([canonical.clone()])))
+            .expect("canonical ID");
+        assert!(
+            validate_addressed_origin_session_ids(&event_with(json!(["os:not-base64"]))).is_err()
+        );
+        assert!(validate_addressed_origin_session_ids(&event_with(json!([
+            canonical.clone(),
+            canonical
+        ])))
+        .is_err());
+        let too_many = (0_u8..17)
+            .map(|byte| {
+                format!(
+                    "os:{}",
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([byte; 32])
+                )
+            })
+            .collect::<Vec<_>>();
+        assert!(validate_addressed_origin_session_ids(&event_with(json!(too_many))).is_err());
+    }
+
+    #[test]
+    fn direct_reply_edges_preserve_flat_threads_and_bind_handled_results() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let context = RoomContext::new(identity.peer_id.clone());
+        let join = member_join(&identity);
+        let root = message(&identity, 1_100, vec![join.event_id.clone()]);
+        accept_event(&root, std::slice::from_ref(&join), &context, 1_100).expect("root");
+        let delegation = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_200,
+            "MSG_POST",
+            vec![root.event_id.clone()],
+            json!({
+                "text": "delegated work",
+                "thread_root_event_id": root.event_id,
+                "in_reply_to_event_id": root.event_id,
+            }),
+        )
+        .expect("delegation");
+        accept_event(&delegation, &[join.clone(), root.clone()], &context, 1_200)
+            .expect("flat reply");
+        let ambiguous_reply = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_250,
+            "MSG_POST",
+            vec![root.event_id.clone()],
+            json!({"text": "ambiguous", "thread_root_event_id": root.event_id}),
+        )
+        .expect("ambiguous reply");
+        assert!(matches!(
+            accept_event(
+                &ambiguous_reply,
+                &[join.clone(), root.clone(), delegation.clone()],
+                &context,
+                1_250,
+            ),
+            Err(AcceptError::Invalid(message)) if message.contains("must name an in-reply-to")
+        ));
+        let result = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_300,
+            "MSG_POST",
+            vec![delegation.event_id.clone()],
+            json!({
+                "text": "delegated result",
+                "thread_root_event_id": root.event_id,
+                "in_reply_to_event_id": delegation.event_id,
+            }),
+        )
+        .expect("result");
+        let admitted = vec![join.clone(), root.clone(), delegation.clone()];
+        accept_event(&result, &admitted, &context, 1_300).expect("direct nested reply");
+        let acknowledgement = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_400,
+            "MSG_ACK",
+            vec![result.event_id.clone()],
+            json!({
+                "target_event_id": delegation.event_id,
+                "state": "handled",
+                "result_event_id": result.event_id,
+            }),
+        )
+        .expect("acknowledgement");
+        let mut with_result = admitted;
+        with_result.push(result.clone());
+        accept_event(&acknowledgement, &with_result, &context, 1_400)
+            .expect("result binds exact direct target");
+
+        let missing_parent = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_500,
+            "MSG_POST",
+            vec![root.event_id.clone()],
+            json!({
+                "text": "missing causal edge",
+                "thread_root_event_id": root.event_id,
+                "in_reply_to_event_id": delegation.event_id,
+            }),
+        )
+        .expect("missing-parent reply");
+        assert!(matches!(
+            accept_event(&missing_parent, &with_result, &context, 1_500),
+            Err(AcceptError::Invalid(message)) if message.contains("causal parent")
+        ));
+
+        let other_root = message(&identity, 1_600, vec![result.event_id.clone()]);
+        accept_event(&other_root, &with_result, &context, 1_600).expect("other root");
+        let cross_thread = create_event(
+            &identity,
+            delegation_for(&identity, vec!["room:post".to_string()]),
+            "room:general",
+            1_700,
+            "MSG_POST",
+            vec![other_root.event_id.clone()],
+            json!({
+                "text": "cross-thread reply",
+                "thread_root_event_id": root.event_id,
+                "in_reply_to_event_id": other_root.event_id,
+            }),
+        )
+        .expect("cross-thread reply");
+        let mut with_other_root = with_result;
+        with_other_root.push(other_root);
+        assert!(matches!(
+            accept_event(&cross_thread, &with_other_root, &context, 1_700),
+            Err(AcceptError::Invalid(message)) if message.contains("same flat thread")
+        ));
+    }
+
+    #[test]
     fn call_authority_converges_mesh_to_four_and_requires_participant_targets() {
         let identities: Vec<PeerIdentity> = (0..5)
             .map(|_| PeerIdentity::generate_at(1_000).expect("identity"))
@@ -2599,6 +3264,19 @@ mod tests {
         .expect("offer");
         accept_event(&offer, &accepted, &context, 1_200).expect("participant offer accepted");
 
+        let media = create_event(
+            author,
+            delegation_for(author, vec!["room:call".to_string()]),
+            "room:general",
+            1_201,
+            "CALL_MEDIA",
+            compute_heads(&accepted),
+            json!({ "call_id": call_id, "video": false }),
+        )
+        .expect("media event");
+        accept_event(&media, &accepted, &context, 1_201)
+            .expect("participant media update accepted");
+
         let excluded = identities
             .iter()
             .find(|identity| !participants.contains(&identity.peer_id))
@@ -2621,6 +3299,21 @@ mod tests {
         assert_eq!(
             accept_event(&excluded_offer, &accepted, &context, 1_201)
                 .expect_err("excluded peer cannot signal"),
+            AcceptError::NotAuthorized
+        );
+        let excluded_media = create_event(
+            excluded,
+            delegation_for(excluded, vec!["room:call".to_string()]),
+            "room:general",
+            1_202,
+            "CALL_MEDIA",
+            compute_heads(&accepted),
+            json!({ "call_id": call_id, "video": true }),
+        )
+        .expect("excluded media event");
+        assert_eq!(
+            accept_event(&excluded_media, &accepted, &context, 1_202)
+                .expect_err("excluded peer cannot update media intent"),
             AcceptError::NotAuthorized
         );
         assert!(active_call_participants(
@@ -2667,6 +3360,146 @@ mod tests {
             identity.device.id,
             id_from_spki_der(&identity.device.spki_der).expect("device id")
         );
+    }
+
+    fn origin_event(
+        identity: &PeerIdentity,
+        cert: OriginSessionCertV1,
+        created_ms: i64,
+        body: serde_json::Value,
+    ) -> EventV1 {
+        create_event_with_origin(
+            identity,
+            create_delegation(
+                identity,
+                created_ms - 100,
+                created_ms + 100,
+                vec!["room:post".to_string()],
+            )
+            .expect("delegation"),
+            EventDraft {
+                room_id: "room:origin".to_string(),
+                created_ms,
+                kind: "MSG_POST".to_string(),
+                parents: vec![],
+                origin: Some(FactOriginV1 {
+                    session_cert: cert,
+                    request_id: "request-origin-001".to_string(),
+                }),
+                body,
+            },
+        )
+        .expect("origin event")
+    }
+
+    #[test]
+    fn fact_origin_is_device_certified_bounded_and_signed_into_event() {
+        let identity = PeerIdentity::generate_at(1_000).expect("identity");
+        let cert = create_origin_session_cert(
+            &identity,
+            &[7; 32],
+            OriginSurfaceProtocolV1::Inhabitant,
+            Some("Resident alpha".to_string()),
+            1_000,
+            2_000,
+        )
+        .expect("origin cert");
+        assert!(cert.session_id.starts_with("os:"));
+        assert!(!cert
+            .session_id
+            .contains(&base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([7; 32])));
+
+        let event = origin_event(&identity, cert, 1_500, json!({"text":"hello"}));
+        validate_event_at(&event, "room:post", 1_500).expect("origin validates");
+
+        let mut tampered_request = event.clone();
+        tampered_request.origin.as_mut().expect("origin").request_id =
+            "different-request".to_string();
+        assert!(validate_event_at(&tampered_request, "room:post", 1_500).is_err());
+    }
+
+    #[test]
+    fn fact_origin_rejects_wrong_device_expiry_and_bad_certificate_signature() {
+        let identity = PeerIdentity::generate_at(1_000).expect("identity");
+        let other = PeerIdentity::generate_at(1_000).expect("other identity");
+        let other_cert = create_origin_session_cert(
+            &other,
+            &[8; 32],
+            OriginSurfaceProtocolV1::Cli,
+            None,
+            1_000,
+            2_000,
+        )
+        .expect("other cert");
+        let wrong_device = origin_event(&identity, other_cert, 1_500, json!({"text":"hello"}));
+        assert!(validate_event_at(&wrong_device, "room:post", 1_500)
+            .expect_err("wrong issuer rejected")
+            .to_string()
+            .contains("issuer peer mismatch"));
+
+        let expired_cert = create_origin_session_cert(
+            &identity,
+            &[9; 32],
+            OriginSurfaceProtocolV1::NativeWebview,
+            None,
+            1_000,
+            1_400,
+        )
+        .expect("expired cert");
+        let expired = origin_event(&identity, expired_cert, 1_500, json!({"text":"hello"}));
+        assert!(validate_event_at(&expired, "room:post", 1_500)
+            .expect_err("expired at creation rejected")
+            .to_string()
+            .contains("not valid at event creation"));
+
+        let cert = create_origin_session_cert(
+            &identity,
+            &[10; 32],
+            OriginSurfaceProtocolV1::Inhabitant,
+            None,
+            1_000,
+            2_000,
+        )
+        .expect("cert");
+        let mut bad_signature = origin_event(&identity, cert, 1_500, json!({"text":"hello"}));
+        bad_signature
+            .origin
+            .as_mut()
+            .expect("origin")
+            .session_cert
+            .device_sig = "invalid".to_string();
+        assert!(validate_event_at(&bad_signature, "room:post", 1_500)
+            .expect_err("bad origin signature rejected")
+            .to_string()
+            .contains("origin session device signature invalid"));
+    }
+
+    #[test]
+    fn fact_origin_event_identity_is_independent_of_json_object_input_order() {
+        let identity = PeerIdentity::generate_at(1_000).expect("identity");
+        let cert = create_origin_session_cert(
+            &identity,
+            &[11; 32],
+            OriginSurfaceProtocolV1::Inhabitant,
+            Some("Stable route".to_string()),
+            1_000,
+            2_000,
+        )
+        .expect("cert");
+        let first = origin_event(
+            &identity,
+            cert.clone(),
+            1_500,
+            serde_json::from_str(r#"{"text":"hello","mentions":[]}"#).expect("first body"),
+        );
+        let second = origin_event(
+            &identity,
+            cert,
+            1_500,
+            serde_json::from_str(r#"{"mentions":[],"text":"hello"}"#).expect("second body"),
+        );
+        assert_eq!(first.event_id, second.event_id);
+        assert_eq!(first.sig, second.sig);
     }
 
     #[test]
@@ -3138,6 +3971,43 @@ mod tests {
         let error = accept_event(&edit, &[join, post, redact], &context, 1_020)
             .expect_err("redacted message cannot be restored");
         assert!(matches!(error, AcceptError::Invalid(message) if message.contains("redacted")));
+    }
+
+    #[test]
+    fn attachment_author_can_redact_the_retained_attachment_projection() {
+        let authority = PeerIdentity::generate().expect("authority");
+        let context = RoomContext::new(authority.peer_id.clone());
+        let join = member_join(&authority);
+        let bytes = b"private draft";
+        let attachment = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:post".to_string()]),
+            "room:general",
+            1_000,
+            "ATTACHMENT_ADD",
+            vec![],
+            json!({
+                "filename": "draft.txt",
+                "mime": "text/plain",
+                "sha256": format!("sha256:{}", base64url_sha256(bytes)),
+                "data_b64": base64::engine::general_purpose::STANDARD.encode(bytes),
+            }),
+        )
+        .expect("attachment");
+        accept_event(&attachment, std::slice::from_ref(&join), &context, 1_000)
+            .expect("attachment accepted");
+        let redact = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:post".to_string()]),
+            "room:general",
+            1_010,
+            "MSG_REDACT",
+            vec![attachment.event_id.clone()],
+            json!({"target_event_id": attachment.event_id}),
+        )
+        .expect("redact");
+        accept_event(&redact, &[join, attachment], &context, 1_010)
+            .expect("attachment author may redact");
     }
 
     #[test]

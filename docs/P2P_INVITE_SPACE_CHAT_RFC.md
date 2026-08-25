@@ -261,6 +261,8 @@ An Event is a JSON object:
 - `ts` (number): Unix ms at author
 - `kind` (string): event type (see below)
 - `prev` (array of strings): zero or more parent event_ids (for partial order)
+- `origin` (object, optional): device-certified local surface route provenance
+  as specified below; this grants no membership or permission
 - `body` (object): kind-specific
 - `sig` (string): Base64 signature by the Device key
 
@@ -384,7 +386,30 @@ Netstrings, in order:
 9. `kind`
 10. `count(prev)`
 11. each `prev` entry, in order
-12. `body_jcs` (JCS bytes; `{}` if missing)
+12. `origin_jcs` (JCS bytes; JSON `null` if missing)
+13. `body_jcs` (JCS bytes; `{}` if missing)
+
+**Optional fact origin**
+
+`origin` contains `session_cert` and `request_id`. `request_id` is 8--128
+non-whitespace bytes and identifies one request within that certified route.
+The certificate contains:
+
+- `v`: `1`
+- `session_id`: `"os:" + base64url(sha256(random_32_byte_capability))`
+- `surface_protocol`: `native_webview` | `inhabitant` | `cli`
+- `display_label`: optional trimmed short text, at most 80 characters
+- `issuer_peer_id`, `issuer_device_id`
+- `issued_ms`, `expires_ms`
+- `device_sig`: the issuing device signature over the preceding fields in
+  their listed order under the domain `voxelle/origin-session-cert/v1`
+
+The capability itself is local authentication material and MUST NOT appear in
+the event or certificate. This origin proves only that the author device
+certified a local route and signed the resulting fact. It does not prove a
+natural person's identity, independently authenticate an actor, or grant any
+protocol authority. For private rooms, origin exists only inside the encrypted
+semantic inner event; an outer `ROOM_ENCRYPTED` carrier MUST omit it.
 
 **Peer record signature input**
 
@@ -407,6 +432,9 @@ Room message kinds:
 - `MSG_POST` (post a message)
 - `MSG_EDIT` (edit a prior message)
 - `MSG_REDACT` (tombstone/hide a prior message)
+- `MSG_ACK` (participant observation or handling assertion)
+- `MSG_CONTINUATION` (bounded conversational intention update)
+- `ATTACHMENT_ADD` (bounded content-addressed file bytes as a standalone room fact)
 - `REACTION_ADD`
 - `REACTION_REMOVE`
 - `PIN_ADD`
@@ -436,14 +464,95 @@ Unless specified, unknown fields in `body` **MUST** be ignored.
 - `msg_id` (string, optional): stable identifier for UI threading; if omitted, use `event_id`
 - `text` (string): UTF-8 text
 - `attachments` (array, optional): implementation-defined descriptors (hashes, sizes, mime)
+- `mentions` (array, optional): stable member principal IDs
+- `addressed_origin_session_ids` (array, optional): zero to 16 unique,
+  lexicographically sorted device-certified origin-session IDs used only as
+  recipient-side routing hints
+- `thread_root_event_id` (string, optional): root of the admitted flat thread
+- `in_reply_to_event_id` (string, required when `thread_root_event_id` is
+  present): exact admitted message answered by this post; it MUST be the root or another message sharing
+  `thread_root_event_id`, and MUST be included in the new event's causal parents
+- `client_request_id` (string, optional): 8--128 non-whitespace caller retry identity,
+  scoped to author principal, device, room, and semantic payload
+
+`addressed_origin_session_ids` is signed ordinary message content, not an
+authorization or delivery mechanism. It grants no membership, room visibility,
+decryption, assignment, obligation, presence, handling, or correctness and is
+not confidential in a public room. A sender may copy, guess, omit, or falsely
+name a session ID. Only a local observation page authenticated as an origin
+session may derive `addressed_to_owner` by comparing its owner ID with this
+field; generic projections MUST NOT claim who received, observed, or accepted
+the message. Resident feeds remain complete and MUST NOT filter out messages
+that omit or address other sessions. In a private room the field exists only
+inside the encrypted semantic event and MUST be absent from the outer
+`ROOM_ENCRYPTED` carrier.
 
 `MSG_EDIT` body:
 - `target_event_id` (string): event being edited
 - `text` (string): replacement text
 
 `MSG_REDACT` body:
-- `target_event_id` (string): event being redacted
+- `target_event_id` (string): `MSG_POST` or `ATTACHMENT_ADD` event being redacted
 - `reason` (string, optional)
+
+`MSG_ACK` body:
+- `target_event_id` (string): admitted `MSG_POST` or `ATTACHMENT_ADD`
+- `state` (string): `observed` | `handled`
+- `result_event_id` (string, optional): only with `handled`; MUST identify the
+  asserting principal's visible admitted `MSG_POST` in the same room whose
+  `in_reply_to_event_id` is the target. The result and target may remain in one
+  flat thread; nested thread projection is not implied.
+
+Acknowledgements are participant assertions, not correctness proofs. Handled
+state is monotonic in projection. Concurrent handled results from separately
+authorized devices MUST be retained as a deterministic conflict set rather
+than resolved by receipt order or wall-clock time.
+
+`MSG_CONTINUATION` body:
+- `target_event_id` (string): admitted `MSG_POST` in the same room
+- `state` (string): `continuing` | `released` | `declined`
+- `lease_ms` (integer, required only for `continuing`): 60,000--604,800,000
+- `supersedes_event_ids` (array): zero to 16 admitted `MSG_CONTINUATION`
+  event IDs by this principal for the same target and room
+- `client_request_id` (string): 8--128 non-whitespace caller retry identity,
+  scoped to author principal, device, room, and the complete semantic payload
+
+A continuation is a bounded intention, not presence, work, correctness, or a
+partition-proof lease. Expiry locally projects current intent as unknown and
+overdue; it does not assert abandonment. Unsuperseded concurrent heads project
+as conflict. A new fact may reconcile conflict only by causally naming all
+known heads; arrival order and timestamps never choose a winner. Future-dated
+continuation facts are rejected even within the general event skew allowance.
+
+For each participant and target, implementations MUST derive effective
+actionability from the causal maxima spanning that participant's handled
+acknowledgements and continuation heads. Admitted source facts MUST be retained
+even when another fact dominates them in projection. A single causal maximum
+projects its literal handled, continuing, released, or declined disposition;
+multiple incomparable maxima MUST project conflict. A causally later
+`continuing` fact MAY resume after handled, released, or declined. Receipt
+order, wall-clock timestamps, local database sequence numbers, and local
+first-admission ordinals MUST NOT choose a winner. Implementations MUST expose
+these results per participant and MUST NOT synthesize a room-global task,
+assignment, correctness, presence, or abandonment state from them.
+An ordinary threaded reply is covered by a participant's disposition only when
+it is the explicitly bound handled result or is an ancestor of every maximal
+disposition head. A causally later or concurrent reply MUST remain exposed as
+uncovered attention evidence until a later disposition causally covers it.
+The disposition state remains literal while actionability and its reason expose
+the uncovered reply; implementations MUST NOT use reply timestamps as causal
+coverage evidence.
+
+`ATTACHMENT_ADD` body:
+- `filename` (string): human-visible filename, 1--255 characters
+- `mime` (string): claimed media type, 1--127 characters
+- `sha256` (string): `sha256:` plus the base64url digest of the decoded bytes
+- `data_b64` (string): 1--256 KiB of file bytes encoded as standard base64
+
+Attachments are standalone facts in the current protocol rather than nested
+`MSG_POST.attachments`. A redaction changes the projected visibility of an
+attachment but does not delete the accepted signed fact or copies already
+retained by recipients.
 
 `REACTION_ADD` / `REACTION_REMOVE` body:
 - `target_event_id` (string)
@@ -532,6 +641,11 @@ Upon receiving an Event, peers **MUST**:
    - compute signature input (per §7.3.2) and verify `sig` under the Device public key corresponding to `author_device_pub`
 6. Validate `event_id`:
    - recompute `event_id` from the signature input bytes and require it matches
+7. If `origin` is present, validate its syntax and bounds, require certificate
+   issuer IDs to equal the Event author principal/device, verify `device_sig`
+   under `author_device_pub`, and require `ts` to fall within the certificate's
+   inclusive issuance/expiry interval. Successful origin validation MUST NOT
+   satisfy or bypass any membership, permission, delegation, or semantic rule.
 
 Peers **MUST** store valid Events even if some referenced ancestors in `prev` are missing.
 

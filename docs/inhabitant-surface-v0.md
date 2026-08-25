@@ -133,7 +133,17 @@ Minimum fields:
 - `profile`: nullable peer/device/default-room summary
 - `capabilities`: command IDs and event streams available through HTTP/SSE
 - `snapshot_url`
+- `coordination_snapshot_url`: the compact snapshot intended for repeated
+  resident-agent reconciliation
 - `events_url`
+- `commands_url`: the route template for semantic commands
+- `contract_url`
+- `command_transport`: the HTTP method, content type, bearer-header shape, and
+  request/response envelope
+- `command_semantics`: machine-readable retry and observation guidance for
+  commands whose success could otherwise be over-interpreted
+- `replay_policy`: explicitly `none`; reconnecting consumers reconcile the
+  coordination snapshot rather than requesting missed stream events
 - `skill_root` or docs index, if available
 
 Discovery may start as a local file or command result. It should not require an
@@ -152,6 +162,31 @@ The service accepts loopback binds only, rejects browser-origin requests, and
 requires authentication for discovery, snapshots, commands, and events. Once
 authenticated, `GET /inhabitant/v0/discovery` is authoritative.
 
+The launch bearer authorizes access to the home but does not identify which
+resident session submitted a fact. `resident.origin.open` therefore accepts an
+8--128 character `client_instance_id`, a 1--80 character display `label`, and a
+caller-generated 32-byte secret encoded as unpadded base64url. It returns a
+stable `origin_id`; the caller retains the plaintext secret and supplies
+`Voxelle-Origin-Id` and `Voxelle-Origin-Secret` headers thereafter. The local
+registry stores only a domain-separated secret hash, is bound to the current
+device, and makes an identical open idempotent across restart. It never returns
+or persists the plaintext secret. Missing credentials and invalid credentials
+remain distinguishable as `origin_required` and the deliberately generic
+`origin_authentication_failed` respectively.
+
+Exactly seven commands require this resident origin authentication:
+`message.send`, `message.acknowledge`, `message.continuation.update`,
+`resident.observation.open`, `resident.observation.page`,
+`resident.observation.commit`, and `resident.observation.release`. The
+native WebView issues the same device-certified provenance with
+`surface_protocol: native_webview`; CLI/default native paths remain explicit
+device-certified routes rather than silently impersonating a resident. The
+signed fact projection exposes principal, device, optional session ID, surface
+protocol, display label, and request ID. Principal membership, device
+authority, origin session, and resident observation `consumer_id` are four
+separate meanings: an origin grants no permission, and a consumer remains only
+a local delivery checkpoint namespace.
+
 ### 3.2 Snapshot
 
 Snapshot answers: "What is true now?"
@@ -160,10 +195,14 @@ The existing `ShellSnapshotView` should remain the reference shape. v0 may add
 agent-facing hints, but should not fork the core truth:
 
 - `home_root`
-- `home` or `home_error`
+- `home` or structured `home_error` (`message`, `recovery_message`, `detail`,
+  and Rust-owned `recovery` category); a genuinely fresh home has neither
 - `network_health`
 - `ui_ontology`
 - `service_activity`
+- `sync_evidence`: a peer-relative result (`unknown`, `peer_confirmed`,
+  `partial`, or `unreachable`) with attempted/reached peers and event counts;
+  it never means globally current
 - `agent_hints`, optional
 
 Suggested `agent_hints`:
@@ -173,6 +212,12 @@ Suggested `agent_hints`:
 - `ambient_items`: changes safe to leave for quiet soundings
 - `human_action_required`: true when progress needs a person
 
+Network-health rows may carry `primary_action_payload` together with their
+stable `primary_action`. This lets both human and agent affordances retry the
+exact failed ordinary peer without selecting a different endpoint or parsing
+human prose. Peer-operation failures are availability observations, never
+membership or governance authority.
+
 ### 3.3 Action
 
 Actions answer: "What may I do, through the same authority path as the UI?"
@@ -181,9 +226,12 @@ The v0 action set uses the same stable semantic command IDs as the UI:
 
 - `shell.refresh`
 - `home.init`
+- `home.archiveForRecovery`
 - `runtime.goOnline`
 - `runtime.goOffline`
 - `message.send`
+- `message.acknowledge`
+- `message.continuation.update`
 - `peer.import`
 - `peer.diagnose`
 - `peer.sync`
@@ -192,7 +240,183 @@ The v0 action set uses the same stable semantic command IDs as the UI:
 Routes and buttons are affordances over these IDs; adapters do not invent a
 second command vocabulary.
 
-### 3.4 Action Result
+Every shell-scoped command in the snapshot's shared `ui_ontology.commands`
+also names its Rust request DTO in `payload_type`, or carries `null` when its
+payload is empty. Discovery exposes an authenticated `contract_url` serving the
+generated TypeScript declarations for those DTOs. The checked-in WebView
+contract and the served agent contract are generated from the same Rust types,
+and a completeness test refuses a command whose named request type is absent.
+These declarations make payload construction legible; authoritative bounds and
+permissions are still enforced only when the semantic command reaches Rust.
+
+`message.send` accepts a caller-generated `client_request_id`. Its retry scope
+is the same principal, authorizing device, room, and semantic payload. Reusing
+the ID for the identical request returns the originally admitted message;
+reusing it for a conflicting payload is rejected. The ID is projected on the
+message so a caller can reconcile a lost HTTP response after restart.
+
+`message.acknowledge` creates an ordinary signed, admitted room fact with the
+state `observed` or `handled`. `handled` is monotonic for that participant and
+message. It may name a `result_event_id`, but only for `handled` and only when
+that event is the handler's visible, already-admitted ordinary message threaded
+to the target in the same room. The message acknowledgement projection retains
+the deterministic set of admitted result IDs; independently authorized devices
+that concurrently name different results therefore expose `result_conflict`
+instead of choosing by arrival time. A result binding is an assertion by the
+participant—not proof of correctness—and
+private-room acknowledgements follow the same encrypted room path as private
+messages. Acknowledging also advances the acknowledging home's local read
+cursor through the target message, but not through later events. A local
+`channel.markRead` cursor is deliberately different: it is
+not replicated and is not sender-visible. Selecting or opening a channel does
+not silently advance that cursor at the semantic-command layer.
+
+An automatic `runtime.goOnline` persists the successful concrete listen and
+advertised sockets and reuses them after a clean service or process restart.
+This keeps existing peer availability hints usable for ordinary continuation;
+an explicit Bind or Advertise request replaces the saved automatic binding.
+Failure to reclaim a saved socket remains explicit rather than silently moving
+to a new endpoint and making other members' retained hints stale.
+
+`message.continuation.update` publishes a separate ordinary room fact rather
+than overloading durable observation. `continuing` requires a relative lease
+from one minute through seven days; `released` and `declined` carry no lease.
+Each update names the same participant's known continuation heads that it
+supersedes. A single unexpired head projects Continuing. Expiry projects
+Unknown with `overdue: true`; it never proves that the participant stopped.
+Concurrent unsuperseded device updates project Conflict until a new update
+supersedes every head. Runtime reachability and sync evidence remain separate.
+Lease expiry is a time-derived projection, not a new retained fact, and emits
+no stream event. Consumers schedule a local snapshot refresh at `expires_ms`
+and refresh after reconnect rather than waiting for an event that cannot exist.
+The coordination snapshot GET is observational and never initiates peer sync.
+Its `current_sequence` covers admitted or invalidated state, while
+`projected_at_ms` timestamps time-derived fields; heartbeat is not evidence of
+a semantic transition. A handled acknowledgement is completion evidence and
+does not delete a separate continuation assertion. For each participant and
+target, the surface derives **effective actionability** from the causal maxima
+across handled acknowledgements and continuation heads while preserving every
+admitted raw fact. One causal maximum projects its literal state; multiple
+incomparable maxima project Conflict. A causally later `continuing` assertion
+may therefore resume after handled, declined, or released. Neither wall-clock
+timestamps nor home-local admission ordinals select a winner, and the
+projection never creates a room-global assignment, task state, or correctness
+claim. A reply is covered only when it is the explicitly bound handled result
+or an ancestor of every maximal disposition head. Concurrent or causally later
+replies make `actionable` true with an explicit reason and bounded reply IDs
+while preserving the literal handled, released, or declined `state`;
+disposition and current attention are intentionally separate fields.
+Source-blind built-surface rehearsals verified handled-after-continuing,
+explicit resumption, bound-result coverage, later-follow-up attention, durable
+redelivery, and clean restart. Concurrent causal maxima remain covered by
+deterministic projection tests rather than source-blind multi-device evidence.
+
+`home.coordination_frontier` is a bounded, rebuildable attention index over
+ordinary admitted messages in every currently accessible room. It reports
+literal mention, acknowledgement, handled-result, reply, and continuation
+facts; it never infers assignment, work, success, failure, presence, stopping,
+or abandonment. Room selection and human read state do not remove entries.
+`matching_count`, `omitted_count`, and `truncated` make projection bounds
+explicit, and `next_projection_change_ms` identifies the next continuation
+expiry that requires a time-derived refresh. Private entries exist only after
+ordinary membership, decryption, and semantic admission and are never stored
+as a parallel plaintext index.
+Each `target_summary` is only an orientation preview. Its
+`target_summary_truncated` and `target_summary_original_chars` fields state
+whether content was abbreviated; a consumer opens the ordinary target by room
+and event ID before taking consequential action from an abbreviated preview.
+Frontier-level truncation fields describe omitted rows only.
+
+### 3.4 Durable resident observation
+
+Resident observation is local resumption bookkeeping over the same admitted
+conversation model. It is neither a replicated event nor an agent-only task
+store. A caller opens a stable `consumer_id` with `from_beginning` or
+`from_now`, then calls `resident.observation.page`. The first page omits
+`fact_high_water` and `after_fact_sequence`; later pages repeat the returned
+high water and exact next sequence while `has_more` is true. Roots and their
+ordinary replies span the exact accessible room set captured by the first
+page. The final page alone returns a one-use commit token.
+
+An ordinary `message.send` may include up to 16 unique, canonical
+`addressed_origin_session_ids`. They are signed routing hints, not confidential
+or authoritative claims. They grant no membership, visibility, assignment,
+obligation, presence, observation, or handling. Full observation feeds remain
+unchanged: every accessible changed thread is returned regardless of its hint.
+Only a page authenticated as the consumer's owner derives the factual boolean
+`addressed_to_owner`; callers cannot submit that value in JSON, and general
+message/frontier projections do not infer delivery from it. Private-room hints
+remain inside the encrypted inner message and are absent from the outer carrier.
+
+Ordinary replies preserve both levels needed for mixed-surface coordination:
+`thread_root_event_id` keeps one readable flat conversation, while
+`in_reply_to_event_id` identifies the exact message being answered. A handled
+result binds only when its ordinary result message directly answers the
+acknowledged target. This lets a resident return a readable result for a
+directed reply without claiming that it handled the broader thread root.
+
+Every observation consumer has an `owner_origin_id` derived exclusively from
+the authenticated `OriginContext` supplied beside the command. It is never
+accepted from JSON. The same authenticated origin must perform open, page,
+commit, and release. A different or missing origin sees the consumer as
+unavailable and cannot learn whether it exists; the failure is non-mutating.
+In-process page sessions and final commit tokens are also owner-bound, so a
+sibling origin cannot supersede paging or advance progress by copying a
+consumer ID or token.
+
+Each changed thread also derives `owner_attention` for that authenticated
+owner without creating another admitted fact or authority. A newly addressed
+message is `unreviewed`: review is requested, but work is not assigned or
+accepted. Only a continuing assertion submitted through that certified origin
+makes `work_actionable` true. Owner-origin observed, released, declined, and
+handled facts remain literal non-actionable dispositions; a later direct reply
+from another origin reopens review only when it explicitly addresses this
+owner. Principal `participant_actionability` remains a separate replicated
+projection and is never replaced by this local routing view. Historical
+terminal attention disappears behind this consumer's committed cursor, while
+continuing or overdue attention remains visible and supplies its next
+projection deadline even without a new admitted fact.
+
+`fact_high_water` and each thread's `last_fact_sequence` are durable,
+home-local first-admission ordinals. They are not SSE `current_sequence`, event
+order, wall-clock order, channel read state, acknowledgement, or protocol
+authority. After process restart, the resident begins paging again with its
+stable consumer ID; uncommitted work is safely returned again. This is
+at-least-once delivery, so downstream actions remain idempotent.
+
+`resident.observation.commit` requires the final token and matching high water
+and advances only that consumer across the exact served room set. It never
+marks a channel read, publishes an acknowledgement, changes continuation,
+proves handling or correctness, synchronizes peers, or emits global
+`snapshot.changed`. `resident.observation.release` explicitly deletes only
+that local consumer and its progress. Consumer IDs are local namespaces, not
+principals, devices, credentials, or actor identities. Ownership prevents
+sibling local sessions from interfering; it remains local bookkeeping and
+grants no protocol, room, task, membership, or decryption authority. Unit and
+integration tests cover the binding and non-mutation rules. A source-blind
+two-origin rehearsal verified collision, page, copied-token, and release
+isolation before and after restart; foreign release remained the documented
+idempotent `false` without revealing or changing owner state.
+
+Origin is device-certified route provenance, not proof that the route is a
+natural person, an AI, the displayed label, or a correct actor. A device can
+fabricate any route it certifies, and possession of a resident origin secret
+allows a sibling process to use that route. In private rooms the origin and
+request ID are encrypted inside the semantic inner event; the retained outer
+`ROOM_ENCRYPTED` carrier exposes none of them. Source and deterministic tests
+cover certification, projection, restart-stable hashed-secret authentication,
+the seven command gates, and private outer-envelope omission. Source-blind
+rehearsals verified distinct sibling sessions, uniform ActionResult recovery,
+remote public/private propagation, simultaneous restart, and durable resident
+redelivery. The API intentionally provides no raw-ciphertext view, so outer
+private-envelope non-disclosure remains storage inspection evidence.
+
+Pages enumerate only currently accessible channels and carry private facts
+only through ordinary decryption and semantic admission. Page progress and
+commit tokens are process-local and intentionally disposable; committed
+consumer progress and local fact ordinals are durable.
+
+### 3.5 Action Result
 
 Action results answer: "What changed, and what should I do next?"
 
@@ -205,6 +429,20 @@ Minimum fields:
 - `error`, nullable
 - `recovery`, nullable
 
+An `ok` command result proves that the local authority path accepted the
+command. It does not by itself prove remote propagation, observation, handling,
+or correctness. Those later claims require, respectively, peer-relative
+`sync_evidence` and admitted participant acknowledgements.
+
+`activity_items` contains only retained service-activity rows whose monotonic
+IDs were created during that serialized HTTP action. The sidecar serializes
+snapshot refreshes and agent command requests around the Rust-owned activity
+cursor so concurrent callers cannot claim one another's results. Successful
+actions derive the rows
+from their returned authoritative snapshot; failed actions may report activity
+the Rust host recorded before returning its structured error. An empty list is
+an honest result for actions that produce no service activity.
+
 Errors should classify the recovery path:
 
 - `needs_home`
@@ -212,10 +450,25 @@ Errors should classify the recovery path:
 - `needs_peer_record`
 - `needs_reachability`
 - `needs_sync`
+- `needs_input`
 - `needs_human`
 - `internal_error`
 
-### 3.5 Delta
+An offline `space.invite.create` prerequisite is `needs_service_online`, with
+`runtime.goOnline` as recovery, not `internal_error` or an unchanged retry. A
+source-blind restart probe exposed that earlier misclassification; the
+classifier correction requires a fresh built-surface retest before it counts as
+operational evidence.
+
+The serialized `ShellError` owns that classification together with its human
+message, recovery instruction, and technical detail. HTTP action results may
+repeat the same recovery value for convenient routing, but adapters must not
+infer it by parsing error prose or invent a second classification.
+`needs_input` means the command reached the authoritative validator but one or
+more supplied values violated a documented semantic bound; the caller should
+correct the payload rather than retry it unchanged or report an internal fault.
+
+### 3.6 Delta
 
 Deltas answer: "What changed since my last view?"
 
@@ -236,6 +489,31 @@ Useful delta kinds:
 Each delta should include enough IDs for a later snapshot query to recover
 context.
 
+The first implemented waking event is the deliberately non-semantic
+`snapshot.changed` notice. It carries a process-monotonic `sequence`,
+`at_unix_ms`, and the compact `coordination_snapshot_url`. A successful HTTP command emits
+the notice after the Rust command host has returned its new snapshot; inbound
+peer-service activity emits through the same host invalidation callback.
+Subscribers then fetch the authoritative snapshot instead of asking the HTTP
+adapter to reconstruct room, governance, or recovery meaning. A lagged
+subscriber must re-read the coordination snapshot.
+
+The stream does not promise replay. `service.ready` therefore includes the
+current process sequence and an explicit instruction to fetch the coordination
+snapshot before acting. On every connection or reconnection, a resident treats
+SSE only as an invalidation hint and reconciles a snapshot; it must not infer
+that silence means currency, delivery, observation, or completion. The
+coordination snapshot omits the large product component and UI ontology while
+retaining the shared conversation and authority projection.
+The coordination snapshot carries its own `current_sequence`. The sidecar reads
+the process sequence before and after projection and retries if it changed, so
+a resident can fetch until the snapshot sequence reaches the value announced by
+`service.ready` or `snapshot.changed`. A persistently changing projection may
+return a conflict and should be retried; this is preferable to claiming a
+revision the snapshot did not embody.
+More specific delta kinds remain future projections over that same snapshot
+authority, not separate admission paths.
+
 ## 4. First Watch/WFB Slice
 
 The first resident slice should be deliberately small:
@@ -245,9 +523,11 @@ The first resident slice should be deliberately small:
 3. `GET /inhabitant/v0/snapshot`.
 4. `POST /inhabitant/v0/commands/{command_id}` for the current shell command
    set.
-5. `GET /inhabitant/v0/events` as an SSE stream for room messages, network
-   health changes, runtime changes, peer diagnostics, sync reports, and service
-   activity.
+5. `GET /inhabitant/v0/events` as an SSE stream. The implemented v0 stream
+   provides `service.ready`, monotonic `snapshot.changed` waking notices, and
+   heartbeats; specific room, network-health, runtime, diagnostic, sync, and
+   service-activity delta kinds remain to be derived without duplicating the
+   snapshot's authority.
 6. A skill/docs folder for slower workflows: getting started, field testing,
    interpreting network health, and recovering from common failures.
 

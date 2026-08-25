@@ -218,6 +218,11 @@ Windows build runner. Current-source native Windows build/package evidence,
 non-loopback field reachability, physical media, and signing-secret custody
 remain outside the completed evidence horizon.
 
+The authenticated beta-evidence status command may expose every incomplete
+receipt section in one pass, but it establishes only receipt completeness and
+internal consistency. It does not elevate operator attestations into observed
+or cryptographic proof of the lived causal paths.
+
 ## Construction And Verification Order
 
 1. Carry one identity through loss, recovery, rotation, revocation, remote
@@ -242,6 +247,16 @@ retains a monotonic identity head. A two-peer QUIC test carries history from a
 lost home through an ordinary retaining peer into a fresh home, propagates the
 new head back, and proves that the retaining peer rejects a newly signed event
 from the lost device.
+
+The human recovery handoff now follows that authority result instead of falling
+through silently to conversation. A successful restore announces that authority
+from previous devices was revoked and focuses the fresh recovery-kit action;
+status dismissal preserves the same fallback. The Identity Recovery view shows only
+the locally recorded save time and a fresh-kit renewal action, never the bearer
+file path or bytes. Deterministic presentation regressions cover the handoff on
+top of the existing serialized principal-continuity, revocation, restart, and
+ordinary-peer recovery evidence; external assistive-technology operation
+remains a separate beta gate.
 
 Transport handshakes now carry the bounded identity proof that authorizes the
 claimed device. The receiver derives the principal and current device key from
@@ -274,6 +289,22 @@ history; events more than five minutes in the future are rejected. Invite
 expiry therefore depends on signed participant clocks and is not claimed as a
 partition-proof lease.
 
+Active invitations are now reconstructed from accepted governance after
+restart and exposed through the Rust snapshot. Revocation uses the same signed
+governance admission and ordinary-peer synchronization path as other accepted
+facts. A focused two-home regression proves that a reachable ordinary peer can
+convey an admitted revocation during an ephemeral governance-only preflight,
+causing a stale bearer join to fail before any local identity or selected-space
+state is created. This does not make revocation instantaneous across a stale
+partition or provide strict single-use admission.
+
+An exported invite is a self-contained causal entry point: its governance
+event descends directly from the signed space genesis carried in the invite.
+It must not claim an unexported local governance head as a parent, because that
+would let head-based anti-entropy mistake missing membership history for known
+ancestry. A fresh-home regression now requires the joined projection to contain
+both the authority member and the new member.
+
 Room anti-entropy now exchanges the bounded DAG heads of the requested room
 instead of serializing every known event ID or offering an arbitrary prefix of
 local history. Each authenticated QUIC exchange computes the causally missing
@@ -290,8 +321,51 @@ an ad-hoc-signed universal macOS DMG (arm64 plus x86_64) and is configured for a
 Windows NSIS artifact, with SHA-256 manifests and narrow per-app Gatekeeper and
 SmartScreen instructions. The signed `v0.1.0-beta.3` Windows artifact crossed
 its native first-launch gate on the external runner named in the evidence
-horizon; a native build and package of the current source still require a
-reliable external Windows runner.
+horizon. Native Windows build, packaging, and lived validation of the current
+source are explicitly deferred; they still require a reliable external Windows
+runner before any current-source Windows claim may be made. Replacing an
+ad-hoc-signed macOS build changes its CDHash and can trigger a Keychain access
+decision for the existing encrypted identity-vault key. The loading surface
+explains that pending operating-system request, and the install guide limits
+approval to a replacement whose signed release manifest was independently
+verified. Ordinary restart evidence continues to use the exact same artifact;
+replacement continuity is a separate lived gate.
+
+The human update surface now has a direct **More → Product updates** route in
+addition to its stable dockable view. Package installation, staged activation,
+rollback, and release-trust rotation enter one modal review path from either
+the view or command palette; missing package or trust-transition input instead
+opens and focuses the required field. A rendered interaction probe exercised
+modal entry, bounded authority copy, forward and reverse Tab containment,
+Escape cancellation with focus return, and palette-to-input routing.
+Deterministic tests enumerate the four consequential commands and distinguish
+non-mutating discovery, staging, and staged-package discard. This is human
+presentation evidence, not new kernel-verification, native activation, or
+release-root custody evidence.
+
+The update view and command palette now derive the same pre-invocation
+availability from the Rust-projected product-generation snapshot. Missing trust
+roots disable discovery, staging, manual install, and trust rotation with an
+explicit reason; an undiscovered release disables staging; a missing staged
+generation disables activation and discard; and missing verified history
+disables rollback. These checks prevent avoidable failing actions but do not
+authorize an update: the unchanged Rust path still authenticates every release,
+transition, sequence, and generation change. A fresh-home rendered preview
+showed each unavailable palette command with its specific prerequisite, while
+the Product Updates surface exposed disabled discovery, install, and trust
+actions with the missing-root description. This is rendered unavailable-state
+evidence, not authenticated update or packaged-native evidence.
+
+That surface now makes signed `.voxupdate` and `.voxtrust` files the ordinary
+portable handoff and keeps complete JSON paste behind explicit disclosure.
+Bounded untrusted previews name the package release, sequence, channel, minimum
+kernel, and signer or the transition sequence, signer, and added/retired key
+counts before confirmation. A rendered probe carried both file types through
+their hidden file inputs into the corresponding review, kept manual text
+keyboard-reachable, enabled the semantic action only after input, and preserved
+the existing modal handoff. It also exposed and closed a shared menu-state gap:
+More now collapses after any of its actions opens another surface. This remains
+presentation evidence; frontend parsing does not verify or authorize updates.
 
 The workbench risk has crossed its first lived gate. Every Rust-registered view
 can move among all five docks by drag/drop or an accessible selector, reorder,
@@ -303,6 +377,195 @@ Tauri run moved and hid views, filtered and invoked the palette from the native
 keyboard shortcut, quit, relaunched, and projected the saved layout through the
 real bridge.
 
+The human palette now projects causal availability without narrowing that
+registry or creating another command vocabulary. Unavailable commands remain
+discoverable but disabled with the missing prerequisite; active-home join and
+restore, fresh-home channel/profile/role/search, offline leave, and invite copy
+without an invite no longer fall through to avoidable command errors. A
+rendered fresh-home probe exposed that `message.composer.focus` was the remaining
+context-only exception: it closed the palette and found no composer. The shared
+availability decision now classifies it with the other home-dependent commands;
+both palette search and its direct shortcut keep it visible, disabled, and
+described as requiring create, join, or recovery first.
+Form-backed commands route to the same invite, channel, profile, role, search,
+peer-import, update-package, or trust-transition surface and focus the required
+input; only explicit form submission supplies the semantic payload. A rendered
+active/fresh-home probe covers disabled reasons and palette-to-input focus for
+join, channel creation, profile editing, role creation, and retained search.
+Deterministic tests cover prerequisite classification while preserving stable
+command IDs. This is presentation evidence, not new command-host admission or
+assistive-technology evidence.
+
+The focused human shell has crossed an additional lived macOS gate. A fresh
+ad-hoc-signed `.app` launch presented only create, signed-invite join, and
+identity recovery; creating a space brought the ordinary peer service online
+without a topology step. The native file dialog wrote a mode-`0600` recovery
+kit and removed the persistent recovery warning only after the Rust command
+accepted it. The People surface updated a profile and created a signed invite,
+and the native composer carried a keyboard-authored message through Rust
+admission and cleared only after success. Terminating and relaunching the exact
+same bundle preserved and projected that message and automatically restored the
+online service. A second fresh native home restored through the macOS file
+chooser, returned online under the recovered principal on a new device, required
+a new mode-`0600` recovery kit, and preserved that completed setup across a full
+restart. A separate-bundle native joiner then accepted a locally transferred
+signed invite, projected both members, posted from its new principal, and the
+inviter received and projected the accepted message. This is local
+packaged-debug evidence, not the external three-machine, Windows,
+assistive-technology, or release-artifact gate.
+
+Damaged local-home handling now preserves the recovery boundary instead of
+misrepresenting unreadable state as a fresh installation. Rust distinguishes a
+missing home from an existing unusable one and owns the confirmed transition:
+`identity.json`, `quic-cert.json`, and the SQLite database plus its WAL/SHM
+companions move into a private `.unusable-home-*` archive under the selected
+home. Nothing is deleted, `product-updates` remains in place as separate update
+trust state, and a healthy home is ineligible for the transition. A serialized
+shell regression carries an exported recovery kit through malformed local
+identity, structured failure, archival, genuinely fresh state, and restoration
+of the same person-level peer identity on a newly authorized device. Native
+presentation crossed a focused local macOS gate: the packaged app showed the
+bounded damage explanation with collapsed technical detail, placed keyboard
+focus into the explicit archive confirmation, returned to truthful onboarding
+after acceptance, and focused **Recover My Identity**. This does not yet prove
+recovery from a damaged home on Windows or through an external-machine field
+test.
+The pre-archive safety review now owns modal keyboard focus: both Tab directions
+wrap within Archive and Cancel, Escape cancels, and focus returns to the stable
+prepare action even though opening the review removes the original DOM node. A
+read-only damaged-home preview and rendered interaction probe cover the dialog
+semantics and cancellation path without manufacturing a successful archive;
+the serialized Rust recovery regression and packaged macOS run remain the
+authority and accepted-transition evidence.
+
+A new disposable-home run of the current ad-hoc-signed macOS `.app` exposed and
+then closed a keyboard handoff gap in that same path. Native pointer activation
+left the WebView document root active after `home.init`, so the vanished create
+button had no meaningful focus destination. The coordinator now rejects
+document roots as command origins and uses causal fallbacks. Repeating the
+fresh run focused **Save Recovery Kit** after accepted creation; after the
+native save dialog wrote a uniquely named kit and Rust removed the recovery
+prompt, focus moved to **Message #general**. Deterministic tests cover both a
+disconnected origin and a document-root origin. This is lived local macOS focus
+evidence, not an assistive-technology claim.
+
+Global error and success notices now preserve causal keyboard location across
+render reconciliation. Correctable validation returns to the invalid control;
+command failure dismissal reacquires the initiating semantic action inside an
+open transient surface, with composer/header fallbacks only when that action no
+longer exists. A rendered preview probe exercised an empty channel name and a
+preview-rejected signed-invite command. In both cases the alert cleared and
+focus remained in the causal workflow. This is rendered WebView-equivalent
+evidence, not native assistive-technology or successful-command evidence.
+
+Channel navigation now preserves that causal location when acceptance changes
+the control topology. The Rust-selected channel row exposes
+`aria-current=page`, and a completed `channel.select` moves focus from the
+removed Select button to that surviving row. The frontend neither predicts the
+selection nor marks it current before the returned snapshot. Deterministic
+source and rendered accessibility-tree evidence cover this handoff; actual
+assistive-technology operation remains part of the external human gate.
+
+The degraded-connection human path has crossed a focused local macOS gate. Two
+separately identified ad-hoc-signed native bundles joined through a real signed
+invite. After the inviter exited, an explicit refresh retained the failed
+ordinary-peer synchronization as a Rust-owned health observation: the joiner
+header changed from **Online** to **Online · 1 problem**, Connection & sync named
+the unavailable inviter, and its retry button carried that exact peer/device
+command payload. Restarting the inviter on its previously advertised endpoint
+and invoking the retry cleared the broken row and restored **Online** without
+changing membership or local conversation availability. This is local
+loopback lived evidence, not the external IPv6 field, physical-machine, or
+assistive-technology gate.
+
+Signed-invite handoff has crossed a focused native macOS feedback gate. From a
+fresh packaged launch, a real Rust-created space invite reached the native
+clipboard and only then produced the visible live-region message **Signed
+invite copied. Send it privately to the person you want to invite.** The
+deterministic clipboard boundary separately rejects missing and failed writes,
+preserves technical detail, and directs the person to manually copy the
+complete signed JSON. This proves local clipboard feedback, not successful
+delivery to another person or an assistive-technology announcement.
+
+Invite admission has crossed a focused native macOS review gate. A second
+fresh, separately identified packaged bundle pasted a real Rust-created signed
+invite and, before submission, displayed **My Space**, stable space
+and authority identifiers, the local expiry time, one included ordinary peer,
+and the unbound bearer-reuse limitation. The surface explicitly labeled these
+as untrusted claims and named Rust's signature, genesis, expiry, governance,
+and peer-record checks. Choosing **Join Space** then completed through the real
+Rust command and projected both members. Deterministic preview tests cover
+expired, conflicting, partial, and oversized input without turning preview
+parsing into admission. This is local packaged evidence, not external delivery,
+offline-inviter, Windows, or assistive-technology evidence.
+
+Fresh onboarding now makes a `.voxinvite` file the ordinary handoff, keeps the
+raw signed JSON fallback behind explicit disclosure, and disables submission
+until one of those sources contains input. A rendered fresh-state interaction
+probe exercised the visible file-picker trigger, confirmed the hidden native
+input does not create a duplicate accessible control, carried a selected file
+into the same bounded claims review, and verified that manual text remains
+keyboard-reachable. Desktop and narrow viewport checks showed no horizontal
+overflow. This is rendered browser evidence for presentation and interaction,
+not a new native file-dialog or successful-admission claim; the preceding
+packaged gate remains the Rust-owned admission evidence.
+
+The broader workbench narrow-window projection has also crossed a rendered
+browser gate. At 640, 480, and 360 CSS pixels, the current conversation and
+composer remain fully reachable without document-level horizontal scrolling;
+the header wraps its actions inside the visible width. At 480 pixels,
+Connection & sync remains inside the scrollbar-safe containing width and has no
+internal horizontal overflow. The compact projection stacks the existing named
+dock areas without changing their stable IDs, persisted placement, visibility,
+or command authority. This is rendered presentation evidence, not
+packaged-native, Windows, or assistive-technology evidence.
+
+Invite lifecycle controls have crossed a rendered interaction and Rust
+operational gate. The People surface offers explicit one-hour, one-day,
+seven-day, and thirty-day expiries, truthfully states bearer reuse, and lists
+Rust-projected active governance invitations. Revocation opens an alert dialog,
+focuses the consequential action, names ordinary-peer propagation and the
+stale-partition limit, and returns focus to the exact invite row on cancel. A
+command-host regression proves the semantic action removes the active invite
+from the authoritative snapshot, clears the matching local handoff copy, and
+remains revoked after restart. This is not packaged-native or external-network
+evidence for the new controls.
+
+Customization has crossed a focused native macOS gate. The packaged workbench
+opens one human settings surface from More, presents everyday behavior before
+advanced semantic-token and metric controls, and exposes contextual accessible
+names for each save action. A timestamp-style change traversed the Rust-owned
+preference command, survived a full restart, and projected back as the selected
+value. `ui.preferences.reset` then restored the complete preference and layout
+defaults through the same authority, survived another restart, and left the
+full advanced ontology reachable. A reconciler regression test also proves
+that changing a control's semantic action replaces the node carrying its old
+listener instead of pairing a new label with stale behavior. This remains
+packaged-debug macOS evidence, not an external assistive-technology or release
+artifact gate.
+
+The customization frontend now distinguishes projected values from in-progress
+human drafts: unchanged fields expose disabled contextual Save actions, edits
+enable only their associated Save action, and drafts survive ordinary refreshes
+and reset-review cancellation without becoming a second persistence authority.
+Reset All Customization opens a modal review that names appearance, spacing,
+behavior, and workbench placement or visibility, states which protocol state is
+untouched, focuses the consequential action, traps keyboard navigation, and
+returns to Reset after button or Escape cancellation. Only explicit confirmation
+invokes the existing Rust-owned reset command; accepted preference or reset
+commands clear their matching disposable drafts. The distinct
+`workbench.layout.reset` command now uses the same modal discipline but names
+only dock placement and visibility, explicitly preserves appearance, spacing,
+and behavior, and returns cancellation to the exact reset control or the visible
+More entry point when no narrower reset control is rendered. A rendered preview probe
+verified unchanged/changed/reverted Save states, draft survival across Refresh,
+the reset review and initial focus, both cancellation paths, retained draft on
+cancel, and focus return without invoking reset. This is rendered presentation
+evidence. A fresh-home rendered palette probe separately verified the
+layout-only review, its bounded preservation language, consequential initial
+focus, Escape cancellation, and focus return to collapsed More without invoking
+the command. These are not new packaged-native or assistive-technology claims.
+
 The public Discord families have crossed their operational gate. Space
 governance now carries channel definitions, profiles, roles, permissions,
 bans, and invites. Signed room events carry posts, edits, redaction tombstones,
@@ -310,7 +573,659 @@ reactions, mentions, threads, pins, and content-addressed attachments. SQLite
 retains the accepted facts; multi-room QUIC anti-entropy forwards them through
 ordinary peers; the app projects unread cursors, mention notifications, and
 local full-text search. A serialized two-home test exercises those commands
-through the same host used by the native shell.
+through the same host used by the native shell. That serialized path now also
+opens a retained search result through `message.open`, where Rust validates its
+channel membership and returns a bounded projection anchored on the exact
+event. The same path serves mention notifications, so older results do not
+silently disappear behind the ordinary latest-500 projection and the frontend
+does not reconstruct retained history. Rendered-preview evidence confirms that
+the notification affordance routes through `message.open` and refuses to
+simulate acceptance. This is semantic and rendered evidence, not a new
+packaged-native search claim. The serialized path also
+projects admitted role assignments and ban state, proves that a banned member
+loses current membership and role assignment, and proves that unbanning only
+permits a future invited rejoin. The packaged macOS People surface presents
+human permission names and member/role actions while keeping stable IDs in
+command payloads; private-channel creation selects current named members and
+explains the self-only case without requiring principal-ID entry.
+
+Governance creation surfaces now distinguish disclosure from admission in their
+accessible names. **Open channel creation form** and **Open role creation form**
+only expose retained frontend drafts and expanded state; the nested **Create
+Channel** and **Create Role** controls remain the sole semantic submissions to
+Rust. Deterministic source checks and a rendered preview verified one distinct
+opener and submit action for each form. This is rendered interaction evidence,
+not admitted-governance, packaged-native, or assistive-technology evidence.
+
+File sharing now has a human consent boundary before admission. Selecting a
+file opens a focused review of its name, type, decoded size, destination,
+projected audience, and durable-retention limitation; cancel returns to the one
+visible attachment affordance without publishing bytes. The Rust projection
+reports decoded size from the already-admitted content, while the serialized
+two-home path proves hash/size projection, convergence, search, and an admitted
+attachment tombstone. Core admission now permits an attachment author or
+authorized moderator to create the same `MSG_REDACT` fact the projection
+already understood. The P2P draft records the existing standalone
+`ATTACHMENT_ADD` wire shape. Rendered evidence covers review focus, cancellation,
+file-specific actions, and refusal to simulate preview acceptance; this is not
+new packaged-native file-dialog or external-machine evidence.
+Before reading bytes, attachment selection now applies the shared advisory
+short-text check to filenames with Rust's 255-Unicode-character bound and gives
+rename guidance that states nothing was shared. Unusable browser MIME metadata
+is normalized to the already-supported `application/octet-stream` label in the
+review instead of creating a locally unfixable failure. Deterministic helper and
+product-source regressions cover ordering and normalization. Rust still validates
+the original filename, projected MIME, decoded bytes, size, and hash; this is
+not new rendered or packaged file-dialog evidence.
+
+Manual multi-peer verification no longer silently targets the first stored
+availability record. Connection & sync and the re-entrant Field Test view share
+a disposable explicit target selection, show its address/principal/device
+tuple, and send that exact principal/device payload through the existing Rust
+diagnose or sync command. Field-test completion is evaluated against the
+peer-named activity result for the selected target rather than any prior peer
+success. Deterministic selection tests and rendered two-peer evidence cover
+target retention, fallback when a record disappears, keyboard focus, visible
+identity, and command payloads. This does not add routing or membership
+authority, and it is not non-loopback or three-machine evidence.
+
+The zero-peer degraded state no longer offers targetless diagnosis or sync as
+though it could complete. Palette and Network Health actions share the
+Rust-projected known-peer prerequisite, remain disabled with **Join with an
+invite or import peer availability first**, and leave Import Peer available as
+the causal recovery path. The existing Rust commands still validate the exact
+principal/device payload; the frontend check neither imports a route nor grants
+authority. Deterministic availability and source tests plus a rendered temporary
+zero-peer fixture verified the disabled actions and descriptions in both
+surfaces while Import Peer remained available. This is rendered unavailable-state
+evidence, not accepted import, reachability, synchronization, or external-network
+evidence.
+
+The no-peer recovery action is now causally complete. A context-free
+`peer.import` from the palette, Network Health, or Field Test opens and focuses
+the shared Connection & sync availability review rather than submitting an
+empty frontend draft. The bounded preview exposes claimed label, address,
+principal, device, and space while repeatedly naming those claims as untrusted;
+malformed or incomplete current-format JSON cannot be submitted. Rust still
+validates and stores the complete record, and the existing sync authority check
+still refuses a foreign-home record. A successful import selects that exact
+principal/device tuple for manual checks and optional auto-sync. Deterministic
+preview/selection tests and rendered palette-to-review evidence cover malformed
+input, foreign-space warning, focus, draft preservation on refusal, and refusal
+to simulate preview acceptance. This is not accepted native import or external
+network evidence.
+
+Advanced Bind and Advertise input now presents the complete IPv6 socket shape
+with a port instead of ambiguously asking for an address. One advisory helper
+accepts empty automatic defaults or bracketed IPv6 sockets, including numeric
+scope IDs and IPv4-mapped tails, while correcting edge whitespace, controls,
+malformed addresses, missing ports, and ports above 65,535. **Go Online** opens
+Connection & sync, marks and focuses the exact invalid field, and does not
+invoke the semantic command until both drafts are locally usable. Rust's typed
+`SocketAddr` deserialization and service startup remain authoritative for the
+accepted configuration. Deterministic helper, product-source, and native bundle
+tests cover this presentation path; this is not new rendered, packaged-native,
+non-loopback, or field evidence.
+
+Runtime palette actions now reflect the projected transition rather than
+offering contradictory Start and Stop choices. While online, context-free Go
+Online is disabled with a route to Connection & sync for explicit Bind or
+Advertise reconfiguration, while Go Offline remains available; the visible
+in-form Go Online action remains available to apply those drafts. Offline state
+reverses the palette availability. The semantic command and Rust service
+configuration authority are unchanged. Deterministic availability tests and a
+rendered online preview verified the disabled palette reason and the still-active
+Connection & sync action. This is rendered presentation evidence, not a service
+restart or external reachability claim.
+
+The member-ban affordance now requires an explicit confirmation that explains
+loss of participation authority, retained history, and the fresh-invite
+requirement before it invokes `member.ban`. Rendered-preview evidence exercises
+confirmation focus, cancellation back to the stable member row, and refusal to
+simulate the semantic command. The serialized two-home test above remains the
+authority evidence for the accepted ban transition; this is not yet a new
+packaged-native or assistive-technology claim.
+
+Role assignment is no longer a one-click authority change. Grant and revoke
+affordances now focus an explicit confirmation naming the member, role,
+direction, and human-readable permissions gained or lost, while noting that
+other roles remain unchanged. Cancel and completion return keyboard focus to
+the stable role row. Rendered-preview evidence covers the confirmation and
+semantic-command route; the serialized two-home governance path remains the
+accepted role-assignment evidence, so this is not a new packaged-native or
+assistive-technology claim.
+
+Invitation revocation, private-channel key rotation, member bans, role
+assignment, message or attachment deletion, and attachment sharing now reuse
+one modal interaction boundary without merging their semantic commands. Every
+review blocks background interaction, focuses its consequential action, wraps
+Tab in both directions, suppresses unrelated shortcuts, cancels with Escape,
+and retains its existing stable return target. Deterministic source coverage
+holds all six review families to that boundary. A rendered invite-revocation
+probe verified the overlay, alert-dialog identity, both focus wraps, shortcut
+containment, Escape cancellation, and stable invite-row return. This is shared
+human-presentation evidence; Rust admission, retained facts, and command-specific
+authority remain unchanged, and no packaged-native or assistive-technology
+claim is added.
+Rejected actions no longer put the sole structured error behind a still-open
+blocking review. Consequential, damaged-home, customization-reset, and
+product-update modals own their error while open: the alert retains bounded
+human recovery and technical detail, focuses **Dismiss**, and returns to the
+same retry action without closing the review or claiming acceptance. A rendered
+preview refusal exercised this complete failure, dismissal, and retry-focus
+path for invitation revocation. This is modal failure-presentation evidence,
+not a native governance rejection or admitted-fact claim.
+
+The shared shell error contract now distinguishes `needs_input` from authority,
+home, reachability, synchronization, human-intervention, and internal failures.
+Representative serialized and inhabitant-surface tests prove that an empty
+retained-message search is returned as correctable input while malformed command
+schemas and unsupported commands remain internal integration errors. The Rust
+classifier narrowly covers authoritative validation outcomes for message text
+and mentions, reactions, attachments, profiles, channel and role creation, and
+search; it does not reclassify permission failures or infrastructure faults.
+The authenticated inhabitant SSE surface now wakes resident agents when the
+Rust-owned snapshot changes. A successful HTTP semantic command emits a
+process-monotonic `snapshot.changed` notice only after the command host returns
+its new snapshot; asynchronous peer-service invalidations use the same channel.
+The notice carries the compact coordination-snapshot URL, so agents re-read
+authoritative state instead of relying on an HTTP-side reconstruction of room,
+governance, or recovery meaning. SSE is an invalidation channel, not a durable
+event log: reconnect does not promise replay, `service.ready` names the current
+process sequence and requires immediate snapshot reconciliation, and silence
+does not prove currency or delivery. The coordination snapshot carries a
+sequence captured across a stable projection attempt, so a reconnecting
+resident can retry until it reaches the sequence announced by the stream;
+discovery explicitly advertises that replay is unavailable. Unit evidence
+covers multi-subscriber monotonic delivery, and
+an isolated live HTTP/SSE rehearsal carried `home.init` from an authenticated
+command response showing initialized identity to sequence 1 on an already-open
+event stream. This is local loopback agent-surface evidence, not a resident
+Watch/WFB integration or autonomous-agent claim.
+The shared admitted message model now carries a caller-generated
+`client_request_id` scoped to principal, device, room, and semantic payload.
+Identical retries return the original event, including after process restart;
+conflicting reuse is rejected as correctable, non-retryable input. Ordinary
+signed `MSG_ACK` room facts project one monotonic `observed` or `handled` state
+per participant and target message, traverse the existing private-room
+encryption and admission path, and survive synchronization and restart. An
+acknowledgement advances only the acknowledging home's local read cursor
+through its target; channel selection remains context, not acknowledgement.
+Independent source-blind two-home rehearsals proved duplicate suppression,
+offline retained-message catch-up on `runtime.goOnline`, acknowledgement
+propagation, handled-state durability while the participant was offline, and
+honest `unreachable` sync evidence when the known peer could not be contacted.
+`handled` remains a participant assertion rather than proof of correct work. It
+may bind the handler's visible admitted ordinary reply in the same room, making
+the result traceable without parsing prose while preserving the human
+conversation. Concurrent authorized-device bindings retain a deterministic
+result set and expose conflict rather than selecting by arrival time. Sync evidence is peer-relative,
+never a claim of global currency or live conversation presence.
+Two independent source-blind inhabitant rehearsals carried a normal readable
+thread reply into a handled result binding, reconciled it after restart while
+the handler was offline, and let the sender locate and validate the result using
+only structured IDs. Exact retry was inert; observed-with-result, missing,
+self, unrelated, and terminal-rebinding attempts were non-mutating failures.
+Deterministic projection tests cover concurrent result conflict in opposite
+input orders, while private-room evidence shows result and acknowledgement
+bodies remain inside the existing encrypted envelope and survive key rotation
+and recovery. This proves traceable participant assertions, not result
+correctness, audit-grade acknowledgement provenance, or live presence.
+Automatic runtime startup now persists the last successful concrete listen and
+advertised sockets and attempts them again after clean restart. The QUIC
+endpoint is created and destroyed on the service runtime that owns its socket,
+so a clean in-process stop releases the binding before restart. This preserves
+ordinary same-device reachability for already distributed peer hints without
+turning endpoints into identity or authority; explicit address configuration
+replaces the saved binding, and a bind conflict remains an explicit failure.
+An independent source-blind two-home process rehearsal confirmed that a peer
+reclaimed its exact loopback QUIC socket after clean restart and that the other
+home received a new message using its original retained peer record. The same
+run showed an acknowledgement attempted before local message admission now
+returns `needs_sync`; after ordinary peer sync, the identical acknowledgement
+was admitted. This is same-machine continuity evidence, not external IPv6
+endpoint refresh, crash recovery, or global reachability evidence.
+
+Quiet coordination now has a separate bounded-intention truth rather than
+overloading durable observation or runtime presence. An admitted
+`MSG_CONTINUATION` may assert `continuing` for one minute through seven days,
+explicitly `released`, or explicitly `declined`; it causally supersedes only
+the same principal's known heads for the same message. Expiry projects current
+intent as unknown and overdue, never stopped or abandoned. Concurrent device
+heads remain an explicit deterministic conflict until a later fact supersedes
+all of them. The fact follows ordinary room membership, posting permission,
+private encryption, retention, sync, and recovery. It neither grants authority
+nor proves presence, work, correctness, or partition-free liveness.
+Three independent source-blind resident experiments exercised the advertised
+continuation contract through the built inhabitant service: idempotent retry,
+invalid input, sync, clean restart, active lease, time-only expiry, release,
+resume, decline, handled threaded result, and reconnect reconciliation. An
+adversarial probe found and drove removal of hidden peer synchronization from
+coordination snapshot GET; repeated post-fix reads preserved sync evidence and
+sequence while only `projected_at_ms` advanced. This remains same-machine
+loopback evidence, not external reachability, crash, or long-partition proof.
+
+Effective actionability is a per-participant, per-target projection over the
+causal maxima of handled acknowledgements and continuation heads. The admitted
+facts remain intact: projection does not erase handled, declined, released, or
+continuing assertions. A single maximum exposes its literal disposition;
+incomparable maxima expose conflict; and a causally later continuing assertion
+may explicitly resume participation. Wall-clock timestamps and home-local
+first-admission ordinals are evidence/display mechanisms only and must never
+resolve these semantic heads. No participant projection is a room-global task,
+assignment, correctness, presence, or stopping authority. This rule is now in
+the preservation envelope. Replies are covered only by an explicit handled
+result binding or causal ancestry beneath every maximal disposition head;
+concurrent and causally later replies remain bounded actionable evidence rather
+than being guessed from timestamps. Three source-blind built-surface rehearsals
+verified handled-after-continuing, later explicit resumption, bound-result
+coverage, later-follow-up attention, durable redelivery, and restart. Concurrent
+causal maxima remain deterministic projection evidence rather than a
+source-blind multi-device rehearsal.
+
+Cross-room coordination is projected through one bounded factual frontier
+derived from the same admitted room messages. It remains independent of the
+selected room and local read cursor, prioritizes live/conflicting/overdue
+continuations and undispositioned mentions ahead of terminal history, reports
+all truncation, and exposes newer replies after a local disposition without
+interpreting their prose as a machine directive. The frontier adds no task
+authority or plaintext cache; private entries follow the ordinary admitted
+membership and decryption path. Human Notifications exposes the same facts as
+Follow-ups rather than maintaining a second frontend task model.
+Source-blind two-room restart evidence showed handled General and continuing
+Ops exchanges simultaneously while both rooms were read and General selected;
+selection changes and restart preserved the frontier, a newer reply advanced
+the root's factual relation, and repeated GET remained observational. A second
+private-room probe caught silent preview abbreviation before a consequential
+prohibition; item-level completeness fields, visible ellipsis, and an explicit
+open-before-action contract resolved that prediction error. These are
+same-machine loopback and served-contract results, not external field evidence.
+
+Resident resumption uses a second, explicitly local counter domain. A retained
+fact receives a durable per-home ordinal only on first admission; retries do
+not advance it, and it never participates in signatures, replication,
+governance, semantic admission, or protocol order. Independently named local
+consumers page changed ordinary roots and replies across accessible rooms,
+then commit only a final served token bound to the captured high water and room
+set. Human read state, signed acknowledgement, bounded continuation, process
+SSE sequence, and resident observation progress remain separate meanings.
+Uncommitted pages are delivered at least once across restart; consumer commits
+do not create a global invalidation or protocol fact. The surface makes no
+exactly-once, global-currency, presence, work, correctness, or remote-read
+claim.
+Three source-blind runs against the built inhabitant service exercised
+FromBeginning and FromNow, independent consumers, human read/selection/open
+independence, two-page delivery, arbitrary and mismatched commit rejection,
+crash-before-commit rereading, response-loss reconciliation, process restart,
+public/private multi-room pages, and commit silence on the global stream. The
+durable fact domain remained stable while SSE sequence reset, and signed
+acknowledgement, continuation, unread, and resident commit remained distinct.
+This is same-machine loopback evidence; excluded-retainer private paging,
+larger pagination, crash during multi-room commit, and external transport
+remain bounded gaps.
+
+Fact provenance now preserves four distinct identities. A principal owns
+membership and permissions; an authorized device signs and admits ordinary
+facts; an optional origin session identifies a device-certified local route;
+and a resident observation consumer names only local delivery progress. The
+origin certificate and enclosing event signature bind a stable secret-derived
+session ID, surface protocol (`native_webview`, `inhabitant`, or `cli`), bounded
+display label, device/principal issuer, validity window, and bounded request ID.
+Origin never grants membership, permissions, private keys, correctness, or
+task authority and does not prove a natural human, an AI, or the truth of its
+label. The certifying device can fabricate its own route assertions.
+
+The inhabitant surface opens a route with `resident.origin.open` using a stable
+client instance ID, label, and caller-held random 32-byte secret. Only a
+domain-separated secret hash is persisted in the owner-local registry; the
+plaintext secret is neither returned nor stored. Subsequent
+`message.send`, `message.acknowledge`, `message.continuation.update`, and all
+four `resident.observation.{open,page,commit,release}` requests require the
+returned origin ID and original secret in dedicated headers. The native
+WebView uses the same Rust-owned certificate path with a
+`native_webview` route. Private-room provenance is serialized only inside the
+encrypted semantic event, never on its ciphertext carrier. Core, app, and
+sidecar tests establish these local and cryptographic mechanics. Source-blind
+rehearsals then carried two distinct inhabitant sessions on one principal and
+device through ordinary messages, a threaded result, continuation, handled
+assertion, remote public/private synchronization, simultaneous restart, and
+durable resident redelivery. Missing and invalid origin credentials retained
+one ActionResult error envelope. Raw private ciphertext is intentionally absent
+from the inhabitant API, so outer-envelope non-disclosure remains storage
+inspection evidence rather than a source-blind API claim.
+
+Resident observation ownership is derived from that authenticated origin
+context, never from command JSON. Each consumer durably records its
+`owner_origin_id`; open, page, commit, and release require the same origin.
+Foreign origins receive the same unavailable result as an unknown consumer and
+cannot mutate or enumerate it. Active page sessions and final commit tokens are
+owner-bound as well, preventing a sibling route from superseding a page or
+advancing another consumer by copying identifiers. This separation is local
+availability and integrity bookkeeping only: it creates no replicated fact,
+principal, membership, permission, task authority, private-room access, or
+claim about a human or AI. Deterministic tests cover ownership, token binding,
+and non-mutation. A source-blind Alpha/Beta rehearsal then proved that a
+foreign origin could not open or page the same consumer, consume its final
+token, or release it; the owner's original token remained valid and ownership
+plus committed progress survived sidecar restart and bearer rotation.
+
+Ordinary signed message posts may carry a bounded set of device-certified
+origin-session IDs as delivery hints. These hints remain message content: they
+are forgeable or omissible by an authorized sender, non-confidential in public
+rooms, and grant no membership, visibility, private key, assignment,
+obligation, presence, observation, handling, correctness, or task authority.
+Full resident feeds remain complete. Only a page authenticated as its owning
+origin derives `addressed_to_owner`; this local comparison is not accepted from
+JSON and does not become a replicated delivery receipt. Private-room hints are
+encrypted solely inside the semantic message and omitted from the outer
+ciphertext carrier. A source-blind multi-resident delegation exercise showed
+the original gap: an ordinary message could not identify the intended sibling
+origin without prose. The implemented hint now gives every consumer the same
+ordinary message while only the matching owner derives prioritization. Public
+and private synchronization, excluded-peer confidentiality, malformed and
+unknown IDs, retry conflicts, full-feed preservation, and disconnect/reconcile
+behavior have source-blind evidence. A full addressed flow also reproduced a
+first-command restart stall. It was traced to origin authentication obtaining a device ID through a
+full restarted-home snapshot while holding the command gate. Direct identity
+vault lookup removed that dependency; a deterministic restart regression and
+fresh full-flow rehearsal reopened origins in 5--12 ms and served coordination
+in about 186 ms.
+
+Flat threads carry a separate exact `in_reply_to_event_id`. The thread root
+continues to group one human-readable conversation, while the exact reply
+target lets a handled result bind to a directed reply without overclaiming the
+broader root. The first source-naive delegation rehearsal exposed this missing
+relationship. A rebuilt Human-to-Alpha-to-Beta rehearsal then survived a hard
+pre-commit crash, preserved the flat readable chain, bound Beta's result to
+Alpha's exact delegation, and drained the durable cursor to empty.
+
+Multiple resident and human origins may share one principal without sharing a
+single local attention queue. Resident pages therefore derive a separate
+owner-local attention projection from the authenticated owner, certified fact
+origins, address hints, and ordinary acknowledgements/continuations. It does
+not change principal actionability or create assignment, permission, receipt,
+or task authority. An addressed message requests review without accepting
+work; only the owner's continuing assertion makes work actionable. Terminal
+historical attention is suppressed by that owner's durable cursor, while
+continuing/overdue attention remains visible across commit and restart.
+A fresh source-naive same-principal rehearsal preserved Alpha's principal
+decline while projecting Beta's exact delegation as owner-local
+`unreviewed/review_required` and not accepted work. Beta's later continuing and
+decline affected Beta's owner view; Beta's ordinary reason addressed to Alpha
+reopened Alpha review without reopening Beta. After both consumers committed,
+restart suppressed Beta's terminal history and returned an empty page.
+
+A separate source-blind restart probe found that offline
+`space.invite.create` reported `internal_error` even though its detail required
+going online. It now reports `needs_service_online` and identifies
+`runtime.goOnline`; a rebuilt source-blind retest passed.
+
+Episodic agent actions no longer require repository-source inspection to learn
+their payload shape. The same Rust-projected `UiCommand` records used by the
+WebView now name each shell command's request DTO, while empty-payload and
+frontend-only commands remain explicit through scope and a null payload type.
+Authenticated inhabitant discovery exposes the TypeScript contract generated
+from those Rust DTOs. Contract equality plus command-to-type completeness tests
+prevent the WebView and inhabitant descriptions from drifting. An isolated live
+rehearsal discovered `home.init` as `InitHomeRequest`, retrieved that declaration
+from the advertised contract URL, submitted the typed payload, and received an
+initialized authoritative snapshot. Payload declarations are affordances, not
+validation or protocol authority.
+Inhabitant action results now attribute only the Rust-owned service activity
+created during that serialized HTTP command. The adapter captures the host's
+monotonic activity cursor, invokes the ordinary semantic command, and filters
+the returned snapshot or failed-command activity by that cursor. A sidecar
+command gate prevents concurrent agent calls or snapshot refreshes from
+claiming one another's rows;
+it does not alter the host's command serialization or admission path. An
+isolated authenticated HTTP rehearsal showed `home.init` returning only its
+initialization and service-start rows, the following `runtime.goOffline`
+returning only the later stop row, and an unsupported command returning
+structured `internal_error` with no inherited activity. This proves local
+causal result visibility, not external-agent judgment or autonomous recovery.
+Initial snapshot failure no longer ends in a static dead-end screen after
+advising the person to retry. The pre-component shell renders the same bounded
+structured explanation, states that retry does not delete, archive, or replace
+local state, focuses **Try Again**, and repeats only the native `shell.refresh`
+request after explicit activation. Technical details remain keyboard-operable
+and report expanded state. A deterministic retry-loop test covers repeated
+failure before first success; a temporary clean-origin preview failure verified
+the focused error, recovery description, Enter-opened details, explicit retry,
+and eventual ordinary product load. This is rendered startup recovery evidence,
+not damaged-home archival, packaged-native credential, or identity-recovery
+evidence.
+The profile, channel, and role forms now make their narrower frontend
+prerequisite checks causally usable: empty profile display name, empty channel
+name, empty role name, and missing role permissions each mark and describe the
+exact control or group and return keyboard focus to it. The accessible field
+name remains separate from the error description. Editing that exact field or
+selecting a missing permission removes the stale inline and global error
+immediately; unrelated
+edits and later non-validation failures cannot inherit or erase a field marker
+accidentally. This presentation check does not accept the command or replace
+the Rust classifier and semantic admission path.
+
+Those three human-name forms now also share one testable advisory mirror of the
+Rust-admitted short-text shape: no leading or trailing space, no control
+characters, and at most 80 Unicode characters. Rendered probes focused and
+described a leading-space profile name, an 81-character channel name, and a
+trailing-space role name. The helper is included in both preview and builtin
+product-component assembly, with a Rust bundle regression proving the native
+source contains the helper and all three consumers. This remains corrective
+presentation; Rust independently decides admission and protects replay paths.
+The optional profile About and channel Topic fields use the same helper family
+for their admitted 512- and 1,024-Unicode-character bounds and control-character
+exclusion. Rendered probes focused and described 513- and 1,025-character emoji
+or text drafts respectively; empty optional values remain permitted.
+Invite joining now preserves the same distinction: an observed revocation,
+expiry, or malformed signed invite asks for corrected input; an already-used
+home names the separate-fresh-home requirement; and an unexplained local join
+failure remains internal rather than being mislabeled as reachability. A
+serialized revoked-invite test proves both the human recovery copy and that the
+refused join leaves the destination genuinely fresh.
+
+Signed invite creation no longer silently clamps a semantic caller's requested
+authority window. Rust accepts the documented finite envelope of 1 minute
+through 30 days and returns correctable-input recovery outside it before
+creating the signed governance fact. The human form retains its bounded
+one-hour, one-day, seven-day, and thirty-day choices, now reviews the selected
+bearer-capability window in a live region, and labels the action **Create signed
+invite**. Serialized semantic-command tests cover refusal on both sides of the
+range and prove no active invite was admitted; a deterministic product-source
+regression covers the review copy. A rendered
+active-home probe changed the choice from 24 hours to 7 days and observed the
+exact live 7-day review with the named creation action still available; it did
+not simulate command acceptance. This is not new packaged-native, admitted
+governance, multi-peer, or assistive-technology evidence.
+
+The packaged macOS conversation surface has crossed a lived reply/edit gate. A
+person selected Reply on a retained message, received named composer context,
+posted through `message.send` with the authoritative thread root, and observed
+both the reply annotation and incremented root count. The same run opened an
+inline edit, focused the native text control, saved through `message.edit`, and
+exercised Escape cancellation without a browser prompt. The edited root and
+thread reply survived a full restart of the exact same artifact. Existing
+serialized two-home evidence continues to prove convergence through those same
+commands; this lived run is local packaged-debug evidence.
+
+The ordinary composer and inline editor now prevent a locally knowable empty
+submission before invoking authority. One shared predicate disables **Send
+Message** or **Save changes** for empty drafts, leading or trailing whitespace,
+null characters, and more than 4,000 Unicode characters; it is reused by typing,
+Enter, member-picker insertion, and form submission. The displayed counter uses
+Unicode code points rather than UTF-16 units. Rendered probes observed `2 / 4,000`
+for two emoji, inline edge-whitespace guidance, retained over-limit text with
+`4,001 / 4,000`, enabled visible text and `@Bob` insertion, and keyboard clearing
+back to disabled in both paths. Rust still owns
+message length, authorization, mention, and semantic admission; this is
+presentation evidence, not accepted-message evidence.
+
+Retained search now has one Rust-owned finite request shape for both human and
+agent callers: after edge whitespace is trimmed, a query must contain 1 to 1,024
+Unicode characters and no control characters. The semantic command returns
+correctable-input recovery for each refusal before lowercasing or scanning
+retained messages. The frontend advisory mirror disables **Search Messages**
+and gives live correction guidance for the same locally knowable shape while
+preserving edge whitespace that Rust accepts. Serialized semantic-command tests
+cover oversized and control-character refusals, and deterministic helper/source
+tests cover the human projection. The prior rendered probe covers only the
+empty, whitespace, visible-term, and cleared transitions; this is not a new
+rendered, packaged-native, or assistive-technology claim. Rust remains the
+authority for query bounds, accessible index scope, and returned retained facts.
+
+The human composer and inline editor now expose a named member picker for
+mentions. Rendered-preview evidence proves that selecting a member inserts the
+visible name and returns focus to the text control; deterministic composition
+tests prove unambiguous typed-name resolution and duplicate-name selection; and
+the serialized two-home command test carries the resulting stable peer ID into
+the admitted message and recipient notification. This is local semantic and
+rendered evidence, not a new packaged-native or assistive-technology claim.
+
+Repeated workbench controls now carry their visible target into the accessible
+name. Channel selection names the public or private channel, private-key
+rotation names its channel, and each message-action disclosure names the author
+plus a bounded text or attachment preview. Member actions name the member, role
+assignment names the role, invite revocation names the displayed expiry, and a
+visible reaction or pin action names the exact author/content context. A
+rendered accessibility-tree probe covers public text, mentioned text,
+attachment-only messages, and the populated People surface while the
+underlying controls continue to invoke the existing stable commands and
+payloads. Escape from that
+nonmodal panel closes it, restores focus to its People invoker, and projects the
+collapsed state. Deterministic source regressions preserve the contextual
+labels and preview bound. This reduces nonvisual navigation ambiguity but is
+not the actual assistive-technology beta gate.
+
+Duplicate member display names no longer collapse those governance targets back
+into position-dependent labels. One case-insensitive helper leaves unique names
+unchanged and appends a bounded principal-derived member marker of at least 12
+characters only when names collide. When 12 characters still collide, the
+marker expands to the shortest unique principal prefix. The same label appears
+on the member card, mention
+choice, Ban/Unban affordance and confirmation, and role assignment affordance
+and confirmation, while each command still carries the complete stable peer ID
+to Rust. Deterministic helper, product-source, and native bundle tests cover the
+mapping. A rendered case-insensitive duplicate-name fixture probe observed
+distinct matching member markers on both cards, the mention choice, Ban review,
+and role-assignment review, and did not invoke either governance command. This
+is not admitted-governance, packaged-native, or assistive-technology evidence.
+
+Roles now retain the parallel distinction allowed by governance: duplicate
+case-insensitive names leave unique names uncluttered but append the shortest
+unique stable role-ID suffix of at least eight characters when names collide.
+The marker persists from the role card through Manage members, Grant/Revoke,
+and the focused assignment review, while Rust still receives the complete role
+ID and independently decides authority. Deterministic helper, product-source,
+and native bundle tests cover the mapping. A rendered case-insensitive
+duplicate-role fixture probe observed distinct role cards and Manage members
+controls, then carried the selected marker and its distinct permission summary
+through the assignment review without invoking governance. This is not
+admitted-governance, packaged-native, or assistive-technology evidence.
+
+Channels now preserve that distinction across navigation and conversation when
+case-insensitive names collide. One helper leaves unique names uncluttered and
+appends the shortest unique room-ID suffix of at least eight characters to the
+channel card, Select and private-key rotation paths, selected header, timeline,
+composer target, retained-search results, and notification actions. Commands
+and projections still carry complete room IDs, and the frontend does not infer
+room authority from the label. Deterministic helper, product-source, and native
+bundle tests cover the mapping. A rendered public/private case-insensitive
+duplicate-name fixture probe observed distinct channel cards, selected header,
+timeline, composer target, private Select and key-rotation controls, the focused
+rotation review, and the notification action; it did not invoke either room
+command. This is not admitted-channel, packaged-native, or
+assistive-technology evidence.
+
+Active invite revocation no longer collapses multiple bearer capabilities with
+the same human-formatted expiry into identical actions. The frontend compares
+the displayed expiry labels and, only on collision, appends the shortest unique
+invite-event-ID suffix of at least eight characters to the row action, focused
+confirmation, and final Revoke button. The full invite event ID remains visible
+in the row and is the sole governance command payload. Deterministic helper,
+product-source, and native bundle tests cover the mapping. A rendered
+same-expiry fixture probe observed two distinct row actions, carried the chosen
+marker through the focused confirmation and final Revoke button, and returned
+to both unchanged rows after cancellation without invoking governance. This is
+not admitted-governance, packaged-native, or assistive-technology evidence.
+
+Repeated identical posts no longer collapse message controls back into
+position-dependent labels. The frontend compares the existing bounded
+author/content or attachment context among visible messages and, only on
+collision, appends the shortest unique message-event-ID suffix of at least
+eight characters. That label persists across reaction chips and actions,
+downloads, Message actions, Reply, Edit, Delete, and the focused deletion review.
+Every command still carries the complete target event ID, and Rust remains the
+message authority. Deterministic helper, product-source, and native bundle tests
+cover the mapping. A rendered duplicate-own-message fixture exposed two distinct
+action disclosures, carried the selected suffix through Reply, Edit, Delete,
+the focused deletion review, and its final Delete button, then returned after
+cancellation without invoking the command. This is not admitted-message,
+packaged-native, attachment-collision, or assistive-technology evidence.
+
+Accepted reaction and pin toggles also preserve causal keyboard location
+without preserving a stale command listener. Reconciliation replaces the
+control when the Rust-projected action changes from add to remove or back; a
+distinct presentation-only key then focuses the exact successor. Removing the
+last visible reaction falls back to the stable message row when no chip
+survives. Deterministic regressions cover the replacement and contextual
+accessible names; actual assistive-technology behavior remains in the external
+human gate.
+
+Disclosure controls have crossed a broader rendered accessibility gate. More,
+onboarding fallbacks, profile and identity details, customization, signed
+artifact entry, peer setup, invitations, channel creation, member and role
+management, message actions, error details, and the mention picker all use one
+owner-independent presentation helper. It exposes a button role, synchronizes
+`aria-expanded` with the native `details` state, and preserves both Enter and
+Space activation. Rendered traversal covers the default workbench plus People,
+Customize, and Product Updates, including expanded-state changes. This remains
+browser accessibility-tree and keyboard evidence, not an actual VoiceOver,
+Narrator, or NVDA claim.
+
+A rendered private-channel probe exposed that blanket disclosure preservation
+also blocked intentional product-driven closure: turning private mode off
+cleared the checkbox while leaving its now-inapplicable options expanded. The
+reconciler now preserves `open` only for native user-owned disclosures and
+honors it for explicitly controlled profile, peer-import, channel, privacy,
+role-member, and role-create forms. Unit coverage proves both sides of that
+boundary, and the repeated probe observed `{checked:false, open:false}`. This is
+rendered presentation evidence, not an authority or assistive-technology claim.
+
+Fresh onboarding has also crossed a rendered system-color and narrow-window
+gate. At 420×700 it keeps create, signed-invite join, and recovery in one
+vertical causal path without document-level horizontal overflow; the manual
+invite disclosure remains keyboard-operable. A dark-scheme render exposed that
+fixed light message surfaces and fixed green/red status foregrounds did not
+adapt with `CanvasText`. The stable semantic token IDs now retain user
+customization while their defaults derive message surfaces from system colors
+and select distinct light/dark status colors. On the rendered dark canvas, the
+ownership/status and recovery-warning foregrounds measure 10.36:1 and 8.21:1
+contrast respectively. This is preview rendering evidence, not packaged-native
+or actual assistive-technology evidence.
+
+The populated active-home surface has now crossed the matching 420×700 rendered
+gate. The header, selected conversation, messages, composer, and direct-media
+actions remain in one vertical projection with equal document client and scroll
+widths. The compact header now groups its six routine surfaces into two bounded
+columns instead of six separate rows. A 320×700 discriminating probe then
+exposed an independent intrinsic-width overflow in the composer controls; they
+now use the same bounded two-column projection. Repeated probes observed equal
+document client and scroll widths at both 320px and 420px, with matching composer
+client and scroll widths. Opening People exposed that the prior fixed 104px
+panel offset covered the dynamically wrapped header while leaving its actions
+focusable. Compact Connection and utility panels now become viewport-contained
+modals, report `aria-modal=true`, and trap Tab within visible controls. The shared focus order
+keeps native disclosure summaries but excludes their collapsed descendants; a
+rendered Shift+Tab probe wrapped from **Close** to **Manual peer setup**. Desktop
+widths retain the existing nonmodal panels and command paths. This is rendered
+preview evidence, not packaged-native or actual assistive-technology evidence.
+
+The same packaged surface now derives reaction and pin actions from projected
+accepted state: a native run added and removed the local reaction and pinned
+and unpinned the message through their distinct semantic commands. Deletion no
+longer shares that one-click toggle shape; it focuses an explicit confirmation
+that explains the retained signed tombstone, with a separately exercised cancel
+path.
 
 Private channels have crossed their first confidentiality and recovery gate.
 Each member publishes a signed X25519 encryption key, private channel creation
@@ -321,6 +1236,17 @@ projection. A three-home test proves that the excluded peer neither lists nor
 stores the private room, retained events and local key files lack the message
 plaintext, admitted peers decrypt successive epochs, and a fresh recovered
 home restores the epoch keys and history from an ordinary peer.
+
+The private-channel rotation affordance now projects the admitted epoch and
+current private-member count from Rust and requires an explicit confirmation.
+The copy names the forward-only confidentiality effect and refuses to imply
+remote erasure of earlier ciphertext, keys, or plaintext. Rendered interaction
+evidence proves alert-dialog focus and stable-row focus return; the existing
+three-home confidentiality regression now also proves that the projected epoch
+advances through admitted governance and reconstructs after restart. A
+serialized-shell regression carries `channel.rotateKey` through the shared
+semantic host and observes that same durable projection. This is not
+packaged-native, physical-participant, or external-network evidence.
 
 The local durability topology now uses one SQLite database for accepted events,
 monotonic identity heads, the selected accepted space-genesis ID, peer records,
@@ -343,20 +1269,113 @@ deterministically selected four peers without rejecting otherwise valid facts,
 and heartbeat expiry releases a slot after a crash. Public and private rooms
 reuse the same acceptance, encryption, storage, and sync path. Deterministic UI
 tests exercise camera requests, voice fallback when hardware is absent, and
-permission-denial truthfulness. This verification machine has no physical
-camera or microphone, so physical-device capture is not claimed as lived local
-evidence.
+permission-denial truthfulness. The packaged macOS surface now presents mutually
+exclusive pre-join and in-call actions, explains the direct four-person envelope
+before capture, localizes actionable permission and device failures, and names
+each participant's direct connection state for assistive technology. This
+surface now also receives each active participant's accepted camera intent from
+the Rust projection. A rendered capacity probe verifies that four projected
+participants disable both visible join choices and the palette Join command
+with an explicit full-call reason. A separate already-joined probe verifies that
+the visible surface exposes only in-call controls while palette Join remains
+disabled as redundant. These are presentation guards over projected state;
+Rust remains the admission authority if that state changes. Heartbeats preserve
+the latest admitted join mode, and a
+remote voice-only participant renders as an explicit voice tile instead of an
+empty video element; a rendered preview probe exercised that label together
+with the independent **Connecting directly** state. Camera intent no longer
+creates a blank video element before that direct connection reaches
+`connected`: connecting and failed peers retain explicit placeholders, and a
+transiently disconnected tile distinguishes ongoing reconnection from the
+terminal failed tile's leave-and-rejoin action. Recovery remains attributed to
+each participant rather than a global notice, including when multiple direct
+connections degrade. Deterministic projection tests cover connected,
+connecting, disconnected, and failed camera intent, while rendered previews
+exercise the connecting and interrupted camera-intent tiles.
+This does not move
+participant selection, media authorization, or connection truth into the
+frontend. The verification machine has no physical camera or microphone, so
+capture, permission prompts, two-device media flow, and the resulting in-call
+tiles are not claimed as lived local evidence.
+Active-call operation now includes a stable `call.microphone.toggle` frontend
+command shared by the visible call control and command palette. It changes all
+local WebView audio tracks together, projects **Microphone on** or **Microphone
+muted** in the local tile, and gives a leave-and-rejoin recovery action when a
+restart-like call snapshot has no captured track. Deterministic track tests
+exercise both directions and missing capture; rendered preview evidence covers
+the muted state, recovery copy, and palette route. This local device control
+does not change accepted call participation or signaling and is not physical
+audio evidence.
+Active camera control follows the same visible-control and command-palette
+vocabulary through `call.camera.toggle`. It disables or reenables only an
+already negotiated local camera track, while a signed, semantically admitted
+`CALL_MEDIA` fact updates the projected camera intent seen by ordinary peers.
+Only an active call participant may publish that fact, and it neither extends
+liveness nor changes call membership. A voice-only capture remains explicit and
+directs the person to leave and rejoin with camera instead of pretending a new
+track was negotiated. Deterministic authority, serialized two-home, device-track,
+and palette tests cover this path; physical camera behavior remains an external
+human evidence gate.
 
-The final local fixed-point pass is green for the changed system authorities:
-71 Rust tests, 9 browser-shell behavior tests, strict lint, generated-contract
-equality, a universal macOS package build, ad-hoc signature and checksum
-inspection, packaged native initialization, accepted message projection,
-layout and message persistence across restart, IPv6 QUIC startup, and retained
-artifact inspection all pass. The universal app contains both arm64 and
-x86_64 executables, occupies 31 MiB unpacked, and ships in an 11 MiB DMG. The
-initialized native test home occupied 84 KiB after one message and one saved
-layout change; its application state consisted of the encrypted identity vault,
-the separate QUIC credential, SQLite, and SQLite crash-safety sidecars.
+The current local verification pass is green for the changed system
+authorities: 121 Rust workspace tests, 137 frontend behavior tests, strict
+`voxelle-app` lint, generated-contract equality, IPv6 QUIC startup, retained
+artifact inspection, and the authority-specific recovery, invitation,
+governance, private-room, media, update, release-evidence, CLI, inhabitant, and
+native-host paths all pass. The current universal macOS build and its DMG
+inspection are recorded separately below so artifact-specific claims remain
+distinguishable from semantic test evidence.
+
+Historical source commit `0559f982c5088dac7ad3b55d5020396e89578e99` has one locally
+assembled `v0.1.0-beta.4` candidate at sequence 4. Its signed manifest
+authenticates the universal macOS DMG as
+`c84e6b3eaefccb89b9a0af9ba0992212da3160f14697de361fc7ce05ca9dee22`,
+the Windows x86-64 NSIS installer as
+`a513c04d7c36c73c14bda3a41b5bb9f0399bbfca987ce7d1d980c71779ce5f28`,
+and the live product generation as
+`1562ea99a4fa09edbaa1ac83645ad514b77c9cb2c920e470fac1eee26c88f68d`.
+The release verifier accepted all three exact bytes. `hdiutil verify` accepted
+the DMG; inspection of its mounted app reported `x86_64` and `arm64`, a valid
+ad-hoc signature, and hardened runtime. The cross-built Windows executable is
+COFF x86-64 with the Windows GUI subsystem, but has not run on Windows.
+An independent local readback copied only the signed manifest and its three
+named artifacts into a fresh directory and authenticated the complete set.
+Read-only secret verification also confirmed that the mode-`0600` development
+copies match the distinct trusted release and recovery-only capability roles.
+That is key-identity evidence, not offline custody, separate protection,
+restore testing, or authorization to remove either development copy.
+
+From the exact candidate DMG, an isolated native rehearsal using the documented
+test-file vault displayed only Create, signed-invite Join, and Recover; accepted
+Create through Rust, immediately projected the offline recovery-kit obligation,
+showed online state, admitted `beta4-release-bound-rehearsal`, and projected it
+in Conversation. The app exited cleanly, the read-only image detached, and the
+disposable home was removed. This is release-bound packaged-WebView and local
+admission evidence, not production Keychain, restart, invite, recovery,
+multi-peer, physical-media, or completed release-receipt evidence. The generated
+receipt template still fails distribution, Windows, field, human, and custody
+sections exactly as intended; no tag or public beta.4 release is claimed.
+
+Subsequent native human review superseded that candidate as the current source
+for release purposes. An unfamiliar person was asked to create a conversation
+space for one friend and produce what they would actually send. The first run
+completed only after guessing that invitations lived under **People** and
+scrolling below the initial panel viewport. A release-bundle revision exposed
+**Invite someone** in the ordinary header while retaining the same signed
+`space.invite.create` authority path. A second fresh-home run reached invite
+creation directly, then showed that command completion returned the People
+panel to its top, clipboard confirmation was obscured behind the panel, and raw
+JSON did not tell a friend without Voxelle how to proceed. The integrated
+revision now keeps the invite result in view, reports creation and copy success
+inside that result, and exposes the semantic **Copy Message for Friend** command
+with installer, join, paste, and privacy instructions alongside the signed
+invite; copying JSON alone remains an explicit secondary action. On a third
+fresh native run the same person confirmed that the result stayed visible,
+copy success was clear, and the copied handoff adequately explained what the
+friend should do. The signed bearer values and disposable homes were not
+retained as evidence. This is lived evidence for sender-side comprehension and
+handoff only; it does not prove recipient installation, invite admission on a
+second device, non-loopback reachability, or distribution availability.
 
 The locally natural compression point is therefore the current authority
 topology, not the smallest imaginable byte count. The remaining separations
@@ -376,11 +1395,58 @@ carry named product meaning:
   parallel representation before it removes one.
 
 Those are bounded revision or evidence questions, not unfinished local
-collapses. Workspace-wide formatting and lint are not claimed as green because
-the separate provenance-board crates have existing rustfmt drift and two new
-`manual_contains` warnings under Rust 1.96; the changed Voxelle authority crates
-are formatted and strict-lint clean. The signed `v0.1.0-beta.3` Windows first
-launch is complete; current-source native Windows build/package evidence,
-non-loopback field reachability, physical media devices, and signing-secret
-custody remain the external gates already named in the evidence horizon, not
-locally completed claims.
+collapses. Workspace-wide formatting and strict lint are green under Rust 1.96.
+The lint gate exposed positional event, message, and resident-page constructors
+that had grown past the warning-free interface bound as coordination metadata
+expanded; those boundaries now use named request records, and the complete
+workspace regression suite passes after the refactor. A current RustSec scan
+also exposed two high-severity `quick-xml` denial-of-service advisories plus
+patched `anyhow` and `rand` soundness warnings in the locked graph. Updating
+`plist`, `anyhow`, and `rand` removed every reported vulnerability and those two
+soundness warnings. Remaining audit warnings are inherited unmaintained Linux
+GTK3 dependencies, an affected Linux GLib iterator API, and yanked WebAssembly
+packages; Linux and browser protocol participation are outside the beta target
+envelope, but these warnings remain dependency-maintenance evidence rather than
+being described as a clean all-target advisory graph. The signed
+`v0.1.0-beta.3` Windows first launch is complete; native Windows build,
+packaging, and lived validation of the current source are deferred. Non-loopback
+field reachability, actual assistive-technology operation, physical media
+devices, and signing-secret custody remain external gates already named in the
+evidence horizon, not locally completed claims. The release-bound beta receipt
+requires those human external gates explicitly, so local mocks and semantic
+tests cannot silently stand in for lived evidence.
+
+Human-gate recording no longer requires hand-editing its nested receipt
+section. The release CLI copies the latest partial `voxelle-beta-evidence/v1`
+receipt, requires an explicit flag for every keyboard-only assistive and
+physical-media observation, validates the complete human section against the
+field roles, preserves other evidence sections, and refuses output overwrite.
+An end-to-end disposable receipt proves successful recording and fail-closed
+omission without claiming the synthetic values as lived evidence. The command
+records operator attestations; it does not observe or strengthen them.
+
+The three-machine field gate has the same staged recording boundary. Its
+release command requires distinct A/B/C machine, principal, and device values;
+real IPv6 listen and advertised sockets; exact per-author markers;
+bidirectional A/B diagnosis and synchronization; offline-inviter forwarding;
+retained history; and three-way message visibility. Existing field validation
+runs before the section is replaced, so loopback or otherwise invalid topology
+cannot create an output receipt. Successful disposable recording is tooling
+evidence only, not a non-loopback network claim.
+
+Distribution evidence is staged through an authenticated boundary rather than
+hand-edited. The release CLI verifies the downloaded signed manifest, derives
+its exact release tag URL, checks that the partial receipt identifies the same
+release and sequence, and requires separate observations for public readback,
+DMG verification, universal binary inspection, packaged launch, live
+activation, rollback, and current-generation reactivation. This binds the
+record to release identity without claiming the recorder performed any of
+those lived operations.
+
+Custody recording likewise authenticates only public release material. It
+derives distinct ordinary-release and recovery-only key IDs from the reviewed
+capability roles, requires separate non-secret storage descriptions plus
+separate-protection, offline, development-copy-removal, and restore-test
+attestations, and validates before staged replacement. The recorder never
+reads, moves, unmounts, or deletes signing secrets; destructive removal remains
+an explicit operator action after recoverability is established.

@@ -115,6 +115,25 @@ test("snapshot publication preserves open details and the active draft control",
   assert.equal(details.childNodes[1].childNodes[0].data, "online");
 });
 
+test("explicitly controlled details accept an authoritative close", () => {
+  const document = { activeElement: null };
+  const root = element(document, "main", "root");
+  const details = element(document, "details", "controlled");
+  details.setAttribute("open", "");
+  root.append(details);
+
+  const desired = element(document, "main", "desired-root");
+  const desiredDetails = element(document, "details", "controlled");
+  desiredDetails.setAttribute("data-sync-open", "true");
+  desired.append(desiredDetails);
+
+  reconcileChildren(root, desired);
+
+  assert.equal(root.childNodes[0], details);
+  assert.equal(details.open, false);
+  assert.equal(details.getAttribute("data-sync-open"), "true");
+});
+
 test("keyed workbench views move without losing their node identity", () => {
   const document = { activeElement: null };
   const root = element(document, "main", "root");
@@ -131,4 +150,43 @@ test("keyed workbench views move without losing their node identity", () => {
   reconcileChildren(root, desired);
 
   assert.deepEqual(root.childNodes, [second, first]);
+});
+
+test("a controlled focused input can accept an authoritative cleared value", () => {
+  const document = { activeElement: null };
+  const root = element(document, "main", "root");
+  const input = element(document, "textarea", "composer");
+  input.value = "accepted message";
+  root.append(input);
+  document.activeElement = input;
+
+  const desired = element(document, "main", "desired-root");
+  const desiredInput = element(document, "textarea", "composer");
+  desiredInput.setAttribute("data-sync-focused-value", "true");
+  desiredInput.value = "";
+  desired.append(desiredInput);
+
+  reconcileChildren(root, desired);
+
+  assert.equal(root.childNodes[0], input);
+  assert.equal(input.value, "");
+  assert.equal(document.activeElement, input);
+});
+
+test("a control with a new semantic action replaces the node carrying the old listener", () => {
+  const document = { activeElement: null };
+  const root = element(document, "main", "root");
+  const oldButton = element(document, "button", null, text(document, "Customize"));
+  oldButton.setAttribute("data-action-key", "action:Show Command Palette");
+  root.append(oldButton);
+
+  const desired = element(document, "main", "desired-root");
+  const customizeButton = element(document, "button", null, text(document, "Customize"));
+  customizeButton.setAttribute("data-action-key", "action:Customize");
+  desired.append(customizeButton);
+
+  reconcileChildren(root, desired);
+
+  assert.equal(root.childNodes[0], customizeButton);
+  assert.notEqual(root.childNodes[0], oldButton);
 });

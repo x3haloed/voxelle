@@ -15,16 +15,17 @@ use std::sync::Arc;
 use std::thread;
 use ts_rs::TS;
 use voxelle_core::{
-    accept_event, create_delegation, create_event, create_space, create_space_invite_event,
-    derive_governance_state, space_from_genesis, topo_sort_deterministic,
-    validate_room_event_semantics, validate_space_at, validate_space_invite_at, ChannelVisibility,
-    EventV1, IdentityProofV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
+    accept_event, create_delegation, create_event, create_event_with_origin,
+    create_origin_session_cert, create_space, create_space_invite_event, derive_governance_state,
+    space_from_genesis, topo_sort_deterministic, validate_room_event_semantics, validate_space_at,
+    validate_space_invite_at, ChannelVisibility, EventDraft, EventV1, FactOriginV1,
+    IdentityProofV1, OriginSurfaceProtocolV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
 };
 use voxelle_net::{
     AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
     QuicNode, RoomSync, ServedPeerRequest,
 };
-use voxelle_store::Store;
+use voxelle_store::{ResidentObservationStart, SequencedEvent, Store};
 use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
 use voxelle_update::{
     ActiveSource, AvailableProductUpdate, DownloadedProductUpdate, GenerationPointerV1,
@@ -34,7 +35,7 @@ use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret as X25519Secret};
 
 mod shell;
 
-pub use shell::{ShellError, ShellResult, ShellState};
+pub use shell::{ShellError, ShellRecovery, ShellResult, ShellState};
 
 pub const DEFAULT_ROOM_ID: &str = "room:general";
 const CALL_LIVENESS_MS: i64 = 90_000;
@@ -43,10 +44,29 @@ const KNOWN_PEERS_STATE: &str = "peers.known";
 const READ_STATE: &str = "rooms.read";
 const ROOM_KEYS_STATE: &str = "rooms.keys.encrypted";
 const UI_PREFERENCES_STATE: &str = "ui.preferences";
+const RECOVERY_HEALTH_STATE: &str = "identity.recovery_health";
+const SERVICE_BINDING_STATE: &str = "runtime.service_binding";
 const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
 const MAX_KNOWN_PEERS: usize = 128;
 const MAX_PROJECTED_MESSAGES: usize = 500;
+const MAX_COORDINATION_FRONTIER_ITEMS: usize = 256;
+const MAX_COORDINATION_SUMMARY_CHARACTERS: usize = 160;
+const MAX_COORDINATION_PARTICIPANTS: usize = 50;
+const MAX_COORDINATION_RESULT_IDS: usize = 16;
+const MAX_RESIDENT_CHANGED_THREADS_PAGE: usize = 100;
 const MAX_PROJECTED_CALL_SIGNALS: usize = 256;
+const MAX_SEARCH_QUERY_CHARACTERS: usize = 1024;
+const MAX_INVITE_EXPIRY_MINUTES: u64 = 30 * 24 * 60;
+const MIN_CONTINUATION_LEASE_MS: u64 = 60_000;
+const MAX_CONTINUATION_LEASE_MS: u64 = 7 * 24 * 60 * 60_000;
+const MAX_CONTINUATION_HEADS: usize = 16;
+const LOCAL_HOME_STATE_FILES: [&str; 5] = [
+    "identity.json",
+    "quic-cert.json",
+    "store.sqlite3",
+    "store.sqlite3-wal",
+    "store.sqlite3-shm",
+];
 
 pub fn resolve_home_root(explicit: Option<PathBuf>) -> PathBuf {
     resolve_home_root_from(
@@ -71,6 +91,26 @@ fn resolve_home_root_from(
 #[derive(Debug, Clone)]
 pub struct VoxelleHome {
     root: PathBuf,
+}
+
+/// Trusted caller provenance supplied beside, never inside, semantic command payloads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginContext {
+    fact_origin: FactOriginV1,
+}
+
+impl OriginContext {
+    pub fn new(fact_origin: FactOriginV1) -> Self {
+        Self { fact_origin }
+    }
+
+    fn fact_origin(&self) -> &FactOriginV1 {
+        &self.fact_origin
+    }
+
+    fn owner_origin_id(&self) -> &str {
+        &self.fact_origin.session_cert.session_id
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -209,16 +249,326 @@ pub struct MessageView {
     #[ts(type = "number")]
     pub created_ms: i64,
     pub author_peer_id: String,
+    pub origin: FactOriginView,
+    pub client_request_id: Option<String>,
     pub text: String,
     #[ts(type = "number | null")]
     pub edited_ms: Option<i64>,
     pub redacted: bool,
     pub mentions: Vec<String>,
+    pub addressed_origin_session_ids: Vec<String>,
     pub thread_root_event_id: Option<String>,
+    pub in_reply_to_event_id: Option<String>,
     pub reply_count: usize,
     pub pinned: bool,
     pub reactions: Vec<ReactionView>,
+    pub acknowledgements: Vec<MessageAcknowledgementView>,
+    pub continuations: Vec<MessageContinuationView>,
+    pub participant_actionability: Vec<MessageParticipantActionabilityView>,
     pub attachments: Vec<AttachmentView>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidentObservationStartView {
+    FromBeginning,
+    FromNow,
+}
+
+impl From<ResidentObservationStartView> for ResidentObservationStart {
+    fn from(value: ResidentObservationStartView) -> Self {
+        match value {
+            ResidentObservationStartView::FromBeginning => Self::FromBeginning,
+            ResidentObservationStartView::FromNow => Self::FromNow,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct OpenResidentObservationRequest {
+    pub consumer_id: String,
+    pub start: ResidentObservationStartView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ReleaseResidentObservationRequest {
+    pub consumer_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentChangedThreadsRequest {
+    pub consumer_id: String,
+    #[ts(type = "number | null")]
+    pub fact_high_water: Option<u64>,
+    #[ts(type = "number | null")]
+    pub after_fact_sequence: Option<u64>,
+    pub limit: Option<usize>,
+}
+
+struct ResidentChangedThreadsProjection<'a> {
+    consumer_id: &'a str,
+    owner_origin_id: &'a str,
+    fact_high_water: u64,
+    after_fact_sequence: Option<u64>,
+    limit: usize,
+    projection_ms: i64,
+    room_ids: &'a [String],
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CommitResidentObservationRequest {
+    pub consumer_id: String,
+    #[ts(type = "number")]
+    pub fact_high_water: u64,
+    pub commit_token: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentObservationConsumerView {
+    pub consumer_id: String,
+    pub start: ResidentObservationStartView,
+    #[ts(type = "number")]
+    pub start_fact_sequence: u64,
+    #[ts(type = "number")]
+    pub created_ms: i64,
+    #[ts(type = "number")]
+    pub updated_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentChangedThreadView {
+    pub room_id: String,
+    pub room_name: String,
+    pub room_visibility: String,
+    #[ts(type = "number")]
+    pub last_fact_sequence: u64,
+    pub root: MessageView,
+    pub replies: Vec<MessageView>,
+    pub addressed_to_owner: bool,
+    pub addressed_event_ids: Vec<String>,
+    pub owner_attention: Vec<ResidentOwnerAttentionView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentOwnerAttentionView {
+    pub target_event_id: String,
+    pub state: ResidentOwnerAttentionState,
+    pub review_required: bool,
+    pub work_actionable: bool,
+    pub reasons: Vec<ResidentOwnerAttentionReason>,
+    pub basis_event_ids: Vec<String>,
+    pub result_event_ids: Vec<String>,
+    pub uncovered_reply_event_ids: Vec<String>,
+    #[ts(type = "number | null")]
+    pub next_projection_change_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidentOwnerAttentionState {
+    Unreviewed,
+    Observed,
+    Continuing,
+    Overdue,
+    Released,
+    Declined,
+    Handled,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidentOwnerAttentionReason {
+    AddressedUnreviewed,
+    Continuing,
+    AddressedReplyNotCovered,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentChangedThreadsPageView {
+    pub consumer_id: String,
+    #[ts(type = "number")]
+    pub fact_high_water: u64,
+    pub room_ids: Vec<String>,
+    pub items: Vec<ResidentChangedThreadView>,
+    pub has_more: bool,
+    #[ts(type = "number | null")]
+    pub next_after_fact_sequence: Option<u64>,
+    pub commit_token: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentObservationCommitView {
+    pub consumer_id: String,
+    #[ts(type = "number")]
+    pub committed_fact_sequence: u64,
+    pub room_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageContinuationView {
+    pub peer_id: String,
+    pub state: MessageContinuationProjectionState,
+    #[ts(type = "number")]
+    pub asserted_ms: i64,
+    #[ts(type = "number | null")]
+    pub expires_ms: Option<i64>,
+    pub overdue: bool,
+    pub head_event_ids: Vec<String>,
+    pub heads: Vec<MessageContinuationHeadView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageContinuationHeadView {
+    pub event_id: String,
+    pub state: MessageContinuationState,
+    #[ts(type = "number")]
+    pub asserted_ms: i64,
+    #[ts(type = "number | null")]
+    pub expires_ms: Option<i64>,
+    pub origin: FactOriginView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct FactOriginView {
+    pub principal_id: String,
+    pub device_id: String,
+    pub session_id: Option<String>,
+    pub surface_protocol: Option<OriginSurfaceProtocolView>,
+    pub display_label: Option<String>,
+    pub request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum OriginSurfaceProtocolView {
+    NativeWebview,
+    Inhabitant,
+    Cli,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageParticipantActionabilityView {
+    pub peer_id: String,
+    pub state: MessageParticipantActionabilityState,
+    pub actionable: bool,
+    pub actionable_reasons: Vec<MessageParticipantActionabilityReason>,
+    pub basis_event_ids: Vec<String>,
+    pub uncovered_reply_event_ids: Vec<String>,
+    pub uncovered_reply_event_ids_omitted_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageParticipantActionabilityReason {
+    Continuing,
+    ReplyNotCoveredByDisposition,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageParticipantActionabilityState {
+    Unknown,
+    Continuing,
+    Released,
+    Declined,
+    Handled,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CoordinationFrontierView {
+    pub items: Vec<CoordinationFrontierItemView>,
+    pub matching_count: usize,
+    pub omitted_count: usize,
+    pub truncated: bool,
+    #[ts(type = "number | null")]
+    pub next_projection_change_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CoordinationFrontierItemView {
+    pub room_id: String,
+    pub room_name: String,
+    pub room_visibility: String,
+    pub target_event_id: String,
+    #[ts(type = "number")]
+    pub target_created_ms: i64,
+    pub target_author_peer_id: String,
+    pub target_redacted: bool,
+    pub target_summary: String,
+    pub target_summary_truncated: bool,
+    pub target_summary_original_chars: usize,
+    pub local_principal_mentioned: bool,
+    pub target_after_local_read_cursor: bool,
+    pub reply_count: usize,
+    #[ts(type = "number | null")]
+    pub latest_reply_ms: Option<i64>,
+    pub relevance: Vec<CoordinationFrontierRelevance>,
+    pub acknowledgements: Vec<CoordinationAcknowledgementView>,
+    pub acknowledgements_omitted_count: usize,
+    pub continuations: Vec<MessageContinuationView>,
+    pub continuations_omitted_count: usize,
+    pub local_actionability: Option<MessageParticipantActionabilityView>,
+    #[ts(type = "number")]
+    pub latest_fact_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CoordinationAcknowledgementView {
+    pub peer_id: String,
+    pub state: MessageAcknowledgementState,
+    pub result_event_ids: Vec<String>,
+    pub result_event_ids_omitted_count: usize,
+    pub result_conflict: bool,
+    #[ts(type = "number")]
+    pub acknowledged_ms: i64,
+    pub assertions: Vec<MessageAcknowledgementAssertionView>,
+    pub assertions_omitted_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CoordinationFrontierRelevance {
+    MentionWithoutLocalDisposition,
+    ReplyAfterLocalDisposition,
+    ContinuationActive,
+    ContinuationOverdue,
+    ContinuationConflict,
+    Observed,
+    Handled,
+    HandledResultAvailable,
+    Released,
+    Declined,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageContinuationProjectionState {
+    Unknown,
+    Continuing,
+    Released,
+    Declined,
+    Conflict,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageAcknowledgementView {
+    pub peer_id: String,
+    pub state: MessageAcknowledgementState,
+    pub result_event_ids: Vec<String>,
+    pub result_conflict: bool,
+    #[ts(type = "number")]
+    pub acknowledged_ms: i64,
+    pub assertions: Vec<MessageAcknowledgementAssertionView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct MessageAcknowledgementAssertionView {
+    pub event_id: String,
+    pub state: MessageAcknowledgementState,
+    pub result_event_id: Option<String>,
+    pub origin: FactOriginView,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -233,6 +583,7 @@ pub struct AttachmentView {
     pub filename: String,
     pub mime: String,
     pub sha256: String,
+    pub size_bytes: usize,
     pub data_b64: String,
 }
 
@@ -242,8 +593,12 @@ pub struct ChannelView {
     pub name: String,
     pub topic: String,
     pub visibility: String,
+    #[ts(type = "number")]
+    pub key_epoch: u64,
+    pub private_member_count: usize,
     pub selected: bool,
     pub unread_count: usize,
+    pub last_read_event_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -259,6 +614,8 @@ pub struct ProfileView {
     pub peer_id: String,
     pub display_name: String,
     pub about: String,
+    pub banned: bool,
+    pub role_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -296,6 +653,7 @@ pub struct CallSignalView {
 pub struct CallView {
     pub call_id: String,
     pub participants: Vec<String>,
+    pub participant_video: BTreeMap<String, bool>,
     pub signals: Vec<CallSignalView>,
 }
 
@@ -323,6 +681,13 @@ struct ReadStateFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct ServiceBindingFile {
+    v: u8,
+    bind: SocketAddr,
+    advertise: SocketAddr,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct EncryptedRoomKeysFile {
     v: u8,
     nonce_b64: String,
@@ -338,6 +703,8 @@ struct RoomKeysV1 {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct PrivateEventPlaintext {
     kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<FactOriginV1>,
     body: serde_json::Value,
 }
 
@@ -486,6 +853,7 @@ pub struct UiCommand {
     pub scope: UiCommandScope,
     pub shortcut: Option<String>,
     pub palette: bool,
+    pub payload_type: Option<String>,
     pub editable: bool,
     pub editing_surface: String,
 }
@@ -592,6 +960,33 @@ pub fn shell_contract_typescript() -> String {
         PeerEndpoint::decl(&cfg),
         ProfileSummary::decl(&cfg),
         MessageView::decl(&cfg),
+        MessageAcknowledgementView::decl(&cfg),
+        MessageContinuationView::decl(&cfg),
+        MessageContinuationHeadView::decl(&cfg),
+        FactOriginView::decl(&cfg),
+        OriginSurfaceProtocolView::decl(&cfg),
+        MessageContinuationProjectionState::decl(&cfg),
+        MessageParticipantActionabilityView::decl(&cfg),
+        MessageParticipantActionabilityReason::decl(&cfg),
+        MessageParticipantActionabilityState::decl(&cfg),
+        CoordinationFrontierView::decl(&cfg),
+        CoordinationFrontierItemView::decl(&cfg),
+        CoordinationFrontierRelevance::decl(&cfg),
+        CoordinationAcknowledgementView::decl(&cfg),
+        ResidentObservationStartView::decl(&cfg),
+        OpenResidentOriginRequest::decl(&cfg),
+        ResidentOriginSessionView::decl(&cfg),
+        OpenResidentObservationRequest::decl(&cfg),
+        ReleaseResidentObservationRequest::decl(&cfg),
+        ResidentChangedThreadsRequest::decl(&cfg),
+        CommitResidentObservationRequest::decl(&cfg),
+        ResidentObservationConsumerView::decl(&cfg),
+        ResidentChangedThreadView::decl(&cfg),
+        ResidentOwnerAttentionView::decl(&cfg),
+        ResidentOwnerAttentionState::decl(&cfg),
+        ResidentOwnerAttentionReason::decl(&cfg),
+        ResidentChangedThreadsPageView::decl(&cfg),
+        ResidentObservationCommitView::decl(&cfg),
         ReactionView::decl(&cfg),
         AttachmentView::decl(&cfg),
         ChannelView::decl(&cfg),
@@ -618,16 +1013,25 @@ pub fn shell_contract_typescript() -> String {
         UiRenderer::decl(&cfg),
         UiBehaviorValue::decl(&cfg),
         ShellSnapshotView::decl(&cfg),
+        SyncEvidenceView::decl(&cfg),
+        SyncEvidenceState::decl(&cfg),
         ServiceActivityItem::decl(&cfg),
         ServiceActivityLevel::decl(&cfg),
         InitHomeRequest::decl(&cfg),
         StartServiceRequest::decl(&cfg),
         SendMessageRequest::decl(&cfg),
+        AcknowledgeMessageRequest::decl(&cfg),
+        MessageAcknowledgementState::decl(&cfg),
+        MessageAcknowledgementAssertionView::decl(&cfg),
+        UpdateMessageContinuationRequest::decl(&cfg),
+        MessageContinuationState::decl(&cfg),
         SelectChannelRequest::decl(&cfg),
+        OpenMessageRequest::decl(&cfg),
         MarkReadRequest::decl(&cfg),
         CreateChannelRequest::decl(&cfg),
         RotateChannelKeyRequest::decl(&cfg),
         CallJoinRequest::decl(&cfg),
+        CallMediaRequest::decl(&cfg),
         CallSignalRequest::decl(&cfg),
         CallLeaveRequest::decl(&cfg),
         MessageTargetRequest::decl(&cfg),
@@ -641,11 +1045,16 @@ pub fn shell_contract_typescript() -> String {
         SearchMessagesRequest::decl(&cfg),
         ImportPeerRecordRequest::decl(&cfg),
         CreateSpaceInviteRequest::decl(&cfg),
+        RevokeSpaceInviteRequest::decl(&cfg),
         JoinSpaceRequest::decl(&cfg),
+        ExportRecoveryKitRequest::decl(&cfg),
+        RestoreRecoveryKitRequest::decl(&cfg),
         PeerCommandRequest::decl(&cfg),
         SetUiPreferenceRequest::decl(&cfg),
         SetWorkbenchLayoutRequest::decl(&cfg),
         InstallProductUpdateRequest::decl(&cfg),
+        InstallTrustTransitionRequest::decl(&cfg),
+        RecoveryHealthView::decl(&cfg),
         HomeScreenView::decl(&cfg),
         NetworkHealthView::decl(&cfg),
         NetworkHealthRow::decl(&cfg),
@@ -659,6 +1068,11 @@ pub fn shell_contract_typescript() -> String {
     let mut output = typescript_module(declarations);
     output.push_str("export ");
     output.push_str(&ShellError::decl(&cfg));
+    if !output.ends_with('\n') {
+        output.push('\n');
+    }
+    output.push_str("export ");
+    output.push_str(&ShellRecovery::decl(&cfg));
     if !output.ends_with('\n') {
         output.push('\n');
     }
@@ -695,9 +1109,20 @@ pub fn builtin_product_generation() -> ProductGenerationV1 {
 }
 
 fn builtin_product_component_source() -> String {
-    const MODULES: [&str; 4] = [
+    const MODULES: [&str; 15] = [
         include_str!("../../../web/src/call-media.mjs"),
+        include_str!("../../../web/src/clipboard.mjs"),
+        include_str!("../../../web/src/command-progress.mjs"),
+        include_str!("../../../web/src/connection-status.mjs"),
+        include_str!("../../../web/src/coordination-frontier.mjs"),
         include_str!("../../../web/src/dom-reconcile.mjs"),
+        include_str!("../../../web/src/error-presentation.mjs"),
+        include_str!("../../../web/src/focus-management.mjs"),
+        include_str!("../../../web/src/form-draft.mjs"),
+        include_str!("../../../web/src/invite-preview.mjs"),
+        include_str!("../../../web/src/message-composition.mjs"),
+        include_str!("../../../web/src/product-update-confirmation.mjs"),
+        include_str!("../../../web/src/signed-artifact-preview.mjs"),
         include_str!("../../../web/src/ui-ontology.mjs"),
         include_str!("../../../web/src/workbench.mjs"),
     ];
@@ -741,6 +1166,7 @@ pub struct VoxelleCommandHost {
     next_activity_id: u64,
     last_space_invite_json: Option<String>,
     selected_room_id: Option<String>,
+    selected_message_event_id: Option<String>,
     search_results: Vec<SearchResultView>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
     update_manager: UpdateManager,
@@ -748,6 +1174,28 @@ pub struct VoxelleCommandHost {
     product_generation_notice: Option<String>,
     available_product_update: Option<AvailableProductUpdate>,
     update_phase: String,
+    peer_health_failures: BTreeMap<(String, String, PeerHealthOperation), PeerHealthFailure>,
+    sync_evidence: SyncEvidenceView,
+    resident_page_progress: BTreeMap<(String, String), ResidentPageProgress>,
+    resident_commit_tokens: BTreeMap<String, (String, String, u64, Vec<String>)>,
+}
+
+#[derive(Debug, Clone)]
+struct ResidentPageProgress {
+    fact_high_water: u64,
+    next_after_fact_sequence: Option<u64>,
+    room_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PeerHealthOperation {
+    Diagnose,
+    Sync,
+}
+
+#[derive(Debug, Clone)]
+struct PeerHealthFailure {
+    label: String,
 }
 
 #[derive(Debug, Clone)]
@@ -821,13 +1269,47 @@ pub struct ShellSnapshotView {
     #[ts(type = "string")]
     pub home_root: PathBuf,
     pub home: Option<HomeScreenView>,
-    pub home_error: Option<String>,
+    pub home_error: Option<ShellError>,
     pub network_health: NetworkHealthView,
     pub ui_ontology: UiOntologyView,
     pub product_generation: ProductGenerationStatusView,
     pub product_component: ProductComponentView,
     pub service_activity: Vec<ServiceActivityItem>,
     pub search_results: Vec<SearchResultView>,
+    pub sync_evidence: SyncEvidenceView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SyncEvidenceView {
+    pub state: SyncEvidenceState,
+    #[ts(type = "number | null")]
+    pub attempted_ms: Option<i64>,
+    pub peers_attempted: usize,
+    pub peers_reached: usize,
+    pub events_received: usize,
+    pub events_pushed: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncEvidenceState {
+    Unknown,
+    PeerConfirmed,
+    Partial,
+    Unreachable,
+}
+
+impl Default for SyncEvidenceView {
+    fn default() -> Self {
+        Self {
+            state: SyncEvidenceState::Unknown,
+            attempted_ms: None,
+            peers_attempted: 0,
+            peers_reached: 0,
+            events_received: 0,
+            events_pushed: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -851,6 +1333,23 @@ pub struct InitHomeRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct OpenResidentOriginRequest {
+    pub client_instance_id: String,
+    pub secret: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ResidentOriginSessionView {
+    pub origin_id: String,
+    pub client_instance_id: String,
+    pub label: String,
+    pub device_id: String,
+    #[ts(type = "number")]
+    pub created_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct StartServiceRequest {
     #[ts(type = "string | null")]
     pub bind: Option<SocketAddr>,
@@ -865,12 +1364,60 @@ pub struct SendMessageRequest {
     #[serde(default)]
     pub mentions: Vec<String>,
     #[serde(default)]
+    pub addressed_origin_session_ids: Vec<String>,
+    #[serde(default)]
     pub thread_root_event_id: Option<String>,
+    #[serde(default)]
+    pub in_reply_to_event_id: Option<String>,
+    #[serde(default)]
+    pub client_request_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageAcknowledgementState {
+    Observed,
+    Handled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct AcknowledgeMessageRequest {
+    pub target_event_id: String,
+    pub room: Option<String>,
+    pub state: MessageAcknowledgementState,
+    pub result_event_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageContinuationState {
+    Continuing,
+    Released,
+    Declined,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct UpdateMessageContinuationRequest {
+    pub target_event_id: String,
+    pub room: Option<String>,
+    pub state: MessageContinuationState,
+    #[serde(default)]
+    #[ts(type = "number | null")]
+    pub lease_ms: Option<u64>,
+    #[serde(default)]
+    pub supersedes_event_ids: Vec<String>,
+    pub client_request_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct SelectChannelRequest {
     pub room_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct OpenMessageRequest {
+    pub room_id: String,
+    pub event_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -896,6 +1443,13 @@ pub struct RotateChannelKeyRequest {
 pub struct CallJoinRequest {
     pub room: Option<String>,
     #[serde(default)]
+    pub video: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct CallMediaRequest {
+    pub room: Option<String>,
+    pub call_id: String,
     pub video: bool,
 }
 
@@ -993,9 +1547,27 @@ pub struct CreateSpaceInviteRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RevokeSpaceInviteRequest {
+    pub invite_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct JoinSpaceRequest {
     pub space_invite_json: String,
     pub max_events: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ExportRecoveryKitRequest {
+    #[ts(type = "string")]
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RestoreRecoveryKitRequest {
+    #[ts(type = "string")]
+    pub path: PathBuf,
+    pub max_events_per_peer: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1030,16 +1602,47 @@ pub struct InstallTrustTransitionRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
 pub struct HomeScreenView {
+    pub space: SpaceSummaryView,
     pub profile: ProfileSummary,
+    pub recovery: RecoveryHealthView,
     pub runtime: RuntimeStatusView,
     pub invite: Option<InviteExchangeView>,
+    pub active_invites: Vec<ActiveInviteView>,
     pub peers: Vec<PeerListItemView>,
     pub channels: Vec<ChannelView>,
     pub roles: Vec<RoleView>,
     pub profiles: Vec<ProfileView>,
     pub notifications: Vec<NotificationView>,
+    pub coordination_frontier: CoordinationFrontierView,
     pub call: CallView,
     pub room: RoomTimelineView,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct SpaceSummaryView {
+    pub space_id: String,
+    pub name: String,
+    pub authority_peer_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct ActiveInviteView {
+    pub invite_id: String,
+    pub created_ms: i64,
+    pub expires_ms: i64,
+    pub author_peer_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+pub struct RecoveryHealthView {
+    pub kit_exported: bool,
+    pub last_exported_ms: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct RecoveryHealthV1 {
+    v: u8,
+    last_exported_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
@@ -1054,6 +1657,8 @@ pub struct NetworkHealthRow {
     pub status: NetworkHealthStatus,
     pub summary: String,
     pub primary_action: Option<String>,
+    #[ts(type = "unknown")]
+    pub primary_action_payload: Option<serde_json::Value>,
     pub details: Vec<String>,
     pub related_views: Vec<String>,
     pub related_commands: Vec<String>,
@@ -1113,8 +1718,88 @@ impl VoxelleHome {
         Self { root: root.into() }
     }
 
+    pub fn issue_origin_context(
+        &self,
+        session_capability: &[u8; 32],
+        surface_protocol: OriginSurfaceProtocolV1,
+        display_label: Option<String>,
+        request_id: String,
+    ) -> Result<OriginContext> {
+        let identity = self.load_identity()?;
+        let issued_ms = now_ms().saturating_sub(60_000);
+        let expires_ms = now_ms().saturating_add(30 * 24 * 60 * 60_000);
+        Ok(OriginContext::new(FactOriginV1 {
+            session_cert: create_origin_session_cert(
+                &identity,
+                session_capability,
+                surface_protocol,
+                display_label,
+                issued_ms,
+                expires_ms,
+            )?,
+            request_id,
+        }))
+    }
+
+    fn default_origin_context(&self) -> Result<OriginContext> {
+        let identity = self.load_identity()?;
+        let mut digest = Sha256::new();
+        digest.update(b"voxelle-default-origin-v1\0");
+        digest.update(identity.device.secret_key_b64().as_bytes());
+        let capability: [u8; 32] = digest.finalize().into();
+        self.issue_origin_context(
+            &capability,
+            OriginSurfaceProtocolV1::Cli,
+            Some("Native/CLI session".to_string()),
+            format!(
+                "native-{}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 18]>())
+            ),
+        )
+    }
+
     fn path(&self, name: &str) -> PathBuf {
         self.root.join(name)
+    }
+
+    fn has_local_home_state(&self) -> bool {
+        LOCAL_HOME_STATE_FILES
+            .iter()
+            .any(|name| fs::symlink_metadata(self.path(name)).is_ok())
+    }
+
+    fn archive_unusable_local_state(&self) -> Result<PathBuf> {
+        if self.home_screen_view(None).is_ok() {
+            anyhow::bail!("a healthy local home cannot be archived for recovery");
+        }
+        if !self.has_local_home_state() {
+            anyhow::bail!("there is no local home state to archive");
+        }
+        ensure_private_dir(&self.root)?;
+        let suffix =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 6]>());
+        let archive = self
+            .root
+            .join(format!(".unusable-home-{}-{suffix}", now_ms()));
+        ensure_private_dir(&archive)?;
+        let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
+        for name in LOCAL_HOME_STATE_FILES {
+            let source = self.path(name);
+            if fs::symlink_metadata(&source).is_err() {
+                continue;
+            }
+            let destination = archive.join(name);
+            if let Err(error) = fs::rename(&source, &destination) {
+                for (original, archived) in moved.iter().rev() {
+                    let _ = fs::rename(archived, original);
+                }
+                let _ = fs::remove_dir(&archive);
+                return Err(anyhow::Error::new(error))
+                    .with_context(|| format!("archive unusable local state file {name}"));
+            }
+            moved.push((source, destination));
+        }
+        Ok(archive)
     }
 
     pub fn init(&self, default_room: impl Into<String>) -> Result<ProfileSummary> {
@@ -1167,6 +1852,10 @@ impl VoxelleHome {
         })
     }
 
+    pub fn current_device_id(&self) -> Result<String> {
+        Ok(self.load_identity()?.device.id)
+    }
+
     pub fn home_screen_view(&self, online: Option<&OnlineHome>) -> Result<HomeScreenView> {
         self.home_screen_view_for_room(online, None)
     }
@@ -1175,6 +1864,30 @@ impl VoxelleHome {
         &self,
         online: Option<&OnlineHome>,
         selected_room: Option<&str>,
+    ) -> Result<HomeScreenView> {
+        self.home_screen_view_for_room_and_message(online, selected_room, None)
+    }
+
+    pub fn home_screen_view_for_room_and_message(
+        &self,
+        online: Option<&OnlineHome>,
+        selected_room: Option<&str>,
+        selected_message_event_id: Option<&str>,
+    ) -> Result<HomeScreenView> {
+        self.home_screen_view_for_room_message_at(
+            online,
+            selected_room,
+            selected_message_event_id,
+            now_ms(),
+        )
+    }
+
+    fn home_screen_view_for_room_message_at(
+        &self,
+        online: Option<&OnlineHome>,
+        selected_room: Option<&str>,
+        selected_message_event_id: Option<&str>,
+        projection_ms: i64,
     ) -> Result<HomeScreenView> {
         let config = self.load_config()?;
         let invite = online
@@ -1189,12 +1902,32 @@ impl VoxelleHome {
             .find(|channel| channel.selected)
             .map(|channel| channel.room_id.clone())
             .unwrap_or_else(|| config.space.default_room_id.clone());
-        let mut projected_messages = self.read_messages(Some(&selected_room))?;
-        retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
+        let mut projected_messages =
+            project_messages(self.decrypted_room_events(&selected_room)?, projection_ms);
+        let coordination_frontier = self.coordination_frontier(&channels, projection_ms)?;
+        if let Some(event_id) = selected_message_event_id {
+            if let Some(index) = projected_messages
+                .iter()
+                .position(|message| message.event_id == event_id)
+            {
+                retain_window_around_index(&mut projected_messages, index, MAX_PROJECTED_MESSAGES);
+            } else {
+                retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
+            }
+        } else {
+            retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
+        }
         Ok(HomeScreenView {
+            space: SpaceSummaryView {
+                space_id: config.space.space_id.clone(),
+                name: config.space.name.clone(),
+                authority_peer_id: config.space.authority_peer_id.clone(),
+            },
             profile: self.profile_summary()?,
+            recovery: self.recovery_health()?,
             runtime,
             invite,
+            active_invites: self.active_invites()?,
             peers: self
                 .known_peers()?
                 .into_iter()
@@ -1204,11 +1937,29 @@ impl VoxelleHome {
             roles: self.roles()?,
             profiles: self.profiles()?,
             notifications: self.notifications()?,
+            coordination_frontier,
             call: self.call_view(&selected_room)?,
             room: RoomTimelineView {
                 room_id: selected_room.clone(),
                 messages: projected_messages,
             },
+        })
+    }
+
+    pub fn recovery_health(&self) -> Result<RecoveryHealthView> {
+        let persisted = self.local_state::<RecoveryHealthV1>(RECOVERY_HEALTH_STATE)?;
+        if let Some(health) = persisted {
+            if health.v != 1 {
+                anyhow::bail!("unsupported recovery health version {}", health.v);
+            }
+            return Ok(RecoveryHealthView {
+                kit_exported: true,
+                last_exported_ms: Some(health.last_exported_ms),
+            });
+        }
+        Ok(RecoveryHealthView {
+            kit_exported: false,
+            last_exported_ms: None,
         })
     }
 
@@ -1476,24 +2227,93 @@ impl VoxelleHome {
     }
 
     pub fn send_message(&self, text: &str, room: Option<&str>) -> Result<EventV1> {
-        self.send_message_with_metadata(text, room, Vec::new(), None)
+        self.send_message_with_metadata(SendMessageRequest {
+            text: text.to_string(),
+            room: room.map(str::to_string),
+            mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
+            thread_root_event_id: None,
+            in_reply_to_event_id: None,
+            client_request_id: None,
+        })
     }
 
-    pub fn send_message_with_metadata(
+    pub fn send_message_with_metadata(&self, request: SendMessageRequest) -> Result<EventV1> {
+        let origin = self.default_origin_context()?;
+        self.send_message_with_metadata_and_origin(request, Some(&origin))
+    }
+
+    pub fn send_message_with_metadata_and_origin(
         &self,
-        text: &str,
-        room: Option<&str>,
-        mentions: Vec<String>,
-        thread_root_event_id: Option<String>,
+        mut request: SendMessageRequest,
+        origin: Option<&OriginContext>,
     ) -> Result<EventV1> {
-        self.create_room_event(
-            room,
+        request.addressed_origin_session_ids.sort();
+        request.addressed_origin_session_ids.dedup();
+        if request.addressed_origin_session_ids.len() > 16 {
+            anyhow::bail!("a message may address at most 16 origin sessions");
+        }
+        self.create_room_event_with_origin(
+            request.room.as_deref(),
             "MSG_POST",
             serde_json::json!({
-                "text": text,
-                "mentions": mentions,
-                "thread_root_event_id": thread_root_event_id,
+                "text": request.text,
+                "mentions": request.mentions,
+                "addressed_origin_session_ids": request.addressed_origin_session_ids,
+                "thread_root_event_id": request.thread_root_event_id,
+                "in_reply_to_event_id": request.in_reply_to_event_id,
+                "client_request_id": request.client_request_id,
             }),
+            origin,
+        )
+    }
+
+    pub fn acknowledge_message(&self, request: &AcknowledgeMessageRequest) -> Result<EventV1> {
+        let origin = self.default_origin_context()?;
+        self.acknowledge_message_with_origin(request, Some(&origin))
+    }
+
+    pub fn acknowledge_message_with_origin(
+        &self,
+        request: &AcknowledgeMessageRequest,
+        origin: Option<&OriginContext>,
+    ) -> Result<EventV1> {
+        self.create_room_event_with_origin(
+            request.room.as_deref(),
+            "MSG_ACK",
+            serde_json::json!({
+                "target_event_id": request.target_event_id,
+                "state": request.state,
+                "result_event_id": request.result_event_id,
+            }),
+            origin,
+        )
+    }
+
+    pub fn update_message_continuation(
+        &self,
+        request: &UpdateMessageContinuationRequest,
+    ) -> Result<EventV1> {
+        let origin = self.default_origin_context()?;
+        self.update_message_continuation_with_origin(request, Some(&origin))
+    }
+
+    pub fn update_message_continuation_with_origin(
+        &self,
+        request: &UpdateMessageContinuationRequest,
+        origin: Option<&OriginContext>,
+    ) -> Result<EventV1> {
+        self.create_room_event_with_origin(
+            request.room.as_deref(),
+            "MSG_CONTINUATION",
+            serde_json::json!({
+                "target_event_id": request.target_event_id,
+                "state": request.state,
+                "lease_ms": request.lease_ms,
+                "supersedes_event_ids": request.supersedes_event_ids,
+                "client_request_id": request.client_request_id,
+            }),
+            origin,
         )
     }
 
@@ -1739,10 +2559,73 @@ impl VoxelleHome {
         )
     }
 
+    pub fn revoke_space_invite(&self, request: &RevokeSpaceInviteRequest) -> Result<EventV1> {
+        if !self
+            .active_invites()?
+            .iter()
+            .any(|invite| invite.invite_id == request.invite_id)
+        {
+            anyhow::bail!("invite is not currently active");
+        }
+        self.create_governance_event(
+            "INVITE_REVOKE",
+            serde_json::json!({ "invite_id": request.invite_id }),
+        )
+    }
+
     pub fn read_messages(&self, room: Option<&str>) -> Result<Vec<MessageView>> {
         let config = self.load_config()?;
         let room = room.unwrap_or(&config.space.default_room_id);
-        Ok(project_messages(self.decrypted_room_events(room)?))
+        Ok(project_messages(
+            self.decrypted_room_events(room)?,
+            now_ms(),
+        ))
+    }
+
+    fn message_for_client_request(
+        &self,
+        room: Option<&str>,
+        client_request_id: &str,
+    ) -> Result<Option<EventV1>> {
+        let config = self.load_config()?;
+        let identity = self.load_identity()?;
+        let room_id = room.unwrap_or(&config.space.default_room_id);
+        Ok(self
+            .decrypted_room_events(room_id)?
+            .into_iter()
+            .find(|event| {
+                event.kind == "MSG_POST"
+                    && event.author_peer_id == identity.peer_id
+                    && event.delegation.device_id == identity.device.id
+                    && event
+                        .body
+                        .get("client_request_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(client_request_id)
+            }))
+    }
+
+    fn continuation_for_client_request(
+        &self,
+        room: Option<&str>,
+        client_request_id: &str,
+    ) -> Result<Option<EventV1>> {
+        let config = self.load_config()?;
+        let identity = self.load_identity()?;
+        let room_id = room.unwrap_or(&config.space.default_room_id);
+        Ok(self
+            .decrypted_room_events(room_id)?
+            .into_iter()
+            .find(|event| {
+                event.kind == "MSG_CONTINUATION"
+                    && event.author_peer_id == identity.peer_id
+                    && event.delegation.device_id == identity.device.id
+                    && event
+                        .body
+                        .get("client_request_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(client_request_id)
+            }))
     }
 
     pub fn channels(&self, selected_room: Option<&str>) -> Result<Vec<ChannelView>> {
@@ -1778,8 +2661,14 @@ impl VoxelleHome {
                     ChannelVisibility::Private => "private",
                 }
                 .to_string(),
+                key_epoch: channel.key_epoch,
+                private_member_count: channel.private_members.len(),
                 selected: selected_room.unwrap_or(&config.space.default_room_id) == channel.room_id,
                 unread_count: unread_counts.get(&channel.room_id).copied().unwrap_or(0),
+                last_read_event_id: read_state
+                    .last_read_event_ids
+                    .get(&channel.room_id)
+                    .cloned(),
             })
             .collect();
         channels.sort_by(|left, right| {
@@ -1788,6 +2677,141 @@ impl VoxelleHome {
                 .then(left.room_id.cmp(&right.room_id))
         });
         Ok(channels)
+    }
+
+    pub fn open_resident_observation(
+        &self,
+        request: &OpenResidentObservationRequest,
+        origin: &OriginContext,
+    ) -> Result<ResidentObservationConsumerView> {
+        let consumer = self.open_store()?.open_resident_observation_consumer(
+            &request.consumer_id,
+            origin.owner_origin_id(),
+            request.start.into(),
+            now_ms(),
+        )?;
+        Ok(ResidentObservationConsumerView {
+            consumer_id: consumer.consumer_id,
+            start: match consumer.start {
+                ResidentObservationStart::FromBeginning => {
+                    ResidentObservationStartView::FromBeginning
+                }
+                ResidentObservationStart::FromNow => ResidentObservationStartView::FromNow,
+            },
+            start_fact_sequence: consumer.start_fact_sequence,
+            created_ms: consumer.created_ms,
+            updated_ms: consumer.updated_ms,
+        })
+    }
+
+    fn resident_changed_threads(
+        &self,
+        request: ResidentChangedThreadsProjection<'_>,
+    ) -> Result<ResidentChangedThreadsPageView> {
+        let ResidentChangedThreadsProjection {
+            consumer_id,
+            owner_origin_id,
+            fact_high_water,
+            after_fact_sequence,
+            limit,
+            projection_ms,
+            room_ids,
+        } = request;
+        let store = self.open_store()?;
+        if store
+            .resident_observation_consumer(consumer_id, owner_origin_id)?
+            .is_none()
+        {
+            anyhow::bail!("resident observation consumer is not open");
+        }
+        let current_high_water = store.local_fact_high_water()?;
+        if fact_high_water > current_high_water {
+            anyhow::bail!("resident fact high water is not yet available");
+        }
+        let after = after_fact_sequence.unwrap_or(0);
+        if after > fact_high_water {
+            anyhow::bail!("resident page cursor exceeds fact high water");
+        }
+        let limit = limit.clamp(1, MAX_RESIDENT_CHANGED_THREADS_PAGE);
+        let mut items = Vec::new();
+        let channels: BTreeMap<String, ChannelView> = self
+            .channels(None)?
+            .into_iter()
+            .map(|channel| (channel.room_id.clone(), channel))
+            .collect();
+        for room_id in room_ids {
+            let Some(channel) = channels.get(room_id) else {
+                continue;
+            };
+            let committed = store.effective_resident_observation_sequence(
+                consumer_id,
+                owner_origin_id,
+                room_id,
+            )?;
+            let events = self.decrypted_room_events_with_sequence(room_id)?;
+            items.extend(project_resident_changed_threads(
+                events,
+                projection_ms,
+                committed,
+                fact_high_water,
+                channel,
+                owner_origin_id,
+            ));
+        }
+        items.sort_by(|left, right| {
+            left.last_fact_sequence
+                .cmp(&right.last_fact_sequence)
+                .then(left.room_id.cmp(&right.room_id))
+                .then(left.root.event_id.cmp(&right.root.event_id))
+        });
+        items.retain(|item| item.last_fact_sequence > after);
+        let has_more = items.len() > limit;
+        items.truncate(limit);
+        let next_after_fact_sequence = has_more
+            .then(|| items.last().map(|item| item.last_fact_sequence))
+            .flatten();
+        Ok(ResidentChangedThreadsPageView {
+            consumer_id: consumer_id.to_string(),
+            fact_high_water,
+            room_ids: room_ids.to_vec(),
+            items,
+            has_more,
+            next_after_fact_sequence,
+            commit_token: None,
+        })
+    }
+
+    pub fn commit_resident_observation(
+        &self,
+        consumer_id: &str,
+        owner_origin_id: &str,
+        fact_high_water: u64,
+        room_ids: &[String],
+    ) -> Result<ResidentObservationCommitView> {
+        let store = self.open_store()?;
+        for room_id in room_ids {
+            store.commit_resident_observation(
+                consumer_id,
+                owner_origin_id,
+                room_id,
+                fact_high_water,
+                now_ms(),
+            )?;
+        }
+        Ok(ResidentObservationCommitView {
+            consumer_id: consumer_id.to_string(),
+            committed_fact_sequence: fact_high_water,
+            room_ids: room_ids.to_vec(),
+        })
+    }
+
+    pub fn release_resident_observation(
+        &self,
+        consumer_id: &str,
+        owner_origin_id: &str,
+    ) -> Result<bool> {
+        self.open_store()?
+            .release_resident_observation_consumer(consumer_id, owner_origin_id)
     }
 
     pub fn mark_read(&self, room: Option<&str>) -> Result<()> {
@@ -1815,6 +2839,33 @@ impl VoxelleHome {
             read_state.last_read_event_ids.remove(room_id);
         }
         self.put_local_state(READ_STATE, &read_state)
+    }
+
+    pub fn mark_read_through(&self, room: Option<&str>, target_event_id: &str) -> Result<()> {
+        let config = self.load_config()?;
+        let room_id = room.unwrap_or(&config.space.default_room_id);
+        let mut events = self.decrypted_room_events(room_id)?;
+        events.sort_by(|left, right| {
+            left.created_ms
+                .cmp(&right.created_ms)
+                .then(left.event_id.cmp(&right.event_id))
+        });
+        let target_index = events
+            .iter()
+            .position(|event| event.event_id == target_event_id)
+            .ok_or_else(|| anyhow::anyhow!("read target is unknown or inaccessible"))?;
+        let mut read_state = self.read_state()?;
+        let current_index = read_state
+            .last_read_event_ids
+            .get(room_id)
+            .and_then(|event_id| events.iter().position(|event| &event.event_id == event_id));
+        if current_index.is_none_or(|current_index| target_index > current_index) {
+            read_state
+                .last_read_event_ids
+                .insert(room_id.to_string(), target_event_id.to_string());
+            self.put_local_state(READ_STATE, &read_state)?;
+        }
+        Ok(())
     }
 
     pub fn notifications(&self) -> Result<Vec<NotificationView>> {
@@ -1866,6 +2917,279 @@ impl VoxelleHome {
         Ok(notifications)
     }
 
+    fn coordination_frontier(
+        &self,
+        channels: &[ChannelView],
+        projection_ms: i64,
+    ) -> Result<CoordinationFrontierView> {
+        let local_peer_id = self.load_identity()?.peer_id;
+        let read_state = self.read_state()?;
+        let mut items = Vec::new();
+        let mut next_projection_change_ms: Option<i64> = None;
+
+        for channel in channels {
+            let mut events = self.decrypted_room_events(&channel.room_id)?;
+            events.sort_by(|left, right| {
+                left.created_ms
+                    .cmp(&right.created_ms)
+                    .then(left.event_id.cmp(&right.event_id))
+            });
+            let unread_target_ids: BTreeSet<String> = events
+                .iter()
+                .skip(unread_start(
+                    &events,
+                    read_state.last_read_event_ids.get(&channel.room_id),
+                ))
+                .filter(|event| matches!(event.kind.as_str(), "MSG_POST" | "ATTACHMENT_ADD"))
+                .map(|event| event.event_id.clone())
+                .collect();
+
+            let projected_messages = project_messages(events, projection_ms);
+            let latest_reply_by_root: BTreeMap<String, i64> = projected_messages
+                .iter()
+                .flat_map(|message| {
+                    let mut targets = Vec::new();
+                    if let Some(root) = &message.thread_root_event_id {
+                        targets.push((root.clone(), message.created_ms));
+                    }
+                    if let Some(direct_parent) = &message.in_reply_to_event_id {
+                        if message.thread_root_event_id.as_ref() != Some(direct_parent) {
+                            targets.push((direct_parent.clone(), message.created_ms));
+                        }
+                    }
+                    targets
+                })
+                .fold(BTreeMap::new(), |mut latest, (root, created_ms)| {
+                    latest
+                        .entry(root)
+                        .and_modify(|current| *current = (*current).max(created_ms))
+                        .or_insert(created_ms);
+                    latest
+                });
+            for message in projected_messages {
+                let local_principal_mentioned = message
+                    .mentions
+                    .iter()
+                    .any(|peer_id| peer_id == &local_peer_id);
+                let local_acknowledgement = message
+                    .acknowledgements
+                    .iter()
+                    .find(|acknowledgement| acknowledgement.peer_id == local_peer_id);
+                let local_continuation = message
+                    .continuations
+                    .iter()
+                    .find(|continuation| continuation.peer_id == local_peer_id);
+                let local_actionability = message
+                    .participant_actionability
+                    .iter()
+                    .find(|actionability| actionability.peer_id == local_peer_id)
+                    .cloned();
+                let locally_relevant = local_principal_mentioned
+                    || local_acknowledgement.is_some()
+                    || local_continuation.is_some()
+                    || (message.author_peer_id == local_peer_id
+                        && (!message.acknowledgements.is_empty()
+                            || !message.continuations.is_empty()));
+                if !locally_relevant {
+                    continue;
+                }
+
+                let mut relevance = Vec::new();
+                if local_principal_mentioned
+                    && local_acknowledgement.is_none()
+                    && local_continuation.is_none()
+                {
+                    relevance.push(CoordinationFrontierRelevance::MentionWithoutLocalDisposition);
+                }
+                let latest_reply_ms = latest_reply_by_root.get(&message.event_id).copied();
+                if local_actionability.as_ref().is_some_and(|actionability| {
+                    actionability.actionable_reasons.contains(
+                        &MessageParticipantActionabilityReason::ReplyNotCoveredByDisposition,
+                    )
+                }) {
+                    relevance.push(CoordinationFrontierRelevance::ReplyAfterLocalDisposition);
+                }
+                for acknowledgement in &message.acknowledgements {
+                    match acknowledgement.state {
+                        MessageAcknowledgementState::Observed => {
+                            relevance.push(CoordinationFrontierRelevance::Observed);
+                        }
+                        MessageAcknowledgementState::Handled => {
+                            relevance.push(CoordinationFrontierRelevance::Handled);
+                            if !acknowledgement.result_event_ids.is_empty() {
+                                relevance
+                                    .push(CoordinationFrontierRelevance::HandledResultAvailable);
+                            }
+                        }
+                    }
+                }
+                for actionability in &message.participant_actionability {
+                    match actionability.state {
+                        MessageParticipantActionabilityState::Continuing => {
+                            relevance.push(CoordinationFrontierRelevance::ContinuationActive);
+                            if let Some(expires_ms) = message
+                                .continuations
+                                .iter()
+                                .find(|continuation| continuation.peer_id == actionability.peer_id)
+                                .and_then(|continuation| continuation.expires_ms)
+                            {
+                                next_projection_change_ms = Some(
+                                    next_projection_change_ms
+                                        .map_or(expires_ms, |current| current.min(expires_ms)),
+                                );
+                            }
+                        }
+                        MessageParticipantActionabilityState::Unknown => {
+                            if message.continuations.iter().any(|continuation| {
+                                continuation.peer_id == actionability.peer_id
+                                    && continuation.overdue
+                            }) {
+                                relevance.push(CoordinationFrontierRelevance::ContinuationOverdue);
+                            }
+                        }
+                        MessageParticipantActionabilityState::Conflict => {
+                            relevance.push(CoordinationFrontierRelevance::ContinuationConflict);
+                        }
+                        MessageParticipantActionabilityState::Released => {
+                            relevance.push(CoordinationFrontierRelevance::Released);
+                        }
+                        MessageParticipantActionabilityState::Declined => {
+                            relevance.push(CoordinationFrontierRelevance::Declined);
+                        }
+                        MessageParticipantActionabilityState::Handled => {}
+                    }
+                }
+                relevance.sort();
+                relevance.dedup();
+                if relevance.is_empty() {
+                    continue;
+                }
+
+                let latest_fact_ms = message
+                    .acknowledgements
+                    .iter()
+                    .map(|acknowledgement| acknowledgement.acknowledged_ms)
+                    .chain(
+                        message
+                            .continuations
+                            .iter()
+                            .map(|continuation| continuation.asserted_ms),
+                    )
+                    .chain(latest_reply_ms)
+                    .fold(message.created_ms, i64::max);
+                let target_summary_original_chars = message.text.chars().count();
+                let target_summary_truncated = !message.redacted
+                    && target_summary_original_chars > MAX_COORDINATION_SUMMARY_CHARACTERS;
+                let mut target_summary: String = if message.redacted {
+                    "Message removed".to_string()
+                } else if message.text.is_empty() && !message.attachments.is_empty() {
+                    "Attachment".to_string()
+                } else {
+                    message
+                        .text
+                        .chars()
+                        .take(MAX_COORDINATION_SUMMARY_CHARACTERS)
+                        .collect()
+                };
+                if target_summary_truncated {
+                    target_summary.push('…');
+                }
+                let acknowledgement_count = message.acknowledgements.len();
+                let acknowledgements = message
+                    .acknowledgements
+                    .into_iter()
+                    .take(MAX_COORDINATION_PARTICIPANTS)
+                    .map(|acknowledgement| {
+                        let result_event_id_count = acknowledgement.result_event_ids.len();
+                        CoordinationAcknowledgementView {
+                            peer_id: acknowledgement.peer_id,
+                            state: acknowledgement.state,
+                            result_event_ids: acknowledgement
+                                .result_event_ids
+                                .into_iter()
+                                .take(MAX_COORDINATION_RESULT_IDS)
+                                .collect(),
+                            result_event_ids_omitted_count: result_event_id_count
+                                .saturating_sub(MAX_COORDINATION_RESULT_IDS),
+                            result_conflict: acknowledgement.result_conflict,
+                            acknowledged_ms: acknowledgement.acknowledged_ms,
+                            assertions_omitted_count: acknowledgement
+                                .assertions
+                                .len()
+                                .saturating_sub(MAX_COORDINATION_RESULT_IDS),
+                            assertions: acknowledgement
+                                .assertions
+                                .into_iter()
+                                .take(MAX_COORDINATION_RESULT_IDS)
+                                .collect(),
+                        }
+                    })
+                    .collect();
+                let continuation_count = message.continuations.len();
+                let continuations = message
+                    .continuations
+                    .into_iter()
+                    .take(MAX_COORDINATION_PARTICIPANTS)
+                    .collect();
+                items.push(CoordinationFrontierItemView {
+                    room_id: channel.room_id.clone(),
+                    room_name: channel.name.clone(),
+                    room_visibility: channel.visibility.clone(),
+                    target_event_id: message.event_id.clone(),
+                    target_created_ms: message.created_ms,
+                    target_author_peer_id: message.author_peer_id.clone(),
+                    target_redacted: message.redacted,
+                    target_summary,
+                    target_summary_truncated,
+                    target_summary_original_chars,
+                    local_principal_mentioned,
+                    target_after_local_read_cursor: unread_target_ids.contains(&message.event_id),
+                    reply_count: message.reply_count,
+                    latest_reply_ms,
+                    relevance,
+                    acknowledgements,
+                    acknowledgements_omitted_count: acknowledgement_count
+                        .saturating_sub(MAX_COORDINATION_PARTICIPANTS),
+                    continuations,
+                    continuations_omitted_count: continuation_count
+                        .saturating_sub(MAX_COORDINATION_PARTICIPANTS),
+                    local_actionability,
+                    latest_fact_ms,
+                });
+            }
+        }
+
+        Ok(finalize_coordination_frontier(
+            items,
+            next_projection_change_ms,
+        ))
+    }
+
+    pub fn active_invites(&self) -> Result<Vec<ActiveInviteView>> {
+        let config = self.load_config()?;
+        let store = self.open_store()?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let state = derive_governance_state(&governance, &config.room_context(), now_ms());
+        let mut invites: Vec<ActiveInviteView> = governance
+            .into_iter()
+            .filter_map(|event| {
+                let expires_ms = state.active_invites.get(&event.event_id)?;
+                Some(ActiveInviteView {
+                    invite_id: event.event_id,
+                    created_ms: event.created_ms,
+                    expires_ms: *expires_ms,
+                    author_peer_id: event.author_peer_id,
+                })
+            })
+            .collect();
+        invites.sort_by(|left, right| {
+            left.expires_ms
+                .cmp(&right.expires_ms)
+                .then(left.invite_id.cmp(&right.invite_id))
+        });
+        Ok(invites)
+    }
+
     pub fn roles(&self) -> Result<Vec<RoleView>> {
         let config = self.load_config()?;
         let store = self.open_store()?;
@@ -1898,16 +3222,31 @@ impl VoxelleHome {
         let store = self.open_store()?;
         let governance = store.room_events(&config.space.governance_room_id)?;
         let state = derive_governance_state(&governance, &config.room_context(), now_ms());
-        let mut profiles: BTreeMap<String, ProfileView> = state
+        let principals: BTreeSet<String> = state
             .members
             .iter()
+            .chain(state.banned.iter())
+            .cloned()
+            .collect();
+        let mut profiles: BTreeMap<String, ProfileView> = principals
+            .iter()
             .map(|peer_id| {
+                let mut role_ids: Vec<String> = state
+                    .member_roles
+                    .get(peer_id)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+                    .collect();
+                role_ids.sort();
                 (
                     peer_id.clone(),
                     ProfileView {
                         peer_id: peer_id.clone(),
                         display_name: short_peer_label(peer_id),
                         about: String::new(),
+                        banned: state.banned.contains(peer_id),
+                        role_ids,
                     },
                 )
             })
@@ -1919,8 +3258,7 @@ impl VoxelleHome {
                     .room_events(&channel.room_id)?
                     .into_iter()
                     .filter(|event| {
-                        event.kind == "PROFILE_UPDATE"
-                            && state.members.contains(&event.author_peer_id)
+                        event.kind == "PROFILE_UPDATE" && principals.contains(&event.author_peer_id)
                     }),
             );
         }
@@ -1930,24 +3268,20 @@ impl VoxelleHome {
                 .then(left.event_id.cmp(&right.event_id))
         });
         for event in updates {
-            profiles.insert(
-                event.author_peer_id.clone(),
-                ProfileView {
-                    peer_id: event.author_peer_id,
-                    display_name: event
-                        .body
-                        .get("display_name")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("Member")
-                        .to_string(),
-                    about: event
-                        .body
-                        .get("about")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("")
-                        .to_string(),
-                },
-            );
+            if let Some(profile) = profiles.get_mut(&event.author_peer_id) {
+                profile.display_name = event
+                    .body
+                    .get("display_name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Member")
+                    .to_string();
+                profile.about = event
+                    .body
+                    .get("about")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+            }
         }
         Ok(profiles.into_values().collect())
     }
@@ -1956,10 +3290,17 @@ impl VoxelleHome {
         &self,
         request: &SearchMessagesRequest,
     ) -> Result<Vec<SearchResultView>> {
-        let query = request.query.trim().to_lowercase();
+        let query = request.query.trim();
         if query.is_empty() {
             anyhow::bail!("search query is empty");
         }
+        if query.chars().count() > MAX_SEARCH_QUERY_CHARACTERS {
+            anyhow::bail!("search query exceeds {MAX_SEARCH_QUERY_CHARACTERS} characters");
+        }
+        if query.chars().any(char::is_control) {
+            anyhow::bail!("search query contains control characters");
+        }
+        let query = query.to_lowercase();
         let terms: Vec<&str> = query.split_whitespace().collect();
         let rooms: Vec<String> = if let Some(room) = &request.room {
             vec![room.clone()]
@@ -2007,6 +3348,7 @@ impl VoxelleHome {
         });
         let now = now_ms();
         let mut last_seen = BTreeMap::new();
+        let mut participant_video = BTreeMap::new();
         for event in &events {
             if event
                 .body
@@ -2016,10 +3358,24 @@ impl VoxelleHome {
             {
                 continue;
             }
-            if matches!(event.kind.as_str(), "CALL_JOIN" | "CALL_HEARTBEAT") {
+            if event.kind == "CALL_JOIN" {
                 last_seen.insert(event.author_peer_id.clone(), event.created_ms);
+                if let Some(video) = event.body.get("video").and_then(serde_json::Value::as_bool) {
+                    participant_video.insert(event.author_peer_id.clone(), video);
+                }
+            } else if event.kind == "CALL_HEARTBEAT" {
+                last_seen.insert(event.author_peer_id.clone(), event.created_ms);
+            } else if event.kind == "CALL_MEDIA" {
+                if last_seen.contains_key(&event.author_peer_id) {
+                    if let Some(video) =
+                        event.body.get("video").and_then(serde_json::Value::as_bool)
+                    {
+                        participant_video.insert(event.author_peer_id.clone(), video);
+                    }
+                }
             } else if event.kind == "CALL_LEAVE" {
                 last_seen.remove(&event.author_peer_id);
+                participant_video.remove(&event.author_peer_id);
             }
         }
         let participants: Vec<String> = last_seen
@@ -2028,6 +3384,7 @@ impl VoxelleHome {
             .map(|(peer_id, _)| peer_id)
             .take(4)
             .collect();
+        participant_video.retain(|peer_id, _| participants.contains(peer_id));
         let signals = if participants.is_empty() {
             Vec::new()
         } else {
@@ -2075,6 +3432,7 @@ impl VoxelleHome {
         Ok(CallView {
             call_id,
             participants,
+            participant_video,
             signals,
         })
     }
@@ -2119,6 +3477,14 @@ impl VoxelleHome {
         )
     }
 
+    pub fn update_call_media(&self, request: &CallMediaRequest) -> Result<EventV1> {
+        self.create_room_event(
+            request.room.as_deref(),
+            "CALL_MEDIA",
+            serde_json::json!({ "call_id": request.call_id, "video": request.video }),
+        )
+    }
+
     pub fn heartbeat_call(&self, request: &CallLeaveRequest) -> Result<EventV1> {
         self.create_room_event(
             request.room.as_deref(),
@@ -2141,18 +3507,38 @@ impl VoxelleHome {
         kind: &str,
         body: serde_json::Value,
     ) -> Result<EventV1> {
+        self.create_room_event_with_origin(room, kind, body, None)
+    }
+
+    fn create_room_event_with_origin(
+        &self,
+        room: Option<&str>,
+        kind: &str,
+        body: serde_json::Value,
+        origin: Option<&OriginContext>,
+    ) -> Result<EventV1> {
         let identity = self.load_identity()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
         let room = room.unwrap_or(&config.space.default_room_id);
         let created_ms = now_ms();
-        let parents = store.room_heads(room)?;
+        let mut parents = store.room_heads(room)?;
+        if let Some(in_reply_to_event_id) = body
+            .get("in_reply_to_event_id")
+            .and_then(serde_json::Value::as_str)
+        {
+            if !parents.iter().any(|parent| parent == in_reply_to_event_id) {
+                parents.push(in_reply_to_event_id.to_string());
+                parents.sort();
+                parents.dedup();
+            }
+        }
         let delegation_scope = if kind.starts_with("CALL_") {
             "room:call"
         } else {
             "room:post"
         };
-        let semantic_event = create_event(
+        let semantic_event = create_event_with_origin(
             &identity,
             create_delegation(
                 &identity,
@@ -2160,11 +3546,14 @@ impl VoxelleHome {
                 created_ms + 30 * 24 * 60 * 60_000,
                 vec![delegation_scope.to_string()],
             )?,
-            room,
-            created_ms,
-            kind,
-            parents.clone(),
-            body.clone(),
+            EventDraft {
+                room_id: room.to_string(),
+                created_ms,
+                kind: kind.to_string(),
+                parents: parents.clone(),
+                origin: origin.map(|origin| origin.fact_origin().clone()),
+                body: body.clone(),
+            },
         )?;
         let governance = store.room_events(&config.space.governance_room_id)?;
         let state = derive_governance_state(&governance, &config.room_context(), created_ms);
@@ -2189,6 +3578,7 @@ impl VoxelleHome {
             rand::rngs::OsRng.fill_bytes(&mut nonce);
             let plaintext = serde_json::to_vec(&PrivateEventPlaintext {
                 kind: kind.to_string(),
+                origin: semantic_event.origin.clone(),
                 body,
             })?;
             let aad = private_event_aad(room, channel.key_epoch, &identity.peer_id);
@@ -2228,6 +3618,14 @@ impl VoxelleHome {
     }
 
     fn decrypted_room_events(&self, room_id: &str) -> Result<Vec<EventV1>> {
+        Ok(self
+            .decrypted_room_events_with_sequence(room_id)?
+            .into_iter()
+            .map(|event| event.event)
+            .collect())
+    }
+
+    fn decrypted_room_events_with_sequence(&self, room_id: &str) -> Result<Vec<SequencedEvent>> {
         self.import_private_room_keys()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
@@ -2237,18 +3635,21 @@ impl VoxelleHome {
             .channels
             .get(room_id)
             .is_some_and(|channel| channel.visibility == ChannelVisibility::Private);
-        let mut raw_events = store.room_events(room_id)?;
+        let mut raw_events = store.room_events_with_sequence(room_id)?;
         raw_events.sort_by(|left, right| {
-            left.created_ms
-                .cmp(&right.created_ms)
-                .then(left.event_id.cmp(&right.event_id))
+            left.event
+                .created_ms
+                .cmp(&right.event.created_ms)
+                .then(left.event.event_id.cmp(&right.event.event_id))
         });
         if !private {
             return Ok(raw_events);
         }
         let mut accepted = governance;
         let mut decrypted = Vec::new();
-        for raw in raw_events {
+        for sequenced in raw_events {
+            let sequence = sequenced.local_fact_sequence;
+            let raw = sequenced.event;
             if raw.kind != "ROOM_ENCRYPTED" {
                 continue;
             }
@@ -2302,6 +3703,7 @@ impl VoxelleHome {
             };
             let mut event = raw;
             event.kind = inner.kind;
+            event.origin = inner.origin;
             event.body = inner.body;
             if validate_room_event_semantics(
                 &event,
@@ -2312,7 +3714,10 @@ impl VoxelleHome {
             .is_ok()
             {
                 accepted.push(event.clone());
-                decrypted.push(event);
+                decrypted.push(SequencedEvent {
+                    local_fact_sequence: sequence,
+                    event,
+                });
             }
         }
         Ok(decrypted)
@@ -2757,7 +4162,7 @@ impl VoxelleHome {
                 .collect::<serde_json::Result<Vec<_>>>()?,
             expires_ms,
             now_ms(),
-            store.room_heads(&config.space.governance_room_id)?,
+            vec![config.space.genesis.event_id.clone()],
         )?;
         let governance = store.room_events(&config.space.governance_room_id)?;
         let accepted = accept_event(&event, &governance, &config.room_context(), now_ms())
@@ -2798,6 +4203,8 @@ impl VoxelleHome {
         }
         validate_space_invite_at(&invite.space, &invite.invite_event, now_ms())?;
         let peers = invite.bootstrap_peers()?;
+        self.preflight_space_invite(invite, &peers, max_events_per_peer)
+            .await?;
 
         ensure_private_dir(&self.root)?;
         let identity = PeerIdentity::generate_at(now_ms())?;
@@ -2865,6 +4272,61 @@ impl VoxelleHome {
             events_pushed,
             peer_errors,
         })
+    }
+
+    async fn preflight_space_invite(
+        &self,
+        invite: &SpaceInviteFileV1,
+        peers: &[PeerRecord],
+        max_events_per_peer: usize,
+    ) -> Result<()> {
+        let config = HomeConfig {
+            space: invite.space.clone(),
+        };
+        let mut store = Store::open_in_memory()?;
+        self.ensure_space_genesis(&store, &config)?;
+        let governance = store.room_events(&config.space.governance_room_id)?;
+        let accepted_invite = accept_event(
+            &invite.invite_event,
+            &governance,
+            &config.room_context(),
+            now_ms(),
+        )
+        .map_err(|error| anyhow::anyhow!("space invite rejected locally: {error:?}"))?;
+        store.insert_accepted_event(accepted_invite, now_ms())?;
+
+        let node = QuicNode::bind_ipv6_loopback(PeerIdentity::generate_at(now_ms())?)?;
+        let context = config.room_context();
+        for peer in peers {
+            let result = node
+                .sync_room_once(
+                    &mut store,
+                    RoomSync {
+                        remote: &peer.endpoint,
+                        room_id: &config.space.governance_room_id,
+                        context: &context,
+                        now_ms: now_ms(),
+                        limits: SyncLimits {
+                            max_events_per_batch: max_events_per_peer,
+                        },
+                    },
+                )
+                .await;
+            if result.is_err() {
+                continue;
+            }
+            let governance = store.room_events(&config.space.governance_room_id)?;
+            let state = derive_governance_state(&governance, &context, now_ms());
+            if !state
+                .active_invites
+                .contains_key(&invite.invite_event.event_id)
+            {
+                anyhow::bail!(
+                    "space invite was revoked by a reachable ordinary peer; no local home was created"
+                );
+            }
+        }
+        Ok(())
     }
 
     pub fn ui_ontology(&self) -> Result<UiOntologyView> {
@@ -3205,6 +4667,75 @@ fn unread_start(events: &[EventV1], last_read_event_id: Option<&String>) -> usiz
         .map_or(0, |index| index + 1)
 }
 
+fn coordination_frontier_bucket(item: &CoordinationFrontierItemView) -> u8 {
+    if item.relevance.iter().any(|relevance| {
+        matches!(
+            relevance,
+            CoordinationFrontierRelevance::MentionWithoutLocalDisposition
+                | CoordinationFrontierRelevance::ReplyAfterLocalDisposition
+                | CoordinationFrontierRelevance::ContinuationActive
+                | CoordinationFrontierRelevance::ContinuationOverdue
+                | CoordinationFrontierRelevance::ContinuationConflict
+        )
+    }) {
+        0
+    } else {
+        1
+    }
+}
+
+fn fact_origin_view(event: &EventV1) -> FactOriginView {
+    let (session_id, surface_protocol, display_label, request_id) = event
+        .origin
+        .as_ref()
+        .map(|origin| {
+            (
+                Some(origin.session_cert.session_id.clone()),
+                Some(match origin.session_cert.surface_protocol {
+                    OriginSurfaceProtocolV1::NativeWebview => {
+                        OriginSurfaceProtocolView::NativeWebview
+                    }
+                    OriginSurfaceProtocolV1::Inhabitant => OriginSurfaceProtocolView::Inhabitant,
+                    OriginSurfaceProtocolV1::Cli => OriginSurfaceProtocolView::Cli,
+                }),
+                origin.session_cert.display_label.clone(),
+                Some(origin.request_id.clone()),
+            )
+        })
+        .unwrap_or((None, None, None, None));
+    FactOriginView {
+        principal_id: event.author_peer_id.clone(),
+        device_id: event.author_device_id.clone(),
+        session_id,
+        surface_protocol,
+        display_label,
+        request_id,
+    }
+}
+
+fn finalize_coordination_frontier(
+    mut items: Vec<CoordinationFrontierItemView>,
+    next_projection_change_ms: Option<i64>,
+) -> CoordinationFrontierView {
+    items.sort_by(|left, right| {
+        coordination_frontier_bucket(left)
+            .cmp(&coordination_frontier_bucket(right))
+            .then(right.latest_fact_ms.cmp(&left.latest_fact_ms))
+            .then(left.room_id.cmp(&right.room_id))
+            .then(left.target_event_id.cmp(&right.target_event_id))
+    });
+    let matching_count = items.len();
+    items.truncate(MAX_COORDINATION_FRONTIER_ITEMS);
+    let omitted_count = matching_count.saturating_sub(items.len());
+    CoordinationFrontierView {
+        items,
+        matching_count,
+        omitted_count,
+        truncated: omitted_count > 0,
+        next_projection_change_ms,
+    }
+}
+
 fn unread_count(
     mut events: Vec<EventV1>,
     last_read_event_id: Option<&String>,
@@ -3226,7 +4757,310 @@ fn unread_count(
         .count()
 }
 
-fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
+fn project_resident_changed_threads(
+    events: Vec<SequencedEvent>,
+    projection_ms: i64,
+    committed_fact_sequence: u64,
+    fact_high_water: u64,
+    channel: &ChannelView,
+    owner_origin_id: &str,
+) -> Vec<ResidentChangedThreadView> {
+    let events: Vec<SequencedEvent> = events
+        .into_iter()
+        .filter(|event| event.local_fact_sequence <= fact_high_water)
+        .collect();
+    let messages = project_messages(
+        events.iter().map(|event| event.event.clone()).collect(),
+        projection_ms,
+    );
+    let by_id: BTreeMap<String, MessageView> = messages
+        .iter()
+        .cloned()
+        .map(|message| (message.event_id.clone(), message))
+        .collect();
+    let post_sequence_by_id = events
+        .iter()
+        .filter(|sequenced| sequenced.event.kind == "MSG_POST")
+        .map(|sequenced| {
+            (
+                sequenced.event.event_id.clone(),
+                sequenced.local_fact_sequence,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let root_for_message: BTreeMap<String, String> = messages
+        .iter()
+        .map(|message| {
+            (
+                message.event_id.clone(),
+                message
+                    .thread_root_event_id
+                    .clone()
+                    .unwrap_or_else(|| message.event_id.clone()),
+            )
+        })
+        .collect();
+    let mut last_fact_by_root = BTreeMap::<String, u64>::new();
+    for sequenced in &events {
+        let event = &sequenced.event;
+        let root = match event.kind.as_str() {
+            "MSG_POST" => event
+                .body
+                .get("thread_root_event_id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&event.event_id)
+                .to_string(),
+            "ATTACHMENT_ADD" => event.event_id.clone(),
+            _ => event
+                .body
+                .get("target_event_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|target| root_for_message.get(target))
+                .cloned()
+                .unwrap_or_default(),
+        };
+        if !root.is_empty() {
+            last_fact_by_root
+                .entry(root)
+                .and_modify(|current| *current = (*current).max(sequenced.local_fact_sequence))
+                .or_insert(sequenced.local_fact_sequence);
+        }
+    }
+    let mut replies_by_root = BTreeMap::<String, Vec<MessageView>>::new();
+    for message in messages {
+        if let Some(root) = &message.thread_root_event_id {
+            replies_by_root
+                .entry(root.clone())
+                .or_default()
+                .push(message);
+        }
+    }
+    last_fact_by_root
+        .into_iter()
+        .filter_map(|(root_event_id, last_fact_sequence)| {
+            let root = by_id.get(&root_event_id)?.clone();
+            let mut replies = replies_by_root.remove(&root_event_id).unwrap_or_default();
+            replies.sort_by(|left, right| {
+                left.created_ms
+                    .cmp(&right.created_ms)
+                    .then(left.event_id.cmp(&right.event_id))
+            });
+            let mut addressed_event_ids = std::iter::once(&root)
+                .chain(replies.iter())
+                .filter(|message| {
+                    post_sequence_by_id
+                        .get(&message.event_id)
+                        .is_some_and(|sequence| *sequence > committed_fact_sequence)
+                        && message
+                            .addressed_origin_session_ids
+                            .iter()
+                            .any(|session_id| session_id == owner_origin_id)
+                })
+                .map(|message| message.event_id.clone())
+                .take(16)
+                .collect::<Vec<_>>();
+            addressed_event_ids.sort();
+            let addressed_to_owner = !addressed_event_ids.is_empty();
+            let owner_attention = project_resident_owner_attention(
+                &events,
+                &root,
+                &replies,
+                owner_origin_id,
+                committed_fact_sequence,
+                projection_ms,
+            );
+            if last_fact_sequence <= committed_fact_sequence && owner_attention.is_empty() {
+                return None;
+            }
+            Some(ResidentChangedThreadView {
+                room_id: channel.room_id.clone(),
+                room_name: channel.name.clone(),
+                room_visibility: channel.visibility.clone(),
+                last_fact_sequence,
+                root,
+                replies,
+                addressed_to_owner,
+                addressed_event_ids,
+                owner_attention,
+            })
+        })
+        .collect()
+}
+
+fn project_resident_owner_attention(
+    sequenced_events: &[SequencedEvent],
+    root: &MessageView,
+    replies: &[MessageView],
+    owner_origin_id: &str,
+    committed_fact_sequence: u64,
+    projection_ms: i64,
+) -> Vec<ResidentOwnerAttentionView> {
+    let events = sequenced_events
+        .iter()
+        .map(|sequenced| &sequenced.event)
+        .collect::<Vec<_>>();
+    let by_id = events
+        .iter()
+        .map(|event| (event.event_id.clone(), *event))
+        .collect::<BTreeMap<_, _>>();
+    let sequence_by_id = sequenced_events
+        .iter()
+        .map(|sequenced| {
+            (
+                sequenced.event.event_id.clone(),
+                sequenced.local_fact_sequence,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let messages = std::iter::once(root).chain(replies.iter());
+    let mut attention = Vec::new();
+
+    for target in messages {
+        let initially_addressed = target
+            .addressed_origin_session_ids
+            .iter()
+            .any(|session_id| session_id == owner_origin_id);
+        let owner_dispositions = events
+            .iter()
+            .copied()
+            .filter(|event| {
+                matches!(event.kind.as_str(), "MSG_ACK" | "MSG_CONTINUATION")
+                    && string_event_body(event, "target_event_id") == target.event_id
+                    && event
+                        .origin
+                        .as_ref()
+                        .is_some_and(|origin| origin.session_cert.session_id == owner_origin_id)
+            })
+            .collect::<Vec<_>>();
+        if !initially_addressed && owner_dispositions.is_empty() {
+            continue;
+        }
+        let disposition_heads = causal_maxima(owner_dispositions.clone(), &by_id);
+        let mut uncovered_reply_event_ids = events
+            .iter()
+            .copied()
+            .filter(|reply| {
+                reply.kind == "MSG_POST"
+                    && string_event_body(reply, "in_reply_to_event_id") == target.event_id
+                    && reply
+                        .body
+                        .get("addressed_origin_session_ids")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|ids| {
+                            ids.iter().any(|id| id.as_str() == Some(owner_origin_id))
+                        })
+                    && reply
+                        .origin
+                        .as_ref()
+                        .is_none_or(|origin| origin.session_cert.session_id != owner_origin_id)
+                    && !disposition_heads
+                        .iter()
+                        .all(|head| event_is_ancestor(&reply.event_id, head, &by_id))
+            })
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>();
+        uncovered_reply_event_ids.sort();
+        uncovered_reply_event_ids.dedup();
+
+        let mut basis_event_ids = disposition_heads
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect::<Vec<_>>();
+        if initially_addressed {
+            basis_event_ids.push(target.event_id.clone());
+        }
+        basis_event_ids.extend(uncovered_reply_event_ids.iter().cloned());
+        basis_event_ids.sort();
+        basis_event_ids.dedup();
+        let mut result_event_ids = disposition_heads
+            .iter()
+            .filter(|event| event.kind == "MSG_ACK")
+            .filter_map(|event| {
+                event
+                    .body
+                    .get("result_event_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .collect::<Vec<_>>();
+        result_event_ids.sort();
+        result_event_ids.dedup();
+
+        let (state, next_projection_change_ms) = if disposition_heads.len() > 1 {
+            (ResidentOwnerAttentionState::Conflict, None)
+        } else if let Some(head) = disposition_heads.first() {
+            match head.kind.as_str() {
+                "MSG_ACK" => match string_event_body(head, "state").as_str() {
+                    "handled" => (ResidentOwnerAttentionState::Handled, None),
+                    _ => (ResidentOwnerAttentionState::Observed, None),
+                },
+                _ => match string_event_body(head, "state").as_str() {
+                    "continuing" => {
+                        let expiry = head
+                            .body
+                            .get("lease_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|lease| i64::try_from(lease).ok())
+                            .and_then(|lease| head.created_ms.checked_add(lease));
+                        if expiry.is_some_and(|expiry| projection_ms < expiry) {
+                            (ResidentOwnerAttentionState::Continuing, expiry)
+                        } else {
+                            (ResidentOwnerAttentionState::Overdue, None)
+                        }
+                    }
+                    "released" => (ResidentOwnerAttentionState::Released, None),
+                    _ => (ResidentOwnerAttentionState::Declined, None),
+                },
+            }
+        } else {
+            (ResidentOwnerAttentionState::Unreviewed, None)
+        };
+        let changed_after_cursor = basis_event_ids.iter().any(|event_id| {
+            sequence_by_id
+                .get(event_id)
+                .is_some_and(|sequence| *sequence > committed_fact_sequence)
+        });
+        if !changed_after_cursor
+            && !matches!(
+                state,
+                ResidentOwnerAttentionState::Continuing | ResidentOwnerAttentionState::Overdue
+            )
+        {
+            continue;
+        }
+        let mut reasons = Vec::new();
+        if state == ResidentOwnerAttentionState::Unreviewed && initially_addressed {
+            reasons.push(ResidentOwnerAttentionReason::AddressedUnreviewed);
+        }
+        if state == ResidentOwnerAttentionState::Continuing {
+            reasons.push(ResidentOwnerAttentionReason::Continuing);
+        }
+        if !uncovered_reply_event_ids.is_empty() && !disposition_heads.is_empty() {
+            reasons.push(ResidentOwnerAttentionReason::AddressedReplyNotCovered);
+        }
+        attention.push(ResidentOwnerAttentionView {
+            target_event_id: target.event_id.clone(),
+            state,
+            review_required: reasons.iter().any(|reason| {
+                matches!(
+                    reason,
+                    ResidentOwnerAttentionReason::AddressedUnreviewed
+                        | ResidentOwnerAttentionReason::AddressedReplyNotCovered
+                )
+            }),
+            work_actionable: reasons.contains(&ResidentOwnerAttentionReason::Continuing),
+            reasons,
+            basis_event_ids,
+            result_event_ids,
+            uncovered_reply_event_ids,
+            next_projection_change_ms,
+        });
+    }
+    attention.sort_by(|left, right| left.target_event_id.cmp(&right.target_event_id));
+    attention
+}
+
+fn project_messages(mut events: Vec<EventV1>, projection_ms: i64) -> Vec<MessageView> {
     events.sort_by(|left, right| {
         left.created_ms
             .cmp(&right.created_ms)
@@ -3241,6 +5075,10 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
     let mut order = Vec::new();
     let mut reactions: BTreeMap<String, BTreeMap<String, std::collections::BTreeSet<String>>> =
         BTreeMap::new();
+    let mut acknowledgements: BTreeMap<String, BTreeMap<String, MessageAcknowledgementView>> =
+        BTreeMap::new();
+    let mut handled_events: BTreeMap<String, BTreeMap<String, Vec<EventV1>>> = BTreeMap::new();
+    let mut continuations: BTreeMap<String, BTreeMap<String, Vec<EventV1>>> = BTreeMap::new();
     for event in &events {
         match event.kind.as_str() {
             "MSG_POST" => {
@@ -3253,6 +5091,12 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                         event_id: event.event_id.clone(),
                         created_ms: event.created_ms,
                         author_peer_id: event.author_peer_id.clone(),
+                        origin: fact_origin_view(event),
+                        client_request_id: event
+                            .body
+                            .get("client_request_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned),
                         text: if redacted {
                             "Message removed".to_string()
                         } else {
@@ -3274,14 +5118,31 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                             .filter_map(serde_json::Value::as_str)
                             .map(ToOwned::to_owned)
                             .collect(),
+                        addressed_origin_session_ids: event
+                            .body
+                            .get("addressed_origin_session_ids")
+                            .and_then(serde_json::Value::as_array)
+                            .into_iter()
+                            .flatten()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned)
+                            .collect(),
                         thread_root_event_id: event
                             .body
                             .get("thread_root_event_id")
                             .and_then(serde_json::Value::as_str)
                             .map(ToOwned::to_owned),
+                        in_reply_to_event_id: event
+                            .body
+                            .get("in_reply_to_event_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned),
                         reply_count: 0,
                         pinned: false,
                         reactions: Vec::new(),
+                        acknowledgements: Vec::new(),
+                        continuations: Vec::new(),
+                        participant_actionability: Vec::new(),
                         attachments: Vec::new(),
                     },
                 );
@@ -3295,20 +5156,33 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                         event_id: event.event_id.clone(),
                         created_ms: event.created_ms,
                         author_peer_id: event.author_peer_id.clone(),
+                        origin: fact_origin_view(event),
+                        client_request_id: None,
                         text: String::new(),
                         edited_ms: None,
                         redacted: false,
                         mentions: Vec::new(),
+                        addressed_origin_session_ids: Vec::new(),
                         thread_root_event_id: None,
+                        in_reply_to_event_id: None,
                         reply_count: 0,
                         pinned: false,
                         reactions: Vec::new(),
-                        attachments: vec![AttachmentView {
-                            event_id: event.event_id.clone(),
-                            filename: string_event_body(event, "filename"),
-                            mime: string_event_body(event, "mime"),
-                            sha256: string_event_body(event, "sha256"),
-                            data_b64: string_event_body(event, "data_b64"),
+                        acknowledgements: Vec::new(),
+                        continuations: Vec::new(),
+                        participant_actionability: Vec::new(),
+                        attachments: vec![{
+                            let data_b64 = string_event_body(event, "data_b64");
+                            AttachmentView {
+                                event_id: event.event_id.clone(),
+                                filename: string_event_body(event, "filename"),
+                                mime: string_event_body(event, "mime"),
+                                sha256: string_event_body(event, "sha256"),
+                                size_bytes: base64::engine::general_purpose::STANDARD
+                                    .decode(&data_b64)
+                                    .map_or(0, |bytes| bytes.len()),
+                                data_b64,
+                            }
                         }],
                     },
                 );
@@ -3358,15 +5232,91 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                     peers.remove(&event.author_peer_id);
                 }
             }
+            "MSG_ACK" => {
+                let target = string_event_body(event, "target_event_id");
+                let state = match string_event_body(event, "state").as_str() {
+                    "handled" => MessageAcknowledgementState::Handled,
+                    _ => MessageAcknowledgementState::Observed,
+                };
+                let by_peer = acknowledgements.entry(target.clone()).or_default();
+                let acknowledgement =
+                    by_peer
+                        .entry(event.author_peer_id.clone())
+                        .or_insert_with(|| MessageAcknowledgementView {
+                            peer_id: event.author_peer_id.clone(),
+                            state,
+                            result_event_ids: Vec::new(),
+                            result_conflict: false,
+                            acknowledged_ms: event.created_ms,
+                            assertions: Vec::new(),
+                        });
+                acknowledgement
+                    .assertions
+                    .push(MessageAcknowledgementAssertionView {
+                        event_id: event.event_id.clone(),
+                        state,
+                        result_event_id: event
+                            .body
+                            .get("result_event_id")
+                            .and_then(serde_json::Value::as_str)
+                            .map(ToOwned::to_owned),
+                        origin: fact_origin_view(event),
+                    });
+                acknowledgement
+                    .assertions
+                    .sort_by(|left, right| left.event_id.cmp(&right.event_id));
+                if state == MessageAcknowledgementState::Handled {
+                    handled_events
+                        .entry(target.clone())
+                        .or_default()
+                        .entry(event.author_peer_id.clone())
+                        .or_default()
+                        .push(event.clone());
+                    acknowledgement.state = state;
+                    acknowledgement.acknowledged_ms = event.created_ms;
+                    if let Some(result_event_id) = event
+                        .body
+                        .get("result_event_id")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        acknowledgement
+                            .result_event_ids
+                            .push(result_event_id.to_string());
+                        acknowledgement.result_event_ids.sort();
+                        acknowledgement.result_event_ids.dedup();
+                        acknowledgement.result_conflict =
+                            acknowledgement.result_event_ids.len() > 1;
+                    }
+                }
+            }
+            "MSG_CONTINUATION" => {
+                continuations
+                    .entry(string_event_body(event, "target_event_id"))
+                    .or_default()
+                    .entry(event.author_peer_id.clone())
+                    .or_default()
+                    .push(event.clone());
+            }
             _ => {}
         }
     }
-    let roots: Vec<String> = messages
+    let reply_targets: Vec<String> = messages
         .values()
-        .filter_map(|message| message.thread_root_event_id.clone())
+        .flat_map(|message| {
+            let mut targets = Vec::new();
+            if let Some(root) = &message.thread_root_event_id {
+                targets.push(root.clone());
+            }
+            if let Some(direct_parent) = &message.in_reply_to_event_id {
+                if message.thread_root_event_id.as_ref() != Some(direct_parent) {
+                    targets.push(direct_parent.clone());
+                }
+            }
+            targets
+        })
         .collect();
-    for root in roots {
-        if let Some(message) = messages.get_mut(&root) {
+    for target in reply_targets {
+        if let Some(message) = messages.get_mut(&target) {
             message.reply_count += 1;
         }
     }
@@ -3382,10 +5332,410 @@ fn project_messages(mut events: Vec<EventV1>) -> Vec<MessageView> {
                 .collect();
         }
     }
+    for (target, by_peer) in acknowledgements {
+        if let Some(message) = messages.get_mut(&target) {
+            message.acknowledgements = by_peer.into_values().collect();
+        }
+    }
+    for (target, by_peer) in continuations {
+        let Some(message) = messages.get_mut(&target) else {
+            continue;
+        };
+        for (peer_id, facts) in by_peer {
+            let superseded: BTreeSet<String> = facts
+                .iter()
+                .flat_map(|event| {
+                    event
+                        .body
+                        .get("supersedes_event_ids")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(serde_json::Value::as_str)
+                        .map(ToOwned::to_owned)
+                })
+                .collect();
+            let mut heads: Vec<&EventV1> = facts
+                .iter()
+                .filter(|event| !superseded.contains(&event.event_id))
+                .collect();
+            heads.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+            if heads.is_empty() {
+                continue;
+            }
+            let head_event_ids = heads.iter().map(|event| event.event_id.clone()).collect();
+            let head_views = heads
+                .iter()
+                .map(|event| {
+                    let state = match string_event_body(event, "state").as_str() {
+                        "continuing" => MessageContinuationState::Continuing,
+                        "released" => MessageContinuationState::Released,
+                        _ => MessageContinuationState::Declined,
+                    };
+                    let expires_ms = if state == MessageContinuationState::Continuing {
+                        event
+                            .body
+                            .get("lease_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|lease_ms| i64::try_from(lease_ms).ok())
+                            .and_then(|lease_ms| event.created_ms.checked_add(lease_ms))
+                    } else {
+                        None
+                    };
+                    MessageContinuationHeadView {
+                        event_id: event.event_id.clone(),
+                        state,
+                        asserted_ms: event.created_ms,
+                        expires_ms,
+                        origin: fact_origin_view(event),
+                    }
+                })
+                .collect();
+            let asserted_ms = heads
+                .iter()
+                .map(|event| event.created_ms)
+                .max()
+                .unwrap_or_default();
+            let (state, expires_ms, overdue) = if heads.len() > 1 {
+                (MessageContinuationProjectionState::Conflict, None, false)
+            } else {
+                let head = heads[0];
+                match string_event_body(head, "state").as_str() {
+                    "continuing" => {
+                        let expires_ms = head
+                            .body
+                            .get("lease_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|lease_ms| i64::try_from(lease_ms).ok())
+                            .and_then(|lease_ms| head.created_ms.checked_add(lease_ms));
+                        let overdue =
+                            expires_ms.is_none_or(|expires_ms| projection_ms >= expires_ms);
+                        (
+                            if overdue {
+                                MessageContinuationProjectionState::Unknown
+                            } else {
+                                MessageContinuationProjectionState::Continuing
+                            },
+                            expires_ms,
+                            overdue,
+                        )
+                    }
+                    "released" => (MessageContinuationProjectionState::Released, None, false),
+                    _ => (MessageContinuationProjectionState::Declined, None, false),
+                }
+            };
+            message.continuations.push(MessageContinuationView {
+                peer_id,
+                state,
+                asserted_ms,
+                expires_ms,
+                overdue,
+                head_event_ids,
+                heads: head_views,
+            });
+        }
+        message
+            .continuations
+            .sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+    }
+    let by_id: BTreeMap<String, &EventV1> = events
+        .iter()
+        .map(|event| (event.event_id.clone(), event))
+        .collect();
+    let mut actionability_targets: BTreeSet<String> = handled_events.keys().cloned().collect();
+    actionability_targets.extend(
+        events
+            .iter()
+            .filter(|event| matches!(event.kind.as_str(), "MSG_ACK" | "MSG_CONTINUATION"))
+            .map(|event| string_event_body(event, "target_event_id")),
+    );
+    for target in actionability_targets {
+        let Some(message) = messages.get_mut(&target) else {
+            continue;
+        };
+        let mut peers: BTreeSet<String> = handled_events
+            .get(&target)
+            .into_iter()
+            .flat_map(|by_peer| by_peer.keys().cloned())
+            .collect();
+        peers.extend(
+            message
+                .continuations
+                .iter()
+                .map(|view| view.peer_id.clone()),
+        );
+        peers.extend(
+            events
+                .iter()
+                .filter(|event| {
+                    event.kind == "MSG_ACK" && string_event_body(event, "target_event_id") == target
+                })
+                .map(|event| event.author_peer_id.clone()),
+        );
+        for peer_id in peers {
+            let mut candidates: Vec<&EventV1> = handled_events
+                .get(&target)
+                .and_then(|by_peer| by_peer.get(&peer_id))
+                .into_iter()
+                .flatten()
+                .collect();
+            let continuation_head_ids: BTreeSet<String> = message
+                .continuations
+                .iter()
+                .find(|view| view.peer_id == peer_id)
+                .into_iter()
+                .flat_map(|view| view.head_event_ids.iter().cloned())
+                .collect();
+            candidates.extend(
+                continuation_head_ids
+                    .iter()
+                    .filter_map(|event_id| by_id.get(event_id).copied()),
+            );
+            let maxima = causal_maxima(candidates, &by_id);
+            let mut basis_event_ids = maxima
+                .iter()
+                .map(|event| event.event_id.clone())
+                .collect::<Vec<_>>();
+            let handled_count = maxima
+                .iter()
+                .filter(|event| event.kind == "MSG_ACK")
+                .count();
+            let continuation_maxima = maxima
+                .iter()
+                .filter(|event| event.kind == "MSG_CONTINUATION")
+                .copied()
+                .collect::<Vec<_>>();
+            let state = if handled_count > 0 && continuation_maxima.is_empty() {
+                MessageParticipantActionabilityState::Handled
+            } else if handled_count > 0 || continuation_maxima.len() > 1 {
+                MessageParticipantActionabilityState::Conflict
+            } else if let Some(head) = continuation_maxima.first() {
+                match string_event_body(head, "state").as_str() {
+                    "continuing" => {
+                        let expires_ms = head
+                            .body
+                            .get("lease_ms")
+                            .and_then(serde_json::Value::as_u64)
+                            .and_then(|lease_ms| i64::try_from(lease_ms).ok())
+                            .and_then(|lease_ms| head.created_ms.checked_add(lease_ms));
+                        if expires_ms.is_some_and(|expires_ms| projection_ms < expires_ms) {
+                            MessageParticipantActionabilityState::Continuing
+                        } else {
+                            MessageParticipantActionabilityState::Unknown
+                        }
+                    }
+                    "released" => MessageParticipantActionabilityState::Released,
+                    "declined" => MessageParticipantActionabilityState::Declined,
+                    _ => MessageParticipantActionabilityState::Unknown,
+                }
+            } else {
+                MessageParticipantActionabilityState::Unknown
+            };
+            let mut disposition_candidates = events
+                .iter()
+                .filter(|event| {
+                    event.kind == "MSG_ACK"
+                        && event.author_peer_id == peer_id
+                        && string_event_body(event, "target_event_id") == target
+                })
+                .collect::<Vec<_>>();
+            disposition_candidates.extend(
+                continuation_head_ids
+                    .iter()
+                    .filter_map(|event_id| by_id.get(event_id).copied()),
+            );
+            let disposition_heads = causal_maxima(disposition_candidates, &by_id);
+            basis_event_ids.extend(disposition_heads.iter().map(|event| event.event_id.clone()));
+            let uncovered_reply_event_ids =
+                uncovered_reply_event_ids(&events, &target, &peer_id, &by_id, &disposition_heads);
+            let uncovered_reply_event_ids_omitted_count = uncovered_reply_event_ids
+                .len()
+                .saturating_sub(MAX_COORDINATION_RESULT_IDS);
+            let uncovered_reply_event_ids = uncovered_reply_event_ids
+                .into_iter()
+                .take(MAX_COORDINATION_RESULT_IDS)
+                .collect::<Vec<_>>();
+            basis_event_ids.extend(uncovered_reply_event_ids.iter().cloned());
+            basis_event_ids.sort();
+            basis_event_ids.dedup();
+            let mut actionable_reasons = Vec::new();
+            if state == MessageParticipantActionabilityState::Continuing {
+                actionable_reasons.push(MessageParticipantActionabilityReason::Continuing);
+            }
+            if !uncovered_reply_event_ids.is_empty() || uncovered_reply_event_ids_omitted_count > 0
+            {
+                actionable_reasons
+                    .push(MessageParticipantActionabilityReason::ReplyNotCoveredByDisposition);
+            }
+            message
+                .participant_actionability
+                .push(MessageParticipantActionabilityView {
+                    peer_id,
+                    state,
+                    actionable: !actionable_reasons.is_empty(),
+                    actionable_reasons,
+                    basis_event_ids,
+                    uncovered_reply_event_ids,
+                    uncovered_reply_event_ids_omitted_count,
+                });
+        }
+        message
+            .participant_actionability
+            .sort_by(|left, right| left.peer_id.cmp(&right.peer_id));
+    }
     order
         .into_iter()
         .filter_map(|event_id| messages.remove(&event_id))
         .collect()
+}
+
+fn causal_maxima<'a>(
+    mut candidates: Vec<&'a EventV1>,
+    by_id: &BTreeMap<String, &'a EventV1>,
+) -> Vec<&'a EventV1> {
+    candidates.sort_by(|left, right| left.event_id.cmp(&right.event_id));
+    candidates.dedup_by(|left, right| left.event_id == right.event_id);
+    candidates
+        .iter()
+        .copied()
+        .filter(|candidate| {
+            !candidates.iter().any(|other| {
+                candidate.event_id != other.event_id
+                    && event_is_ancestor(&candidate.event_id, other, by_id)
+            })
+        })
+        .collect()
+}
+
+fn uncovered_reply_event_ids(
+    events: &[EventV1],
+    target_event_id: &str,
+    peer_id: &str,
+    by_id: &BTreeMap<String, &EventV1>,
+    disposition_heads: &[&EventV1],
+) -> Vec<String> {
+    let acknowledgements = events.iter().filter(|event| {
+        event.kind == "MSG_ACK"
+            && event.author_peer_id == peer_id
+            && string_event_body(event, "target_event_id") == target_event_id
+    });
+    let bound_result_ids: BTreeSet<String> = acknowledgements
+        .clone()
+        .filter_map(|event| {
+            event
+                .body
+                .get("result_event_id")
+                .and_then(serde_json::Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect();
+    if disposition_heads.is_empty() {
+        return Vec::new();
+    }
+    let mut reply_ids = events
+        .iter()
+        .filter(|reply| {
+            reply.kind == "MSG_POST"
+                && string_event_body(reply, "in_reply_to_event_id") == target_event_id
+                && !bound_result_ids.contains(&reply.event_id)
+                && !is_own_causally_later_explanation(reply, peer_id, disposition_heads, by_id)
+                && !disposition_heads
+                    .iter()
+                    .all(|head| event_is_ancestor(&reply.event_id, head, by_id))
+        })
+        .map(|reply| reply.event_id.clone())
+        .collect::<Vec<_>>();
+    reply_ids.sort();
+    reply_ids.dedup();
+    reply_ids
+}
+
+fn is_own_causally_later_explanation(
+    reply: &EventV1,
+    peer_id: &str,
+    disposition_heads: &[&EventV1],
+    by_id: &BTreeMap<String, &EventV1>,
+) -> bool {
+    if reply.author_peer_id != peer_id
+        || disposition_heads.is_empty()
+        || !disposition_heads
+            .iter()
+            .all(|head| match head.kind.as_str() {
+                "MSG_ACK" => string_event_body(head, "state") == "handled",
+                "MSG_CONTINUATION" => matches!(
+                    string_event_body(head, "state").as_str(),
+                    "declined" | "released"
+                ),
+                _ => false,
+            })
+        || !disposition_heads
+            .iter()
+            .all(|head| event_is_ancestor(&head.event_id, reply, by_id))
+    {
+        return false;
+    }
+    let reply_session_id = reply
+        .origin
+        .as_ref()
+        .map(|origin| origin.session_cert.session_id.as_str());
+    let same_actor = disposition_heads.iter().all(|head| {
+        head.origin
+            .as_ref()
+            .map(|origin| origin.session_cert.session_id.as_str())
+            == reply_session_id
+    });
+    if !same_actor {
+        return false;
+    }
+    let explicitly_addressed_back = reply_session_id.is_some_and(|session_id| {
+        reply
+            .body
+            .get("addressed_origin_session_ids")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|value| value.as_str() == Some(session_id))
+    });
+    !explicitly_addressed_back
+}
+
+#[cfg(test)]
+fn has_uncovered_reply(events: &[EventV1], target_event_id: &str, peer_id: &str) -> bool {
+    let by_id: BTreeMap<String, &EventV1> = events
+        .iter()
+        .map(|event| (event.event_id.clone(), event))
+        .collect();
+    let disposition_candidates = events
+        .iter()
+        .filter(|event| {
+            matches!(event.kind.as_str(), "MSG_ACK" | "MSG_CONTINUATION")
+                && event.author_peer_id == peer_id
+                && string_event_body(event, "target_event_id") == target_event_id
+        })
+        .collect::<Vec<_>>();
+    let disposition_heads = causal_maxima(disposition_candidates, &by_id);
+    !uncovered_reply_event_ids(events, target_event_id, peer_id, &by_id, &disposition_heads)
+        .is_empty()
+}
+
+fn event_is_ancestor(
+    ancestor_event_id: &str,
+    descendant: &EventV1,
+    by_id: &BTreeMap<String, &EventV1>,
+) -> bool {
+    let mut pending = descendant.parents.clone();
+    let mut visited = BTreeSet::new();
+    while let Some(event_id) = pending.pop() {
+        if event_id == ancestor_event_id {
+            return true;
+        }
+        if visited.insert(event_id.clone()) {
+            if let Some(event) = by_id.get(&event_id) {
+                pending.extend(event.parents.iter().cloned());
+            }
+        }
+    }
+    false
 }
 
 fn event_target_message<'a>(
@@ -3462,6 +5812,7 @@ impl VoxelleCommandHost {
             next_activity_id: 1,
             last_space_invite_json: None,
             selected_room_id: None,
+            selected_message_event_id: None,
             search_results: Vec::new(),
             snapshot_invalidated,
             update_manager,
@@ -3469,7 +5820,34 @@ impl VoxelleCommandHost {
             product_generation_notice,
             available_product_update: None,
             update_phase,
+            peer_health_failures: BTreeMap::new(),
+            sync_evidence: SyncEvidenceView::default(),
+            resident_page_progress: BTreeMap::new(),
+            resident_commit_tokens: BTreeMap::new(),
         }
+    }
+
+    pub fn issue_origin_context(
+        &self,
+        session_capability: &[u8; 32],
+        surface_protocol: OriginSurfaceProtocolV1,
+        display_label: Option<String>,
+        request_id: String,
+    ) -> Result<OriginContext> {
+        self.home.issue_origin_context(
+            session_capability,
+            surface_protocol,
+            display_label,
+            request_id,
+        )
+    }
+
+    pub fn current_device_id(&self) -> Result<String> {
+        self.home.current_device_id()
+    }
+
+    fn default_origin_context(&self) -> Result<OriginContext> {
+        self.home.default_origin_context()
     }
 
     pub fn update_transport_context(&self) -> (UpdateManager, u64) {
@@ -3685,6 +6063,193 @@ impl VoxelleCommandHost {
         self.snapshot_without_drain()
     }
 
+    pub fn open_resident_observation(
+        &mut self,
+        request: OpenResidentObservationRequest,
+    ) -> Result<ResidentObservationConsumerView> {
+        let origin = self.default_origin_context()?;
+        self.open_resident_observation_with_origin(request, &origin)
+    }
+
+    pub fn open_resident_observation_with_origin(
+        &mut self,
+        request: OpenResidentObservationRequest,
+        origin: &OriginContext,
+    ) -> Result<ResidentObservationConsumerView> {
+        let consumer = self.home.open_resident_observation(&request, origin)?;
+        let key = (
+            request.consumer_id.clone(),
+            origin.owner_origin_id().to_string(),
+        );
+        self.resident_page_progress.remove(&key);
+        self.resident_commit_tokens
+            .retain(|_, (consumer_id, owner_origin_id, _, _)| {
+                consumer_id != &request.consumer_id || owner_origin_id != origin.owner_origin_id()
+            });
+        Ok(consumer)
+    }
+
+    pub fn resident_changed_threads(
+        &mut self,
+        request: ResidentChangedThreadsRequest,
+    ) -> Result<ResidentChangedThreadsPageView> {
+        let origin = self.default_origin_context()?;
+        self.resident_changed_threads_with_origin(request, &origin)
+    }
+
+    pub fn resident_changed_threads_with_origin(
+        &mut self,
+        request: ResidentChangedThreadsRequest,
+        origin: &OriginContext,
+    ) -> Result<ResidentChangedThreadsPageView> {
+        let owner_origin_id = origin.owner_origin_id().to_string();
+        if self
+            .home
+            .open_store()?
+            .resident_observation_consumer(&request.consumer_id, &owner_origin_id)?
+            .is_none()
+        {
+            anyhow::bail!("resident observation consumer is not open");
+        }
+        let progress_key = (request.consumer_id.clone(), owner_origin_id.clone());
+        let limit = request
+            .limit
+            .unwrap_or(MAX_RESIDENT_CHANGED_THREADS_PAGE)
+            .clamp(1, MAX_RESIDENT_CHANGED_THREADS_PAGE);
+        let (fact_high_water, room_ids) = match request.fact_high_water {
+            None => {
+                if request.after_fact_sequence.is_some() {
+                    anyhow::bail!("the first resident page must omit after_fact_sequence");
+                }
+                self.resident_page_progress.remove(&progress_key);
+                (
+                    self.home.open_store()?.local_fact_high_water()?,
+                    self.home
+                        .channels(None)?
+                        .into_iter()
+                        .map(|channel| channel.room_id)
+                        .collect(),
+                )
+            }
+            Some(fact_high_water) => {
+                let progress = self
+                    .resident_page_progress
+                    .get(&progress_key)
+                    .ok_or_else(|| anyhow::anyhow!("resident page session is unavailable"))?;
+                if progress.fact_high_water != fact_high_water
+                    || progress.next_after_fact_sequence != request.after_fact_sequence
+                {
+                    anyhow::bail!("resident page does not continue the served page session");
+                }
+                (fact_high_water, progress.room_ids.clone())
+            }
+        };
+        let mut page = self
+            .home
+            .resident_changed_threads(ResidentChangedThreadsProjection {
+                consumer_id: &request.consumer_id,
+                owner_origin_id: &owner_origin_id,
+                fact_high_water,
+                after_fact_sequence: request.after_fact_sequence,
+                limit,
+                projection_ms: now_ms(),
+                room_ids: &room_ids,
+            })?;
+        if page.has_more {
+            self.resident_page_progress.insert(
+                progress_key,
+                ResidentPageProgress {
+                    fact_high_water,
+                    next_after_fact_sequence: page.next_after_fact_sequence,
+                    room_ids,
+                },
+            );
+        } else {
+            self.resident_page_progress.remove(&progress_key);
+            self.resident_commit_tokens
+                .retain(|_, (consumer_id, token_owner, _, _)| {
+                    consumer_id != &request.consumer_id || token_owner != &owner_origin_id
+                });
+            let token =
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(rand::random::<[u8; 24]>());
+            self.resident_commit_tokens.insert(
+                token.clone(),
+                (
+                    request.consumer_id.clone(),
+                    owner_origin_id,
+                    fact_high_water,
+                    page.room_ids.clone(),
+                ),
+            );
+            page.commit_token = Some(token);
+        }
+        Ok(page)
+    }
+
+    pub fn commit_resident_observation(
+        &mut self,
+        request: CommitResidentObservationRequest,
+    ) -> Result<ResidentObservationCommitView> {
+        let origin = self.default_origin_context()?;
+        self.commit_resident_observation_with_origin(request, &origin)
+    }
+
+    pub fn commit_resident_observation_with_origin(
+        &mut self,
+        request: CommitResidentObservationRequest,
+        origin: &OriginContext,
+    ) -> Result<ResidentObservationCommitView> {
+        let Some((consumer_id, owner_origin_id, fact_high_water, room_ids)) = self
+            .resident_commit_tokens
+            .get(&request.commit_token)
+            .cloned()
+        else {
+            anyhow::bail!("resident commit token is unavailable or already used");
+        };
+        if consumer_id != request.consumer_id
+            || owner_origin_id != origin.owner_origin_id()
+            || fact_high_water != request.fact_high_water
+        {
+            anyhow::bail!("resident commit token is unavailable or already used");
+        }
+        let committed = self.home.commit_resident_observation(
+            &request.consumer_id,
+            origin.owner_origin_id(),
+            request.fact_high_water,
+            &room_ids,
+        )?;
+        self.resident_commit_tokens.remove(&request.commit_token);
+        Ok(committed)
+    }
+
+    pub fn release_resident_observation(
+        &mut self,
+        request: ReleaseResidentObservationRequest,
+    ) -> Result<bool> {
+        let origin = self.default_origin_context()?;
+        self.release_resident_observation_with_origin(request, &origin)
+    }
+
+    pub fn release_resident_observation_with_origin(
+        &mut self,
+        request: ReleaseResidentObservationRequest,
+        origin: &OriginContext,
+    ) -> Result<bool> {
+        let released = self
+            .home
+            .release_resident_observation(&request.consumer_id, origin.owner_origin_id())?;
+        let progress_key = (
+            request.consumer_id.clone(),
+            origin.owner_origin_id().to_string(),
+        );
+        self.resident_page_progress.remove(&progress_key);
+        self.resident_commit_tokens
+            .retain(|_, (consumer_id, owner_origin_id, _, _)| {
+                consumer_id != &request.consumer_id || owner_origin_id != origin.owner_origin_id()
+            });
+        Ok(released)
+    }
+
     pub fn init_home(&mut self, request: InitHomeRequest) -> Result<ShellSnapshotView> {
         let default_room = request.default_room.as_deref().unwrap_or(DEFAULT_ROOM_ID);
         self.home.init(default_room)?;
@@ -3692,28 +6257,91 @@ impl VoxelleCommandHost {
             ServiceActivityLevel::Info,
             format!("initialized home for {default_room}"),
         );
+        self.start_service(StartServiceRequest {
+            bind: None,
+            advertise: None,
+        })
+    }
+
+    pub fn archive_unusable_home(&mut self) -> Result<ShellSnapshotView> {
+        if self.service.is_some() {
+            anyhow::bail!("the local service must be offline before preparing recovery");
+        }
+        let archive = self.home.archive_unusable_local_state()?;
+        self.selected_room_id = None;
+        self.selected_message_event_id = None;
+        self.search_results.clear();
+        let archive_name = archive
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("private recovery archive");
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("archived unusable local home as {archive_name}"),
+        );
         self.snapshot()
     }
 
     pub fn start_service(&mut self, request: StartServiceRequest) -> Result<ShellSnapshotView> {
         if self.service.is_some() {
-            return self.snapshot();
+            if request.bind.is_none() && request.advertise.is_none() {
+                return self.snapshot();
+            }
+            if let Some(service) = self.service.take() {
+                service.stop()?;
+                self.push_activity(
+                    ServiceActivityLevel::Info,
+                    "service stopped for address reconfiguration",
+                );
+            }
         }
 
+        let automatic = request.bind.is_none() && request.advertise.is_none();
+        let saved: Option<ServiceBindingFile> = if automatic {
+            self.home.local_state(SERVICE_BINDING_STATE)?
+        } else {
+            None
+        };
+        if saved.as_ref().is_some_and(|saved| saved.v != 1) {
+            anyhow::bail!("unsupported saved service binding version");
+        }
         let bind = request
             .bind
+            .or_else(|| saved.as_ref().map(|saved| saved.bind))
             .unwrap_or_else(|| SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0));
+        let advertise = request
+            .advertise
+            .or_else(|| saved.as_ref().map(|saved| saved.advertise));
         let service = self.home.start_service_with_notifier(
             bind,
-            request.advertise,
+            advertise,
             self.snapshot_invalidated.clone(),
         )?;
         let addr = service.online().endpoint.addr;
+        self.home.put_local_state(
+            SERVICE_BINDING_STATE,
+            &ServiceBindingFile {
+                v: 1,
+                bind: service.online().local_report.listen_addr,
+                advertise: service.online().local_report.advertised_addr,
+            },
+        )?;
         self.service = Some(service);
         self.push_activity(
             ServiceActivityLevel::Info,
             format!("service started at {addr}"),
         );
+        self.snapshot()
+    }
+
+    pub async fn start_service_and_sync(
+        &mut self,
+        request: StartServiceRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.start_service(request)?;
+        if self.home.local_state_exists(HOME_SELECTION_STATE)? {
+            self.sync_known_peers(256).await?;
+        }
         self.snapshot()
     }
 
@@ -3734,10 +6362,10 @@ impl VoxelleCommandHost {
             .as_ref()
             .map(VoxelleService::online)
             .ok_or_else(|| anyhow::anyhow!("go online before creating a space invite"))?;
-        let minutes = request
-            .expires_minutes
-            .unwrap_or(24 * 60)
-            .clamp(1, 30 * 24 * 60);
+        let minutes = request.expires_minutes.unwrap_or(24 * 60);
+        if !(1..=MAX_INVITE_EXPIRY_MINUTES).contains(&minutes) {
+            anyhow::bail!("invite expiry must be between 1 minute and 30 days");
+        }
         let expires_ms = now_ms().saturating_add((minutes as i64).saturating_mul(60_000));
         let additional_bootstraps = self
             .home
@@ -3768,6 +6396,27 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
+    pub async fn revoke_space_invite(
+        &mut self,
+        request: RevokeSpaceInviteRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.revoke_space_invite(&request)?;
+        if self
+            .last_space_invite_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<SpaceInviteFileV1>(json).ok())
+            .is_some_and(|invite| invite.invite_event.event_id == request.invite_id)
+        {
+            self.last_space_invite_json = None;
+        }
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("revoked signed space invite {}", request.invite_id),
+        );
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
     pub async fn join_space(&mut self, request: JoinSpaceRequest) -> Result<ShellSnapshotView> {
         let invite: SpaceInviteFileV1 = serde_json::from_str(&request.space_invite_json)
             .context("parse signed space invite JSON")?;
@@ -3783,27 +6432,298 @@ impl VoxelleCommandHost {
             ),
         );
         if self.service.is_none() {
-            self.service = Some(self.home.start_service_with_notifier(
-                SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
-                None,
-                self.snapshot_invalidated.clone(),
-            )?);
-            self.push_activity(ServiceActivityLevel::Info, "service started after join");
+            self.start_service(StartServiceRequest {
+                bind: None,
+                advertise: None,
+            })?;
         }
         self.snapshot()
     }
 
-    pub async fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
-        let room = request.room.as_deref().or(self.selected_room_id.as_deref());
-        let event = self.home.send_message_with_metadata(
-            &request.text,
-            room,
-            request.mentions,
-            request.thread_root_event_id,
+    pub fn export_recovery_kit(
+        &mut self,
+        request: ExportRecoveryKitRequest,
+    ) -> Result<ShellSnapshotView> {
+        self.home.write_recovery_kit(&request.path)?;
+        self.home.put_local_state(
+            RECOVERY_HEALTH_STATE,
+            &RecoveryHealthV1 {
+                v: 1,
+                last_exported_ms: now_ms(),
+            },
         )?;
         self.push_activity(
             ServiceActivityLevel::Info,
+            "exported an offline identity recovery kit",
+        );
+        self.snapshot()
+    }
+
+    pub async fn restore_recovery_kit(
+        &mut self,
+        request: RestoreRecoveryKitRequest,
+    ) -> Result<ShellSnapshotView> {
+        if self.service.is_some() {
+            anyhow::bail!("recovery requires the local service to be offline");
+        }
+        let kit: RecoveryKitV1 = read_json(&request.path)?;
+        let report = self
+            .home
+            .recover_from_kit(&kit, request.max_events_per_peer.unwrap_or(4096))
+            .await?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "recovered identity onto device {}; reached {}/{} retaining peer(s), recovered {} and pushed {} event(s)",
+                short_peer_label(&report.profile.device_id),
+                report.peers_reached,
+                report.peers_attempted,
+                report.events_recovered,
+                report.events_pushed,
+            ),
+        );
+        for error in report.peer_errors {
+            self.push_activity(
+                ServiceActivityLevel::Error,
+                format!("recovery peer unavailable: {error}"),
+            );
+        }
+        self.start_service(StartServiceRequest {
+            bind: None,
+            advertise: None,
+        })
+    }
+
+    pub async fn send_message(&mut self, request: SendMessageRequest) -> Result<ShellSnapshotView> {
+        let origin = self.default_origin_context()?;
+        self.send_message_with_origin(request, &origin).await
+    }
+
+    pub async fn send_message_with_origin(
+        &mut self,
+        mut request: SendMessageRequest,
+        origin: &OriginContext,
+    ) -> Result<ShellSnapshotView> {
+        request.addressed_origin_session_ids.sort();
+        request.addressed_origin_session_ids.dedup();
+        if request.room.is_none() {
+            request.room = self.selected_room_id.clone();
+        }
+        let room = request.room.as_deref();
+        if let Some(client_request_id) = request.client_request_id.as_deref() {
+            if client_request_id.len() < 8
+                || client_request_id.len() > 128
+                || client_request_id.chars().any(char::is_whitespace)
+            {
+                anyhow::bail!("client_request_id must be 8 to 128 non-whitespace characters");
+            }
+            if let Some(existing) = self
+                .home
+                .message_for_client_request(room, client_request_id)?
+            {
+                let same_payload = existing
+                    .body
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(request.text.as_str())
+                    && existing.body.get("mentions") == Some(&serde_json::json!(request.mentions))
+                    && existing.body.get("addressed_origin_session_ids")
+                        == Some(&serde_json::json!(request.addressed_origin_session_ids))
+                    && existing.body.get("thread_root_event_id")
+                        == Some(&serde_json::json!(request.thread_root_event_id))
+                    && existing.body.get("in_reply_to_event_id")
+                        == Some(&serde_json::json!(request.in_reply_to_event_id));
+                if !same_payload {
+                    anyhow::bail!(
+                        "client_request_id was already used for a different message payload"
+                    );
+                }
+                self.push_activity(
+                    ServiceActivityLevel::Info,
+                    format!(
+                        "reused admitted message {} for idempotent retry",
+                        existing.event_id
+                    ),
+                );
+                return self.snapshot();
+            }
+        }
+        let event = self
+            .home
+            .send_message_with_metadata_and_origin(request, Some(origin))?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
             format!("sent message {}", event.event_id),
+        );
+        self.sync_known_peers(256).await?;
+        self.selected_message_event_id = None;
+        self.snapshot()
+    }
+
+    pub async fn acknowledge_message(
+        &mut self,
+        request: AcknowledgeMessageRequest,
+    ) -> Result<ShellSnapshotView> {
+        let origin = self.default_origin_context()?;
+        self.acknowledge_message_with_origin(request, &origin).await
+    }
+
+    pub async fn acknowledge_message_with_origin(
+        &mut self,
+        request: AcknowledgeMessageRequest,
+        origin: &OriginContext,
+    ) -> Result<ShellSnapshotView> {
+        let room = request.room.as_deref().or(self.selected_room_id.as_deref());
+        let own_peer_id = self.home.load_identity()?.peer_id;
+        let messages = self.home.read_messages(room)?;
+        let target = messages
+            .iter()
+            .find(|message| message.event_id == request.target_event_id)
+            .ok_or_else(|| anyhow::anyhow!("message acknowledgement target is unavailable"))?;
+        let current = target
+            .acknowledgements
+            .iter()
+            .find(|acknowledgement| acknowledgement.peer_id == own_peer_id)
+            .cloned();
+        self.home
+            .mark_read_through(room, &request.target_event_id)?;
+        if let Some(current) = current {
+            if current.state == MessageAcknowledgementState::Handled {
+                let same_handled = request.state == MessageAcknowledgementState::Handled
+                    && request
+                        .result_event_id
+                        .as_ref()
+                        .is_none_or(|result_event_id| {
+                            current.result_event_ids.contains(result_event_id)
+                        });
+                let harmless_downgrade = request.state == MessageAcknowledgementState::Observed
+                    && request.result_event_id.is_none();
+                if same_handled || harmless_downgrade {
+                    return self.snapshot();
+                }
+                anyhow::bail!(
+                    "handled acknowledgement is terminal and cannot change its result_event_id"
+                );
+            }
+            if request.state == MessageAcknowledgementState::Observed
+                && request.result_event_id.is_none()
+            {
+                return self.snapshot();
+            }
+        }
+        let target_event_id = request.target_event_id.clone();
+        let result_event_id = request.result_event_id.clone();
+        self.home.acknowledge_message_with_origin(
+            &AcknowledgeMessageRequest {
+                room: room.map(ToOwned::to_owned),
+                ..request
+            },
+            Some(origin),
+        )?;
+        let result = result_event_id
+            .as_deref()
+            .map(|event_id| format!(" with result {event_id}"))
+            .unwrap_or_default();
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!(
+                "acknowledged target message {} as {:?}{}",
+                target_event_id, request.state, result
+            ),
+        );
+        self.sync_known_peers(256).await?;
+        self.snapshot()
+    }
+
+    pub async fn update_message_continuation(
+        &mut self,
+        request: UpdateMessageContinuationRequest,
+    ) -> Result<ShellSnapshotView> {
+        let origin = self.default_origin_context()?;
+        self.update_message_continuation_with_origin(request, &origin)
+            .await
+    }
+
+    pub async fn update_message_continuation_with_origin(
+        &mut self,
+        mut request: UpdateMessageContinuationRequest,
+        origin: &OriginContext,
+    ) -> Result<ShellSnapshotView> {
+        let room = request.room.as_deref().or(self.selected_room_id.as_deref());
+        if request.client_request_id.len() < 8
+            || request.client_request_id.len() > 128
+            || request.client_request_id.chars().any(char::is_whitespace)
+        {
+            anyhow::bail!("client_request_id must be 8 to 128 non-whitespace characters");
+        }
+        match (request.state, request.lease_ms) {
+            (MessageContinuationState::Continuing, Some(lease_ms))
+                if (MIN_CONTINUATION_LEASE_MS..=MAX_CONTINUATION_LEASE_MS)
+                    .contains(&lease_ms) => {}
+            (MessageContinuationState::Released | MessageContinuationState::Declined, None) => {}
+            _ => anyhow::bail!(
+                "continuing requires a lease from 1 minute through 7 days; release and decline have no lease"
+            ),
+        }
+        if request.supersedes_event_ids.len() > MAX_CONTINUATION_HEADS {
+            anyhow::bail!(
+                "continuation updates may supersede at most {MAX_CONTINUATION_HEADS} heads"
+            );
+        }
+        if request.supersedes_event_ids.iter().any(|event_id| {
+            event_id
+                .strip_prefix("e:")
+                .and_then(|encoded| {
+                    base64::engine::general_purpose::URL_SAFE_NO_PAD
+                        .decode(encoded)
+                        .ok()
+                })
+                .is_none_or(|bytes| bytes.len() != 32)
+        }) {
+            anyhow::bail!("continuation head event ID is malformed");
+        }
+        request.supersedes_event_ids.sort();
+        let original_len = request.supersedes_event_ids.len();
+        request.supersedes_event_ids.dedup();
+        if request.supersedes_event_ids.len() != original_len {
+            anyhow::bail!("continuation supersedes_event_ids must be unique");
+        }
+        if let Some(existing) = self
+            .home
+            .continuation_for_client_request(room, &request.client_request_id)?
+        {
+            let same_payload = existing.body.get("target_event_id")
+                == Some(&serde_json::json!(request.target_event_id))
+                && existing.body.get("state") == Some(&serde_json::json!(request.state))
+                && existing.body.get("lease_ms") == Some(&serde_json::json!(request.lease_ms))
+                && existing.body.get("supersedes_event_ids")
+                    == Some(&serde_json::json!(request.supersedes_event_ids));
+            if !same_payload {
+                anyhow::bail!(
+                    "client_request_id was already used for a different continuation payload"
+                );
+            }
+            self.push_activity(
+                ServiceActivityLevel::Info,
+                format!(
+                    "reused admitted continuation {} for idempotent retry",
+                    existing.event_id
+                ),
+            );
+            return self.snapshot();
+        }
+        self.home
+            .mark_read_through(room, &request.target_event_id)?;
+        let event = self.home.update_message_continuation_with_origin(
+            &UpdateMessageContinuationRequest {
+                room: room.map(ToOwned::to_owned),
+                ..request
+            },
+            Some(origin),
+        )?;
+        self.push_activity(
+            ServiceActivityLevel::Info,
+            format!("updated message continuation {}", event.event_id),
         );
         self.sync_known_peers(256).await?;
         self.snapshot()
@@ -3818,8 +6738,30 @@ impl VoxelleCommandHost {
         {
             anyhow::bail!("channel is unknown or inaccessible");
         }
-        self.home.mark_read(Some(&request.room_id))?;
         self.selected_room_id = Some(request.room_id);
+        self.selected_message_event_id = None;
+        self.snapshot()
+    }
+
+    pub fn open_message(&mut self, request: OpenMessageRequest) -> Result<ShellSnapshotView> {
+        if !self
+            .home
+            .channels(Some(&request.room_id))?
+            .iter()
+            .any(|channel| channel.room_id == request.room_id)
+        {
+            anyhow::bail!("channel is unknown or inaccessible");
+        }
+        if !self
+            .home
+            .read_messages(Some(&request.room_id))?
+            .iter()
+            .any(|message| message.event_id == request.event_id)
+        {
+            anyhow::bail!("message is unknown or inaccessible in this channel");
+        }
+        self.selected_room_id = Some(request.room_id);
+        self.selected_message_event_id = Some(request.event_id);
         self.snapshot()
     }
 
@@ -3842,6 +6784,7 @@ impl VoxelleCommandHost {
             .get("room_id")
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
+        self.selected_message_event_id = None;
         self.sync_known_peers(256).await?;
         self.snapshot()
     }
@@ -3858,12 +6801,10 @@ impl VoxelleCommandHost {
     pub async fn join_call(&mut self, mut request: CallJoinRequest) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         if self.service.is_none() {
-            self.service = Some(self.home.start_service_with_notifier(
-                SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0),
-                None,
-                self.snapshot_invalidated.clone(),
-            )?);
-            self.push_activity(ServiceActivityLevel::Info, "service started for room call");
+            self.start_service(StartServiceRequest {
+                bind: None,
+                advertise: None,
+            })?;
         }
         self.home.join_call(&request)?;
         self.sync_known_peers(512).await?;
@@ -3876,6 +6817,16 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.signal_call(&request)?;
+        self.sync_known_peers(512).await?;
+        self.snapshot()
+    }
+
+    pub async fn update_call_media(
+        &mut self,
+        mut request: CallMediaRequest,
+    ) -> Result<ShellSnapshotView> {
+        request.room = request.room.or_else(|| self.selected_room_id.clone());
+        self.home.update_call_media(&request)?;
         self.sync_known_peers(512).await?;
         self.snapshot()
     }
@@ -4023,6 +6974,12 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
+    pub fn reset_all_ui_preferences(&mut self) -> Result<ShellSnapshotView> {
+        self.home.reset_all_ui_preferences()?;
+        self.push_activity(ServiceActivityLevel::Info, "reset all UI customization");
+        self.snapshot()
+    }
+
     pub fn set_workbench_layout(
         &mut self,
         request: SetWorkbenchLayoutRequest,
@@ -4046,22 +7003,36 @@ impl VoxelleCommandHost {
             .label
             .clone()
             .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
-        let report = self.home.diagnose_peer(&peer).await?;
-        if report.reachable {
-            self.push_activity(
-                ServiceActivityLevel::Info,
-                format!("diagnostic reached {label}"),
-            );
-        } else {
-            self.push_activity(
-                ServiceActivityLevel::Error,
-                format!(
-                    "diagnostic failed for {label}: {}",
-                    report.error.as_deref().unwrap_or("no error detail")
-                ),
-            );
+        match self.home.diagnose_peer(&peer).await {
+            Ok(report) if report.reachable => {
+                self.clear_peer_health_failure(&peer, PeerHealthOperation::Diagnose);
+                self.push_activity(
+                    ServiceActivityLevel::Info,
+                    format!("diagnostic reached {label}"),
+                );
+                self.snapshot()
+            }
+            Ok(report) => {
+                self.record_peer_health_failure(&peer, PeerHealthOperation::Diagnose);
+                self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!(
+                        "diagnostic failed for {label}: {}",
+                        report.error.as_deref().unwrap_or("no error detail")
+                    ),
+                );
+                self.snapshot()
+            }
+            Err(error) => {
+                self.record_peer_health_failure(&peer, PeerHealthOperation::Diagnose);
+                self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!("diagnostic could not reach {label}: {error:#}"),
+                );
+                (self.snapshot_invalidated)();
+                Err(error)
+            }
         }
-        self.snapshot()
     }
 
     pub async fn sync_peer(&mut self, request: PeerCommandRequest) -> Result<ShellSnapshotView> {
@@ -4071,7 +7042,33 @@ impl VoxelleCommandHost {
             .clone()
             .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
         let max_events = request.max_events.unwrap_or(64);
-        let report = self.home.sync_peer(&peer, max_events).await?;
+        let report = match self.home.sync_peer(&peer, max_events).await {
+            Ok(report) => report,
+            Err(error) => {
+                self.sync_evidence = SyncEvidenceView {
+                    state: SyncEvidenceState::Unreachable,
+                    attempted_ms: Some(now_ms()),
+                    peers_attempted: 1,
+                    ..SyncEvidenceView::default()
+                };
+                self.record_peer_health_failure(&peer, PeerHealthOperation::Sync);
+                self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!("sync could not reach {label}: {error:#}"),
+                );
+                (self.snapshot_invalidated)();
+                return Err(error);
+            }
+        };
+        self.sync_evidence = SyncEvidenceView {
+            state: SyncEvidenceState::PeerConfirmed,
+            attempted_ms: Some(now_ms()),
+            peers_attempted: 1,
+            peers_reached: 1,
+            events_received: report.governance.accepted + report.room.accepted,
+            events_pushed: report.governance.remote_accepted + report.room.remote_accepted,
+        };
+        self.clear_peer_health_failure(&peer, PeerHealthOperation::Sync);
         self.push_activity(
             ServiceActivityLevel::Info,
             format!(
@@ -4084,6 +7081,10 @@ impl VoxelleCommandHost {
 
     async fn sync_known_peers(&mut self, max_events: usize) -> Result<()> {
         let peers = self.home.known_peers()?;
+        let peers_attempted = peers.len();
+        let mut peers_reached = 0;
+        let mut events_received = 0;
+        let mut events_pushed = 0;
         let mut tasks = tokio::task::JoinSet::new();
         for peer in peers {
             let home = self.home.clone();
@@ -4104,8 +7105,12 @@ impl VoxelleCommandHost {
                 .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
             match sync {
                 Ok(report) => {
+                    peers_reached += 1;
+                    self.clear_peer_health_failure(&peer, PeerHealthOperation::Sync);
                     let received = report.governance.accepted + report.room.accepted;
                     let pushed = report.governance.remote_accepted + report.room.remote_accepted;
+                    events_received += received;
+                    events_pushed += pushed;
                     if received > 0 || pushed > 0 {
                         self.push_activity(
                             ServiceActivityLevel::Info,
@@ -4115,29 +7120,56 @@ impl VoxelleCommandHost {
                         );
                     }
                 }
-                Err(error) => self.push_activity(
-                    ServiceActivityLevel::Error,
-                    format!("automatic sync could not reach {label}: {error}"),
-                ),
+                Err(error) => {
+                    self.record_peer_health_failure(&peer, PeerHealthOperation::Sync);
+                    self.push_activity(
+                        ServiceActivityLevel::Error,
+                        format!("automatic sync could not reach {label}: {error}"),
+                    );
+                }
             }
         }
+        self.sync_evidence = SyncEvidenceView {
+            state: if peers_attempted == 0 {
+                SyncEvidenceState::Unknown
+            } else if peers_reached == 0 {
+                SyncEvidenceState::Unreachable
+            } else if peers_reached < peers_attempted {
+                SyncEvidenceState::Partial
+            } else {
+                SyncEvidenceState::PeerConfirmed
+            },
+            attempted_ms: Some(now_ms()),
+            peers_attempted,
+            peers_reached,
+            events_received,
+            events_pushed,
+        };
         Ok(())
     }
 
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
         let online = self.service.as_ref().map(VoxelleService::online);
-        let (home, home_error) = match self
-            .home
-            .home_screen_view_for_room(online, self.selected_room_id.as_deref())
-        {
+        let projection_ms = now_ms();
+        let (home, home_error) = match self.home.home_screen_view_for_room_message_at(
+            online,
+            self.selected_room_id.as_deref(),
+            self.selected_message_event_id.as_deref(),
+            projection_ms,
+        ) {
             Ok(mut home) => {
                 if let Some(invite) = home.invite.as_mut() {
                     invite.space_invite_json = self.last_space_invite_json.clone();
                 }
                 (Some(home), None)
             }
-            Err(error) => (None, Some(format!("{error:#}"))),
+            Err(error) if self.home.has_local_home_state() => {
+                (None, Some(ShellError::for_command("shell.refresh", error)))
+            }
+            Err(_) => (None, None),
         };
+        let mut network_health = self.home.network_health_view(online)?;
+        self.apply_peer_health_failures(&mut network_health);
         let preferences = self.home.ui_preferences()?;
         let ui_ontology = match &self.product_generation {
             Some(active) => apply_ui_preferences(active.generation.ontology.clone(), preferences),
@@ -4164,12 +7196,13 @@ impl VoxelleCommandHost {
             home_root: self.home.root.clone(),
             home,
             home_error,
-            network_health: self.home.network_health_view(online)?,
+            network_health,
             ui_ontology,
             product_generation,
             product_component,
             service_activity: self.activity.clone(),
             search_results: self.search_results.clone(),
+            sync_evidence: self.sync_evidence.clone(),
         })
     }
 
@@ -4244,6 +7277,75 @@ impl VoxelleCommandHost {
         if self.activity.len() > 200 {
             let overflow = self.activity.len() - 200;
             self.activity.drain(0..overflow);
+        }
+    }
+
+    fn record_peer_health_failure(&mut self, peer: &PeerRecord, operation: PeerHealthOperation) {
+        self.peer_health_failures.insert(
+            (
+                peer.endpoint.peer_id.clone(),
+                peer.endpoint.device_id.clone(),
+                operation,
+            ),
+            PeerHealthFailure {
+                label: peer
+                    .label
+                    .clone()
+                    .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id)),
+            },
+        );
+    }
+
+    fn clear_peer_health_failure(&mut self, peer: &PeerRecord, operation: PeerHealthOperation) {
+        self.peer_health_failures.remove(&(
+            peer.endpoint.peer_id.clone(),
+            peer.endpoint.device_id.clone(),
+            operation,
+        ));
+    }
+
+    fn apply_peer_health_failures(&self, health: &mut NetworkHealthView) {
+        for (operation, row_id, command, noun) in [
+            (
+                PeerHealthOperation::Diagnose,
+                "reachability",
+                "peer.diagnose",
+                "reachability check",
+            ),
+            (
+                PeerHealthOperation::Sync,
+                "sync",
+                "peer.sync",
+                "synchronization",
+            ),
+        ] {
+            let failures = self
+                .peer_health_failures
+                .iter()
+                .filter(|((_, _, candidate), _)| *candidate == operation)
+                .collect::<Vec<_>>();
+            let Some(((peer_id, device_id, _), first)) = failures.first() else {
+                continue;
+            };
+            let summary = if failures.len() == 1 {
+                format!("Voxelle could not complete {noun} with {}.", first.label)
+            } else {
+                format!(
+                    "Voxelle could not complete {noun} with {} peers.",
+                    failures.len()
+                )
+            };
+            if let Some(row) = health.rows.iter_mut().find(|row| row.id == row_id) {
+                row.status = NetworkHealthStatus::Broken;
+                row.summary = summary;
+                row.primary_action = Some(command.to_string());
+                row.primary_action_payload = Some(serde_json::json!({
+                    "peer_id": peer_id,
+                    "device_id": device_id,
+                    "max_events": 64,
+                }));
+                row.details = vec!["Try again now, or confirm that another authorized member is online and reachable.".to_string()];
+            }
         }
     }
 
@@ -4452,6 +7554,7 @@ impl NetworkHealthRow {
             status,
             summary: summary.into(),
             primary_action: primary_action.map(ToOwned::to_owned),
+            primary_action_payload: None,
             details: Vec::new(),
             related_views: Vec::new(),
             related_commands: primary_action
@@ -4521,14 +7624,34 @@ impl VoxelleService {
         advertise: Option<SocketAddr>,
         snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self> {
-        let server = PeerServer::start(home, bind, advertise)?;
-        let online = server.online.clone();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let (event_tx, events) = mpsc::sync_channel(SERVICE_EVENT_QUEUE_CAPACITY);
+        let (startup_tx, startup_rx) = mpsc::sync_channel(1);
         let thread = thread::Builder::new()
             .name("voxelle-service".to_string())
-            .spawn(move || run_service_thread(server, stop_rx, event_tx, snapshot_invalidated))
+            .spawn(move || {
+                run_service_thread(
+                    home,
+                    bind,
+                    advertise,
+                    startup_tx,
+                    stop_rx,
+                    event_tx,
+                    snapshot_invalidated,
+                )
+            })
             .context("spawn voxelle service thread")?;
+        let online = match startup_rx.recv() {
+            Ok(Ok(online)) => online,
+            Ok(Err(error)) => {
+                let _ = thread.join();
+                anyhow::bail!("{error}");
+            }
+            Err(_) => {
+                let _ = thread.join();
+                anyhow::bail!("voxelle service stopped before startup completed");
+            }
+        };
 
         Ok(Self {
             online,
@@ -4573,7 +7696,10 @@ impl Drop for VoxelleService {
 }
 
 fn run_service_thread(
-    server: PeerServer,
+    home: VoxelleHome,
+    bind: SocketAddr,
+    advertise: Option<SocketAddr>,
+    startup_tx: mpsc::SyncSender<std::result::Result<OnlineHome, String>>,
     stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::SyncSender<VoxelleServiceEvent>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
@@ -4582,17 +7708,25 @@ fn run_service_thread(
         .enable_all()
         .build()
     else {
+        let _ = startup_tx.send(Err("failed to create service runtime".to_string()));
         let _ = event_tx.try_send(VoxelleServiceEvent::Failed(
             "failed to create service runtime".to_string(),
         ));
         return;
     };
-    task_runtime.block_on(run_service_loop(
-        server,
-        stop_rx,
-        event_tx,
-        snapshot_invalidated,
-    ));
+    task_runtime.block_on(async move {
+        let server = match PeerServer::start(home, bind, advertise) {
+            Ok(server) => server,
+            Err(error) => {
+                let detail = format!("{error:#}");
+                let _ = startup_tx.send(Err(detail.clone()));
+                let _ = event_tx.try_send(VoxelleServiceEvent::Failed(detail));
+                return;
+            }
+        };
+        let _ = startup_tx.send(Ok(server.online.clone()));
+        run_service_loop(server, stop_rx, event_tx, snapshot_invalidated).await;
+    });
 }
 
 async fn run_service_loop(
@@ -4930,84 +8064,91 @@ fn default_places() -> Vec<UiPlace> {
 
 fn default_views() -> Vec<UiView> {
     vec![
-        ui_view(
+        hidden_ui_view(
             "profile.summary",
-            "Profile Summary",
+            "You",
             "sidebar",
             0,
             "Local peer and device identity",
         ),
-        ui_view(
+        hidden_ui_view(
+            "identity.recovery",
+            "Identity Recovery",
+            "sidebar",
+            1,
+            "Offline recovery kit export and fresh-device identity restoration",
+        ),
+        hidden_ui_view(
             "runtime.status",
             "Runtime Status",
             "status",
             0,
             "Online/offline and reachability state",
         ),
-        ui_view(
+        hidden_ui_view(
             "network.health",
             "Network Health",
             "status",
             1,
             "Re-entrant checklist for setup, reachability, and repair",
         ),
-        ui_view(
+        hidden_ui_view(
             "field.test",
             "Field Test",
             "status",
             2,
             "Re-entrant end-to-end workflow checks",
         ),
-        ui_view(
+        hidden_ui_view(
             "product.update",
             "Product Update",
             "status",
             3,
             "Signed live product generation status, activation, and rollback",
         ),
-        ui_view(
+        hidden_ui_view(
             "invite.exchange",
-            "Invite Exchange",
-            "sidebar",
-            1,
-            "Copyable peer record and peer import",
-        ),
-        ui_view(
-            "peer.list",
-            "Peer List",
+            "Invite People",
             "sidebar",
             2,
-            "Known peers and peer actions",
+            "Signed membership invitations with optional manual peer setup",
+        ),
+        hidden_ui_view(
+            "peer.list",
+            "Connections",
+            "sidebar",
+            3,
+            "Known ordinary peers with diagnostics and synchronization controls",
         ),
         ui_view(
             "channel.list",
             "Channels",
             "sidebar",
-            3,
+            4,
             "Public and private conversation channels",
         ),
-        ui_view(
+        hidden_ui_view(
             "member.profiles",
             "Members",
             "inspector",
             0,
             "Member profiles and presence identity",
         ),
-        ui_view(
+        hidden_ui_view(
             "role.list",
             "Roles",
             "inspector",
             1,
             "Roles, permissions, and assignments",
         ),
-        ui_view(
+        hidden_ui_view(
             "message.search",
             "Message Search",
             "inspector",
             2,
             "Local full-text message and attachment search",
         ),
-        ui_view(
+        hidden_ui_view(
             "notification.center",
             "Notifications",
             "activity",
@@ -5016,7 +8157,7 @@ fn default_views() -> Vec<UiView> {
         ),
         ui_view(
             "room.timeline",
-            "Room Timeline",
+            "Conversation",
             "main",
             0,
             "Messages in the selected room",
@@ -5035,7 +8176,7 @@ fn default_views() -> Vec<UiView> {
             2,
             "Direct WebRTC mesh for two to four room members",
         ),
-        ui_view(
+        hidden_ui_view(
             "service.activity",
             "Service Activity",
             "activity",
@@ -5062,6 +8203,13 @@ fn default_commands() -> Vec<UiCommand> {
             true,
         ),
         shell_command(
+            "home.archiveForRecovery",
+            "Prepare This Device for Recovery",
+            "Move unusable local identity, certificate, and retained state into a private archive so an offline recovery kit can restore the same principal",
+            None,
+            false,
+        ),
+        shell_command(
             "runtime.goOnline",
             "Go Online",
             "Start resident peer serving",
@@ -5083,9 +8231,30 @@ fn default_commands() -> Vec<UiCommand> {
             true,
         ),
         shell_command(
+            "space.invite.revoke",
+            "Revoke Space Invite",
+            "Revoke an active signed invite through space governance",
+            None,
+            false,
+        ),
+        shell_command(
             "space.join",
             "Join Space",
             "Join from a signed invite and synchronize automatically",
+            None,
+            true,
+        ),
+        shell_command(
+            "identity.recovery.export",
+            "Save Recovery Kit",
+            "Create a new offline bearer recovery kit without changing identity authority",
+            None,
+            true,
+        ),
+        shell_command(
+            "identity.recovery.restore",
+            "Recover My Identity",
+            "Restore the same principal on a fresh device, revoke old devices, and resynchronize",
             None,
             true,
         ),
@@ -5097,9 +8266,58 @@ fn default_commands() -> Vec<UiCommand> {
             false,
         ),
         shell_command(
+            "message.acknowledge",
+            "Acknowledge Message",
+            "Publish an authenticated observed or handled assertion for a message",
+            None,
+            false,
+        ),
+        shell_command(
+            "message.continuation.update",
+            "Update Message Continuation",
+            "Publish, release, decline, renew, or reconcile a bounded intention to continue an exchange",
+            None,
+            false,
+        ),
+        shell_command(
+            "resident.observation.open",
+            "Open Resident Observation",
+            "Create or reopen a bounded local resident resumption consumer",
+            None,
+            false,
+        ),
+        shell_command(
+            "resident.observation.page",
+            "Read Resident Changes",
+            "Read a bounded page of changed ordinary conversation threads for one local consumer",
+            None,
+            false,
+        ),
+        shell_command(
+            "resident.observation.commit",
+            "Commit Resident Observation",
+            "Commit only one local consumer's fully served changed-thread snapshot",
+            None,
+            false,
+        ),
+        shell_command(
+            "resident.observation.release",
+            "Release Resident Observation",
+            "Delete one local resident consumer and its observation progress",
+            None,
+            false,
+        ),
+        shell_command(
             "channel.select",
             "Select Channel",
             "Open an accessible channel",
+            None,
+            false,
+        ),
+        shell_command(
+            "message.open",
+            "Open Message",
+            "Open an accessible retained message in its channel",
             None,
             false,
         ),
@@ -5237,6 +8455,13 @@ fn default_commands() -> Vec<UiCommand> {
             false,
         ),
         shell_command(
+            "call.media",
+            "Update Call Camera State",
+            "Replicate an authenticated camera-intent update for an active participant",
+            None,
+            false,
+        ),
+        shell_command(
             "call.heartbeat",
             "Keep Call Alive",
             "Replicate short-lived room call presence",
@@ -5251,6 +8476,20 @@ fn default_commands() -> Vec<UiCommand> {
             true,
         ),
         frontend_command(
+            "call.microphone.toggle",
+            "Mute or Unmute Microphone",
+            "Toggle the local microphone track without changing room membership",
+            None,
+            true,
+        ),
+        frontend_command(
+            "call.camera.toggle",
+            "Turn Camera Off or On",
+            "Toggle an already captured camera track and publish the resulting camera intent",
+            None,
+            true,
+        ),
+        frontend_command(
             "message.composer.focus",
             "Focus Message Composer",
             "Move keyboard focus to the message composer",
@@ -5258,9 +8497,16 @@ fn default_commands() -> Vec<UiCommand> {
             true,
         ),
         frontend_command(
+            "invite.handoff.copy",
+            "Copy Message for Friend",
+            "Copy human joining instructions together with the current signed membership invite",
+            None,
+            true,
+        ),
+        frontend_command(
             "invite.copy",
-            "Copy Signed Invite",
-            "Copy the current signed membership invite",
+            "Copy Signed Invite JSON",
+            "Copy only the current signed membership invite JSON",
             None,
             true,
         ),
@@ -5291,6 +8537,13 @@ fn default_commands() -> Vec<UiCommand> {
             "Persist a UI customization",
             None,
             false,
+        ),
+        shell_command(
+            "ui.preferences.reset",
+            "Reset All Customization",
+            "Restore appearance, spacing, behavior, and workbench layout defaults",
+            None,
+            true,
         ),
         shell_command(
             "workbench.layout.save",
@@ -5414,7 +8667,7 @@ fn default_semantic_tokens() -> Vec<SemanticToken> {
             "runtime.online",
             "Runtime Online",
             "Online runtime state",
-            "#18794e",
+            "light-dark(#18794e, #63d69a)",
             &["runtime.status"],
         ),
         semantic_token(
@@ -5428,28 +8681,28 @@ fn default_semantic_tokens() -> Vec<SemanticToken> {
             "peer.reachable",
             "Peer Reachable",
             "Reachable peer diagnostic",
-            "#18794e",
+            "light-dark(#18794e, #63d69a)",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
             "peer.unreachable",
             "Peer Unreachable",
             "Unreachable peer diagnostic",
-            "#b42318",
+            "light-dark(#b42318, #ff8a80)",
             &["peer.list", "service.activity"],
         ),
         semantic_token(
             "message.own.background",
             "Own Message Background",
             "Messages authored by this peer",
-            "#e8f1ff",
+            "color-mix(in srgb, Canvas 88%, LinkText)",
             &["room.timeline"],
         ),
         semantic_token(
             "message.remote.background",
             "Remote Message Background",
             "Messages authored by other peers",
-            "#f2f2f2",
+            "color-mix(in srgb, Canvas 94%, CanvasText)",
             &["room.timeline"],
         ),
         semantic_token(
@@ -5463,7 +8716,7 @@ fn default_semantic_tokens() -> Vec<SemanticToken> {
             "activity.error",
             "Activity Error",
             "Error activity entries",
-            "#b42318",
+            "light-dark(#b42318, #ff8a80)",
             &["service.activity"],
         ),
     ]
@@ -5540,7 +8793,7 @@ fn default_behaviors() -> Vec<UiBehavior> {
         behavior(
             "runtime.startOnlineOnLaunch",
             "Start Online On Launch",
-            UiBehaviorValue::Bool(false),
+            UiBehaviorValue::Bool(true),
             &["runtime.status"],
         ),
     ]
@@ -5575,13 +8828,34 @@ fn ui_place(id: &str, label: &str, description: &str) -> UiPlace {
 }
 
 fn ui_view(id: &str, label: &str, place_id: &str, order: usize, description: &str) -> UiView {
+    ui_view_with_visibility(id, label, place_id, order, description, true)
+}
+
+fn hidden_ui_view(
+    id: &str,
+    label: &str,
+    place_id: &str,
+    order: usize,
+    description: &str,
+) -> UiView {
+    ui_view_with_visibility(id, label, place_id, order, description, false)
+}
+
+fn ui_view_with_visibility(
+    id: &str,
+    label: &str,
+    place_id: &str,
+    order: usize,
+    description: &str,
+    visible: bool,
+) -> UiView {
     UiView {
         id: id.to_string(),
         label: label.to_string(),
         default_place_id: place_id.to_string(),
         place_id: place_id.to_string(),
         order,
-        visible: true,
+        visible,
         description: description.to_string(),
         editable: true,
         editing_surface: "layout/place editor".to_string(),
@@ -5595,14 +8869,21 @@ fn shell_command(
     shortcut: Option<&str>,
     palette: bool,
 ) -> UiCommand {
-    ui_command(
+    let payload = shell::shell_command_payload(id)
+        .unwrap_or_else(|| panic!("shell command {id} is missing its payload contract"));
+    let mut command = ui_command(
         id,
         label,
         description,
         UiCommandScope::Shell,
         shortcut,
         palette,
-    )
+    );
+    command.payload_type = match payload {
+        shell::ShellCommandPayload::Empty => None,
+        shell::ShellCommandPayload::Typed(name) => Some(name.to_string()),
+    };
+    command
 }
 
 fn frontend_command(
@@ -5637,6 +8918,7 @@ fn ui_command(
         scope,
         shortcut: shortcut.map(ToOwned::to_owned),
         palette,
+        payload_type: None,
         editable: false,
         editing_surface: "command palette".to_string(),
     }
@@ -5717,6 +8999,11 @@ fn validate_ui_preferences(preferences: &UiPreferences) -> Result<()> {
             .with_context(|| format!("unknown UI behavior {id}"))?;
         if !same_behavior_value_kind(&default.default_value, value) {
             anyhow::bail!("UI behavior {id} value has the wrong kind");
+        }
+        if id == "timestamps.style"
+            && !matches!(value, UiBehaviorValue::Text(style) if style == "relative" || style == "absolute")
+        {
+            anyhow::bail!("timestamps.style must be relative or absolute");
         }
     }
     if !preferences.view_placements.is_empty() {
@@ -6293,6 +9580,19 @@ fn retain_latest<T>(items: &mut Vec<T>, limit: usize) {
     }
 }
 
+fn retain_window_around_index<T>(items: &mut Vec<T>, index: usize, limit: usize) {
+    if limit == 0 {
+        items.clear();
+        return;
+    }
+    if items.len() <= limit {
+        return;
+    }
+    let start = index.saturating_sub(limit / 2).min(items.len() - limit);
+    items.drain(start + limit..);
+    items.drain(..start);
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -6308,10 +9608,52 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn builtin_product_bundles_shared_form_draft_validation() {
+        let source = builtin_product_generation().component.source;
+        assert!(source.contains("function shortTextDraftError"));
+        assert!(source.contains("shortTextDraftError(uiState.profileNameDraft"));
+        assert!(source.contains("shortTextDraftError(uiState.channelNameDraft"));
+        assert!(source.contains("shortTextDraftError(uiState.roleNameDraft"));
+        assert!(source.contains("optionalTextDraftError(uiState.profileAboutDraft"));
+        assert!(source.contains("optionalTextDraftError(uiState.channelTopicDraft"));
+        assert!(source.contains("searchDraftError(uiState.searchDraft"));
+        assert!(source.contains("optionalIpv6SocketDraftError(uiState.bindDraft"));
+        assert!(source.contains("optionalIpv6SocketDraftError(uiState.advertiseDraft"));
+        assert!(source.contains("function disambiguatedMemberLabel"));
+        assert!(source.contains("function disambiguatedRoleLabel"));
+        assert!(source.contains("function disambiguatedChannelLabel"));
+        assert!(source.contains("function disambiguatedInviteLabel"));
+        assert!(source.contains("function disambiguatedMessageLabel"));
+        assert!(source.contains("function customizationResetConfirmation"));
+        assert!(source.contains("function availabilityButton"));
+        assert!(source.contains(
+            "function preferenceForm(preference, input, request, isChanged, readDraft, showId)"
+        ));
+        assert!(source.contains("memberBanConfirmation(profile, memberLabel)"));
+        assert!(source.contains("roleAssignmentConfirmation("));
+        assert!(source.contains("roleLabel,"));
+    }
+
+    #[test]
     fn visible_projection_retains_only_the_latest_bounded_items() {
         let mut items = vec![1, 2, 3, 4];
         retain_latest(&mut items, 2);
         assert_eq!(items, vec![3, 4]);
+    }
+
+    #[test]
+    fn anchored_projection_retains_an_old_selected_item_within_the_bound() {
+        let mut items: Vec<usize> = (0..1_000).collect();
+        retain_window_around_index(&mut items, 10, 100);
+        assert_eq!(items.len(), 100);
+        assert!(items.contains(&10));
+        assert_eq!(items.first(), Some(&0));
+
+        let mut middle: Vec<usize> = (0..1_000).collect();
+        retain_window_around_index(&mut middle, 600, 100);
+        assert_eq!(middle.len(), 100);
+        assert!(middle.contains(&600));
+        assert_eq!(middle.first(), Some(&550));
     }
 
     #[cfg(unix)]
@@ -6447,10 +9789,467 @@ mod tests {
             serde_json::json!({"target_event_id":post.event_id}),
         )
         .expect("redact");
-        let projected = project_messages(vec![post, redact]);
+        let projected = project_messages(vec![post, redact], 10_000);
         assert_eq!(projected.len(), 1);
         assert!(projected[0].redacted);
         assert_eq!(projected[0].text, "Message removed");
+    }
+
+    #[test]
+    fn concurrent_handled_results_project_as_a_deterministic_conflict() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let delegation = || {
+            create_delegation(&identity, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("delegation")
+        };
+        let target = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            1,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"task","mentions":[]}),
+        )
+        .expect("target");
+        let result_a = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            2,
+            "MSG_POST",
+            vec![target.event_id.clone()],
+            serde_json::json!({"text":"result a","mentions":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id}),
+        )
+        .expect("result a");
+        let result_b = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            2,
+            "MSG_POST",
+            vec![target.event_id.clone()],
+            serde_json::json!({"text":"result b","mentions":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id}),
+        )
+        .expect("result b");
+        let ack_a = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            3,
+            "MSG_ACK",
+            vec![result_a.event_id.clone()],
+            serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":result_a.event_id}),
+        )
+        .expect("ack a");
+        let ack_b = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            3,
+            "MSG_ACK",
+            vec![result_b.event_id.clone()],
+            serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":result_b.event_id}),
+        )
+        .expect("ack b");
+        let forward = project_messages(
+            vec![
+                target.clone(),
+                result_a.clone(),
+                result_b.clone(),
+                ack_a.clone(),
+                ack_b.clone(),
+            ],
+            10_000,
+        );
+        let reverse = project_messages(vec![target, result_b, result_a, ack_b, ack_a], 10_000);
+        assert_eq!(forward, reverse);
+        let acknowledgement = &forward[0].acknowledgements[0];
+        assert!(acknowledgement.result_conflict);
+        assert_eq!(acknowledgement.result_event_ids.len(), 2);
+    }
+
+    #[test]
+    fn continuation_expiry_is_unknown_and_concurrent_updates_conflict() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let delegation = || {
+            create_delegation(&identity, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("delegation")
+        };
+        let target = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            1,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"continue?","mentions":[]}),
+        )
+        .expect("target");
+        let continuing = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            2,
+            "MSG_CONTINUATION",
+            vec![target.event_id.clone()],
+            serde_json::json!({
+                "target_event_id": target.event_id,
+                "state": "continuing",
+                "lease_ms": 60_000,
+                "supersedes_event_ids": [],
+                "client_request_id": "continuation-a"
+            }),
+        )
+        .expect("continuing");
+        let expired = project_messages(vec![target.clone(), continuing.clone()], 70_000);
+        let expired_view = &expired[0].continuations[0];
+        assert_eq!(
+            expired_view.state,
+            MessageContinuationProjectionState::Unknown
+        );
+        assert!(expired_view.overdue);
+
+        let declined = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            3,
+            "MSG_CONTINUATION",
+            vec![target.event_id.clone()],
+            serde_json::json!({
+                "target_event_id": target.event_id,
+                "state": "declined",
+                "lease_ms": null,
+                "supersedes_event_ids": [],
+                "client_request_id": "continuation-b"
+            }),
+        )
+        .expect("declined");
+        let forward = project_messages(
+            vec![target.clone(), continuing.clone(), declined.clone()],
+            10_000,
+        );
+        let reverse = project_messages(vec![target, declined, continuing], 10_000);
+        assert_eq!(forward, reverse);
+        let conflict = &forward[0].continuations[0];
+        assert_eq!(conflict.state, MessageContinuationProjectionState::Conflict);
+        assert_eq!(conflict.head_event_ids.len(), 2);
+    }
+
+    #[test]
+    fn participant_actionability_uses_causality_not_time_or_input_order() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let delegation = || {
+            create_delegation(&identity, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("delegation")
+        };
+        let target = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            100,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"work","mentions":[]}),
+        )
+        .expect("target");
+        let continuing = create_event(&identity, delegation(), "room:test", 500, "MSG_CONTINUATION", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"continuing","lease_ms":60_000,"supersedes_event_ids":[],"client_request_id":"causal-continuing"})).expect("continuing");
+        let handled = create_event(&identity, delegation(), "room:test", 200, "MSG_ACK", vec![continuing.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":null})).expect("handled");
+
+        let forward = project_messages(
+            vec![target.clone(), continuing.clone(), handled.clone()],
+            1_000,
+        );
+        let reverse = project_messages(
+            vec![handled.clone(), continuing.clone(), target.clone()],
+            1_000,
+        );
+        assert_eq!(forward, reverse);
+        for permutation in [
+            vec![target.clone(), handled.clone(), continuing.clone()],
+            vec![continuing.clone(), target.clone(), handled.clone()],
+            vec![continuing.clone(), handled.clone(), target.clone()],
+            vec![handled.clone(), target.clone(), continuing.clone()],
+        ] {
+            assert_eq!(forward, project_messages(permutation, 1_000));
+        }
+        assert_eq!(
+            forward[0].participant_actionability[0].state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(!forward[0].participant_actionability[0].actionable);
+
+        let resumed = create_event(&identity, delegation(), "room:test", 150, "MSG_CONTINUATION", vec![handled.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"continuing","lease_ms":60_000,"supersedes_event_ids":[continuing.event_id],"client_request_id":"causal-resumed"})).expect("resumed");
+        let resumed_projection = project_messages(
+            vec![target.clone(), handled.clone(), resumed, continuing.clone()],
+            1_000,
+        );
+        assert_eq!(
+            resumed_projection[0].participant_actionability[0].state,
+            MessageParticipantActionabilityState::Continuing
+        );
+        assert!(resumed_projection[0].participant_actionability[0].actionable);
+
+        let concurrent_handled = create_event(&identity, delegation(), "room:test", 50, "MSG_ACK", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":null})).expect("concurrent handled");
+        let conflict = project_messages(vec![target, continuing, concurrent_handled], 1_000);
+        assert_eq!(
+            conflict[0].participant_actionability[0].state,
+            MessageParticipantActionabilityState::Conflict
+        );
+        assert!(!conflict[0].participant_actionability[0].actionable);
+    }
+
+    #[test]
+    fn own_later_decline_explanation_does_not_reawaken_but_other_actor_reply_does() {
+        let actor = PeerIdentity::generate().expect("actor");
+        let other = PeerIdentity::generate().expect("other");
+        let actor_delegation = || {
+            create_delegation(&actor, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("actor delegation")
+        };
+        let other_delegation = || {
+            create_delegation(&other, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("other delegation")
+        };
+        let target = create_event(&actor, actor_delegation(), "room:test", 500, "MSG_POST", vec![], serde_json::json!({"text":"delegated work","mentions":[],"thread_root_event_id":null,"in_reply_to_event_id":null})).expect("target");
+        let declined = create_event(&actor, actor_delegation(), "room:test", 100, "MSG_CONTINUATION", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"declined","lease_ms":null,"supersedes_event_ids":[],"client_request_id":"decline-own-explanation"})).expect("declined");
+        let own_reason = create_event(&actor, actor_delegation(), "room:test", 50, "MSG_POST", vec![declined.event_id.clone()], serde_json::json!({"text":"I cannot do this","mentions":[],"addressed_origin_session_ids":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id})).expect("own reason");
+        let expected = project_messages(
+            vec![target.clone(), declined.clone(), own_reason.clone()],
+            1_000,
+        );
+        for permutation in [
+            vec![own_reason.clone(), target.clone(), declined.clone()],
+            vec![declined.clone(), own_reason.clone(), target.clone()],
+            vec![declined.clone(), target.clone(), own_reason.clone()],
+        ] {
+            assert_eq!(expected, project_messages(permutation, 1_000));
+        }
+        let actionability = &expected
+            .iter()
+            .find(|message| message.event_id == target.event_id)
+            .expect("target projection")
+            .participant_actionability[0];
+        assert_eq!(
+            actionability.state,
+            MessageParticipantActionabilityState::Declined
+        );
+        assert!(!actionability.actionable);
+        assert!(actionability.uncovered_reply_event_ids.is_empty());
+
+        let other_reply = create_event(&other, other_delegation(), "room:test", 25, "MSG_POST", vec![declined.event_id.clone()], serde_json::json!({"text":"please reconsider","mentions":[],"addressed_origin_session_ids":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id})).expect("other reply");
+        let woken = project_messages(
+            vec![other_reply.clone(), own_reason, declined, target.clone()],
+            1_000,
+        );
+        let actionability = &woken
+            .iter()
+            .find(|message| message.event_id == target.event_id)
+            .expect("woken target")
+            .participant_actionability[0];
+        assert!(actionability.actionable);
+        assert_eq!(
+            actionability.uncovered_reply_event_ids,
+            vec![other_reply.event_id]
+        );
+
+        let session_capability = [0x44; 32];
+        let session_cert = create_origin_session_cert(
+            &actor,
+            &session_capability,
+            OriginSurfaceProtocolV1::Inhabitant,
+            Some("Actor".to_string()),
+            0,
+            i64::MAX,
+        )
+        .expect("origin cert");
+        let session_id = session_cert.session_id.clone();
+        let origin = |request_id: &str| FactOriginV1 {
+            session_cert: session_cert.clone(),
+            request_id: request_id.to_string(),
+        };
+        let addressed_decline = create_event_with_origin(
+            &actor,
+            actor_delegation(),
+            EventDraft {
+                room_id: "room:test".to_string(),
+                created_ms: 10,
+                kind: "MSG_CONTINUATION".to_string(),
+                parents: vec![target.event_id.clone()],
+                origin: Some(origin("addressed-decline")),
+                body: serde_json::json!({"target_event_id":target.event_id,"state":"declined","lease_ms":null,"supersedes_event_ids":[],"client_request_id":"addressed-decline"}),
+            },
+        )
+        .expect("addressed decline");
+        let addressed_back = create_event_with_origin(
+            &actor,
+            actor_delegation(),
+            EventDraft {
+                room_id: "room:test".to_string(),
+                created_ms: 5,
+                kind: "MSG_POST".to_string(),
+                parents: vec![addressed_decline.event_id.clone()],
+                origin: Some(origin("addressed-back")),
+                body: serde_json::json!({"text":"reconsider my decline","mentions":[],"addressed_origin_session_ids":[session_id],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id}),
+            },
+        )
+        .expect("addressed back");
+        let addressed_projection = project_messages(
+            vec![target.clone(), addressed_decline, addressed_back.clone()],
+            1_000,
+        );
+        let addressed_actionability = &addressed_projection
+            .iter()
+            .find(|message| message.event_id == target.event_id)
+            .expect("addressed target")
+            .participant_actionability[0];
+        assert!(addressed_actionability.actionable);
+        assert_eq!(
+            addressed_actionability.uncovered_reply_event_ids,
+            vec![addressed_back.event_id]
+        );
+    }
+
+    #[test]
+    fn reply_coverage_is_causal_and_bound_results_are_covered() {
+        let identity = PeerIdentity::generate().expect("identity");
+        let delegation = || {
+            create_delegation(&identity, 0, i64::MAX, vec!["room:post".to_string()])
+                .expect("delegation")
+        };
+        let target = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            100,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"work","mentions":[]}),
+        )
+        .expect("target");
+        let reply = create_event(&identity, delegation(), "room:test", 500, "MSG_POST", vec![target.event_id.clone()], serde_json::json!({"text":"reply","mentions":[],"thread_root_event_id":target.event_id,"in_reply_to_event_id":target.event_id})).expect("reply");
+        let covered = create_event(&identity, delegation(), "room:test", 200, "MSG_ACK", vec![reply.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"observed","result_event_id":null})).expect("covered");
+        assert!(!has_uncovered_reply(
+            &[covered.clone(), reply.clone(), target.clone()],
+            &target.event_id,
+            &identity.peer_id
+        ));
+        let covered_projection =
+            project_messages(vec![covered.clone(), reply.clone(), target.clone()], 1_000);
+        let covered_actionability = &covered_projection[0].participant_actionability[0];
+        assert_eq!(
+            covered_actionability.state,
+            MessageParticipantActionabilityState::Unknown
+        );
+        assert!(!covered_actionability.actionable);
+        assert!(covered_actionability.uncovered_reply_event_ids.is_empty());
+
+        let concurrent = create_event(&identity, delegation(), "room:test", 50, "MSG_ACK", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"observed","result_event_id":null})).expect("concurrent");
+        assert!(has_uncovered_reply(
+            &[target.clone(), concurrent.clone(), reply.clone()],
+            &target.event_id,
+            &identity.peer_id
+        ));
+        let concurrent_input = vec![target.clone(), concurrent.clone(), reply.clone()];
+        let concurrent_projection = project_messages(concurrent_input.clone(), 1_000);
+        for mut permutation in [
+            concurrent_input.clone(),
+            vec![reply.clone(), target.clone(), concurrent.clone()],
+            vec![concurrent.clone(), reply.clone(), target.clone()],
+        ] {
+            permutation.reverse();
+            assert_eq!(concurrent_projection, project_messages(permutation, 1_000));
+        }
+        let concurrent_actionability = &concurrent_projection[0].participant_actionability[0];
+        assert_eq!(
+            concurrent_actionability.state,
+            MessageParticipantActionabilityState::Unknown
+        );
+        assert!(concurrent_actionability.actionable);
+        assert_eq!(
+            concurrent_actionability.actionable_reasons,
+            vec![MessageParticipantActionabilityReason::ReplyNotCoveredByDisposition]
+        );
+        assert_eq!(
+            concurrent_actionability.uncovered_reply_event_ids,
+            vec![reply.event_id.clone()]
+        );
+        assert_eq!(
+            concurrent_actionability.uncovered_reply_event_ids_omitted_count,
+            0
+        );
+
+        let bound = create_event(&identity, delegation(), "room:test", 50, "MSG_ACK", vec![target.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":reply.event_id})).expect("bound");
+        assert!(!has_uncovered_reply(
+            &[target.clone(), reply.clone(), bound.clone()],
+            &target.event_id,
+            &identity.peer_id
+        ));
+        let bound_projection = project_messages(vec![target.clone(), reply.clone(), bound], 1_000);
+        let bound_actionability = &bound_projection[0].participant_actionability[0];
+        assert_eq!(
+            bound_actionability.state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(!bound_actionability.actionable);
+        assert!(bound_actionability.uncovered_reply_event_ids.is_empty());
+
+        let covering_handled = create_event(&identity, delegation(), "room:test", 25, "MSG_ACK", vec![concurrent.event_id.clone(), reply.event_id.clone()], serde_json::json!({"target_event_id":target.event_id,"state":"handled","result_event_id":null})).expect("covering handled");
+        let covered_later =
+            project_messages(vec![target, concurrent, reply, covering_handled], 1_000);
+        let covered_later_actionability = &covered_later[0].participant_actionability[0];
+        assert_eq!(
+            covered_later_actionability.state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(!covered_later_actionability.actionable);
+        assert!(covered_later_actionability
+            .uncovered_reply_event_ids
+            .is_empty());
+
+        let bounded_target = create_event(
+            &identity,
+            delegation(),
+            "room:test",
+            1_000,
+            "MSG_POST",
+            vec![],
+            serde_json::json!({"text":"bounded work","mentions":[]}),
+        )
+        .expect("bounded target");
+        let bounded_disposition = create_event(&identity, delegation(), "room:test", 2_000, "MSG_ACK", vec![bounded_target.event_id.clone()], serde_json::json!({"target_event_id":bounded_target.event_id,"state":"observed","result_event_id":null})).expect("bounded disposition");
+        let mut bounded_events = vec![bounded_target, bounded_disposition];
+        for index in 0..(MAX_COORDINATION_RESULT_IDS + 2) {
+            let target_event_id = bounded_events[0].event_id.clone();
+            bounded_events.push(
+                create_event(
+                    &identity,
+                    delegation(),
+                    "room:test",
+                    3_000 + index as i64,
+                    "MSG_POST",
+                    vec![target_event_id.clone()],
+                    serde_json::json!({
+                        "text": format!("follow-up {index}"),
+                        "mentions": [],
+                        "thread_root_event_id": target_event_id,
+                        "in_reply_to_event_id": target_event_id
+                    }),
+                )
+                .expect("bounded reply"),
+            );
+        }
+        let bounded_projection = project_messages(bounded_events, 10_000);
+        let bounded_actionability = &bounded_projection[0].participant_actionability[0];
+        assert_eq!(
+            bounded_actionability.uncovered_reply_event_ids.len(),
+            MAX_COORDINATION_RESULT_IDS
+        );
+        assert_eq!(
+            bounded_actionability.uncovered_reply_event_ids_omitted_count,
+            2
+        );
     }
 
     #[test]
@@ -6683,6 +10482,7 @@ mod tests {
         assert_eq!(joined.profile.authority_peer_id, alice_profile.peer_id);
         assert_eq!(joined.peers_reached, 1);
         assert!(joined.events_pushed >= 1, "{joined:?}");
+        assert_eq!(bob.profiles().expect("bob profiles").len(), 2);
         assert!(bob
             .read_messages(None)
             .expect("bob history")
@@ -6784,7 +10584,8 @@ mod tests {
     #[tokio::test]
     async fn private_room_is_ciphertext_for_members_only_and_survives_recovery() {
         let dir = tempdir().expect("tempdir");
-        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let alice_root = dir.path().join("alice");
+        let alice = VoxelleHome::new(&alice_root);
         let bob = VoxelleHome::new(dir.path().join("bob"));
         let charlie = VoxelleHome::new(dir.path().join("charlie"));
         let recovered = VoxelleHome::new(dir.path().join("alice-recovered"));
@@ -6826,6 +10627,14 @@ mod tests {
             .and_then(serde_json::Value::as_str)
             .expect("room id")
             .to_string();
+        let created_channel = alice
+            .channels(None)
+            .expect("created channel projection")
+            .into_iter()
+            .find(|channel| channel.room_id == room_id)
+            .expect("private channel");
+        assert_eq!(created_channel.key_epoch, 1);
+        assert_eq!(created_channel.private_member_count, 2);
         let sent = alice
             .send_message("e2e secret phrase", Some(&room_id))
             .expect("private send");
@@ -6854,11 +10663,130 @@ mod tests {
             bob.read_messages(Some(&room_id)).expect("bob decrypts")[0].text,
             "e2e secret phrase"
         );
+        let private_origin_id = format!(
+            "os:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x33_u8; 32])
+        );
+        let private_result = bob
+            .send_message_with_metadata(SendMessageRequest {
+                text: "private ordinary result".to_string(),
+                room: Some(room_id.clone()),
+                mentions: Vec::new(),
+                addressed_origin_session_ids: vec![private_origin_id.clone()],
+                thread_root_event_id: Some(sent.event_id.clone()),
+                in_reply_to_event_id: Some(sent.event_id.clone()),
+                client_request_id: Some("private-result-001".to_string()),
+            })
+            .expect("bob private result");
+        assert_eq!(private_result.kind, "ROOM_ENCRYPTED");
+        assert!(!serde_json::to_string(&private_result)
+            .expect("private result event json")
+            .contains(&private_origin_id));
+        let private_result_id = bob
+            .read_messages(Some(&room_id))
+            .expect("bob result projection")
+            .into_iter()
+            .find(|message| {
+                message.text == "private ordinary result"
+                    && message.addressed_origin_session_ids == vec![private_origin_id.clone()]
+            })
+            .expect("private result message")
+            .event_id;
+        let private_channel = bob
+            .channels(Some(&room_id))
+            .expect("private channel projection")
+            .into_iter()
+            .find(|channel| channel.room_id == room_id)
+            .expect("private channel");
+        let private_high_water = bob
+            .open_store()
+            .expect("bob store")
+            .local_fact_high_water()
+            .expect("private high water");
+        let private_owner_items = project_resident_changed_threads(
+            bob.decrypted_room_events_with_sequence(&room_id)
+                .expect("decrypted private facts"),
+            now_ms(),
+            0,
+            private_high_water,
+            &private_channel,
+            &private_origin_id,
+        );
+        assert!(private_owner_items.iter().any(|item| {
+            item.owner_attention.iter().any(|attention| {
+                attention.target_event_id == private_result_id
+                    && attention.state == ResidentOwnerAttentionState::Unreviewed
+                    && attention.review_required
+            })
+        }));
+        let private_ack = bob
+            .acknowledge_message(&AcknowledgeMessageRequest {
+                target_event_id: sent.event_id.clone(),
+                room: Some(room_id.clone()),
+                state: MessageAcknowledgementState::Handled,
+                result_event_id: Some(private_result_id.clone()),
+            })
+            .expect("bob private acknowledgement");
+        assert_eq!(private_ack.kind, "ROOM_ENCRYPTED");
+        let private_continuation = bob
+            .update_message_continuation(&UpdateMessageContinuationRequest {
+                target_event_id: sent.event_id.clone(),
+                room: Some(room_id.clone()),
+                state: MessageContinuationState::Continuing,
+                lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "private-continuation-001".to_string(),
+            })
+            .expect("bob private continuation");
+        assert_eq!(private_continuation.kind, "ROOM_ENCRYPTED");
+        let raw_bob_room = bob
+            .open_store()
+            .expect("bob store")
+            .room_events(&room_id)
+            .expect("bob encrypted room events");
+        let raw_bob_json = serde_json::to_string(&raw_bob_room).expect("raw private json");
+        assert!(!raw_bob_json.contains("private ordinary result"));
+        assert!(raw_bob_room
+            .iter()
+            .all(|event| event.kind == "ROOM_ENCRYPTED"));
+        assert!(raw_bob_room.iter().all(|event| {
+            event.body.get("target_event_id").is_none()
+                && event.body.get("result_event_id").is_none()
+                && event.body.get("state").is_none()
+                && event.body.get("lease_ms").is_none()
+                && event.body.get("supersedes_event_ids").is_none()
+        }));
+        bob.sync_peer(&alice_record, 4096)
+            .await
+            .expect("bob pushes private result and acknowledgement");
+        let alice_private = alice
+            .read_messages(Some(&room_id))
+            .expect("alice private result projection");
+        let acknowledged = alice_private
+            .iter()
+            .find(|message| message.event_id == sent.event_id)
+            .expect("private target");
+        assert_eq!(
+            acknowledged.acknowledgements[0].result_event_ids,
+            vec![private_result_id]
+        );
+        assert_eq!(
+            acknowledged.continuations[0].state,
+            MessageContinuationProjectionState::Continuing
+        );
         alice
             .rotate_channel_key(&RotateChannelKeyRequest {
                 room_id: room_id.clone(),
             })
             .expect("rotate key epoch");
+        let rotated_channel = VoxelleHome::new(&alice_root)
+            .channels(None)
+            .expect("restart channel projection")
+            .into_iter()
+            .find(|channel| channel.room_id == room_id)
+            .expect("rotated channel");
+        assert_eq!(rotated_channel.key_epoch, 2);
+        assert_eq!(rotated_channel.private_member_count, 2);
         alice
             .send_message("secret after rotation", Some(&room_id))
             .expect("send under new epoch");
@@ -6868,8 +10796,8 @@ mod tests {
         let bob_messages = bob
             .read_messages(Some(&room_id))
             .expect("both epochs decrypt");
-        assert_eq!(bob_messages.len(), 2);
-        assert_eq!(bob_messages[1].text, "secret after rotation");
+        assert_eq!(bob_messages.len(), 3);
+        assert_eq!(bob_messages[2].text, "secret after rotation");
         charlie
             .sync_peer(&alice_record, 4096)
             .await
@@ -6907,7 +10835,7 @@ mod tests {
         assert_eq!(
             recovered
                 .read_messages(Some(&room_id))
-                .expect("recovered decrypts")[1]
+                .expect("recovered decrypts")[2]
                 .text,
             "secret after rotation"
         );
@@ -6924,14 +10852,55 @@ mod tests {
 
         assert!(ontology.places.iter().any(|place| place.id == "sidebar"));
         assert!(ontology.views.iter().any(|view| view.id == "room.timeline"));
+        for view_id in ["room.timeline", "message.composer", "channel.list"] {
+            assert!(
+                ontology
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+                    .expect("ordinary view")
+                    .visible
+            );
+        }
+        for view_id in [
+            "profile.summary",
+            "identity.recovery",
+            "runtime.status",
+            "network.health",
+            "field.test",
+            "product.update",
+            "invite.exchange",
+            "peer.list",
+            "member.profiles",
+            "role.list",
+            "message.search",
+            "notification.center",
+            "service.activity",
+        ] {
+            assert!(
+                !ontology
+                    .views
+                    .iter()
+                    .find(|view| view.id == view_id)
+                    .expect("progressively disclosed view")
+                    .visible
+            );
+        }
         assert!(ontology
             .commands
             .iter()
             .any(|command| command.id == "peer.sync"));
-        assert_eq!(semantic_token_value(&ontology, "peer.reachable"), "#18794e");
+        assert_eq!(
+            semantic_token_value(&ontology, "peer.reachable"),
+            "light-dark(#18794e, #63d69a)"
+        );
         assert_eq!(metric_value(&ontology, "sidebar.width"), 360.0);
         assert_eq!(
             behavior_value(&ontology, "timestamps.visible"),
+            UiBehaviorValue::Bool(true)
+        );
+        assert_eq!(
+            behavior_value(&ontology, "runtime.startOnlineOnLaunch"),
             UiBehaviorValue::Bool(true)
         );
         assert!(ontology
@@ -7055,7 +11024,10 @@ mod tests {
             .reset_all_ui_preferences()
             .expect("reset all preferences");
         let defaults = reopened.ui_ontology().expect("default ontology");
-        assert_eq!(semantic_token_value(&defaults, "peer.reachable"), "#18794e");
+        assert_eq!(
+            semantic_token_value(&defaults, "peer.reachable"),
+            "light-dark(#18794e, #63d69a)"
+        );
         assert_eq!(
             behavior_value(&defaults, "timestamps.style"),
             UiBehaviorValue::Text("relative".to_string())
@@ -7095,6 +11067,12 @@ mod tests {
                 value: UiBehaviorValue::Text("yes".to_string()),
             })
             .is_err());
+        assert!(home
+            .set_ui_preference(SetUiPreferenceRequest::Behavior {
+                id: "timestamps.style".to_string(),
+                value: UiBehaviorValue::Text("sometimes".to_string()),
+            })
+            .is_err());
     }
 
     #[test]
@@ -7106,7 +11084,7 @@ mod tests {
 
         assert_eq!(snapshot.home_root, dir.path().join("home"));
         assert!(snapshot.home.is_none());
-        assert!(snapshot.home_error.is_some());
+        assert!(snapshot.home_error.is_none());
         assert_eq!(
             network_health_status(&snapshot.network_health, "home"),
             NetworkHealthStatus::NeedsAttention
@@ -7139,7 +11117,10 @@ mod tests {
                 text: "from command host".to_string(),
                 room: None,
                 mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
                 thread_root_event_id: None,
+                in_reply_to_event_id: None,
+                client_request_id: None,
             })
             .await
             .expect("send");
@@ -7207,6 +11188,1379 @@ mod tests {
             .iter()
             .any(|item| item.summary.starts_with("served sync:")));
         alice.stop_service().expect("stop");
+
+        let degraded = bob
+            .diagnose_peer(request)
+            .await
+            .expect("unreachable diagnostic remains a snapshot observation");
+        let reachability = network_health_row(&degraded.network_health, "reachability");
+        assert_eq!(reachability.status, NetworkHealthStatus::Broken);
+        assert!(reachability.summary.contains("could not complete"));
+        assert_eq!(
+            reachability.primary_action.as_deref(),
+            Some("peer.diagnose")
+        );
+        assert!(reachability.primary_action_payload.is_some());
+
+        let alice_restarted = alice
+            .start_service(StartServiceRequest {
+                bind: None,
+                advertise: None,
+            })
+            .expect("restart alice");
+        let fresh_record = alice_restarted
+            .home
+            .as_ref()
+            .expect("alice home")
+            .invite
+            .as_ref()
+            .expect("alice invite")
+            .peer_record_json
+            .clone();
+        let imported = bob
+            .import_peer_record(ImportPeerRecordRequest {
+                peer_record_json: fresh_record,
+            })
+            .expect("replace stale endpoint");
+        let fresh_peer = &imported.home.as_ref().expect("bob home").peers[0];
+        let recovered = bob
+            .diagnose_peer(PeerCommandRequest {
+                peer_id: fresh_peer.peer_id.clone(),
+                device_id: fresh_peer.device_id.clone(),
+                max_events: Some(64),
+            })
+            .await
+            .expect("retry fresh endpoint");
+        assert_eq!(
+            network_health_status(&recovered.network_health, "reachability"),
+            NetworkHealthStatus::NeedsAttention
+        );
+        alice.stop_service().expect("stop restarted alice");
+    }
+
+    #[tokio::test]
+    async fn command_host_projects_and_revokes_active_invites() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        host.start_service(StartServiceRequest {
+            bind: None,
+            advertise: None,
+        })
+        .expect("online");
+
+        let created = host
+            .create_space_invite(CreateSpaceInviteRequest {
+                expires_minutes: Some(7 * 24 * 60),
+            })
+            .expect("create invite");
+        let invite = created.home.expect("home").active_invites;
+        assert_eq!(invite.len(), 1);
+        let invite_id = invite[0].invite_id.clone();
+        assert!(host.last_space_invite_json.is_some());
+
+        let revoked = host
+            .revoke_space_invite(RevokeSpaceInviteRequest {
+                invite_id: invite_id.clone(),
+            })
+            .await
+            .expect("revoke invite");
+        assert!(revoked.home.expect("home").active_invites.is_empty());
+        assert!(host.last_space_invite_json.is_none());
+        assert!(host
+            .activity
+            .iter()
+            .any(|item| { item.summary == format!("revoked signed space invite {invite_id}") }));
+        assert!(VoxelleHome::new(&home_root)
+            .active_invites()
+            .expect("restart projection")
+            .is_empty());
+        host.stop_service().expect("stop");
+    }
+
+    #[tokio::test]
+    async fn go_online_reconfigures_an_online_service_when_addresses_are_supplied() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init and start");
+
+        let advertised = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 42424);
+        let snapshot = host
+            .start_service(StartServiceRequest {
+                bind: Some(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0)),
+                advertise: Some(advertised),
+            })
+            .expect("reconfigure online service");
+
+        assert_eq!(
+            snapshot.home.expect("home").runtime.advertised_addr,
+            Some(advertised)
+        );
+        assert!(host
+            .activity
+            .iter()
+            .any(|item| { item.summary == "service stopped for address reconfiguration" }));
+        host.stop_service().expect("stop service");
+    }
+
+    #[tokio::test]
+    async fn coordination_frontier_survives_selection_read_and_restart() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
+        let initialized = host
+            .init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let general_room = initialized.home.expect("home").profile.default_room;
+        let human_origin = host
+            .issue_origin_context(
+                &[0x71; 32],
+                OriginSurfaceProtocolV1::NativeWebview,
+                Some("Human".to_string()),
+                "frontier-human-follow-up".to_string(),
+            )
+            .expect("human follow-up origin");
+
+        let created = host
+            .create_channel(CreateChannelRequest {
+                name: "ops".to_string(),
+                topic: "coordination".to_string(),
+                private_members: Vec::new(),
+            })
+            .await
+            .expect("create ops");
+        let ops_room = created.home.expect("home").room.room_id;
+        let ops_target = host
+            .send_message(SendMessageRequest {
+                text: "continue in ops".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: None,
+                in_reply_to_event_id: None,
+                client_request_id: Some("frontier-ops-target-001".to_string()),
+            })
+            .await
+            .expect("ops target")
+            .home
+            .expect("home")
+            .room
+            .messages[0]
+            .event_id
+            .clone();
+        host.update_message_continuation(UpdateMessageContinuationRequest {
+            target_event_id: ops_target.clone(),
+            room: Some(ops_room.clone()),
+            state: MessageContinuationState::Continuing,
+            lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+            supersedes_event_ids: Vec::new(),
+            client_request_id: "frontier-ops-continuation-001".to_string(),
+        })
+        .await
+        .expect("continue ops");
+        host.send_message(SendMessageRequest {
+            text: "newer ops reply".to_string(),
+            room: Some(ops_room.clone()),
+            mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
+            thread_root_event_id: Some(ops_target.clone()),
+            in_reply_to_event_id: Some(ops_target.clone()),
+            client_request_id: Some("frontier-ops-reply-001".to_string()),
+        })
+        .await
+        .expect("newer ops reply");
+        host.mark_read(MarkReadRequest {
+            room_id: Some(ops_room.clone()),
+        })
+        .expect("read ops");
+
+        host.select_channel(SelectChannelRequest {
+            room_id: general_room.clone(),
+        })
+        .expect("select general");
+        let general_target = host
+            .send_message(SendMessageRequest {
+                text: "handle in general".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: None,
+                in_reply_to_event_id: None,
+                client_request_id: Some("frontier-general-target-001".to_string()),
+            })
+            .await
+            .expect("general target")
+            .home
+            .expect("home")
+            .room
+            .messages[0]
+            .event_id
+            .clone();
+        let result_event_id = host
+            .send_message(SendMessageRequest {
+                text: "ordinary handled result".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: Some(general_target.clone()),
+                in_reply_to_event_id: Some(general_target.clone()),
+                client_request_id: Some("frontier-general-result-001".to_string()),
+            })
+            .await
+            .expect("general result")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.text == "ordinary handled result")
+            .expect("result message")
+            .event_id;
+        host.acknowledge_message(AcknowledgeMessageRequest {
+            target_event_id: general_target.clone(),
+            room: Some(general_room.clone()),
+            state: MessageAcknowledgementState::Handled,
+            result_event_id: Some(result_event_id),
+        })
+        .await
+        .expect("handled general");
+        let follow_up_event_id = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "human follow-up after handled".to_string(),
+                    room: Some(general_room.clone()),
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: Some(general_target.clone()),
+                    in_reply_to_event_id: Some(general_target.clone()),
+                    client_request_id: Some("frontier-general-follow-up-001".to_string()),
+                },
+                &human_origin,
+            )
+            .await
+            .expect("follow-up after handled")
+            .home
+            .expect("follow-up home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.text == "human follow-up after handled")
+            .expect("follow-up message")
+            .event_id;
+        let general_snapshot = host
+            .mark_read(MarkReadRequest {
+                room_id: Some(general_room.clone()),
+            })
+            .expect("read general");
+        let general_frontier = general_snapshot
+            .home
+            .expect("general home")
+            .coordination_frontier;
+        assert_eq!(general_frontier.matching_count, 2);
+        let ops_item = general_frontier
+            .items
+            .iter()
+            .find(|item| item.target_event_id == ops_target)
+            .expect("ops frontier item");
+        assert!(ops_item
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ContinuationActive));
+        assert!(ops_item
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ReplyAfterLocalDisposition));
+        assert_eq!(ops_item.reply_count, 1);
+        assert!(ops_item.latest_reply_ms.is_some());
+        let general_item = general_frontier
+            .items
+            .iter()
+            .find(|item| item.target_event_id == general_target)
+            .expect("general frontier item");
+        assert!(general_item
+            .relevance
+            .contains(&CoordinationFrontierRelevance::HandledResultAvailable));
+        assert!(general_item
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ReplyAfterLocalDisposition));
+        let general_actionability = general_item
+            .local_actionability
+            .as_ref()
+            .expect("handled actionability with follow-up");
+        assert_eq!(
+            general_actionability.state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(general_actionability.actionable);
+        assert_eq!(
+            general_actionability.actionable_reasons,
+            vec![MessageParticipantActionabilityReason::ReplyNotCoveredByDisposition]
+        );
+        assert_eq!(
+            general_actionability.uncovered_reply_event_ids,
+            vec![follow_up_event_id]
+        );
+        assert!(general_frontier
+            .items
+            .iter()
+            .all(|item| !item.target_after_local_read_cursor));
+
+        let ops_frontier = host
+            .select_channel(SelectChannelRequest { room_id: ops_room })
+            .expect("select ops")
+            .home
+            .expect("ops home")
+            .coordination_frontier;
+        assert_eq!(ops_frontier, general_frontier);
+
+        drop(host);
+        let restarted = VoxelleCommandHost::new(&home_root)
+            .snapshot()
+            .expect("restart snapshot")
+            .home
+            .expect("restart home")
+            .coordination_frontier;
+        assert_eq!(restarted.items, general_frontier.items);
+        assert_eq!(restarted.matching_count, 2);
+    }
+
+    #[tokio::test]
+    async fn coordination_frontier_uses_private_room_projection() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        let initialized = host
+            .init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let peer_id = initialized.home.expect("home").profile.peer_id;
+        let created = host
+            .create_channel(CreateChannelRequest {
+                name: "private coordination".to_string(),
+                topic: String::new(),
+                private_members: vec![peer_id],
+            })
+            .await
+            .expect("create private room");
+        let room_id = created.home.expect("home").room.room_id;
+        let target_event_id = host
+            .send_message(SendMessageRequest {
+                text: "private continuation ".repeat(9).trim_end().to_string(),
+                room: Some(room_id.clone()),
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: None,
+                in_reply_to_event_id: None,
+                client_request_id: Some("frontier-private-target-001".to_string()),
+            })
+            .await
+            .expect("private target")
+            .home
+            .expect("home")
+            .room
+            .messages[0]
+            .event_id
+            .clone();
+        let snapshot = host
+            .update_message_continuation(UpdateMessageContinuationRequest {
+                target_event_id: target_event_id.clone(),
+                room: Some(room_id.clone()),
+                state: MessageContinuationState::Continuing,
+                lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "frontier-private-continuation-001".to_string(),
+            })
+            .await
+            .expect("private continuation");
+        let frontier = snapshot.home.expect("home").coordination_frontier;
+        assert_eq!(frontier.matching_count, 1);
+        assert_eq!(frontier.items[0].room_id, room_id);
+        assert_eq!(frontier.items[0].room_visibility, "private");
+        assert!(frontier.items[0].target_summary.ends_with('…'));
+        assert!(frontier.items[0].target_summary_truncated);
+        assert_eq!(frontier.items[0].target_summary_original_chars, 188);
+
+        let result_event_id = host
+            .send_message(SendMessageRequest {
+                text: "private result".to_string(),
+                room: Some(room_id.clone()),
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: Some(target_event_id.clone()),
+                in_reply_to_event_id: Some(target_event_id.clone()),
+                client_request_id: Some("frontier-private-result-001".to_string()),
+            })
+            .await
+            .expect("private result")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.text == "private result")
+            .expect("result message")
+            .event_id;
+        let handled = host
+            .acknowledge_message(AcknowledgeMessageRequest {
+                target_event_id,
+                room: Some(room_id),
+                state: MessageAcknowledgementState::Handled,
+                result_event_id: Some(result_event_id),
+            })
+            .await
+            .expect("private handled")
+            .home
+            .expect("home")
+            .coordination_frontier;
+        assert_eq!(
+            handled.items[0]
+                .local_actionability
+                .as_ref()
+                .expect("local actionability")
+                .state,
+            MessageParticipantActionabilityState::Handled
+        );
+        assert!(!handled.items[0]
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ContinuationActive));
+    }
+
+    #[test]
+    fn coordination_frontier_order_and_truncation_are_deterministic() {
+        let item =
+            |index: usize, relevance: CoordinationFrontierRelevance| CoordinationFrontierItemView {
+                room_id: format!("room:{:03}", index % 3),
+                room_name: "room".to_string(),
+                room_visibility: "public".to_string(),
+                target_event_id: format!("event:{index:03}"),
+                target_created_ms: index as i64,
+                target_author_peer_id: "peer:local".to_string(),
+                target_redacted: false,
+                target_summary: format!("message {index}"),
+                target_summary_truncated: false,
+                target_summary_original_chars: format!("message {index}").chars().count(),
+                local_principal_mentioned: false,
+                target_after_local_read_cursor: false,
+                reply_count: 0,
+                latest_reply_ms: None,
+                relevance: vec![relevance],
+                acknowledgements: Vec::new(),
+                acknowledgements_omitted_count: 0,
+                continuations: Vec::new(),
+                continuations_omitted_count: 0,
+                local_actionability: None,
+                latest_fact_ms: index as i64,
+            };
+        let mut input: Vec<_> = (0..257)
+            .map(|index| item(index, CoordinationFrontierRelevance::Handled))
+            .collect();
+        input.push(item(
+            999,
+            CoordinationFrontierRelevance::ContinuationOverdue,
+        ));
+        let forward = finalize_coordination_frontier(input.clone(), Some(42));
+        input.reverse();
+        let reverse = finalize_coordination_frontier(input, Some(42));
+
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.matching_count, 258);
+        assert_eq!(forward.items.len(), MAX_COORDINATION_FRONTIER_ITEMS);
+        assert_eq!(forward.omitted_count, 2);
+        assert!(forward.truncated);
+        assert_eq!(forward.next_projection_change_ms, Some(42));
+        assert_eq!(forward.items[0].target_event_id, "event:999");
+        assert!(forward.items[0]
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ContinuationOverdue));
+    }
+
+    #[tokio::test]
+    async fn automatic_service_binding_survives_a_clean_restart() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut first = VoxelleCommandHost::new(&home_root);
+        let initial = first
+            .init_home(InitHomeRequest { default_room: None })
+            .expect("initialize service");
+        let initial_runtime = initial.home.expect("home").runtime;
+        let initial_listen = initial_runtime.listen_addr.expect("listen address");
+        let initial_advertised = initial_runtime.advertised_addr.expect("advertised address");
+        assert_ne!(initial_listen.port(), 0);
+        first.stop_service().expect("clean stop");
+        drop(first);
+
+        let mut restarted = VoxelleCommandHost::new(&home_root);
+        let after_restart = restarted
+            .start_service(StartServiceRequest {
+                bind: None,
+                advertise: None,
+            })
+            .expect("restart on saved binding");
+        let restarted_runtime = after_restart.home.expect("home").runtime;
+        assert_eq!(restarted_runtime.listen_addr, Some(initial_listen));
+        assert_eq!(restarted_runtime.advertised_addr, Some(initial_advertised));
+        restarted.stop_service().expect("stop restarted service");
+    }
+
+    #[tokio::test]
+    async fn message_retry_and_acknowledgement_are_deterministic_coordination_facts() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let request = SendMessageRequest {
+            text: "coordinate this once".to_string(),
+            room: None,
+            mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
+            thread_root_event_id: None,
+            in_reply_to_event_id: None,
+            client_request_id: Some("request-0001".to_string()),
+        };
+        let first = host
+            .send_message(request.clone())
+            .await
+            .expect("first send");
+        let event_id = first.home.expect("home").room.messages[0].event_id.clone();
+        let retry = host.send_message(request.clone()).await.expect("retry");
+        assert_eq!(retry.home.expect("home").room.messages.len(), 1);
+
+        let mut conflicting = request;
+        conflicting.text = "different payload".to_string();
+        assert!(host.send_message(conflicting).await.is_err());
+
+        host.acknowledge_message(AcknowledgeMessageRequest {
+            target_event_id: event_id.clone(),
+            room: None,
+            state: MessageAcknowledgementState::Observed,
+            result_event_id: None,
+        })
+        .await
+        .expect("observed");
+        let result = host
+            .send_message(SendMessageRequest {
+                text: "ordinary threaded result".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: Some(event_id.clone()),
+                in_reply_to_event_id: Some(event_id.clone()),
+                client_request_id: Some("result-0001".to_string()),
+            })
+            .await
+            .expect("result reply");
+        let result_event_id = result
+            .home
+            .expect("result home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.text == "ordinary threaded result")
+            .expect("result message")
+            .event_id;
+        assert!(host
+            .acknowledge_message(AcknowledgeMessageRequest {
+                target_event_id: event_id.clone(),
+                room: None,
+                state: MessageAcknowledgementState::Observed,
+                result_event_id: Some(result_event_id.clone()),
+            })
+            .await
+            .is_err());
+        assert!(host
+            .acknowledge_message(AcknowledgeMessageRequest {
+                target_event_id: event_id.clone(),
+                room: None,
+                state: MessageAcknowledgementState::Handled,
+                result_event_id: Some(event_id.clone()),
+            })
+            .await
+            .is_err());
+        host.acknowledge_message(AcknowledgeMessageRequest {
+            target_event_id: event_id.clone(),
+            room: None,
+            state: MessageAcknowledgementState::Handled,
+            result_event_id: Some(result_event_id.clone()),
+        })
+        .await
+        .expect("handled");
+        let snapshot = host
+            .acknowledge_message(AcknowledgeMessageRequest {
+                target_event_id: event_id.clone(),
+                room: None,
+                state: MessageAcknowledgementState::Observed,
+                result_event_id: None,
+            })
+            .await
+            .expect("no regression");
+        let home = snapshot.home.expect("home");
+        let acknowledgements = &home.room.messages[0].acknowledgements;
+        assert_eq!(acknowledgements.len(), 1);
+        assert_eq!(
+            acknowledgements[0].state,
+            MessageAcknowledgementState::Handled
+        );
+        assert_eq!(acknowledgements[0].result_event_ids, vec![result_event_id]);
+        assert!(!acknowledgements[0].result_conflict);
+        assert_eq!(home.channels[0].unread_count, 0);
+        assert_eq!(
+            home.channels[0].last_read_event_id.as_deref(),
+            Some(event_id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn continuation_intent_is_bounded_idempotent_and_causally_released() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let sent = host
+            .send_message(SendMessageRequest {
+                text: "quiet coordination".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: None,
+                in_reply_to_event_id: None,
+                client_request_id: Some("continuation-target-001".to_string()),
+            })
+            .await
+            .expect("target");
+        let target_event_id = sent.home.expect("home").room.messages[0].event_id.clone();
+        let continuing = UpdateMessageContinuationRequest {
+            target_event_id: target_event_id.clone(),
+            room: None,
+            state: MessageContinuationState::Continuing,
+            lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+            supersedes_event_ids: Vec::new(),
+            client_request_id: "continuation-lease-001".to_string(),
+        };
+        let active = host
+            .update_message_continuation(continuing.clone())
+            .await
+            .expect("continuing");
+        let active_view = &active.home.expect("home").room.messages[0].continuations[0];
+        assert_eq!(
+            active_view.state,
+            MessageContinuationProjectionState::Continuing
+        );
+        assert!(!active_view.overdue);
+        let active_head = active_view.head_event_ids[0].clone();
+        let retried = host
+            .update_message_continuation(continuing.clone())
+            .await
+            .expect("idempotent retry");
+        assert_eq!(
+            retried.home.expect("home").room.messages[0].continuations[0].head_event_ids,
+            vec![active_head.clone()]
+        );
+        let mut conflict = continuing;
+        conflict.lease_ms = Some(MIN_CONTINUATION_LEASE_MS * 2);
+        assert!(host.update_message_continuation(conflict).await.is_err());
+
+        let released = host
+            .update_message_continuation(UpdateMessageContinuationRequest {
+                target_event_id,
+                room: None,
+                state: MessageContinuationState::Released,
+                lease_ms: None,
+                supersedes_event_ids: vec![active_head],
+                client_request_id: "continuation-release-001".to_string(),
+            })
+            .await
+            .expect("released");
+        let released_view = &released.home.expect("home").room.messages[0].continuations[0];
+        assert_eq!(
+            released_view.state,
+            MessageContinuationProjectionState::Released
+        );
+        assert!(!released_view.overdue);
+    }
+
+    #[tokio::test]
+    async fn resident_changed_threads_page_is_durable_bounded_and_commit_bound() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        host.open_resident_observation(OpenResidentObservationRequest {
+            consumer_id: "resident:alpha".to_string(),
+            start: ResidentObservationStartView::FromBeginning,
+        })
+        .expect("open consumer");
+        let initial = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: Some(1),
+            })
+            .expect("initial page");
+        host.commit_resident_observation(CommitResidentObservationRequest {
+            consumer_id: "resident:alpha".to_string(),
+            fact_high_water: initial.fact_high_water,
+            commit_token: initial.commit_token.expect("initial commit token"),
+        })
+        .expect("initial commit");
+
+        let first = host
+            .send_message(SendMessageRequest {
+                text: "Human request A".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: None,
+                in_reply_to_event_id: None,
+                client_request_id: Some("resident-thread-a".to_string()),
+            })
+            .await
+            .expect("first root");
+        let first_id = first.home.expect("home").room.messages[0].event_id.clone();
+        let reply = host
+            .send_message(SendMessageRequest {
+                text: "Agent result A".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: Some(first_id.clone()),
+                in_reply_to_event_id: Some(first_id.clone()),
+                client_request_id: Some("resident-result-a".to_string()),
+            })
+            .await
+            .expect("first reply");
+        let reply_id = reply
+            .home
+            .expect("home")
+            .room
+            .messages
+            .last()
+            .expect("reply")
+            .event_id
+            .clone();
+        host.acknowledge_message(AcknowledgeMessageRequest {
+            target_event_id: first_id,
+            room: None,
+            state: MessageAcknowledgementState::Handled,
+            result_event_id: Some(reply_id),
+        })
+        .await
+        .expect("handled");
+        let second = host
+            .send_message(SendMessageRequest {
+                text: "Human request B".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: None,
+                in_reply_to_event_id: None,
+                client_request_id: Some("resident-thread-b".to_string()),
+            })
+            .await
+            .expect("second root");
+        let second_id = second
+            .home
+            .expect("home")
+            .room
+            .messages
+            .last()
+            .expect("second")
+            .event_id
+            .clone();
+        host.update_message_continuation(UpdateMessageContinuationRequest {
+            target_event_id: second_id,
+            room: None,
+            state: MessageContinuationState::Continuing,
+            lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+            supersedes_event_ids: Vec::new(),
+            client_request_id: "resident-continuing-b".to_string(),
+        })
+        .await
+        .expect("continuing");
+
+        let first_page = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: Some(1),
+            })
+            .expect("first changed page");
+        assert!(first_page.has_more);
+        assert!(first_page.commit_token.is_none());
+        assert_eq!(first_page.items.len(), 1);
+        let second_page = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: Some(first_page.fact_high_water),
+                after_fact_sequence: first_page.next_after_fact_sequence,
+                limit: Some(1),
+            })
+            .expect("second changed page");
+        assert!(!second_page.has_more);
+        let mut all = first_page.items;
+        all.extend(second_page.items.clone());
+        assert_eq!(all.len(), 2);
+        let handled = all
+            .iter()
+            .find(|item| item.root.client_request_id.as_deref() == Some("resident-thread-a"))
+            .expect("handled thread");
+        assert_eq!(handled.replies.len(), 1);
+        assert_eq!(handled.replies[0].text, "Agent result A");
+        assert_eq!(
+            handled.root.acknowledgements[0].state,
+            MessageAcknowledgementState::Handled
+        );
+        let continuing = all
+            .iter()
+            .find(|item| item.root.client_request_id.as_deref() == Some("resident-thread-b"))
+            .expect("continuing thread");
+        assert_eq!(
+            continuing.root.continuations[0].state,
+            MessageContinuationProjectionState::Continuing
+        );
+        assert!(host
+            .commit_resident_observation(CommitResidentObservationRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: second_page.fact_high_water,
+                commit_token: "not-served".to_string(),
+            })
+            .expect_err("arbitrary commit rejected")
+            .to_string()
+            .contains("unavailable"));
+        host.commit_resident_observation(CommitResidentObservationRequest {
+            consumer_id: "resident:alpha".to_string(),
+            fact_high_water: second_page.fact_high_water,
+            commit_token: second_page.commit_token.expect("commit token"),
+        })
+        .expect("commit served high water");
+        let active_after_commit = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: None,
+            })
+            .expect("active owner attention after commit");
+        assert_eq!(active_after_commit.items.len(), 1);
+        assert!(active_after_commit.items[0]
+            .owner_attention
+            .iter()
+            .any(|attention| {
+                attention.state == ResidentOwnerAttentionState::Continuing
+                    && attention.work_actionable
+                    && !attention.review_required
+            }));
+        host.send_message(SendMessageRequest {
+            text: "Human request after checkpoint".to_string(),
+            room: None,
+            mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
+            thread_root_event_id: None,
+            in_reply_to_event_id: None,
+            client_request_id: Some("resident-thread-after-restart".to_string()),
+        })
+        .await
+        .expect("post-checkpoint root");
+        host.stop_service().expect("stop service");
+        drop(host);
+
+        let mut reopened = VoxelleCommandHost::new(&home_root);
+        reopened
+            .open_resident_observation(OpenResidentObservationRequest {
+                consumer_id: "resident:alpha".to_string(),
+                start: ResidentObservationStartView::FromBeginning,
+            })
+            .expect("reopen durable consumer");
+        let after_restart = reopened
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "resident:alpha".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: None,
+            })
+            .expect("page after restart");
+        assert!(after_restart.items.iter().any(|item| {
+            item.root.client_request_id.as_deref() == Some("resident-thread-after-restart")
+        }));
+        assert!(after_restart.items.iter().any(|item| {
+            item.owner_attention
+                .iter()
+                .any(|attention| attention.state == ResidentOwnerAttentionState::Continuing)
+        }));
+    }
+
+    #[tokio::test]
+    async fn resident_observation_is_owned_by_origin_across_collisions_and_restart() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let alpha_capability = [0x11; 32];
+        let beta_capability = [0x22; 32];
+        let mut host = VoxelleCommandHost::new(&home_root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let alpha = host
+            .issue_origin_context(
+                &alpha_capability,
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Alpha".to_string()),
+                "alpha-open".to_string(),
+            )
+            .expect("alpha origin");
+        let beta = host
+            .issue_origin_context(
+                &beta_capability,
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Beta".to_string()),
+                "beta-open".to_string(),
+            )
+            .expect("beta origin");
+        let open = OpenResidentObservationRequest {
+            consumer_id: "shared-consumer".to_string(),
+            start: ResidentObservationStartView::FromBeginning,
+        };
+        host.open_resident_observation_with_origin(open.clone(), &alpha)
+            .expect("alpha open");
+        let alpha_page = host
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: open.consumer_id.clone(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &alpha,
+            )
+            .expect("alpha page");
+        let alpha_token = alpha_page.commit_token.expect("alpha token");
+
+        assert!(host
+            .open_resident_observation_with_origin(open.clone(), &beta)
+            .expect_err("beta collision")
+            .to_string()
+            .contains("not open"));
+        assert!(host
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: open.consumer_id.clone(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &beta,
+            )
+            .expect_err("beta page")
+            .to_string()
+            .contains("not open"));
+        assert!(host
+            .commit_resident_observation_with_origin(
+                CommitResidentObservationRequest {
+                    consumer_id: open.consumer_id.clone(),
+                    fact_high_water: alpha_page.fact_high_water,
+                    commit_token: alpha_token.clone(),
+                },
+                &beta,
+            )
+            .expect_err("beta commit")
+            .to_string()
+            .contains("unavailable"));
+        assert!(!host
+            .release_resident_observation_with_origin(
+                ReleaseResidentObservationRequest {
+                    consumer_id: open.consumer_id.clone(),
+                },
+                &beta,
+            )
+            .expect("foreign release is hidden"));
+        host.commit_resident_observation_with_origin(
+            CommitResidentObservationRequest {
+                consumer_id: open.consumer_id.clone(),
+                fact_high_water: alpha_page.fact_high_water,
+                commit_token: alpha_token,
+            },
+            &alpha,
+        )
+        .expect("alpha token survives foreign attempts");
+
+        host.open_resident_observation_with_origin(
+            OpenResidentObservationRequest {
+                consumer_id: "beta-independent".to_string(),
+                start: ResidentObservationStartView::FromNow,
+            },
+            &beta,
+        )
+        .expect("independent beta consumer");
+        let unowned_origin_id = format!(
+            "os:{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0x44_u8; 32])
+        );
+        let addressed_request = SendMessageRequest {
+            text: "Beta, please inspect this thread".to_string(),
+            room: None,
+            mentions: Vec::new(),
+            addressed_origin_session_ids: vec![
+                unowned_origin_id.clone(),
+                beta.owner_origin_id().to_string(),
+            ],
+            thread_root_event_id: None,
+            in_reply_to_event_id: None,
+            client_request_id: Some("origin-address-beta-001".to_string()),
+        };
+        let sent = host
+            .send_message_with_origin(addressed_request.clone(), &alpha)
+            .await
+            .expect("addressed send");
+        let addressed_event_id = sent
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.client_request_id.as_deref() == Some("origin-address-beta-001"))
+            .expect("addressed message")
+            .event_id;
+        let mut reordered_retry = addressed_request.clone();
+        reordered_retry.addressed_origin_session_ids.reverse();
+        host.send_message_with_origin(reordered_retry, &alpha)
+            .await
+            .expect("exact addressed retry");
+        let mut conflict = addressed_request;
+        conflict.addressed_origin_session_ids = vec![alpha.owner_origin_id().to_string()];
+        assert!(host
+            .send_message_with_origin(conflict, &alpha)
+            .await
+            .expect_err("addressed retry conflict")
+            .to_string()
+            .contains("different message payload"));
+        host.update_message_continuation_with_origin(
+            UpdateMessageContinuationRequest {
+                target_event_id: addressed_event_id.clone(),
+                room: None,
+                state: MessageContinuationState::Declined,
+                lease_ms: None,
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "alpha-declines-addressed-001".to_string(),
+            },
+            &alpha,
+        )
+        .await
+        .expect("alpha declines for its own origin evidence");
+
+        let alpha_changed = host
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: "shared-consumer".to_string(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &alpha,
+            )
+            .expect("alpha sees all changed threads");
+        let alpha_item = alpha_changed
+            .items
+            .iter()
+            .find(|item| item.root.event_id == addressed_event_id)
+            .expect("alpha changed thread remains present");
+        assert!(!alpha_item.addressed_to_owner);
+        assert!(alpha_item.addressed_event_ids.is_empty());
+        let beta_changed = host
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: "beta-independent".to_string(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &beta,
+            )
+            .expect("beta page");
+        let beta_item = beta_changed
+            .items
+            .iter()
+            .find(|item| item.root.event_id == addressed_event_id)
+            .expect("beta changed thread");
+        assert!(beta_item.addressed_to_owner);
+        assert_eq!(
+            beta_item.addressed_event_ids,
+            vec![addressed_event_id.clone()]
+        );
+        assert_eq!(beta_item.owner_attention.len(), 1);
+        assert_eq!(
+            beta_item.owner_attention[0].state,
+            ResidentOwnerAttentionState::Unreviewed
+        );
+        assert!(beta_item.owner_attention[0].review_required);
+        assert!(!beta_item.owner_attention[0].work_actionable);
+        assert!(alpha_item.owner_attention.iter().any(|attention| {
+            attention.target_event_id == addressed_event_id
+                && attention.state == ResidentOwnerAttentionState::Declined
+        }));
+        host.update_message_continuation_with_origin(
+            UpdateMessageContinuationRequest {
+                target_event_id: addressed_event_id.clone(),
+                room: None,
+                state: MessageContinuationState::Declined,
+                lease_ms: None,
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "beta-declines-addressed-001".to_string(),
+            },
+            &beta,
+        )
+        .await
+        .expect("beta independently declines");
+        drop(host);
+
+        let mut restarted = VoxelleCommandHost::new(&home_root);
+        let alpha_after_restart = restarted
+            .issue_origin_context(
+                &alpha_capability,
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Alpha".to_string()),
+                "alpha-restart".to_string(),
+            )
+            .expect("alpha restart origin");
+        let beta_after_restart = restarted
+            .issue_origin_context(
+                &beta_capability,
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Beta".to_string()),
+                "beta-restart".to_string(),
+            )
+            .expect("beta restart origin");
+        let beta_restart_page = restarted
+            .resident_changed_threads_with_origin(
+                ResidentChangedThreadsRequest {
+                    consumer_id: "beta-independent".to_string(),
+                    fact_high_water: None,
+                    after_fact_sequence: None,
+                    limit: None,
+                },
+                &beta_after_restart,
+            )
+            .expect("addressed prioritization survives restart");
+        assert!(beta_restart_page
+            .items
+            .iter()
+            .any(|item| item.addressed_to_owner
+                && item.addressed_event_ids.contains(&addressed_event_id)));
+        assert!(beta_restart_page.items.iter().any(|item| {
+            item.owner_attention.iter().any(|attention| {
+                attention.target_event_id == addressed_event_id
+                    && attention.state == ResidentOwnerAttentionState::Declined
+                    && !attention.review_required
+                    && !attention.work_actionable
+            })
+        }));
+        restarted
+            .open_resident_observation_with_origin(open.clone(), &alpha_after_restart)
+            .expect("owner reopens after restart");
+        assert!(restarted
+            .open_resident_observation_with_origin(open, &beta_after_restart)
+            .expect_err("foreign owner remains rejected after restart")
+            .to_string()
+            .contains("not open"));
+    }
+
+    #[tokio::test]
+    async fn flat_thread_direct_reply_can_handle_an_addressed_delegation() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let human = host
+            .issue_origin_context(
+                &[0x51; 32],
+                OriginSurfaceProtocolV1::NativeWebview,
+                Some("Human".to_string()),
+                "human-open".to_string(),
+            )
+            .expect("human origin");
+        let alpha = host
+            .issue_origin_context(
+                &[0x52; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Alpha".to_string()),
+                "alpha-open".to_string(),
+            )
+            .expect("alpha origin");
+        let beta = host
+            .issue_origin_context(
+                &[0x53; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Beta".to_string()),
+                "beta-open".to_string(),
+            )
+            .expect("beta origin");
+        let root = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "Please coordinate an answer".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: vec![alpha.owner_origin_id().to_string()],
+                    thread_root_event_id: None,
+                    in_reply_to_event_id: None,
+                    client_request_id: Some("direct-reply-root-001".to_string()),
+                },
+                &human,
+            )
+            .await
+            .expect("human root")
+            .home
+            .expect("home")
+            .room
+            .messages[0]
+            .event_id
+            .clone();
+        let delegation = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "Beta, compute the answer".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: vec![beta.owner_origin_id().to_string()],
+                    thread_root_event_id: Some(root.clone()),
+                    in_reply_to_event_id: Some(root.clone()),
+                    client_request_id: Some("direct-reply-delegation-001".to_string()),
+                },
+                &alpha,
+            )
+            .await
+            .expect("delegation")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| {
+                message.client_request_id.as_deref() == Some("direct-reply-delegation-001")
+            })
+            .expect("delegation projection")
+            .event_id;
+        let result = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "The answer is 95".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: Some(root.clone()),
+                    in_reply_to_event_id: Some(delegation.clone()),
+                    client_request_id: Some("direct-reply-result-001".to_string()),
+                },
+                &beta,
+            )
+            .await
+            .expect("direct result")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.client_request_id.as_deref() == Some("direct-reply-result-001"))
+            .expect("result projection");
+        assert_eq!(result.thread_root_event_id.as_deref(), Some(root.as_str()));
+        assert_eq!(
+            result.in_reply_to_event_id.as_deref(),
+            Some(delegation.as_str())
+        );
+        host.send_message_with_origin(
+            SendMessageRequest {
+                text: "The answer is 95".to_string(),
+                room: None,
+                mentions: Vec::new(),
+                addressed_origin_session_ids: Vec::new(),
+                thread_root_event_id: Some(root.clone()),
+                in_reply_to_event_id: Some(delegation.clone()),
+                client_request_id: Some("direct-reply-result-001".to_string()),
+            },
+            &beta,
+        )
+        .await
+        .expect("exact direct-reply retry");
+        assert!(host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "The answer is 95".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: Some(root.clone()),
+                    in_reply_to_event_id: Some(root.clone()),
+                    client_request_id: Some("direct-reply-result-001".to_string()),
+                },
+                &beta,
+            )
+            .await
+            .expect_err("changed direct target conflicts")
+            .to_string()
+            .contains("different message payload"));
+        let handled = host
+            .acknowledge_message_with_origin(
+                AcknowledgeMessageRequest {
+                    target_event_id: delegation.clone(),
+                    room: None,
+                    state: MessageAcknowledgementState::Handled,
+                    result_event_id: Some(result.event_id.clone()),
+                },
+                &beta,
+            )
+            .await
+            .expect("handle exact delegation");
+        let handled_home = handled.home.expect("home");
+        let delegation_view = handled_home
+            .room
+            .messages
+            .iter()
+            .find(|message| message.event_id == delegation)
+            .expect("delegation after handled");
+        assert_eq!(delegation_view.reply_count, 1);
+        assert_eq!(delegation_view.acknowledgements.len(), 1);
+        assert_eq!(
+            delegation_view.acknowledgements[0].result_event_ids,
+            vec![result.event_id]
+        );
+        let invalid_root_error = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "invalid root response edge".to_string(),
+                    room: None,
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: None,
+                    in_reply_to_event_id: Some(root),
+                    client_request_id: Some("direct-reply-invalid-root-001".to_string()),
+                },
+                &beta,
+            )
+            .await
+            .expect_err("root cannot directly reply");
+        let invalid_root_error = format!("{invalid_root_error:#}");
+        assert!(
+            invalid_root_error.contains("root message cannot name"),
+            "unexpected error: {invalid_root_error}"
+        );
+        drop(host);
+        let mut restarted = VoxelleCommandHost::new(&home_root);
+        let restart = restarted.snapshot().expect("restart snapshot");
+        let restart_home = restart.home.expect("restart home");
+        let delegation_view = restart_home
+            .room
+            .messages
+            .iter()
+            .find(|message| message.event_id == delegation)
+            .expect("restarted delegation");
+        assert_eq!(delegation_view.reply_count, 1);
+        let frontier = restart_home
+            .coordination_frontier
+            .items
+            .iter()
+            .find(|item| item.target_event_id == delegation)
+            .expect("delegation frontier");
+        assert_eq!(frontier.reply_count, 1);
+        assert!(frontier.latest_reply_ms.is_some());
     }
 
     #[test]
@@ -7485,6 +12839,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn invite_revocation_is_durable_and_blocks_membership_at_an_informed_peer() {
+        let dir = tempdir().expect("tempdir");
+        let alice_root = dir.path().join("alice");
+        let alice = VoxelleHome::new(&alice_root);
+        let charlie = VoxelleHome::new(dir.path().join("charlie"));
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        let service = alice
+            .start_service(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0), None)
+            .expect("service");
+        let invite = alice
+            .create_space_invite(service.online(), now_ms() + 60_000)
+            .expect("invite");
+        let invite_id = invite.invite_event.event_id.clone();
+        assert_eq!(alice.active_invites().expect("active invites").len(), 1);
+
+        alice
+            .revoke_space_invite(&RevokeSpaceInviteRequest {
+                invite_id: invite_id.clone(),
+            })
+            .expect("revoke");
+        assert!(alice
+            .active_invites()
+            .expect("revoked projection")
+            .is_empty());
+        assert!(VoxelleHome::new(&alice_root)
+            .active_invites()
+            .expect("restart projection")
+            .is_empty());
+        assert!(alice
+            .revoke_space_invite(&RevokeSpaceInviteRequest {
+                invite_id: invite_id.clone(),
+            })
+            .expect_err("cannot revoke twice")
+            .to_string()
+            .contains("not currently active"));
+
+        let error = charlie
+            .join_space_from_invite(&invite, 64)
+            .await
+            .expect_err("informed peer reports revocation before local home creation");
+        assert!(error
+            .to_string()
+            .contains("revoked by a reachable ordinary peer"));
+        assert!(!charlie.path("identity.json").exists());
+        assert!(!charlie
+            .local_state_exists(HOME_SELECTION_STATE)
+            .expect("fresh home"));
+        service.stop().expect("stop service");
+    }
+
+    #[tokio::test]
     async fn malformed_peer_request_does_not_terminate_the_service() {
         let dir = tempdir().expect("tempdir");
         let server_home = VoxelleHome::new(dir.path().join("server"));
@@ -7610,5 +13015,272 @@ mod tests {
 
     fn network_health_status(health: &NetworkHealthView, id: &str) -> NetworkHealthStatus {
         network_health_row(health, id).status
+    }
+
+    #[tokio::test]
+    async fn contextual_fact_origins_survive_retry_projection_and_restart() {
+        let dir = tempdir().expect("tempdir");
+        let home_root = dir.path().join("home");
+        let mut host = VoxelleCommandHost::new(&home_root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let resident_a = host
+            .issue_origin_context(
+                &[31; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Resident A".to_string()),
+                "resident-a-request-001".to_string(),
+            )
+            .expect("resident A origin");
+        let resident_b = host
+            .issue_origin_context(
+                &[32; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Resident B".to_string()),
+                "resident-b-request-001".to_string(),
+            )
+            .expect("resident B origin");
+        let request = SendMessageRequest {
+            text: "origin-aware root".to_string(),
+            room: None,
+            mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
+            thread_root_event_id: None,
+            in_reply_to_event_id: None,
+            client_request_id: Some("origin-root-001".to_string()),
+        };
+        let sent = host
+            .send_message_with_origin(request.clone(), &resident_a)
+            .await
+            .expect("send");
+        let root = sent
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.client_request_id.as_deref() == Some("origin-root-001"))
+            .expect("root");
+        assert_eq!(root.origin.display_label.as_deref(), Some("Resident A"));
+        assert_eq!(
+            root.origin.request_id.as_deref(),
+            Some("resident-a-request-001")
+        );
+
+        let retried = host
+            .send_message_with_origin(request, &resident_b)
+            .await
+            .expect("retry");
+        let retried_root = retried
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.event_id == root.event_id)
+            .expect("same root");
+        assert_eq!(retried_root.origin, root.origin);
+
+        let continuation = host
+            .issue_origin_context(
+                &[31; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Resident A".to_string()),
+                "resident-a-request-002".to_string(),
+            )
+            .expect("continuation origin");
+        host.update_message_continuation_with_origin(
+            UpdateMessageContinuationRequest {
+                target_event_id: root.event_id.clone(),
+                room: None,
+                state: MessageContinuationState::Continuing,
+                lease_ms: Some(MIN_CONTINUATION_LEASE_MS),
+                supersedes_event_ids: Vec::new(),
+                client_request_id: "origin-continuation-001".to_string(),
+            },
+            &continuation,
+        )
+        .await
+        .expect("continuation");
+        let acknowledgement = host
+            .issue_origin_context(
+                &[32; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Resident B".to_string()),
+                "resident-b-request-002".to_string(),
+            )
+            .expect("ack origin");
+        let snapshot = host
+            .acknowledge_message_with_origin(
+                AcknowledgeMessageRequest {
+                    target_event_id: root.event_id.clone(),
+                    room: None,
+                    state: MessageAcknowledgementState::Handled,
+                    result_event_id: None,
+                },
+                &acknowledgement,
+            )
+            .await
+            .expect("ack");
+        let projected = snapshot
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.event_id == root.event_id)
+            .expect("projected root");
+        assert_eq!(
+            projected.continuations[0].heads[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident A")
+        );
+        assert_eq!(
+            projected.acknowledgements[0].assertions[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident B")
+        );
+
+        let room_id = host
+            .home
+            .load_config()
+            .expect("config")
+            .space
+            .default_room_id;
+        let events = host.home.decrypted_room_events(&room_id).expect("events");
+        let forward = project_messages(events.clone(), now_ms());
+        let mut reversed_events = events;
+        reversed_events.reverse();
+        let reversed = project_messages(reversed_events, now_ms());
+        assert_eq!(forward, reversed);
+
+        host.open_resident_observation(OpenResidentObservationRequest {
+            consumer_id: "origin-resident-page".to_string(),
+            start: ResidentObservationStartView::FromBeginning,
+        })
+        .expect("open resident");
+        let page = host
+            .resident_changed_threads(ResidentChangedThreadsRequest {
+                consumer_id: "origin-resident-page".to_string(),
+                fact_high_water: None,
+                after_fact_sequence: None,
+                limit: Some(100),
+            })
+            .expect("resident page");
+        let page_root = page
+            .items
+            .into_iter()
+            .find(|item| item.root.event_id == root.event_id)
+            .expect("page root")
+            .root;
+        assert_eq!(page_root.origin, root.origin);
+        assert_eq!(
+            page_root.acknowledgements[0].assertions[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident B")
+        );
+
+        drop(host);
+        let restarted = VoxelleCommandHost::new(&home_root)
+            .snapshot()
+            .expect("restart")
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| message.event_id == root.event_id)
+            .expect("restarted root");
+        assert_eq!(restarted.origin, root.origin);
+        assert_eq!(
+            restarted.continuations[0].heads[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident A")
+        );
+        assert_eq!(
+            restarted.acknowledgements[0].assertions[0]
+                .origin
+                .display_label
+                .as_deref(),
+            Some("Resident B")
+        );
+    }
+
+    #[tokio::test]
+    async fn private_fact_origin_is_projected_but_absent_from_outer_ciphertext() {
+        let dir = tempdir().expect("tempdir");
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        let initialized = host
+            .init_home(InitHomeRequest { default_room: None })
+            .expect("init");
+        let peer_id = initialized.home.expect("home").profile.peer_id;
+        let room_id = host
+            .create_channel(CreateChannelRequest {
+                name: "private origin".to_string(),
+                topic: String::new(),
+                private_members: vec![peer_id],
+            })
+            .await
+            .expect("private room")
+            .home
+            .expect("home")
+            .room
+            .room_id;
+        let origin = host
+            .issue_origin_context(
+                &[41; 32],
+                OriginSurfaceProtocolV1::Inhabitant,
+                Some("Secret Resident Label".to_string()),
+                "secret-origin-request-001".to_string(),
+            )
+            .expect("origin");
+        let snapshot = host
+            .send_message_with_origin(
+                SendMessageRequest {
+                    text: "private attributed message".to_string(),
+                    room: Some(room_id.clone()),
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: None,
+                    in_reply_to_event_id: None,
+                    client_request_id: Some("private-origin-message-001".to_string()),
+                },
+                &origin,
+            )
+            .await
+            .expect("send");
+        let message = snapshot
+            .home
+            .expect("home")
+            .room
+            .messages
+            .into_iter()
+            .find(|message| {
+                message.client_request_id.as_deref() == Some("private-origin-message-001")
+            })
+            .expect("message");
+        assert_eq!(
+            message.origin.display_label.as_deref(),
+            Some("Secret Resident Label")
+        );
+        let raw = host
+            .home
+            .open_store()
+            .expect("store")
+            .room_events(&room_id)
+            .expect("raw");
+        let encoded = serde_json::to_string(&raw).expect("serialize raw");
+        assert!(raw.iter().all(|event| event.origin.is_none()));
+        assert!(!encoded.contains("Secret Resident Label"));
+        assert!(!encoded.contains("secret-origin-request-001"));
+        assert!(!encoded.contains(message.origin.session_id.as_deref().expect("session id")));
     }
 }

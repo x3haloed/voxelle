@@ -1,0 +1,9 @@
+[advisories]
+# GTK3/GLib enters the lock graph through Tauri's Linux backend. Linux is not a
+# beta target, Voxelle does not call VariantStrIter, and the advisory has no
+# patched 0.18 release. Keep this exact exception visible while denying every
+# other current or future soundness advisory.
+ignore = ["RUSTSEC-2024-0429"]
+
+[yanked]
+enabled = true

@@ -149,7 +149,7 @@ Reviews should treat the following as repository-wide invariants:
 
 **Primary attacker stories.** An invite is modified or belongs to another space; an attacker leaks a valid unbound invite and creates many principals; a revoked invite is redeemed against a stale partition; bootstrap peers all point to the attacker or dead addresses; a peer record redirects a user to a hostile certificate/device; a valid endpoint is mistaken for membership; an inviter goes offline and a forwarding peer gives the joiner a censored governance subset.
 
-**Existing controls.** Space genesis and invite events are signed by the space authority, bounded to one to eight bootstrap peers, expire, and are admitted as governance facts. `SpaceInviteFileV1` validates space, invite, and bootstrap-space consistency. QUIC endpoints include pinned certificate material and device IDs. Joining pushes a signed member event and pulls history through ordinary peers; endpoint JSON alone is not meant to grant membership.
+**Existing controls.** Space genesis, invite, and invite-revocation events are signed by the space authority, bounded to one to eight bootstrap peers, expire where applicable, and are admitted as governance facts. `SpaceInviteFileV1` validates space, invite, and bootstrap-space consistency. QUIC endpoints include pinned certificate material and device IDs. Before creating local identity state, joining uses an ephemeral governance-only preflight against each reachable bootstrap peer and refuses an invite whose admitted revocation is learned; successful joining then pushes a signed member event and pulls history through ordinary peers. Endpoint JSON alone is not meant to grant membership. Fresh onboarding displays bounded untrusted claims for the target space, authority, expiry, and bootstrap count before submission and explicitly warns that an unbound bearer invite can be reused; the People surface exposes bounded expiry choices, Rust-projected active invitations, and explicit revocation confirmation with the stale-partition limitation. Rust remains the admission authority.
 
 **Review focus.** Invite possession is authority to attempt membership, so import UX must display the target space/authority and the limitations of expiry/use count. Revocation must be evaluated against sufficiently complete governance and must fail visibly when history is unavailable. Standalone peer records are untrusted availability inputs even when structurally valid. Live transport identity must be cryptographically bound to the authorized principal before governance or private-room content is released. Automatic peer selection should use plural paths where available and report when all paths share one bootstrap/eclipsing source.
 
@@ -179,7 +179,7 @@ Reviews should treat the following as repository-wide invariants:
 
 **Primary attacker stories.** A channel creator omits or substitutes a recipient package; an excluded peer receives room events or a key package; a removed member continues reading because no new epoch is created; a malicious recipient republishes plaintext or keys; an attacker swaps inner semantics under an otherwise valid envelope; later theft of the stable recovery/member-encryption secret decrypts archived room-key packages; recovery restores a stale key set; an old epoch is replayed as current.
 
-**Existing controls.** Private channel creation requires current members with published 32-byte X25519 keys, packages exactly one random room key to each member, and signs the governance event. Per-epoch content uses XChaCha20-Poly1305 with room/epoch/author associated data. Sync checks both peers' private membership before transfer. The application decrypts and then reruns ordinary semantic validation on the reconstructed inner event. Room-key state is encrypted at rest under the identity-vault key and included in the authenticated recovery capsule.
+**Existing controls.** Private channel creation requires current members with published 32-byte X25519 keys, packages exactly one random room key to each member, and signs the governance event. Per-epoch content uses XChaCha20-Poly1305 with room/epoch/author associated data. Sync checks both peers' private membership before transfer. The application decrypts and then reruns ordinary semantic validation on the reconstructed inner event. Room-key state is encrypted at rest under the identity-vault key and included in the authenticated recovery capsule. The human rotation surface projects the admitted epoch and private-member count, requires explicit confirmation, and states that rotation protects future content without erasing material recipients already retained; Rust remains the key-generation, packaging, admission, storage, and synchronization authority.
 
 **Review focus.** Key distribution must follow admitted governance, not merely a supplied member list. Ban/removal semantics must state when a new epoch is mandatory; old recipients cannot be made to forget old epochs. Recovery and static member encryption intentionally favor continuity, but they should not be described as forward secrecy or post-compromise security. Epoch monotonicity, package uniqueness, recipient binding, ciphertext AAD, nonce randomness, and refusal to project undecryptable/invalid inner facts require negative tests. Ordinary ciphertext retention must not imply decryption rights.
 
@@ -199,9 +199,17 @@ Reviews should treat the following as repository-wide invariants:
 
 **Primary attacker stories.** A crafted attachment navigates the privileged WebView or invokes a native handler; a filename/MIME pair misleads the user; replicated HTML/script becomes XSS; a malicious link gains access to Tauri globals; an injected script invokes `execute_shell_command` to export capabilities, join a space, ban a member, or start networking; search or rendering creates CPU/memory denial; preview mode accidentally mutates fixture truth and is mistaken for the native app.
 
-**Existing controls.** The UI generally constructs DOM nodes and assigns untrusted values through `textContent`; Rust validates replicated bodies and attachment hashes/sizes. Tauri exposes one serialized command entrypoint backed by a mutex and typed Serde requests, and its declared capability file only enables native snapshot event listening. Runtime truth stays in Rust.
+The native WebView now emits a device-certified `native_webview` origin on the
+three attributed message/coordination commands. This distinguishes the route
+from inhabitant and CLI routes but does not prove user presence: compromised
+WebView code can still cause the device to certify fabricated Desktop-origin
+facts.
+
+**Existing controls.** The UI generally constructs DOM nodes and assigns untrusted values through `textContent`; Rust validates replicated bodies and attachment hashes/sizes. File selection remains a disposable frontend draft until a focused review names the file, size, type, destination, audience, and retained-copy limitation and the person invokes `attachment.add`. The timeline uses a download-named `data:` link and does not expose editing for standalone file facts. Attachment redaction passes through ordinary signed admission and changes projection without claiming remote erasure. Tauri exposes one serialized command entrypoint backed by a mutex and typed Serde requests, and its declared capability file only enables native snapshot event listening. Runtime truth stays in Rust. The human surface requires explicit modal review before product-package installation, staged-generation activation, rollback, or release-root transition, including when the semantic command starts in the palette; this is user-presence friction, not update authentication. Bounded previews label portable update and trust-transition metadata as untrusted while the native kernel remains the only signature, role, sequence, downgrade, compatibility, and trust-set authority.
 
 **Review focus.** The WebView is a high-privilege origin because a script that reaches the bridge can exercise the semantic command host. CSP, navigation policy, remote-content exclusion, `data:` attachment behavior, MIME handling, external opener behavior, and all DOM injection sinks deserve high scrutiny. Type-safe command parsing does not authenticate who called the bridge. Sensitive commands may need user-presence or explicit confirmation even when syntactically valid. Generated shell contracts must match Rust; fixture/preview clients cannot be security evidence.
+
+Peer availability JSON is attacker-controlled routing input, not membership. The frontend bounds and previews its claimed label, IPv6 address, principal, device, and space only for human review; it never treats that parse as validation. The Rust importer validates the complete endpoint record, and later synchronization independently checks the active space authority. Context-free import commands must open the visible review rather than sending stale or empty hidden draft state.
 
 ### 9. Inhabitant HTTP/SSE and CLI automation
 
@@ -209,7 +217,47 @@ Reviews should treat the following as repository-wide invariants:
 
 **Primary attacker stories.** A same-user process discovers the ephemeral port and executes privileged commands; an operator binds the unauthenticated service to LAN/global IPv4/IPv6; a malicious webpage reaches loopback through browser behavior; many SSE clients or slow HTTP requests consume resources; two automation clients race governance or UI actions; an agent acts on stale snapshot state without human visibility.
 
+Origin-specific attacker stories include a sibling resident guessing or
+reusing another session ID, stealing its plaintext secret, spoofing a trusted
+human/agent display label, or racing the same client instance across restart.
+A sibling may also copy a resident observation consumer ID, page cursor, high
+water, or commit token to suppress or advance another resident's work, or may
+place a forged `owner_origin_id` in JSON hoping it overrides authenticated
+transport context.
+An authorized sender may guess, scrape, replay, flood, or falsely name
+`addressed_origin_session_ids`, correlate a stable public-room session hint,
+or try to make a recipient treat routing as assignment or proof of delivery.
+An excluded private-room retainer may inspect the outer envelope for hint
+metadata if encryption placement regresses.
+The authorized device itself can fabricate any origin it certifies. A process
+that can read or replace `.voxelle-inhabitant-origins.json` may learn labels,
+IDs, client-instance names, and stored secret hashes, corrupt availability, or
+attempt offline secret guessing; the registry is not protocol authority and
+must never contain plaintext capabilities.
+
 **Existing controls.** The default bind is `127.0.0.1`; commands are serialized through the same `ShellState` mutex and typed command dispatch as the desktop; unknown commands fail closed; activity and returned snapshots expose effects. The sidecar is optional and separate from ordinary one-process desktop use.
+
+The owner-local origin registry rejects symlink targets, uses owner-only mode
+where supported, writes through a fresh temporary file, stores a
+domain-separated hash rather than the secret, binds records to the current
+device, and compares hashes without early exit. Wrong and unknown credentials
+share one response. Message send, acknowledgement, continuation, and all four
+resident observation commands require origin headers; the launch bearer still
+authorizes other commands. Observation ownership comes only from authenticated
+origin context, never JSON; foreign access is indistinguishable from an unknown
+consumer and cannot mutate its cursor, page session, or token. These controls
+prevent cooperative sibling interference but do not survive theft of the
+owning origin secret. Origin labels are presentation claims, not verified
+identities. A source-blind two-origin restart rehearsal verified collision,
+copied-token, page, and release isolation without mutating the owner's cursor.
+
+Addressed-origin hints are bounded signed content only. Owner-authenticated
+observation pages compare them locally to derive `addressed_to_owner`, while
+full accessible feeds remain unfiltered. UI and agents must not turn the hint
+into obligation, presence, membership, decryption rights, observation, or a
+receipt. Public-room correlation is an explicit limitation; private-room hints
+must remain inside the encrypted semantic event. Spoof, omission, cardinality,
+private-carrier, and full-feed tests are required before beta use.
 
 **Review focus.** Loopback is a reachability restriction, not an authorization credential. Non-loopback binding should require an explicit security mode with authentication, origin protections, TLS as appropriate, and clear warnings; otherwise it should be refused. Discovery files should not contain secrets and should have safe permissions. Request/body/concurrency limits and cancellation must be explicit. Snapshot-before-action is a consistency aid, not authorization; high-impact commands need attribution and may need optimistic state/version checks.
 

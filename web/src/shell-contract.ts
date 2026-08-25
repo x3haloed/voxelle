@@ -4,17 +4,71 @@ export type PeerEndpoint = { v: number, addr: string, peer_id: string, device_id
 
 export type ProfileSummary = { home: string, peer_id: string, device_id: string, default_room: string, authority_peer_id: string, };
 
-export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, text: string, edited_ms: number | null, redacted: boolean, mentions: Array<string>, thread_root_event_id: string | null, reply_count: number, pinned: boolean, reactions: Array<ReactionView>, attachments: Array<AttachmentView>, };
+export type MessageView = { event_id: string, created_ms: number, author_peer_id: string, origin: FactOriginView, client_request_id: string | null, text: string, edited_ms: number | null, redacted: boolean, mentions: Array<string>, addressed_origin_session_ids: Array<string>, thread_root_event_id: string | null, in_reply_to_event_id: string | null, reply_count: number, pinned: boolean, reactions: Array<ReactionView>, acknowledgements: Array<MessageAcknowledgementView>, continuations: Array<MessageContinuationView>, participant_actionability: Array<MessageParticipantActionabilityView>, attachments: Array<AttachmentView>, };
+
+export type MessageAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_conflict: boolean, acknowledged_ms: number, assertions: Array<MessageAcknowledgementAssertionView>, };
+
+export type MessageContinuationView = { peer_id: string, state: MessageContinuationProjectionState, asserted_ms: number, expires_ms: number | null, overdue: boolean, head_event_ids: Array<string>, heads: Array<MessageContinuationHeadView>, };
+
+export type MessageContinuationHeadView = { event_id: string, state: MessageContinuationState, asserted_ms: number, expires_ms: number | null, origin: FactOriginView, };
+
+export type FactOriginView = { principal_id: string, device_id: string, session_id: string | null, surface_protocol: OriginSurfaceProtocolView | null, display_label: string | null, request_id: string | null, };
+
+export type OriginSurfaceProtocolView = "native_webview" | "inhabitant" | "cli";
+
+export type MessageContinuationProjectionState = "unknown" | "continuing" | "released" | "declined" | "conflict";
+
+export type MessageParticipantActionabilityView = { peer_id: string, state: MessageParticipantActionabilityState, actionable: boolean, actionable_reasons: Array<MessageParticipantActionabilityReason>, basis_event_ids: Array<string>, uncovered_reply_event_ids: Array<string>, uncovered_reply_event_ids_omitted_count: number, };
+
+export type MessageParticipantActionabilityReason = "continuing" | "reply_not_covered_by_disposition";
+
+export type MessageParticipantActionabilityState = "unknown" | "continuing" | "released" | "declined" | "handled" | "conflict";
+
+export type CoordinationFrontierView = { items: Array<CoordinationFrontierItemView>, matching_count: number, omitted_count: number, truncated: boolean, next_projection_change_ms: number | null, };
+
+export type CoordinationFrontierItemView = { room_id: string, room_name: string, room_visibility: string, target_event_id: string, target_created_ms: number, target_author_peer_id: string, target_redacted: boolean, target_summary: string, target_summary_truncated: boolean, target_summary_original_chars: number, local_principal_mentioned: boolean, target_after_local_read_cursor: boolean, reply_count: number, latest_reply_ms: number | null, relevance: Array<CoordinationFrontierRelevance>, acknowledgements: Array<CoordinationAcknowledgementView>, acknowledgements_omitted_count: number, continuations: Array<MessageContinuationView>, continuations_omitted_count: number, local_actionability: MessageParticipantActionabilityView | null, latest_fact_ms: number, };
+
+export type CoordinationFrontierRelevance = "mention_without_local_disposition" | "reply_after_local_disposition" | "continuation_active" | "continuation_overdue" | "continuation_conflict" | "observed" | "handled" | "handled_result_available" | "released" | "declined";
+
+export type CoordinationAcknowledgementView = { peer_id: string, state: MessageAcknowledgementState, result_event_ids: Array<string>, result_event_ids_omitted_count: number, result_conflict: boolean, acknowledged_ms: number, assertions: Array<MessageAcknowledgementAssertionView>, assertions_omitted_count: number, };
+
+export type ResidentObservationStartView = "from_beginning" | "from_now";
+
+export type OpenResidentOriginRequest = { client_instance_id: string, secret: string, label: string, };
+
+export type ResidentOriginSessionView = { origin_id: string, client_instance_id: string, label: string, device_id: string, created_ms: number, };
+
+export type OpenResidentObservationRequest = { consumer_id: string, start: ResidentObservationStartView, };
+
+export type ReleaseResidentObservationRequest = { consumer_id: string, };
+
+export type ResidentChangedThreadsRequest = { consumer_id: string, fact_high_water: number | null, after_fact_sequence: number | null, limit: number | null, };
+
+export type CommitResidentObservationRequest = { consumer_id: string, fact_high_water: number, commit_token: string, };
+
+export type ResidentObservationConsumerView = { consumer_id: string, start: ResidentObservationStartView, start_fact_sequence: number, created_ms: number, updated_ms: number, };
+
+export type ResidentChangedThreadView = { room_id: string, room_name: string, room_visibility: string, last_fact_sequence: number, root: MessageView, replies: Array<MessageView>, addressed_to_owner: boolean, addressed_event_ids: Array<string>, owner_attention: Array<ResidentOwnerAttentionView>, };
+
+export type ResidentOwnerAttentionView = { target_event_id: string, state: ResidentOwnerAttentionState, review_required: boolean, work_actionable: boolean, reasons: Array<ResidentOwnerAttentionReason>, basis_event_ids: Array<string>, result_event_ids: Array<string>, uncovered_reply_event_ids: Array<string>, next_projection_change_ms: number | null, };
+
+export type ResidentOwnerAttentionState = "unreviewed" | "observed" | "continuing" | "overdue" | "released" | "declined" | "handled" | "conflict";
+
+export type ResidentOwnerAttentionReason = "addressed_unreviewed" | "continuing" | "addressed_reply_not_covered";
+
+export type ResidentChangedThreadsPageView = { consumer_id: string, fact_high_water: number, room_ids: Array<string>, items: Array<ResidentChangedThreadView>, has_more: boolean, next_after_fact_sequence: number | null, commit_token: string | null, };
+
+export type ResidentObservationCommitView = { consumer_id: string, committed_fact_sequence: number, room_ids: Array<string>, };
 
 export type ReactionView = { emoji: string, peer_ids: Array<string>, };
 
-export type AttachmentView = { event_id: string, filename: string, mime: string, sha256: string, data_b64: string, };
+export type AttachmentView = { event_id: string, filename: string, mime: string, sha256: string, size_bytes: number, data_b64: string, };
 
-export type ChannelView = { room_id: string, name: string, topic: string, visibility: string, selected: boolean, unread_count: number, };
+export type ChannelView = { room_id: string, name: string, topic: string, visibility: string, key_epoch: number, private_member_count: number, selected: boolean, unread_count: number, last_read_event_id: string | null, };
 
 export type RoleView = { role_id: string, name: string, permissions: Array<string>, member_count: number, };
 
-export type ProfileView = { peer_id: string, display_name: string, about: string, };
+export type ProfileView = { peer_id: string, display_name: string, about: string, banned: boolean, role_ids: Array<string>, };
 
 export type SearchResultView = { room_id: string, message: MessageView, };
 
@@ -22,7 +76,7 @@ export type NotificationView = { event_id: string, room_id: string, author_peer_
 
 export type CallSignalView = { event_id: string, kind: string, call_id: string, author_peer_id: string, target_peer_id: string | null, video: boolean | null, sdp: string | null, candidate: string | null, created_ms: number, };
 
-export type CallView = { call_id: string, participants: Array<string>, signals: Array<CallSignalView>, };
+export type CallView = { call_id: string, participants: Array<string>, participant_video: { [key in string]: boolean }, signals: Array<CallSignalView>, };
 
 export type PeerRecord = { v: number, label: string | null, space_id: string, governance_room_id: string, default_room: string, authority_peer_id: string, endpoint: PeerEndpoint, };
 
@@ -40,7 +94,7 @@ export type UiPlace = { id: string, label: string, description: string, editable
 
 export type UiView = { id: string, label: string, default_place_id: string, place_id: string, order: number, visible: boolean, description: string, editable: boolean, editing_surface: string, };
 
-export type UiCommand = { id: string, label: string, description: string, scope: UiCommandScope, shortcut: string | null, palette: boolean, editable: boolean, editing_surface: string, };
+export type UiCommand = { id: string, label: string, description: string, scope: UiCommandScope, shortcut: string | null, palette: boolean, payload_type: string | null, editable: boolean, editing_surface: string, };
 
 export type UiCommandScope = "shell" | "frontend";
 
@@ -56,7 +110,11 @@ export type UiRenderer = { id: string, label: string, renders: string, default_r
 
 export type UiBehaviorValue = { "type": "bool", "value": boolean } | { "type": "text", "value": string };
 
-export type ShellSnapshotView = { home_root: string, home: HomeScreenView | null, home_error: string | null, network_health: NetworkHealthView, ui_ontology: UiOntologyView, product_generation: ProductGenerationStatusView, product_component: ProductComponentView, service_activity: Array<ServiceActivityItem>, search_results: Array<SearchResultView>, };
+export type ShellSnapshotView = { home_root: string, home: HomeScreenView | null, home_error: ShellError | null, network_health: NetworkHealthView, ui_ontology: UiOntologyView, product_generation: ProductGenerationStatusView, product_component: ProductComponentView, service_activity: Array<ServiceActivityItem>, search_results: Array<SearchResultView>, sync_evidence: SyncEvidenceView, };
+
+export type SyncEvidenceView = { state: SyncEvidenceState, attempted_ms: number | null, peers_attempted: number, peers_reached: number, events_received: number, events_pushed: number, };
+
+export type SyncEvidenceState = "unknown" | "peer_confirmed" | "partial" | "unreachable";
 
 export type ServiceActivityItem = { id: number, level: ServiceActivityLevel, summary: string, };
 
@@ -66,9 +124,21 @@ export type InitHomeRequest = { default_room: string | null, };
 
 export type StartServiceRequest = { bind: string | null, advertise: string | null, };
 
-export type SendMessageRequest = { text: string, room: string | null, mentions: Array<string>, thread_root_event_id: string | null, };
+export type SendMessageRequest = { text: string, room: string | null, mentions: Array<string>, addressed_origin_session_ids: Array<string>, thread_root_event_id: string | null, in_reply_to_event_id: string | null, client_request_id: string | null, };
+
+export type AcknowledgeMessageRequest = { target_event_id: string, room: string | null, state: MessageAcknowledgementState, result_event_id: string | null, };
+
+export type MessageAcknowledgementState = "observed" | "handled";
+
+export type MessageAcknowledgementAssertionView = { event_id: string, state: MessageAcknowledgementState, result_event_id: string | null, origin: FactOriginView, };
+
+export type UpdateMessageContinuationRequest = { target_event_id: string, room: string | null, state: MessageContinuationState, lease_ms: number | null, supersedes_event_ids: Array<string>, client_request_id: string, };
+
+export type MessageContinuationState = "continuing" | "released" | "declined";
 
 export type SelectChannelRequest = { room_id: string, };
+
+export type OpenMessageRequest = { room_id: string, event_id: string, };
 
 export type MarkReadRequest = { room_id: string | null, };
 
@@ -77,6 +147,8 @@ export type CreateChannelRequest = { name: string, topic: string, private_member
 export type RotateChannelKeyRequest = { room_id: string, };
 
 export type CallJoinRequest = { room: string | null, video: boolean, };
+
+export type CallMediaRequest = { room: string | null, call_id: string, video: boolean, };
 
 export type CallSignalRequest = { room: string | null, call_id: string, target_peer_id: string, signal_type: string, sdp: string | null, candidate: string | null, };
 
@@ -104,7 +176,13 @@ export type ImportPeerRecordRequest = { peer_record_json: string, };
 
 export type CreateSpaceInviteRequest = { expires_minutes: number | null, };
 
+export type RevokeSpaceInviteRequest = { invite_id: string, };
+
 export type JoinSpaceRequest = { space_invite_json: string, max_events: number | null, };
+
+export type ExportRecoveryKitRequest = { path: string, };
+
+export type RestoreRecoveryKitRequest = { path: string, max_events_per_peer: number | null, };
 
 export type PeerCommandRequest = { peer_id: string, device_id: string, max_events: number | null, };
 
@@ -114,11 +192,15 @@ export type SetWorkbenchLayoutRequest = { placements: Array<UiViewPlacement>, };
 
 export type InstallProductUpdateRequest = { package_json: string, };
 
-export type HomeScreenView = { profile: ProfileSummary, runtime: RuntimeStatusView, invite: InviteExchangeView | null, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, call: CallView, room: RoomTimelineView, };
+export type InstallTrustTransitionRequest = { transition_json: string, };
+
+export type RecoveryHealthView = { kit_exported: boolean, last_exported_ms: bigint | null, };
+
+export type HomeScreenView = { space: SpaceSummaryView, profile: ProfileSummary, recovery: RecoveryHealthView, runtime: RuntimeStatusView, invite: InviteExchangeView | null, active_invites: Array<ActiveInviteView>, peers: Array<PeerListItemView>, channels: Array<ChannelView>, roles: Array<RoleView>, profiles: Array<ProfileView>, notifications: Array<NotificationView>, coordination_frontier: CoordinationFrontierView, call: CallView, room: RoomTimelineView, };
 
 export type NetworkHealthView = { rows: Array<NetworkHealthRow>, };
 
-export type NetworkHealthRow = { id: string, label: string, status: NetworkHealthStatus, summary: string, primary_action: string | null, details: Array<string>, related_views: Array<string>, related_commands: Array<string>, };
+export type NetworkHealthRow = { id: string, label: string, status: NetworkHealthStatus, summary: string, primary_action: string | null, primary_action_payload: unknown, details: Array<string>, related_views: Array<string>, related_commands: Array<string>, };
 
 export type NetworkHealthStatus = "unknown" | "working" | "needs_attention" | "broken";
 
@@ -132,4 +214,5 @@ export type PeerListItemView = { label: string, peer_id: string, device_id: stri
 
 export type RoomTimelineView = { room_id: string, messages: Array<MessageView>, };
 
-export type ShellError = { message: string, };
+export type ShellError = { message: string, recovery: ShellRecovery, recovery_message: string, detail: string, };
+export type ShellRecovery = "needs_home" | "needs_service_online" | "needs_peer_record" | "needs_reachability" | "needs_sync" | "needs_input" | "needs_human" | "internal_error";

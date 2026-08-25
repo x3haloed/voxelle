@@ -30,14 +30,14 @@ test("saved appearance values become concrete rendered values", () => {
     "--panel-border": "ButtonBorder",
     "--text-primary": "CanvasText",
     "--text-secondary": "GrayText",
-    "--runtime-online": "#18794e",
+    "--runtime-online": "light-dark(#18794e, #63d69a)",
     "--runtime-offline": "GrayText",
-    "--peer-reachable": "#18794e",
-    "--peer-unreachable": "#b42318",
-    "--message-own-background": "#e8f1ff",
-    "--message-remote-background": "#f2f2f2",
+    "--peer-reachable": "light-dark(#18794e, #63d69a)",
+    "--peer-unreachable": "light-dark(#b42318, #ff8a80)",
+    "--message-own-background": "color-mix(in srgb, Canvas 88%, LinkText)",
+    "--message-remote-background": "color-mix(in srgb, Canvas 94%, CanvasText)",
     "--activity-info": "LinkText",
-    "--activity-error": "#b42318",
+    "--activity-error": "light-dark(#b42318, #ff8a80)",
     "--sidebar-width": "444px",
     "--panel-padding": "21px",
     "--panel-gap": "8px",
@@ -82,6 +82,43 @@ test("activity limit controls the visible newest entries", () => {
   const activities = [1, 2, 3].map((id) => ({ id, level: "info", summary: String(id) }));
 
   assert.deepEqual(visibleActivity(activities, ontology).map((item) => item.id), [3, 2]);
+});
+
+test("default workbench prioritizes conversation while advanced views stay registered", () => {
+  const visibility = Object.fromEntries(
+    defaultUiOntology.views.map((view) => [view.id, view.visible]),
+  );
+  assert.equal(visibility["room.timeline"], true);
+  assert.equal(visibility["message.composer"], true);
+  assert.equal(visibility["channel.list"], true);
+  assert.equal(visibility["profile.summary"], false);
+  assert.equal(visibility["invite.exchange"], false);
+  assert.equal(visibility["peer.list"], false);
+  assert.equal(visibility["member.profiles"], false);
+  assert.equal(visibility["message.search"], false);
+  assert.equal(visibility["notification.center"], false);
+  assert.equal(visibility["network.health"], false);
+  assert.equal(visibility["field.test"], false);
+  assert.equal(visibility["product.update"], false);
+  assert.equal(visibility["service.activity"], false);
+});
+
+test("ordinary native launch starts the peer service unless a person opts out", () => {
+  const startOnline = defaultUiOntology.behaviors.find(
+    (behavior) => behavior.id === "runtime.startOnlineOnLaunch",
+  );
+  assert.deepEqual(startOnline?.default_value, { type: "bool", value: true });
+  assert.deepEqual(startOnline?.current_value, { type: "bool", value: true });
+});
+
+test("identity and invitation views use human-facing labels without changing stable ids", () => {
+  const labels = Object.fromEntries(
+    defaultUiOntology.views.map((view) => [view.id, view.label]),
+  );
+  assert.equal(labels["profile.summary"], "You");
+  assert.equal(labels["invite.exchange"], "Invite People");
+  assert.equal(labels["peer.list"], "Connections");
+  assert.equal(labels["room.timeline"], "Conversation");
 });
 
 test("live update lifecycle remains one semantic command vocabulary", () => {

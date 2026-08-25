@@ -27,8 +27,14 @@ length, and SHA-256 digest. It does not trust GitHub, a mirror, or the
 manifest's own claimed signer unless that signer is present in the reviewed
 trust-root file.
 
-The desktop Product Update view applies the same root verification to a signed
-`.voxupdate` package before live activation.
+The desktop **More → Product updates** surface leads with choosing a signed
+`.voxupdate` file, displays its claimed release, sequence, channel, minimum
+kernel, and signer for review, then applies the same native-root verification
+before live activation. Raw JSON paste remains available as an explicit text
+handoff fallback. The displayed claims are not verification; only the installed
+native kernel may authenticate or activate the package. The same surface accepts
+signed `.voxtrust` files for exceptional release-root transitions and previews
+their claimed sequence and key-set changes before native verification.
 
 ## macOS
 
@@ -44,6 +50,14 @@ The desktop Product Update view applies the same root verification to a signed
 Do not use `sudo spctl --master-disable`. If macOS still quarantines a copy
 whose signed manifest you verified, the narrow fallback is
 `xattr -dr com.apple.quarantine /Applications/Voxelle.app`.
+
+When replacing Voxelle with another independently verified build, macOS may
+ask whether the new copy may access the existing `app.voxelle.identity-vault`
+Keychain item. Ad-hoc signatures identify each build by its changing code hash,
+so this is expected even when the bundle name and path are unchanged. Approve
+the request only after verifying the replacement's signed release manifest.
+Declining leaves the encrypted identity unreadable to that build; an offline
+`.voxrecover` kit remains the supported recovery path on a fresh home.
 
 ## Windows
 
@@ -94,6 +108,16 @@ vendor signing identity. There is intentionally no formal release CI/CD for the
 beta path: a release operator runs the tests, builds both platform artifacts,
 signs one manifest over the collected bytes, verifies it from a clean
 directory, publishes with `gh`, and reads the published assets back.
+
+When collecting macOS restart evidence, create the test home and relaunch it
+with the exact same built `.app`. Rebuilding and ad-hoc-signing the bundle
+between those two launches changes the executable identity that macOS Keychain
+uses to protect the encrypted identity-vault unlock key; that tests replacement
+of the native artifact, not ordinary restart. The native loading surface must
+make a pending operating-system credential request explicit rather than
+appearing frozen. Development-only tests that must
+cross rebuilds may explicitly use `VOXELLE_VAULT_BACKEND=test-file`, but that is
+not evidence for the production Keychain path.
 
 Do not enable GitHub's **Set as a pre-release** option for these beta builds.
 The signed manifest—not GitHub—declares the `beta` channel, while installed

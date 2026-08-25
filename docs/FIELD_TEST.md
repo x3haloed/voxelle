@@ -50,18 +50,29 @@ The important thing is that each running host has its own home root.
 
 ## Surfaces To Watch
 
-Use these panels in the workbench:
+Use the ordinary human surfaces first:
 
-- `Profile Summary`: confirms the current home, peer, device, and space
-  identity.
-- `Runtime Status`: shows online state plus listen and advertised addresses.
-- `Network Health`: shows lower-level setup and reachability rows.
-- `Invite Exchange`: creates and copies a signed membership invite and imports
-  ordinary peer availability records after membership exists.
-- `Peer List`: shows imported availability records and exposes diagnosis/sync.
-- `Field Test`: shows the operator checklist for the current peer.
-- `Service Activity`: shows diagnostic, sync, service, update, and error events.
-- `Room Timeline` and `Message Composer`: read and send test messages.
+- **People** in the header shows the local profile and members, creates and
+  copies a signed membership invite with an explicit expiry, lists active
+  governance invitations, confirms revocation, and progressively discloses
+  identity and manual peer details.
+- **Online / Offline** in the header opens Connection & Sync health. It shows
+  automatic service, reachability, and synchronization state without requiring
+  topology on the ordinary success path. For manual checks, choose the exact
+  named peer and verify its IPv6 address, principal, and device before running
+  diagnosis or sync; the selection grants no membership or authority.
+- **Channels**, **Conversation**, and **Message Composer** select rooms, project
+  accepted messages, and send test messages.
+
+For operator intervention, choose **More → Edit layout** and restore the
+registered `Runtime Status`, `Network Health`, `Connections`, `Field Test`, and
+`Service Activity` views. These expose listen/advertised addresses, imported
+ordinary peer records, explicit diagnosis and sync, the re-entrant field-test
+checklist, and service errors. The advanced views invoke the same Rust semantic
+commands as the focused surfaces; they are not a separate authority path.
+The command palette keeps unavailable operations visible with their missing
+prerequisite and routes form-backed operations to the same focused inputs; it
+must not submit empty drafts merely because the command started in the palette.
 
 Do not conflate the two signed JSON objects. A `.voxinvite` grants membership;
 a peer record only advertises replaceable endpoint availability and grants no
@@ -77,19 +88,34 @@ membership or protocol authority.
 4. In `Runtime Status`, confirm:
    - `Runtime` is `online`.
    - `Advertise` is not a loopback address unless this is a same-machine test.
-5. In `Invite Exchange`, create a signed, expiring space invite and copy its
-   complete JSON.
+5. In `Invite Exchange`, choose an expiry, create a signed space invite, and
+   copy its complete JSON. Confirm the invite appears under **Active
+   invitations**.
 6. Send A's signed space invite to Peer B out-of-band.
+
+As a separate revocation check, create another invite, choose **Revoke
+invite…**, review the stale-partition limitation, and confirm. Verify it leaves
+**Active invitations** and stays absent after restarting A. While an ordinary
+bootstrap peer that has learned the revocation is reachable, verify a fresh
+home refuses that stale `.voxinvite` without creating a local identity. Do not
+interpret acceptance by an isolated stale partition as strict-single-use or
+instantaneous-revocation behavior; neither is claimed.
 
 ### Peer B
 
 1. Launch the host with a fresh isolated home; do not initialize a separate
    space first.
-2. Paste A's signed invite JSON into `Or join a space` and run `Join Space`.
+2. Choose A's `.voxinvite` file under **Join with an invite**, review the
+   displayed space, authority, expiry, and included peers, then run **Join
+   Space**. If the invite arrived as complete signed text instead, expand
+   **Paste invite JSON instead** and paste it there.
 3. Confirm the join creates B's durable principal, admits it to A's space,
    synchronizes retained history, and goes online without manual topology
    steps on the ordinary success path.
-4. In `Peer List`, diagnose A and run an explicit sync as a re-entrant check.
+4. In `Connection & sync`, select A by its displayed address, principal, and
+   device; alternatively, open A's exact row in `Peer List`. Diagnose A and run
+   an explicit sync as a re-entrant check. Record the peer-named activity
+   result.
 5. In `Message Composer`, send a message like:
 
 ```text
@@ -102,10 +128,24 @@ hello from peer b
 ### Peer A Again
 
 1. Import B's peer record if needed; this must not change membership.
-2. Run `Diagnose Peer` and `Sync Peer`.
+   The generic **Import Peer** action must open the Connection & sync review,
+   focus the availability input, show B's claimed label/address/principal/device
+   and space, and keep Import disabled for incomplete JSON. Compare those claims
+   with B's recorded values before importing; Rust remains the validator.
+2. In `Connection & sync`, select B and confirm the displayed address,
+   principal, and device match B's recorded values. Run the B-named diagnosis
+   and sync actions; do not infer the target from peer ordering.
 3. Confirm B's message appears in `Room Timeline`.
 4. Send a reply from A.
 5. Have B sync A again and confirm A's reply appears.
+6. Choose a harmless non-empty file no larger than 256 KiB. Before sharing,
+   confirm the review names its filename, type, size, `#general`, admitted-space
+   audience, and retained-copy limitation. Share it and have B synchronize.
+7. On B, confirm the projected filename and size, download it, and compare its
+   SHA-256 with A's original. On A, choose **Delete…**, review the tombstone
+   limitation, and confirm; after another sync B must project the tombstone.
+   Record that this does not erase B's already downloaded copy or the accepted
+   signed fact.
 
 ## Third-Peer Test
 
@@ -125,9 +165,34 @@ Peer C should prove that the system is not only pairwise happy-path glue.
 hello from peer c
 ```
 
-7. Have B import C's ordinary peer record if needed, diagnose C, and sync C.
-8. Bring A back online and sync it against either B or C.
+7. Have B import C's ordinary peer record if needed, explicitly select C,
+   confirm the import review and C's address/principal/device tuple, diagnose C,
+   and sync C.
+8. Bring A back online, explicitly select either B or C, and sync that named
+   peer. Record which topology edge was exercised.
 9. Confirm all three peers can eventually see A, B, and C messages.
+
+## Private-Channel Test
+
+Use the same three admitted peers to exercise confidentiality without creating
+a second authority path.
+
+1. On A, create a private channel containing A and B but not C.
+2. Record the projected private-member count and key epoch, then send a unique
+   harmless marker in that channel.
+3. Synchronize B and C. Confirm B can open and read the private channel while C
+   does not see it or its marker.
+4. On A, choose **Rotate key…**. With the confirmation open, verify it names
+   the current private-member count, future-content protection, and the fact
+   that earlier retained material cannot be erased. Confirm the rotation.
+5. Confirm the projected epoch advances, send a second unique marker, and
+   synchronize B and C again. B must read both epochs; C must remain excluded.
+6. Restart A and confirm the advanced epoch and private-member count reconstruct
+   before sending more private content.
+
+Do not treat rotation as proof that a prior recipient forgot old keys or
+plaintext. The test proves current membership-bound distribution and future
+epoch use, not remote erasure or forward secrecy.
 
 ## What To Record
 
@@ -135,7 +200,9 @@ For a beta-gate run, begin with the release-bound evidence template and follow
 `docs/BETA_EVIDENCE.md`. The completed receipt is required in addition to these
 human-readable notes; it rejects loopback endpoints, duplicate machines, a
 non-offline inviter, missing bidirectional checks, and incomplete message
-convergence.
+convergence. Use `record-field-beta-evidence` immediately after the run to copy
+the recorded A/B/C identities, endpoints, markers, and explicit observations
+into a new staged receipt without hand-editing its nested JSON.
 
 For each peer, write down:
 
@@ -219,6 +286,8 @@ Minimum useful success:
 - C can use A's signed invite to join and receive history through ordinary peer
   B while A is offline.
 - A, B, and C can eventually see a message from each peer.
+- A and B can exchange content across a private-channel key rotation while C
+  remains excluded and the epoch reconstructs after restart.
 - The operator can explain what happened using only the workbench panels.
 
 Strong success:

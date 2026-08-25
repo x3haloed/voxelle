@@ -144,6 +144,14 @@ endpoint = {
 
 Endpoints are not identity. They are hints. They may expire, rotate, fail, or be superseded.
 
+Within one device installation, ordinary clean restart should first attempt the
+last successfully advertised socket so existing peer hints continue to work.
+Failure to reclaim it must be explicit; silently choosing a new ephemeral port
+turns an apparently successful restart into an unreachable continuing
+conversation. This local continuity does not make the endpoint authoritative:
+explicit reconfiguration, authenticated peer exchange, and eventual expiry may
+still replace it.
+
 ### 4.4 Room
 
 A room is a replicated signed event log with membership and permissions.

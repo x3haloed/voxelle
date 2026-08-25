@@ -1,0 +1,34 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const source = await readFile(new URL("./product-component.js", import.meta.url), "utf8");
+
+test("channel actions expose their visible channel context", () => {
+  assert.match(source, /Select \$\{channel\.visibility === "private" \? "private " : ""\}channel \$\{channelLabel\}/);
+  assert.match(source, /Rotate encryption key for private channel \$\{channelLabel\}/);
+});
+
+test("message action disclosures expose author and bounded content context", () => {
+  assert.match(source, /actionSummary\.setAttribute\("aria-label", messageActionsLabel\(messageLabel\)\)/);
+  assert.match(source, /reaction on \$\{messageLabel\}/);
+  assert.match(source, /text\.length > 48 \? `\$\{text\.slice\(0, 47\)\}…` : text/);
+});
+
+test("network health peer actions share target availability", () => {
+  assert.match(source, /isPeerOperation\(row\.primary_action\)[\s\S]*availabilityButton\(row\.primary_action, snapshot, payload\)/);
+  assert.match(source, /hasKnownPeer: \(snapshot\.home\?\.peers\.length \?\? 0\) > 0/);
+});
+
+test("governance row controls expose their visible member, role, and invite targets", () => {
+  assert.match(source, /Actions for member \$\{memberLabel\}/);
+  assert.match(source, /Manage members for role \$\{roleLabel\}/);
+  assert.match(source, /Revoke invite expiring \$\{inviteLabel\}/);
+});
+
+test("governance form disclosures are distinct from their semantic submit actions", () => {
+  assert.match(source, /createSummary\.setAttribute\("aria-label", "Open channel creation form"\)/);
+  assert.match(source, /createSummary\.setAttribute\("aria-label", "Open role creation form"\)/);
+  assert.match(source, /form\.append\(privacy, submitButton\("channel\.create"\)\)/);
+  assert.match(source, /form\.append\(permissions, submitButton\("role\.create"\)\)/);
+});
