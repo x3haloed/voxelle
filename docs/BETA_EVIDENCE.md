@@ -266,9 +266,10 @@ failure nor dismissal may claim acceptance or erase the review context.
 In **Connection & sync**, enter an advertised IPv6 address without brackets or
 a port, then a bracketed address with port `70000`. Invoke **Go Online** each
 time and confirm the exact field is announced invalid, receives focus, and the
-service does not reconfigure. Correct it to a real bracketed IPv6 socket with a
-valid port and continue through the native connection path. Leaving both fields
-empty must retain automatic local setup.
+service does not reconfigure. Correct it to real bracketed Bind and Advertise
+sockets using the same valid port and continue through the native connection
+path. Leaving both fields empty must retain automatic wildcard binding and
+native global-interface selection.
 
 While the peer service is online, confirm the command palette disables **Go
 Online** with a direction to Connection & sync and keeps **Go Offline**

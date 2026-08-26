@@ -34,7 +34,7 @@ use tokio::{
     sync::{broadcast, Mutex, Semaphore},
     time,
 };
-use tracing::info;
+use tracing::{info, warn};
 use voxelle_app::{
     resolve_home_root, shell_command_ids, shell_contract_typescript, OriginContext,
     ServiceActivityItem, ShellError, ShellRecovery, ShellSnapshotView, ShellState,
@@ -232,6 +232,26 @@ async fn main() -> Result<()> {
         event_slots: Arc::new(Semaphore::new(8)),
         snapshot_changes,
         origin_registry_path,
+    });
+    let startup_shell = state.shell.clone();
+    tokio::spawn(async move {
+        match startup_shell.observational_snapshot().await {
+            Ok(snapshot) if snapshot.home.is_some() => {
+                if let Err(error) = startup_shell
+                    .execute_serialized_command(
+                        "runtime.goOnline",
+                        serde_json::json!({"bind": null, "advertise": null}),
+                    )
+                    .await
+                {
+                    warn!(detail = %error.detail, "automatic Voxelle runtime startup failed");
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                warn!(detail = %error.detail, "could not inspect Voxelle home for automatic startup");
+            }
+        }
     });
     let app = Router::new()
         .route("/inhabitant/v0/discovery", get(get_discovery))

@@ -152,6 +152,16 @@ conversation. This local continuity does not make the endpoint authoritative:
 explicit reconfiguration, authenticated peer exchange, and eventual expiry may
 still replace it.
 
+Ordinary startup must not require a person to select an interface, transcribe an
+IPv6 address, or invoke an online command. The native runtime should bind a
+stable UDP port on the IPv6 wildcard, select a concrete global address from
+operational interfaces, prefer a still-present prior address on the active
+route, and refresh the local advertised endpoint when that interface set
+changes. If no global address is available, local-first operation continues
+with an explicit degraded state while automatic discovery keeps retrying.
+Manual bind and advertise sockets are an advanced diagnostic override; when
+both are supplied they must resolve to the same non-zero UDP port.
+
 ### 4.4 Room
 
 A room is a replicated signed event log with membership and permissions.

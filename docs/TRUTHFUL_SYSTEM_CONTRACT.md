@@ -678,14 +678,16 @@ to simulate preview acceptance. This is not accepted native import or external
 network evidence.
 
 Advanced Bind and Advertise input now presents the complete IPv6 socket shape
-with a port instead of ambiguously asking for an address. One advisory helper
+with a port instead of ambiguously asking for an address, and the entire form is
+disclosed only as an advanced diagnostic override. One advisory helper
 accepts empty automatic defaults or bracketed IPv6 sockets, including numeric
 scope IDs and IPv4-mapped tails, while correcting edge whitespace, controls,
 malformed addresses, missing ports, and ports above 65,535. **Go Online** opens
 Connection & sync, marks and focuses the exact invalid field, and does not
 invoke the semantic command until both drafts are locally usable. Rust's typed
-`SocketAddr` deserialization and service startup remain authoritative for the
-accepted configuration. Deterministic helper, product-source, and native bundle
+`SocketAddr` deserialization, shared-port validation, automatic native-interface
+selection, and service startup remain authoritative for the accepted
+configuration. Deterministic helper, product-source, and native bundle
 tests cover this presentation path; this is not new rendered, packaged-native,
 non-loopback, or field evidence.
 
@@ -693,7 +695,7 @@ Runtime palette actions now reflect the projected transition rather than
 offering contradictory Start and Stop choices. While online, context-free Go
 Online is disabled with a route to Connection & sync for explicit Bind or
 Advertise reconfiguration, while Go Offline remains available; the visible
-in-form Go Online action remains available to apply those drafts. Offline state
+advanced-form Go Online action remains available to apply those drafts. Offline state
 reverses the palette availability. The semantic command and Rust service
 configuration authority are unchanged. Deterministic availability tests and a
 rendered online preview verified the disabled palette reason and the still-active
@@ -800,6 +802,17 @@ so a clean in-process stop releases the binding before restart. This preserves
 ordinary same-device reachability for already distributed peer hints without
 turning endpoints into identity or authority; explicit address configuration
 replaces the saved binding, and a bind conflict remains an explicit failure.
+Ordinary automatic startup binds the stable UDP port on the IPv6 wildcard,
+selects a concrete global address from operational native interfaces, prefers a
+still-present prior address and the active route's interface, and monitors that
+interface set for changes. When no global address exists, the runtime stays
+locally usable on loopback, reports the missing reachability explicitly, and
+keeps retrying without asking a person to enter socket syntax. Explicit
+bind/advertise values remain one advanced diagnostic override and must name one
+shared non-zero UDP port; they cannot manufacture an advertised endpoint whose
+listener owns another port. Automatic local-only invite creation requires a
+global ordinary-peer bootstrap rather than presenting an unusable local hint as
+ordinary success.
 An independent source-blind two-home process rehearsal confirmed that a peer
 reclaimed its exact loopback QUIC socket after clean restart and that the other
 home received a new message using its original retained peer record. The same
@@ -807,6 +820,14 @@ run showed an acknowledgement attempted before local message admission now
 returns `needs_sync`; after ordinary peer sync, the identical acknowledgement
 was admitted. This is same-machine continuity evidence, not external IPv6
 endpoint refresh, crash recovery, or global reachability evidence.
+On 2026-08-25, a fresh disposable home launched through the built inhabitant
+service without an online command from a client, projected `online`, listened on
+`[::]:53477`, automatically advertised the machine's stable global `en0`
+address on the same port, and exposed the wildcard UDP socket in the native
+kernel table. Deterministic tests cover retained-address preference, no-global
+degradation, same-port explicit overrides, mismatch rejection, and clean
+restart continuity. This is current-source local macOS runtime evidence, not a
+packaged-app, Windows, network-change, or external inbound-reachability claim.
 
 Quiet coordination now has a separate bounded-intention truth rather than
 overloading durable observation or runtime presence. An admitted

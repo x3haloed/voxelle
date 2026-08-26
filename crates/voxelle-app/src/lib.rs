@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 use ts_rs::TS;
 use voxelle_core::{
     accept_event, append_identity_change, create_delegation, create_delegation_for_device,
@@ -24,8 +25,8 @@ use voxelle_core::{
     Keypair, OriginSurfaceProtocolV1, PeerIdentity, RecoveryCardV1, RoomContext, SpaceV1,
 };
 use voxelle_net::{
-    AddressScope, LocalReachabilityReport, PeerEndpoint, PeerReachabilityReport, QuicCertificate,
-    QuicNode, RoomSync, ServedPeerRequest,
+    classify_address, local_reachability_report, AddressScope, LocalReachabilityReport,
+    PeerEndpoint, PeerReachabilityReport, QuicCertificate, QuicNode, RoomSync, ServedPeerRequest,
 };
 use voxelle_store::{ResidentObservationStart, SequencedEvent, Store};
 use voxelle_sync::{merge_stats, SyncLimits, SyncStats};
@@ -50,7 +51,9 @@ const RECOVERY_HEALTH_STATE: &str = "identity.recovery_health";
 const DEVICE_NAMES_STATE: &str = "identity.device_names";
 const DEVICE_LINK_PENDING_FILE: &str = "device-link-pending.json";
 const SERVICE_BINDING_STATE: &str = "runtime.service_binding";
+const SERVICE_BINDING_VERSION: u8 = 2;
 const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
+const AUTOMATIC_ADDRESS_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_KNOWN_PEERS: usize = 128;
 const MAX_PROJECTED_MESSAGES: usize = 500;
 const MAX_COORDINATION_FRONTIER_ITEMS: usize = 256;
@@ -726,8 +729,31 @@ struct ReadStateFile {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ServiceBindingFile {
     v: u8,
+    mode: ServiceBindingMode,
     bind: SocketAddr,
     advertise: SocketAddr,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ServiceBindingMode {
+    Automatic,
+    Explicit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResolvedServiceBinding {
+    mode: ServiceBindingMode,
+    bind: SocketAddr,
+    advertise: Option<SocketAddr>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InterfaceAddressCandidate {
+    interface_name: String,
+    address: Ipv6Addr,
+    operational: bool,
+    point_to_point: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1278,6 +1304,7 @@ struct PeerServer {
 #[derive(Debug)]
 pub struct VoxelleService {
     online: OnlineHome,
+    binding_mode: ServiceBindingMode,
     events: mpsc::Receiver<VoxelleServiceEvent>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
@@ -1332,6 +1359,7 @@ struct ActiveProductGeneration {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoxelleServiceEvent {
     Served(Box<ServedPeerRequest>),
+    AutomaticAddressChanged(SocketAddr),
     Failed(String),
     Stopped,
 }
@@ -1366,6 +1394,9 @@ impl VoxelleServiceEvent {
                     )
                 }
             },
+            VoxelleServiceEvent::AutomaticAddressChanged(addr) => {
+                format!("automatic advertised address changed to {addr}")
+            }
             VoxelleServiceEvent::Failed(error) => format!("service error: {error}"),
             VoxelleServiceEvent::Stopped => "service stopped".to_string(),
         }
@@ -2355,7 +2386,24 @@ impl VoxelleHome {
         }
         .related_view("runtime.status");
 
+        let peers = self.known_peers()?;
+        let has_global_bootstrap = peers
+            .iter()
+            .any(|peer| classify_address(peer.endpoint.addr.ip()) == AddressScope::Global);
         let invite_status = match online {
+            Some(online)
+                if online.local_report.address_scope != AddressScope::Global
+                    && !has_global_bootstrap =>
+            {
+                NetworkHealthRow::needs_attention(
+                    "invite",
+                    "Invite",
+                    "This device is online locally but cannot provide a globally reachable bootstrap endpoint yet.",
+                    None,
+                )
+                .detail("Voxelle will keep checking native interfaces automatically; an already reachable ordinary peer may still bootstrap a signed invite.".to_string())
+                .related_command("space.invite.create")
+            }
             Some(online) => match online.invite_view(None, None) {
                 Ok(invite) => NetworkHealthRow::new(
                     "invite",
@@ -2388,7 +2436,6 @@ impl VoxelleHome {
         }
         .related_view("invite.exchange");
 
-        let peers = self.known_peers()?;
         let peer_status = if peers.is_empty() {
             NetworkHealthRow::needs_attention(
                 "peers",
@@ -4905,11 +4952,10 @@ impl VoxelleHome {
 
     fn start_service_with_notifier(
         &self,
-        bind: SocketAddr,
-        advertise: Option<SocketAddr>,
+        binding: ResolvedServiceBinding,
         snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<VoxelleService> {
-        VoxelleService::start(self.clone(), bind, advertise, snapshot_invalidated)
+        VoxelleService::start_with_binding(self.clone(), binding, snapshot_invalidated)
     }
 
     pub async fn diagnose_peer(&self, peer: &PeerRecord) -> Result<PeerReachabilityReport> {
@@ -5046,6 +5092,22 @@ impl VoxelleHome {
             return Ok(None);
         }
         self.open_store()?.local_state(key)
+    }
+
+    fn service_binding(&self) -> Result<Option<ServiceBindingFile>> {
+        let Some(value) = self.local_state::<serde_json::Value>(SERVICE_BINDING_STATE)? else {
+            return Ok(None);
+        };
+        if value.get("v").and_then(serde_json::Value::as_u64)
+            != Some(u64::from(SERVICE_BINDING_VERSION))
+        {
+            // Endpoint availability is disposable local state. An older development shape is
+            // recomputed rather than becoming a compatibility authority.
+            return Ok(None);
+        }
+        Ok(Some(
+            serde_json::from_value(value).context("parse saved service binding")?,
+        ))
     }
 
     fn local_state_exists(&self, key: &str) -> Result<bool> {
@@ -6824,32 +6886,41 @@ impl VoxelleCommandHost {
             }
         }
 
-        let automatic = request.bind.is_none() && request.advertise.is_none();
-        let saved: Option<ServiceBindingFile> = if automatic {
-            self.home.local_state(SERVICE_BINDING_STATE)?
+        let automatic_request = request.bind.is_none() && request.advertise.is_none();
+        let saved = if automatic_request {
+            self.home.service_binding()?
         } else {
             None
         };
-        if saved.as_ref().is_some_and(|saved| saved.v != 1) {
-            anyhow::bail!("unsupported saved service binding version");
-        }
-        let bind = request
-            .bind
-            .or_else(|| saved.as_ref().map(|saved| saved.bind))
-            .unwrap_or_else(|| SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 0));
-        let advertise = request
-            .advertise
-            .or_else(|| saved.as_ref().map(|saved| saved.advertise));
-        let service = self.home.start_service_with_notifier(
-            bind,
-            advertise,
-            self.snapshot_invalidated.clone(),
-        )?;
+        let candidates = if automatic_request
+            && !saved
+                .as_ref()
+                .is_some_and(|saved| saved.mode == ServiceBindingMode::Explicit)
+        {
+            match interface_address_candidates() {
+                Ok(candidates) => candidates,
+                Err(error) => {
+                    self.push_activity(
+                        ServiceActivityLevel::Error,
+                        format!("automatic IPv6 address discovery failed: {error:#}"),
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+        let binding =
+            resolve_service_binding(request, saved, &candidates, preferred_route_source_ipv6())?;
+        let service = self
+            .home
+            .start_service_with_notifier(binding, self.snapshot_invalidated.clone())?;
         let addr = service.online().endpoint.addr;
         self.home.put_local_state(
             SERVICE_BINDING_STATE,
             &ServiceBindingFile {
-                v: 1,
+                v: SERVICE_BINDING_VERSION,
+                mode: binding.mode,
                 bind: service.online().local_report.listen_addr,
                 advertise: service.online().local_report.advertised_addr,
             },
@@ -6885,11 +6956,11 @@ impl VoxelleCommandHost {
         &mut self,
         request: CreateSpaceInviteRequest,
     ) -> Result<ShellSnapshotView> {
-        let online = self
+        let service = self
             .service
             .as_ref()
-            .map(VoxelleService::online)
             .ok_or_else(|| anyhow::anyhow!("go online before creating a space invite"))?;
+        let online = service.online();
         let minutes = request.expires_minutes.unwrap_or(24 * 60);
         if !(1..=MAX_INVITE_EXPIRY_MINUTES).contains(&minutes) {
             anyhow::bail!("invite expiry must be between 1 minute and 30 days");
@@ -6907,6 +6978,16 @@ impl VoxelleCommandHost {
             })
             .take(7)
             .collect::<Vec<_>>();
+        if service.binding_mode == ServiceBindingMode::Automatic
+            && online.local_report.address_scope != AddressScope::Global
+            && !additional_bootstraps
+                .iter()
+                .any(|peer| classify_address(peer.endpoint.addr.ip()) == AddressScope::Global)
+        {
+            anyhow::bail!(
+                "no globally reachable bootstrap endpoint is available yet; Voxelle will keep checking local IPv6 interfaces automatically"
+            );
+        }
         let invite = self.home.create_space_invite_with_bootstraps(
             online,
             &additional_bootstraps,
@@ -7851,17 +7932,44 @@ impl VoxelleCommandHost {
 
         let mut drained = Vec::new();
         while let Some(event) = service.try_recv_event() {
-            let level = match event {
-                VoxelleServiceEvent::Failed(_) => ServiceActivityLevel::Error,
-                VoxelleServiceEvent::Served(_) | VoxelleServiceEvent::Stopped => {
-                    ServiceActivityLevel::Info
-                }
-            };
-            drained.push((level, event.summary()));
+            drained.push(event);
         }
 
-        for (level, summary) in drained {
-            self.push_activity(level, summary);
+        for event in drained {
+            let level = match &event {
+                VoxelleServiceEvent::Failed(_) => ServiceActivityLevel::Error,
+                VoxelleServiceEvent::Served(_)
+                | VoxelleServiceEvent::AutomaticAddressChanged(_)
+                | VoxelleServiceEvent::Stopped => ServiceActivityLevel::Info,
+            };
+            let mut persistence_error = None;
+            if let VoxelleServiceEvent::AutomaticAddressChanged(advertised) = &event {
+                if let Some(service) = self.service.as_mut() {
+                    service.online.endpoint.addr = *advertised;
+                    service.online.local_report = local_reachability_report(
+                        service.online.local_report.listen_addr,
+                        *advertised,
+                    );
+                    if let Err(error) = self.home.put_local_state(
+                        SERVICE_BINDING_STATE,
+                        &ServiceBindingFile {
+                            v: SERVICE_BINDING_VERSION,
+                            mode: ServiceBindingMode::Automatic,
+                            bind: service.online.local_report.listen_addr,
+                            advertise: *advertised,
+                        },
+                    ) {
+                        persistence_error = Some(error);
+                    }
+                }
+            }
+            if let Some(error) = persistence_error {
+                self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!("could not retain automatic service address: {error:#}"),
+                );
+            }
+            self.push_activity(level, event.summary());
         }
     }
 
@@ -8183,7 +8291,15 @@ impl PeerServer {
         let identity = home.load_identity()?;
         let certificate = home.load_certificate()?;
         let node = QuicNode::bind_with_certificate(identity, certificate, bind)?;
-        let advertised_addr = advertise.unwrap_or(node.local_addr()?);
+        let listen_addr = node.local_addr()?;
+        let advertised_addr = advertise
+            .map(|mut advertised| {
+                if advertised.port() == 0 {
+                    advertised.set_port(listen_addr.port());
+                }
+                advertised
+            })
+            .unwrap_or(listen_addr);
         let endpoint = node.peer_endpoint(advertised_addr)?;
         let local_report = node.local_reachability_report(advertised_addr)?;
         let config = home.load_config()?;
@@ -8223,6 +8339,22 @@ impl VoxelleService {
         advertise: Option<SocketAddr>,
         snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self> {
+        Self::start_with_binding(
+            home,
+            ResolvedServiceBinding {
+                mode: ServiceBindingMode::Explicit,
+                bind,
+                advertise,
+            },
+            snapshot_invalidated,
+        )
+    }
+
+    fn start_with_binding(
+        home: VoxelleHome,
+        binding: ResolvedServiceBinding,
+        snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<Self> {
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let (event_tx, events) = mpsc::sync_channel(SERVICE_EVENT_QUEUE_CAPACITY);
         let (startup_tx, startup_rx) = mpsc::sync_channel(1);
@@ -8231,8 +8363,7 @@ impl VoxelleService {
             .spawn(move || {
                 run_service_thread(
                     home,
-                    bind,
-                    advertise,
+                    binding,
                     startup_tx,
                     stop_rx,
                     event_tx,
@@ -8254,6 +8385,7 @@ impl VoxelleService {
 
         Ok(Self {
             online,
+            binding_mode: binding.mode,
             events,
             stop: Some(stop_tx),
             thread: Some(thread),
@@ -8296,8 +8428,7 @@ impl Drop for VoxelleService {
 
 fn run_service_thread(
     home: VoxelleHome,
-    bind: SocketAddr,
-    advertise: Option<SocketAddr>,
+    binding: ResolvedServiceBinding,
     startup_tx: mpsc::SyncSender<std::result::Result<OnlineHome, String>>,
     stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::SyncSender<VoxelleServiceEvent>,
@@ -8314,7 +8445,7 @@ fn run_service_thread(
         return;
     };
     task_runtime.block_on(async move {
-        let server = match PeerServer::start(home, bind, advertise) {
+        let server = match PeerServer::start(home, binding.bind, binding.advertise) {
             Ok(server) => server,
             Err(error) => {
                 let detail = format!("{error:#}");
@@ -8324,19 +8455,72 @@ fn run_service_thread(
             }
         };
         let _ = startup_tx.send(Ok(server.online.clone()));
-        run_service_loop(server, stop_rx, event_tx, snapshot_invalidated).await;
+        run_service_loop(
+            server,
+            binding.mode == ServiceBindingMode::Automatic,
+            stop_rx,
+            event_tx,
+            snapshot_invalidated,
+        )
+        .await;
     });
 }
 
 async fn run_service_loop(
-    server: PeerServer,
+    mut server: PeerServer,
+    monitor_automatic_address: bool,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::SyncSender<VoxelleServiceEvent>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
 ) {
+    let mut address_poll = tokio::time::interval(AUTOMATIC_ADDRESS_POLL_INTERVAL);
+    address_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    address_poll.tick().await;
     loop {
         tokio::select! {
             _ = &mut stop_rx => break,
+            _ = address_poll.tick(), if monitor_automatic_address => {
+                let previous = match server.online.endpoint.addr.ip() {
+                    IpAddr::V6(address) => Some(address),
+                    IpAddr::V4(_) => None,
+                };
+                match interface_address_candidates() {
+                    Ok(candidates) => {
+                        let selected = select_automatic_ipv6_address(
+                            &candidates,
+                            previous,
+                            preferred_route_source_ipv6(),
+                        )
+                        .unwrap_or(Ipv6Addr::LOCALHOST);
+                        let advertised = SocketAddr::new(
+                            IpAddr::V6(selected),
+                            server.online.endpoint.addr.port(),
+                        );
+                        if advertised != server.online.endpoint.addr
+                            && event_tx
+                                .try_send(VoxelleServiceEvent::AutomaticAddressChanged(advertised))
+                                .is_ok()
+                        {
+                            server.online.endpoint.addr = advertised;
+                            server.online.local_report = local_reachability_report(
+                                server.online.local_report.listen_addr,
+                                advertised,
+                            );
+                            snapshot_invalidated();
+                        }
+                    }
+                    Err(error) => {
+                        if event_tx
+                            .try_send(VoxelleServiceEvent::Failed(format!(
+                                "automatic IPv6 address discovery failed: {error:#}"
+                            )))
+                            .is_ok()
+                        {
+                            snapshot_invalidated();
+                        }
+                    }
+                }
+            }
             result = server.serve_next_request() => {
                 match result {
                     Ok(served) => {
@@ -9767,10 +9951,10 @@ fn advertised_address_row(report: &LocalReachabilityReport) -> NetworkHealthRow 
         AddressScope::Loopback => (
             NetworkHealthStatus::NeedsAttention,
             format!(
-                "Advertising loopback address {}; only this machine can connect.",
+                "No usable global IPv6 address is available; {} keeps local operation online.",
                 report.advertised_addr
             ),
-            Some("runtime.goOnline"),
+            None,
         ),
         AddressScope::Unspecified => (
             NetworkHealthStatus::Broken,
@@ -9795,6 +9979,140 @@ fn advertised_address_row(report: &LocalReachabilityReport) -> NetworkHealthRow 
         row = row.related_command(action);
     }
     row
+}
+
+fn interface_address_candidates() -> Result<Vec<InterfaceAddressCandidate>> {
+    Ok(if_addrs::get_if_addrs()
+        .context("enumerate local network interfaces")?
+        .into_iter()
+        .filter_map(|interface| match interface.ip() {
+            IpAddr::V6(address) => {
+                let operational = interface.is_oper_up();
+                let point_to_point = interface.is_p2p();
+                Some(InterfaceAddressCandidate {
+                    interface_name: interface.name,
+                    address,
+                    operational,
+                    point_to_point,
+                })
+            }
+            IpAddr::V4(_) => None,
+        })
+        .collect())
+}
+
+fn preferred_route_source_ipv6() -> Option<Ipv6Addr> {
+    let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)).ok()?;
+    // Connecting a UDP socket sends no packet. The documentation-only destination lets the
+    // operating system reveal its preferred IPv6 route without depending on an external service.
+    socket
+        .connect(SocketAddr::new(IpAddr::V6("2001:db8::1".parse().ok()?), 9))
+        .ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V6(address) if classify_address(IpAddr::V6(address)) == AddressScope::Global => {
+            Some(address)
+        }
+        _ => None,
+    }
+}
+
+fn select_automatic_ipv6_address(
+    candidates: &[InterfaceAddressCandidate],
+    saved_address: Option<Ipv6Addr>,
+    preferred_route_source: Option<Ipv6Addr>,
+) -> Option<Ipv6Addr> {
+    let preferred_interface = preferred_route_source.and_then(|preferred| {
+        candidates
+            .iter()
+            .find(|candidate| candidate.address == preferred)
+            .map(|candidate| candidate.interface_name.as_str())
+    });
+    let mut usable = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.operational
+                && classify_address(IpAddr::V6(candidate.address)) == AddressScope::Global
+        })
+        .collect::<Vec<_>>();
+    usable.sort_by_key(|candidate| {
+        (
+            candidate.address != saved_address.unwrap_or(Ipv6Addr::UNSPECIFIED),
+            preferred_interface != Some(candidate.interface_name.as_str()),
+            candidate.point_to_point,
+            candidate.interface_name.as_str(),
+            candidate.address.octets(),
+        )
+    });
+    usable.first().map(|candidate| candidate.address)
+}
+
+fn resolve_service_binding(
+    request: StartServiceRequest,
+    saved: Option<ServiceBindingFile>,
+    candidates: &[InterfaceAddressCandidate],
+    preferred_route_source: Option<Ipv6Addr>,
+) -> Result<ResolvedServiceBinding> {
+    if request.bind.is_some() || request.advertise.is_some() {
+        let mut bind = request.bind;
+        let advertise = request.advertise;
+        if bind.is_some_and(|addr| !addr.is_ipv6()) {
+            anyhow::bail!("listen address must be IPv6");
+        }
+        if let Some(advertised) = advertise {
+            if !advertised.is_ipv6() {
+                anyhow::bail!("advertised address must be IPv6");
+            }
+            if advertised.ip().is_unspecified() || advertised.port() == 0 {
+                anyhow::bail!("advertised address must be concrete and use a non-zero port");
+            }
+            bind = Some(match bind {
+                None => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), advertised.port()),
+                Some(mut listen) if listen.port() == 0 => {
+                    listen.set_port(advertised.port());
+                    listen
+                }
+                Some(listen) if listen.port() != advertised.port() => {
+                    anyhow::bail!("listen and advertised addresses must use the same UDP port")
+                }
+                Some(listen) => listen,
+            });
+        }
+        return Ok(ResolvedServiceBinding {
+            mode: ServiceBindingMode::Explicit,
+            bind: bind.unwrap_or_else(|| SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0)),
+            advertise,
+        });
+    }
+
+    if let Some(saved) = saved
+        .as_ref()
+        .filter(|saved| saved.mode == ServiceBindingMode::Explicit)
+    {
+        return Ok(ResolvedServiceBinding {
+            mode: ServiceBindingMode::Explicit,
+            bind: saved.bind,
+            advertise: Some(saved.advertise),
+        });
+    }
+
+    let port = saved
+        .as_ref()
+        .map(|saved| saved.bind.port())
+        .filter(|port| *port != 0)
+        .or_else(|| saved.as_ref().map(|saved| saved.advertise.port()))
+        .unwrap_or(0);
+    let saved_address = saved.and_then(|saved| match saved.advertise.ip() {
+        IpAddr::V6(address) => Some(address),
+        IpAddr::V4(_) => None,
+    });
+    let advertised_address =
+        select_automatic_ipv6_address(candidates, saved_address, preferred_route_source)
+            .unwrap_or(Ipv6Addr::LOCALHOST);
+    Ok(ResolvedServiceBinding {
+        mode: ServiceBindingMode::Automatic,
+        bind: SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port),
+        advertise: Some(SocketAddr::new(IpAddr::V6(advertised_address), port)),
+    })
 }
 
 fn local_ipv6_socket_available() -> Result<()> {
@@ -12319,6 +12637,20 @@ mod tests {
             .iter()
             .any(|item| { item.summary == "service stopped for address reconfiguration" }));
         host.stop_service().expect("stop service");
+
+        let restarted = host
+            .start_service(StartServiceRequest {
+                bind: None,
+                advertise: None,
+            })
+            .expect("restart explicit diagnostic binding");
+        let runtime = restarted.home.expect("home").runtime;
+        assert_eq!(
+            runtime.listen_addr,
+            Some("[::1]:42424".parse().expect("bind"))
+        );
+        assert_eq!(runtime.advertised_addr, Some(advertised));
+        host.stop_service().expect("stop restarted service");
     }
 
     #[tokio::test]
@@ -12700,6 +13032,19 @@ mod tests {
         let initial_listen = initial_runtime.listen_addr.expect("listen address");
         let initial_advertised = initial_runtime.advertised_addr.expect("advertised address");
         assert_ne!(initial_listen.port(), 0);
+        assert!(initial_listen.ip().is_unspecified());
+        assert_eq!(initial_listen.port(), initial_advertised.port());
+        let local_candidates = interface_address_candidates().expect("local interfaces");
+        if select_automatic_ipv6_address(&local_candidates, None, preferred_route_source_ipv6())
+            .is_some()
+        {
+            assert_eq!(
+                classify_address(initial_advertised.ip()),
+                AddressScope::Global
+            );
+        } else {
+            assert_eq!(initial_advertised.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+        }
         first.stop_service().expect("clean stop");
         drop(first);
 
@@ -12714,6 +13059,102 @@ mod tests {
         assert_eq!(restarted_runtime.listen_addr, Some(initial_listen));
         assert_eq!(restarted_runtime.advertised_addr, Some(initial_advertised));
         restarted.stop_service().expect("stop restarted service");
+    }
+
+    #[test]
+    fn automatic_service_binding_prefers_a_retained_global_address_and_wildcard_listener() {
+        let stable: Ipv6Addr = "2601:db8::10".parse().expect("stable address");
+        let temporary: Ipv6Addr = "2601:db8::20".parse().expect("temporary address");
+        let candidates = vec![
+            InterfaceAddressCandidate {
+                interface_name: "en0".to_string(),
+                address: temporary,
+                operational: true,
+                point_to_point: false,
+            },
+            InterfaceAddressCandidate {
+                interface_name: "en0".to_string(),
+                address: stable,
+                operational: true,
+                point_to_point: false,
+            },
+        ];
+        let resolved = resolve_service_binding(
+            StartServiceRequest {
+                bind: None,
+                advertise: None,
+            },
+            Some(ServiceBindingFile {
+                v: SERVICE_BINDING_VERSION,
+                mode: ServiceBindingMode::Automatic,
+                bind: "[::]:48207".parse().expect("saved bind"),
+                advertise: SocketAddr::new(IpAddr::V6(stable), 48207),
+            }),
+            &candidates,
+            Some(temporary),
+        )
+        .expect("automatic binding");
+
+        assert_eq!(resolved.mode, ServiceBindingMode::Automatic);
+        assert_eq!(resolved.bind, "[::]:48207".parse().expect("wildcard"));
+        assert_eq!(
+            resolved.advertise,
+            Some(SocketAddr::new(IpAddr::V6(stable), 48207))
+        );
+    }
+
+    #[test]
+    fn automatic_service_binding_is_truthfully_local_without_a_global_address() {
+        let resolved = resolve_service_binding(
+            StartServiceRequest {
+                bind: None,
+                advertise: None,
+            },
+            None,
+            &[InterfaceAddressCandidate {
+                interface_name: "en0".to_string(),
+                address: "fe80::1".parse().expect("link local"),
+                operational: true,
+                point_to_point: false,
+            }],
+            None,
+        )
+        .expect("degraded automatic binding");
+
+        assert_eq!(resolved.bind, "[::]:0".parse().expect("wildcard"));
+        assert_eq!(
+            resolved.advertise,
+            Some("[::1]:0".parse().expect("loopback"))
+        );
+    }
+
+    #[test]
+    fn explicit_advertisement_owns_the_listener_port_and_rejects_split_ports() {
+        let advertised: SocketAddr = "[2601:db8::10]:48207".parse().expect("advertised");
+        let resolved = resolve_service_binding(
+            StartServiceRequest {
+                bind: None,
+                advertise: Some(advertised),
+            },
+            None,
+            &[],
+            None,
+        )
+        .expect("aligned explicit binding");
+        assert_eq!(resolved.bind, "[::]:48207".parse().expect("wildcard"));
+        assert_eq!(resolved.advertise, Some(advertised));
+
+        let error = resolve_service_binding(
+            StartServiceRequest {
+                bind: Some("[::]:47000".parse().expect("bind")),
+                advertise: Some(advertised),
+            },
+            None,
+            &[],
+            None,
+        )
+        .expect_err("split ports must not create a false endpoint");
+        assert!(error.to_string().contains("must use the same UDP port"));
     }
 
     #[tokio::test]
@@ -13712,13 +14153,13 @@ mod tests {
         );
         assert_eq!(
             network_health_status(&health, "invite"),
-            NetworkHealthStatus::Working
+            NetworkHealthStatus::NeedsAttention
         );
         assert_eq!(
             network_health_row(&health, "invite")
                 .primary_action
                 .as_deref(),
-            Some("invite.copy")
+            None
         );
         service.stop().expect("stop service");
     }

@@ -2047,7 +2047,9 @@ function cancelProductConfirmation() {
 }
 
 function serviceOptions() {
-  const options = element("div", "service-options");
+  const advanced = element("details", "advanced-details service-options");
+  advanced.append(disclosureSummary("Advanced address override"));
+  const options = element("div", "service-options-fields");
   options.append(
     labeledInput("Bind", "Optional local bind, e.g. [::]:0", uiState.bindDraft, (value) => {
       uiState.bindDraft = value;
@@ -2064,10 +2066,11 @@ function serviceOptions() {
     element(
       "p",
       "summary",
-      "Use bracketed IPv6 sockets with ports. Leave both blank for automatic local setup; advertise a reachable global IPv6 socket for other machines.",
+      "Voxelle normally chooses and refreshes these automatically. Override both only for diagnostics or an intentional field-test topology; both sockets must use the same UDP port.",
     ),
   );
-  return options;
+  advanced.append(options);
+  return advanced;
 }
 
 /**

@@ -272,32 +272,10 @@ impl QuicNode {
         &self,
         advertised_addr: SocketAddr,
     ) -> Result<LocalReachabilityReport> {
-        let listen_addr = self.local_addr()?;
-        let address_scope = classify_address(advertised_addr.ip());
-        let mut notes = Vec::new();
-        match address_scope {
-            AddressScope::Global => notes.push("advertised address appears globally routable".into()),
-            AddressScope::UniqueLocal => notes.push("advertised address is unique-local and may only work inside one private IPv6 network".into()),
-            AddressScope::LinkLocal => notes.push("advertised address is link-local and requires an interface scope; it is not internet-routable".into()),
-            AddressScope::Loopback => notes.push("advertised address is loopback; only this machine can connect".into()),
-            AddressScope::Unspecified => notes.push("advertised address is unspecified; provide a concrete IPv6 address to peers".into()),
-            AddressScope::Ipv4 => notes.push("advertised address is IPv4; Voxelle IPv6 transport will reject it".into()),
-        }
-        if listen_addr.ip().is_unspecified() {
-            notes.push("listener is bound on all local IPv6 interfaces".into());
-        }
-        notes.push(
-            "public inbound reachability still requires a remote peer-assisted connect check"
-                .into(),
-        );
-
-        Ok(LocalReachabilityReport {
-            listen_addr,
+        Ok(local_reachability_report(
+            self.local_addr()?,
             advertised_addr,
-            address_scope,
-            can_accept_inbound: listen_addr.is_ipv6(),
-            notes,
-        })
+        ))
     }
 
     pub async fn accept_one(&self) -> Result<AuthenticatedConnection> {
@@ -982,7 +960,37 @@ fn cert_fingerprint(cert_der: &[u8]) -> String {
     )
 }
 
-fn classify_address(ip: IpAddr) -> AddressScope {
+pub fn local_reachability_report(
+    listen_addr: SocketAddr,
+    advertised_addr: SocketAddr,
+) -> LocalReachabilityReport {
+    let address_scope = classify_address(advertised_addr.ip());
+    let mut notes = Vec::new();
+    match address_scope {
+        AddressScope::Global => notes.push("advertised address appears globally routable".into()),
+        AddressScope::UniqueLocal => notes.push("advertised address is unique-local and may only work inside one private IPv6 network".into()),
+        AddressScope::LinkLocal => notes.push("advertised address is link-local and requires an interface scope; it is not internet-routable".into()),
+        AddressScope::Loopback => notes.push("advertised address is loopback; only this machine can connect".into()),
+        AddressScope::Unspecified => notes.push("advertised address is unspecified; provide a concrete IPv6 address to peers".into()),
+        AddressScope::Ipv4 => notes.push("advertised address is IPv4; Voxelle IPv6 transport will reject it".into()),
+    }
+    if listen_addr.ip().is_unspecified() {
+        notes.push("listener is bound on all local IPv6 interfaces".into());
+    }
+    notes.push(
+        "public inbound reachability still requires a remote peer-assisted connect check".into(),
+    );
+
+    LocalReachabilityReport {
+        listen_addr,
+        advertised_addr,
+        address_scope,
+        can_accept_inbound: listen_addr.is_ipv6(),
+        notes,
+    }
+}
+
+pub fn classify_address(ip: IpAddr) -> AddressScope {
     match ip {
         IpAddr::V4(_) => AddressScope::Ipv4,
         IpAddr::V6(addr) if addr.is_unspecified() => AddressScope::Unspecified,

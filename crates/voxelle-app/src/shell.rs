@@ -331,6 +331,7 @@ impl ShellState {
             };
         }
         let mut host = self.host.lock().await;
+        host.drain_service_events();
         let result = match command_id {
             "shell.refresh" => host.refresh_and_sync().await,
             "home.init" => host.init_home(parse_request(payload)?),

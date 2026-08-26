@@ -84,10 +84,13 @@ membership or protocol authority.
 
 1. Launch the host with an isolated home.
 2. Run `Create My Space` if needed.
-3. Run `Go Online`.
+3. Confirm the runtime goes online automatically without entering an address or
+   invoking `Go Online`.
 4. In `Runtime Status`, confirm:
    - `Runtime` is `online`.
-   - `Advertise` is not a loopback address unless this is a same-machine test.
+   - `Listen` is the IPv6 wildcard on a non-zero port.
+   - `Advertise` is a concrete global interface address using that same port,
+     unless this is an explicit same-machine test.
 5. In `Invite Exchange`, choose an expiry, create a signed space invite, and
    copy its complete JSON. Confirm the invite appears under **Active
    invitations**.
@@ -230,8 +233,11 @@ If possible, capture screenshots of:
 ### Advertised Address Is Loopback
 
 If `Advertise` shows `[::1]` or another loopback-only address, off-machine peers
-cannot connect. Try entering a non-loopback IPv6 address in the `Advertise`
-field before running `Go Online`.
+cannot connect. Confirm the machine actually has an operational global IPv6
+address and inspect the automatic-discovery error under **Connection & sync**.
+Voxelle will keep retrying interface discovery. Use **Advanced address
+override** only to isolate an interface-selection defect or impose the exact
+topology required by the field test; set both sockets to the same UDP port.
 
 ### Diagnose Fails
 

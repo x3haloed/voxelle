@@ -12,3 +12,11 @@ test("going online focuses locally invalid IPv6 socket text before invocation", 
   assert.match(source, /"service-bind"/);
   assert.match(source, /"service-advertise"/);
 });
+
+test("ordinary startup is automatic and raw socket controls are advanced diagnostics", () => {
+  assert.match(source, /startOnlineOnLaunch[\s\S]*shell\.execute\("runtime\.goOnline"/);
+  assert.match(source, /element\("details", "advanced-details service-options"\)/);
+  assert.match(source, /disclosureSummary\("Advanced address override"\)/);
+  assert.match(source, /Voxelle normally chooses and refreshes these automatically/);
+  assert.doesNotMatch(source, /Leave both blank for automatic local setup/);
+});

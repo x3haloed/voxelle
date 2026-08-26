@@ -103,12 +103,15 @@ same Rust-owned state and invoke the same semantic commands; they are not a
 parallel authority path.
 
 Advanced connection addressing names the complete input unit: a bracketed IPv6
-socket with its port. Empty Bind and Advertise values retain automatic local
-setup. Locally knowable edge whitespace, control characters, malformed IPv6,
+socket with its port. The form is closed under an advanced diagnostic
+disclosure. Empty Bind and Advertise values retain automatic wildcard binding
+and native global-interface selection. Locally knowable edge whitespace,
+control characters, malformed IPv6,
 missing ports, and ports above 65,535 keep **Go Online** from invoking the
 command; Connection & sync opens, describes the exact field, and focuses it.
-Rust's typed `SocketAddr` deserialization and native service startup remain the
-authority for accepted network configuration and reachability.
+Rust's typed `SocketAddr` deserialization, shared-port validation, native
+interface selection, and service startup remain the authority for accepted
+network configuration and reachability.
 
 Governance follows the same rule. Role creation exposes named, bounded
 permission choices; role assignment, ban, and unban controls lead with member
@@ -700,6 +703,13 @@ Initial behaviors:
 - `peerList.compact`
 - `sync.autoAfterImport`
 - `runtime.startOnlineOnLaunch`
+
+`runtime.startOnlineOnLaunch` defaults to true and represents the ordinary
+native behavior: Rust automatically binds, selects a usable IPv6 interface,
+advertises, and starts peer synchronization. Raw bind and advertise sockets are
+progressively disclosed diagnostic overrides. Ordinary setup must not require a
+person to understand IPv6 socket syntax or click **Go Online**; that semantic
+command remains available for explicit recovery, retry, and automation.
 
 Behavior settings are not visual theme settings. They belong to the same
 customization ontology because they shape how the app behaves for the user.
