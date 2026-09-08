@@ -1705,6 +1705,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn offline_invite_open_reports_unconfirmed_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let inviter = ShellState::new(dir.path().join("inviter"));
+        let joiner = ShellState::new(dir.path().join("joiner"));
+        inviter
+            .execute_serialized_command("home.init", serde_json::json!({}))
+            .await
+            .unwrap();
+        inviter
+            .execute_serialized_command(
+                "runtime.goOnline",
+                serde_json::json!({
+                    "bind":"[::1]:0", "advertise":null
+                }),
+            )
+            .await
+            .unwrap();
+        let created = inviter
+            .execute_serialized_command(
+                "space.invite.create",
+                serde_json::json!({"expires_minutes":60}),
+            )
+            .await
+            .unwrap();
+        let invite = created
+            .home
+            .unwrap()
+            .invite
+            .unwrap()
+            .space_invite_json
+            .unwrap();
+        inviter
+            .execute_serialized_command("runtime.goOffline", serde_json::Value::Null)
+            .await
+            .unwrap();
+        let opened = joiner
+            .execute_serialized_command(
+                "space.join",
+                serde_json::json!({
+                    "space_invite_json":invite, "max_events":64
+                }),
+            )
+            .await
+            .expect("signed invite supports local setup while peers are unavailable");
+        assert!(opened.home.is_some());
+        assert_eq!(
+            opened.sync_evidence.state,
+            crate::SyncEvidenceState::Unreachable
+        );
+        assert_eq!(opened.sync_evidence.peers_reached, 0);
+        assert!(opened.sync_evidence.peers_attempted > 0);
+        assert!(opened
+            .service_activity
+            .iter()
+            .any(|item| item.summary.starts_with("invite connection:")));
+        assert!(opened
+            .service_activity
+            .iter()
+            .any(|item| item.summary.contains("reached 0 of")));
+    }
+
+    #[tokio::test]
     async fn serialized_join_reports_revoked_invite_without_creating_a_home() {
         let dir = tempfile::tempdir().expect("tempdir");
         let alice = ShellState::new(dir.path().join("alice"));

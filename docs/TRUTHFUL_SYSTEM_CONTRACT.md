@@ -333,6 +333,32 @@ for application, inhabitant, and transport crates pass. The rebuilt disposable
 macOS bundle reopened retained messages and admitted/rendered a new message via
 Computer Use; this test-file-vault smoke check is not production vault evidence.
 
+## Honest Invite Connection Outcome — UX-006
+
+Preserve **Complete User Causal Paths**, **Claim/Evidence Honesty**, and the
+separation of signed membership facts from availability. A valid signed invite
+can still initialize local state while every bootstrap peer is unavailable.
+This does not prove remote acceptance or a working conversation. The command
+now exposes its actual peer-attempt/reach/event counts through existing sync
+evidence and retains the peer errors in activity. The native success notice
+says the space opened locally and connection is unconfirmed when no peer was
+reached; successful exchange is described as synchronization with a peer, not
+universal member availability. No admission, preflight, or offline semantics
+change, and no additional authority/state representation is introduced.
+
+A serialized-shell regression creates a signed invite, stops its peer, opens a
+fresh home, and verifies zero peers reached, unreachable evidence, and retained
+connection errors. Local 75 application tests plus 15 inhabitant tests pass
+(the manual performance probe remains ignored); all 145 web tests and strict
+Clippy pass. Computer Use created/copied a signed invitation in the disposable
+native inviter, quit it, pasted the invitation into a fresh native test home,
+and observed the explicit unconfirmed-connection notice. The debug test-file
+vault is limited to these disposable profiles. The joiner then sent a message
+while the inviter remained offline. After restarting the inviter, its native GUI
+showed that exact message and two members without manual sync or record exchange.
+This is same-machine native restart/recovery evidence, not non-loopback Linux
+reachability evidence.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

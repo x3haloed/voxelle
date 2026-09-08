@@ -4531,7 +4531,10 @@ async function runCommand(command, payload) {
           max_events: payload.max_events ?? 4096,
         });
         uiState.spaceInviteDraft = "";
-        uiState.status = `Joined ${currentSnapshot.home?.space.name ?? joiningPreview.spaceName ?? "the space"}. You are now connected as a member.`;
+        const spaceName = currentSnapshot.home?.space.name ?? joiningPreview.spaceName ?? "the space";
+        uiState.status = currentSnapshot.sync_evidence.peers_reached > 0
+          ? `Opened ${spaceName} and synchronized with a peer. Other members may still be offline.`
+          : `Opened ${spaceName} on this device. No peer has confirmed a connection yet. Voxelle will retry automatically; keep this window open or check Connection & sync.`;
         return;
       }
       case "identity.recovery.export": {

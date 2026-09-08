@@ -7039,11 +7039,36 @@ impl VoxelleCommandHost {
             .home
             .join_space_from_invite(&invite, request.max_events.unwrap_or(4096))
             .await?;
+        self.sync_evidence = SyncEvidenceView {
+            state: if report.peers_reached == 0 {
+                SyncEvidenceState::Unreachable
+            } else if report.peers_reached < report.peers_attempted {
+                SyncEvidenceState::Partial
+            } else {
+                SyncEvidenceState::PeerConfirmed
+            },
+            attempted_ms: Some(now_ms()),
+            peers_attempted: report.peers_attempted,
+            peers_reached: report.peers_reached,
+            events_received: report.events_received,
+            events_pushed: report.events_pushed,
+        };
+        for error in &report.peer_errors {
+            self.push_activity(
+                ServiceActivityLevel::Error,
+                format!("invite connection: {error}"),
+            );
+        }
         self.push_activity(
             ServiceActivityLevel::Info,
             format!(
-                "joined space {} via {}, received {}, pushed {}",
-                invite.space.name, report.invite_id, report.events_received, report.events_pushed
+                "opened space {} via {}, reached {} of {} peers, received {}, pushed {}",
+                invite.space.name,
+                report.invite_id,
+                report.peers_reached,
+                report.peers_attempted,
+                report.events_received,
+                report.events_pushed
             ),
         );
         if self.service.is_none() {
