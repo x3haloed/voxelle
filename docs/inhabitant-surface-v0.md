@@ -118,6 +118,17 @@ If an agent acts, Voxelle should be able to show what happened. Agent-originated
 room messages, imports, diagnostics, syncs, and online/offline changes should be
 visible as ordinary app activity with attribution.
 
+### 2.7 Busy Responses And Recovery
+
+When snapshot, coordination, command, or event-stream capacity cannot be acquired
+within the existing one-second wait, the service returns HTTP 429 with
+`Retry-After: 1`. The response body remains empty. Clients should wait at least
+that interval and apply bounded backoff; the header does not promise that
+capacity will be available on the next attempt. Command capacity rejection
+occurs before dispatch. A timeout or HTTP 500 is different: reconcile retained
+state before resending a possibly admitted mutation, and preserve its original
+retry token for an identical payload.
+
 ## 3. Core Contracts
 
 ### 3.1 Discovery

@@ -413,15 +413,23 @@ async fn contract() -> impl IntoResponse {
     )
 }
 
+fn busy_response() -> axum::response::Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(header::RETRY_AFTER, HeaderValue::from_static("1"))],
+    )
+        .into_response()
+}
+
 async fn snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let Ok(Ok(_permit)) =
         time::timeout(Duration::from_secs(1), state.request_slots.acquire()).await
     else {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+        return busy_response();
     };
     let Ok(_command_guard) = time::timeout(Duration::from_secs(1), state.command_gate.lock()).await
     else {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+        return busy_response();
     };
     match time::timeout(
         Duration::from_secs(30),
@@ -439,11 +447,11 @@ async fn coordination_snapshot(State(state): State<Arc<AppState>>) -> impl IntoR
     let Ok(Ok(_permit)) =
         time::timeout(Duration::from_secs(1), state.request_slots.acquire()).await
     else {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+        return busy_response();
     };
     let Ok(_command_guard) = time::timeout(Duration::from_secs(1), state.command_gate.lock()).await
     else {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+        return busy_response();
     };
     for _ in 0..3 {
         let before = snapshot_sequence();
@@ -481,11 +489,11 @@ async fn command(
     let Ok(Ok(_permit)) =
         time::timeout(Duration::from_secs(1), state.request_slots.acquire()).await
     else {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+        return busy_response();
     };
     let Ok(command_guard) = time::timeout(Duration::from_secs(1), state.command_gate.lock()).await
     else {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+        return busy_response();
     };
     if command_id == "resident.origin.open" {
         let Some(device_id) = state.shell.current_device_id().await else {
@@ -962,7 +970,7 @@ async fn events(State(state): State<Arc<AppState>>) -> axum::response::Response 
     )
     .await
     else {
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
+        return busy_response();
     };
     let discovery = state.discovery.clone();
     let changes = state.snapshot_changes.subscribe();
@@ -1359,6 +1367,83 @@ mod tests {
         assert_eq!(message["origin"]["surface_protocol"], "inhabitant");
         assert_eq!(message["origin"]["display_label"], "Projection resident");
         assert_eq!(message["origin"]["request_id"], "projection-request-001");
+    }
+
+    #[tokio::test]
+    async fn saturated_handlers_advertise_backoff_and_recover_after_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let (snapshot_changes, snapshot_invalidated) = snapshot_change_channel();
+        let shell = Arc::new(ShellState::new_with_notifier(&home, snapshot_invalidated));
+        let state = Arc::new(AppState {
+            shell: shell.clone(),
+            discovery: DiscoveryView::new(home.clone(), "http://127.0.0.1:1".to_string(), "test"),
+            bearer_token: Arc::from("test"),
+            request_slots: Arc::new(Semaphore::new(8)),
+            command_gate: Arc::new(Mutex::new(())),
+            event_slots: Arc::new(Semaphore::new(8)),
+            snapshot_changes,
+            origin_registry_path: home.join(ORIGIN_REGISTRY_FILE),
+        });
+        for exhaust_slots in [true, false] {
+            let slots = if exhaust_slots {
+                Some(
+                    state
+                        .request_slots
+                        .clone()
+                        .acquire_many_owned(8)
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                None
+            };
+            let gate = if exhaust_slots {
+                None
+            } else {
+                Some(state.command_gate.lock().await)
+            };
+            let event_slots = state
+                .event_slots
+                .clone()
+                .acquire_many_owned(8)
+                .await
+                .unwrap();
+            let (snapshot_response, coordination_response, command_response, events_response) = tokio::join!(
+                snapshot(State(state.clone())),
+                coordination_snapshot(State(state.clone())),
+                command(
+                    State(state.clone()),
+                    Path("message.send".to_string()),
+                    HeaderMap::new(),
+                    Json(serde_json::json!({"text": "must not dispatch"}))
+                ),
+                events(State(state.clone())),
+            );
+            for response in [
+                snapshot_response.into_response(),
+                coordination_response.into_response(),
+                command_response.into_response(),
+                events_response,
+            ] {
+                assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+                assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+                assert!(axum::body::to_bytes(response.into_body(), 1024)
+                    .await
+                    .unwrap()
+                    .is_empty());
+            }
+            drop(event_slots);
+            drop(gate);
+            drop(slots);
+        }
+        let recovered = snapshot(State(state.clone())).await.into_response();
+        assert_eq!(recovered.status(), StatusCode::OK);
+        assert!(!recovered.headers().contains_key(header::RETRY_AFTER));
+        assert!(
+            shell.observational_snapshot().await.unwrap().home.is_none(),
+            "busy mutation must not create a home or dispatch"
+        );
     }
 
     #[tokio::test]

@@ -61,6 +61,21 @@ platform, accessibility, agent, and release evidence.
   artifact readback. `docs/BETA_EVIDENCE.md` and the authenticated release
   manifest define those external gates, and beta.3 predates this branch.
 
+## Current orientation
+
+The local performance and consistency work is progress, but native evidence is
+still behind main. The protected communicating apps remain unchanged while the
+Mac is locked; stable development signing and actual Keychain authorization are
+unverified. Pending Thimble READY handoffs are UNSENT in the external coordination
+journal. Resume GUI coordination and native rehearsals as soon as access returns.
+Do not treat local private-history timings as completing onboarding, network
+healing, cross-platform durability, or easy/predictable native UX.
+
+UX-023 supplies Retry-After: 1 on actual daemon capacity-rejection responses and
+tests saturated handlers/recovery. Thimble's HTTP 500 cause remains unresolved.
+Further private-send reuse needs a proven freshness boundary; repeated timing
+fixtures and allocation cleanups alone do not close that UX gap.
+
 ## Prediction errors
 
 - Native use exposed multi-second send/refresh stalls and Linux HTTP 429 under

@@ -738,6 +738,20 @@ private token-bearing probe verifies retained text and idempotent command retrie
 across reopening; local snapshot/send timings remain about 85/152 ms. Native
 lived and independent Linux verification remain pending.
 
+## Explicit Busy Backoff — UX-023
+
+The inhabitant service now includes `Retry-After: 1` on all capacity-rejection
+HTTP 429 responses: snapshot, coordination snapshot, command, and event stream.
+Existing capacity limits, one-second acquisition waits, empty response bodies,
+authentication, and dispatch boundaries are unchanged. This supplies an explicit
+bounded-backoff signal for the observed paired-read 429 failures; it does not
+claim to prevent saturation or explain the separately reported HTTP 500 errors.
+
+A handler test exhausts request slots and separately holds the command gate,
+while also exhausting event-stream slots. All four handlers return 429 with the
+retry header, and snapshot reads recover after capacity is released. All 16 daemon
+tests and strict daemon Clippy pass. Local daemon verification remains separate from Thimble's Linux installation and native use.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI
