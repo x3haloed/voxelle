@@ -90,7 +90,13 @@ platform, accessibility, agent, and release evidence.
 - Native connection setup required relaying raw certificates and manually
   replacing a changed port. A globally addressed runtime and an "Online"
   label did not establish peer connectivity. Profile names were known but
-  manual connection controls still used opaque peer IDs.
+  manual connection controls still used opaque peer IDs. UX-011 proves automatic
+  bidirectional catch-up after one peer changes port while the other retains its
+  stale record, provided a surviving outbound route exists. Current transport
+  has no advertised endpoint exchange; IPv6 spec §6.3 remains unimplemented.
+  Next endpoint work needs authenticated, bounded, expiring listening-address
+  claims and a real three-peer stale-route recovery test; incoming ephemeral
+  socket addresses cannot be substituted for listeners.
 - Rebuilding an ad-hoc macOS artifact changes Keychain identity. Disposable
   test homes can use the documented debug-only test vault; continuing homes
   must retain production protection and an explicit replacement/recovery path.

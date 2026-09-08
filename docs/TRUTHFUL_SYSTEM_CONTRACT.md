@@ -438,6 +438,26 @@ extending leases or changing production clocks, admission, or user semantics.
 The three local coordination-frontier tests pass; independent Linux confirmation
 of the formerly failing test remains outstanding.
 
+## One-sided Endpoint Change Evidence — UX-011
+
+The real two-home shell workflow now imports Bob's return record into Alice,
+stops Bob, occupies his former UDP port, and restarts the same home/device on a
+different port. Bob receives the message sent during his absence and sends a
+new message back using automatic synchronization. Alice still retains the old
+record at the end. No explicit sync or replacement-record import completes the
+recovery. This verifies **Durable Convergence** and **Complete User Causal Paths**
+through a surviving outbound route, using existing admission and bidirectional
+QUIC synchronization; it does not establish endpoint rediscovery.
+
+Source inspection confirms the current sync request/response and handshake do
+not exchange advertised listening endpoints. The IPv6 specification §6.3 peer
+exchange remains a capability gap: two peers whose only saved routes have both
+changed cannot infer replacement addresses. A future exchange must authenticate
+bounded, expiring device claims, distinguish listening sockets from ephemeral
+outbound sockets, preserve admission/revocation checks and membership privacy,
+and handle stale/replayed hints without making routing an authority. No new wire
+contract or endpoint authority is introduced by this test.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

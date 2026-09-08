@@ -1722,9 +1722,37 @@ mod tests {
             .iter()
             .any(|message| message.text == "arrives without manual sync"));
 
+        // Give Alice a real return address, then deliberately make it stale.
+        // Recovery must use Bob's surviving outbound route, not a test-side
+        // record refresh or successful rebind of his old listening port.
+        let old_bob_record = bob
+            .host
+            .lock()
+            .await
+            .service
+            .as_ref()
+            .expect("bob service")
+            .online()
+            .peer_record(None, None)
+            .expect("bob record");
+        alice
+            .execute_serialized_command(
+                "peer.import",
+                serde_json::json!({
+                    "peer_record_json": serde_json::to_string(&old_bob_record).unwrap()
+                }),
+            )
+            .await
+            .expect("alice retains bob return address");
         bob.execute_serialized_command("runtime.goOffline", serde_json::json!({}))
             .await
             .expect("bob offline");
+        let _old_port = tokio::net::UdpSocket::bind(std::net::SocketAddr::new(
+            std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
+            old_bob_record.endpoint.addr.port(),
+        ))
+        .await
+        .expect("occupy old bob port");
         alice
             .execute_serialized_command(
                 "message.send",
@@ -1734,10 +1762,32 @@ mod tests {
             .expect("send while bob offline");
         bob.execute_serialized_command(
             "runtime.goOnline",
-            serde_json::json!({ "bind": null, "advertise": null }),
+            serde_json::json!({ "bind": "[::1]:0", "advertise": null }),
         )
         .await
-        .expect("restart local service");
+        .expect("restart local service on a new port");
+        let new_bob_record = bob
+            .host
+            .lock()
+            .await
+            .service
+            .as_ref()
+            .expect("restarted bob service")
+            .online()
+            .peer_record(None, None)
+            .expect("new bob record");
+        assert_ne!(
+            new_bob_record.endpoint.addr.port(),
+            old_bob_record.endpoint.addr.port()
+        );
+        assert_eq!(
+            new_bob_record.endpoint.peer_id,
+            old_bob_record.endpoint.peer_id
+        );
+        assert_eq!(
+            new_bob_record.endpoint.device_id,
+            old_bob_record.endpoint.device_id
+        );
         let bob_reconnected = wait_for_snapshot(&bob, |snapshot| {
             snapshot
                 .home
@@ -1781,6 +1831,18 @@ mod tests {
             .messages
             .iter()
             .any(|message| message.text == "pushes automatically"));
+
+        assert!(
+            alice
+                .host
+                .lock()
+                .await
+                .home
+                .known_peers()
+                .expect("alice records")
+                .contains(&old_bob_record),
+            "delivery must not depend on refreshing the stale record"
+        );
 
         let alice_after_serving = alice
             .execute_serialized_command("shell.refresh", serde_json::json!({}))
