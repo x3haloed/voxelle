@@ -289,7 +289,11 @@ supersedes every head. Runtime reachability and sync evidence remain separate.
 Lease expiry is a time-derived projection, not a new retained fact, and emits
 no stream event. Consumers schedule a local snapshot refresh at `expires_ms`
 and refresh after reconnect rather than waiting for an event that cannot exist.
-The coordination snapshot GET is observational and never initiates peer sync.
+Both the ordinary snapshot GET and the coordination snapshot GET are observational
+and never initiate peer sync. The online service independently retries known peers every fifteen seconds,
+with up to four automatic peer requests in flight. Polling local state must not dial stale endpoints
+or manufacture new sync evidence. Explicit `shell.refresh` and `peer.sync`
+commands retain their current synchronization behavior.
 Its `current_sequence` covers admitted or invalidated state, while
 `projected_at_ms` timestamps time-derived fields; heartbeat is not evidence of
 a semantic transition. A handled acknowledgement is completion evidence and

@@ -53,6 +53,7 @@ const DEVICE_LINK_PENDING_FILE: &str = "device-link-pending.json";
 const SERVICE_BINDING_STATE: &str = "runtime.service_binding";
 const SERVICE_BINDING_VERSION: u8 = 2;
 const SERVICE_EVENT_QUEUE_CAPACITY: usize = 128;
+const AUTOMATIC_SYNC_INTERVAL: Duration = Duration::from_secs(15);
 const AUTOMATIC_ADDRESS_POLL_INTERVAL: Duration = Duration::from_secs(15);
 const MAX_KNOWN_PEERS: usize = 128;
 const MAX_PROJECTED_MESSAGES: usize = 500;
@@ -1360,6 +1361,7 @@ struct ActiveProductGeneration {
 pub enum VoxelleServiceEvent {
     Served(Box<ServedPeerRequest>),
     AutomaticAddressChanged(SocketAddr),
+    AutomaticSync(Vec<(PeerRecord, std::result::Result<PeerSyncReport, String>)>),
     Failed(String),
     Stopped,
 }
@@ -1396,6 +1398,9 @@ impl VoxelleServiceEvent {
             },
             VoxelleServiceEvent::AutomaticAddressChanged(addr) => {
                 format!("automatic advertised address changed to {addr}")
+            }
+            VoxelleServiceEvent::AutomaticSync(reports) => {
+                format!("background sync checked {} peer(s)", reports.len())
             }
             VoxelleServiceEvent::Failed(error) => format!("service error: {error}"),
             VoxelleServiceEvent::Stopped => "service stopped".to_string(),
@@ -7760,24 +7765,20 @@ impl VoxelleCommandHost {
     }
 
     async fn sync_known_peers(&mut self, max_events: usize) -> Result<()> {
-        let peers = self.home.known_peers()?;
-        let peers_attempted = peers.len();
+        let reports = synchronize_known_peers(&self.home, max_events).await?;
+        self.apply_sync_reports(reports);
+        Ok(())
+    }
+
+    fn apply_sync_reports(
+        &mut self,
+        reports: Vec<(PeerRecord, std::result::Result<PeerSyncReport, String>)>,
+    ) {
+        let peers_attempted = reports.len();
         let mut peers_reached = 0;
         let mut events_received = 0;
         let mut events_pushed = 0;
-        let mut tasks = tokio::task::JoinSet::new();
-        for peer in peers {
-            let home = self.home.clone();
-            tasks.spawn(async move {
-                let result = home
-                    .sync_peer(&peer, max_events)
-                    .await
-                    .map_err(|error| format!("{error:#}"));
-                (peer, result)
-            });
-        }
-        while let Some(result) = tasks.join_next().await {
-            let (peer, sync) = result.context("automatic peer sync task failed")?;
+        for (peer, sync) in reports {
             let label = peer
                 .label
                 .as_deref()
@@ -7825,7 +7826,6 @@ impl VoxelleCommandHost {
             events_received,
             events_pushed,
         };
-        Ok(())
     }
 
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
@@ -7936,10 +7936,15 @@ impl VoxelleCommandHost {
         }
 
         for event in drained {
+            if let VoxelleServiceEvent::AutomaticSync(reports) = event {
+                self.apply_sync_reports(reports);
+                continue;
+            }
             let level = match &event {
                 VoxelleServiceEvent::Failed(_) => ServiceActivityLevel::Error,
                 VoxelleServiceEvent::Served(_)
                 | VoxelleServiceEvent::AutomaticAddressChanged(_)
+                | VoxelleServiceEvent::AutomaticSync(_)
                 | VoxelleServiceEvent::Stopped => ServiceActivityLevel::Info,
             };
             let mut persistence_error = None;
@@ -8466,6 +8471,35 @@ fn run_service_thread(
     });
 }
 
+// One transport/admission path serves both explicit commands and background work.
+// Bound concurrent handshakes so stale records cannot create unbounded socket work.
+async fn synchronize_known_peers(
+    home: &VoxelleHome,
+    max_events: usize,
+) -> Result<Vec<(PeerRecord, std::result::Result<PeerSyncReport, String>)>> {
+    let mut peers = home.known_peers()?.into_iter();
+    let mut tasks = tokio::task::JoinSet::new();
+    let mut reports = Vec::new();
+    loop {
+        while tasks.len() < 4 {
+            let Some(peer) = peers.next() else { break };
+            let home = home.clone();
+            tasks.spawn(async move {
+                let result = home
+                    .sync_peer(&peer, max_events)
+                    .await
+                    .map_err(|error| format!("{error:#}"));
+                (peer, result)
+            });
+        }
+        let Some(result) = tasks.join_next().await else {
+            break;
+        };
+        reports.push(result.context("automatic peer sync task failed")?);
+    }
+    Ok(reports)
+}
+
 async fn run_service_loop(
     mut server: PeerServer,
     monitor_automatic_address: bool,
@@ -8473,6 +8507,27 @@ async fn run_service_loop(
     event_tx: mpsc::SyncSender<VoxelleServiceEvent>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
 ) {
+    // The service, not a polling consumer, owns eventual synchronization. This
+    // task never holds the command host lock and is canceled with this runtime.
+    let sync_home = server.home.clone();
+    let sync_events = event_tx.clone();
+    let sync_notify = snapshot_invalidated.clone();
+    let sync_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(AUTOMATIC_SYNC_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        interval.tick().await;
+        loop {
+            interval.tick().await;
+            let event = match synchronize_known_peers(&sync_home, 256).await {
+                Ok(reports) if reports.is_empty() => continue,
+                Ok(reports) => VoxelleServiceEvent::AutomaticSync(reports),
+                Err(error) => VoxelleServiceEvent::Failed(format!("background sync: {error:#}")),
+            };
+            if sync_events.try_send(event).is_ok() {
+                sync_notify();
+            }
+        }
+    });
     let mut address_poll = tokio::time::interval(AUTOMATIC_ADDRESS_POLL_INTERVAL);
     address_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     address_poll.tick().await;
@@ -8537,6 +8592,8 @@ async fn run_service_loop(
             }
         }
     }
+    sync_task.abort();
+    let _ = sync_task.await;
     server.stop().await;
     let _ = event_tx.try_send(VoxelleServiceEvent::Stopped);
     snapshot_invalidated();
@@ -14248,6 +14305,51 @@ mod tests {
             .expect_err("an endpoint record is not a membership capability");
         assert!(sync_error.to_string().contains("active home authority"));
         service.stop().expect("stop service");
+    }
+
+    #[tokio::test]
+    async fn service_syncs_retained_messages_without_a_polling_consumer() {
+        let dir = tempdir().expect("tempdir");
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+        alice.init(DEFAULT_ROOM_ID).expect("alice init");
+        let service = alice
+            .start_service("[::1]:0".parse().unwrap(), None)
+            .expect("alice service");
+        let invite = alice
+            .create_space_invite(service.online(), now_ms() + 60_000)
+            .expect("invite");
+        bob.join_space_from_invite(&invite, 64).await.expect("join");
+        let bob_service = bob
+            .start_service("[::1]:0".parse().unwrap(), None)
+            .expect("bob service");
+        let message = alice
+            .send_message("arrives without a consumer refresh", None)
+            .expect("send");
+        // Neither home runs a command or explicit sync after this durable append.
+        tokio::time::timeout(Duration::from_secs(25), async {
+            loop {
+                if bob
+                    .read_messages(None)
+                    .unwrap()
+                    .iter()
+                    .any(|item| item.event_id == message.event_id)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("service must recover retained messages independently");
+        bob_service.stop().expect("stop bob");
+        let reopened = VoxelleHome::new(dir.path().join("bob"));
+        assert!(reopened
+            .read_messages(None)
+            .unwrap()
+            .iter()
+            .any(|item| item.event_id == message.event_id));
+        service.stop().expect("stop alice");
     }
 
     #[tokio::test]

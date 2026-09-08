@@ -425,9 +425,7 @@ async fn snapshot(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     };
     match time::timeout(
         Duration::from_secs(30),
-        state
-            .shell
-            .execute_serialized_command("shell.refresh", Value::Null),
+        state.shell.observational_snapshot(),
     )
     .await
     {
@@ -1669,6 +1667,62 @@ mod tests {
             .await
             .ok
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_reads_do_not_dial_stale_peers_or_change_sync_evidence() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let home = dir.path().join("home");
+        let shell = Arc::new(ShellState::new(&home));
+        let initialized = shell
+            .execute_serialized_command("home.init", serde_json::json!({}))
+            .await
+            .expect("initialize");
+        let mut stale = initialized
+            .home
+            .expect("home")
+            .invite
+            .expect("online")
+            .peer_record;
+        // A bound UDP socket that never speaks QUIC forces a real handshake timeout
+        // if a supposedly observational GET accidentally starts synchronization.
+        let blackhole = std::net::UdpSocket::bind("[::1]:0").expect("blackhole socket");
+        stale.endpoint.addr = blackhole.local_addr().expect("blackhole address");
+        shell
+            .execute_serialized_command(
+                "peer.import",
+                serde_json::json!({"peer_record_json": serde_json::to_string(&stale).unwrap()}),
+            )
+            .await
+            .expect("import stale availability");
+        let before = shell.observational_snapshot().await.expect("before");
+        let bearer = "snapshot-test-bearer";
+        let (snapshot_changes, _) = snapshot_change_channel();
+        let state = Arc::new(AppState {
+            shell: shell.clone(),
+            discovery: DiscoveryView::new(home.clone(), "http://127.0.0.1:1".to_string(), bearer),
+            bearer_token: Arc::from(bearer),
+            request_slots: Arc::new(Semaphore::new(8)),
+            command_gate: Arc::new(Mutex::new(())),
+            event_slots: Arc::new(Semaphore::new(8)),
+            snapshot_changes,
+            origin_registry_path: home.join(ORIGIN_REGISTRY_FILE),
+        });
+        for _ in 0..3 {
+            let response = time::timeout(Duration::from_secs(1), snapshot(State(state.clone())))
+                .await
+                .expect("local snapshot must not wait for QUIC handshake")
+                .into_response();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let after = shell.observational_snapshot().await.expect("after");
+        assert_eq!(
+            serde_json::to_value(before.sync_evidence).unwrap(),
+            serde_json::to_value(after.sync_evidence).unwrap(),
+            "reading state must not manufacture a sync attempt"
+        );
+        let response = coordination_snapshot(State(state)).await.into_response();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]

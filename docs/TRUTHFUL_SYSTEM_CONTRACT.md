@@ -184,6 +184,48 @@ and discard the established customizable workbench path.
 - Checkpoint coherent, independently understandable slices with commits,
   provenance snapshots, and pushes to the active branch.
 
+## Responsiveness Overhaul Preservation — UX-001
+
+The central truth remains that authorized devices propose signed facts and
+ordinary members independently validate, retain, replicate, and project them.
+The defended obligations are **Trust And Authority / Progressive Topology And
+Plural Availability**, **Causal Claims**, and **Topology Preservation**, plus
+IPv6 specification §§2.4–2.5 and RFC §10.3: observing local state cannot become
+a second admission authority, and removing consumer-driven network work must
+preserve eventual synchronization through ordinary peers.
+
+Before this change, an ordinary inhabitant snapshot GET invoked `shell.refresh`
+and awaited a fan-out of network requests under both command locks. Merely
+polling the local conversation could therefore block coordination and create
+HTTP 429. The selected collapse removes the snapshot-consumer-to-network
+scheduling dependency: GET uses the existing local projection, while the
+existing service runtime periodically synchronizes through `VoxelleHome::sync_peer`.
+At most four automatic peer requests run concurrently. Background work is
+canceled with the service and uses the same admission/store/projection path.
+No new process, database, secret, wire format, or authority is introduced.
+
+This changes timing, not authorization or retained meaning. Explicit refresh,
+sync, and post-mutation sync remain blocking for this first milestone; their
+latency is still an open lane. Periodic retry currently runs every fifteen
+seconds with missed ticks skipped; per-peer backoff and endpoint healing remain
+open. Physical benefits are removal of read-triggered network fan-out and a
+bound on concurrent automatic socket work. Engineering and cross-platform
+verification cost are separate from those resource claims. Native Rust,
+OS WebView, SQLite, and the existing platform envelope remain binding.
+
+UX-001 verification on 2026-09-07, based on `3bf4e80`: all 71 application
+and 14 inhabitant tests pass, including recovery/revocation, signed invite,
+offline-inviter forwarding, private-room recovery, public families, and generated
+contract equality. Strict Clippy passes for both changed crates. A real QUIC
+regression observes background-only delivery and retained readback after reopen
+within 25 seconds; a bound nonresponding UDP endpoint proves three snapshot GETs
+each return within one second without changing sync evidence. The native host
+build passes, and a separate macOS test bundle created a disposable home and
+admitted/projected `UX-001 native smoke` through Computer Use. That bundle used
+the explicit debug test-file vault; it is not production Keychain replacement
+or remote Linux verification. Linux review by Thimble and removing remaining
+command-held network waits are pending.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

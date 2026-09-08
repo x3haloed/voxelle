@@ -62,3 +62,16 @@ platform, accessibility, agent, and release evidence.
   manifest define those external gates, and beta.3 predates this branch.
 
 ## Prediction errors
+
+- Native use exposed multi-second send/refresh stalls and Linux HTTP 429 under
+  stale peer endpoints. Ordinary snapshot GET initiated sync under
+  the shared command gate; explicit commands still await network completion.
+  Local acceptance must stay responsive independently of unreachable peers,
+  while durable propagation and truthful peer-relative evidence remain intact.
+- Native connection setup required relaying raw certificates and manually
+  replacing a changed port. A globally addressed runtime and an "Online"
+  label did not establish peer connectivity. Profile names were known but
+  manual connection controls still used opaque peer IDs.
+- Rebuilding an ad-hoc macOS artifact changes Keychain identity. Disposable
+  test homes can use the documented debug-only test vault; continuing homes
+  must retain production protection and an explicit replacement/recovery path.
