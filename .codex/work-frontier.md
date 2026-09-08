@@ -73,6 +73,13 @@ healing, cross-platform durability, or easy/predictable native UX.
 
 UX-023 supplies Retry-After: 1 on actual daemon capacity-rejection responses and
 tests saturated handlers/recovery. Thimble's HTTP 500 cause remains unresolved.
+UX-024 rules out initialized-store schema setup as a writer-contention cause in
+one local case: the bundled SQLite store opens and reads committed facts while
+another connection holds BEGIN IMMEDIATE with an uncommitted write. The reader
+excludes that write until commit. Preserve this regression and seek actual error
+body/log evidence for the HTTP 500, rather than changing initialization on that
+unproven hypothesis. This does not rule out filesystem failures, corrupt homes,
+other contention paths, or Linux-specific behavior.
 Further private-send reuse needs a proven freshness boundary; repeated timing
 fixtures and allocation cleanups alone do not close that UX gap.
 

@@ -809,6 +809,31 @@ mod tests {
     }
 
     #[test]
+    fn reopening_an_initialized_store_does_not_wait_for_a_wal_writer() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("writer.sqlite");
+        let writer = Store::open(&path).unwrap();
+        let member = PeerIdentity::generate().unwrap();
+        let context = RoomContext::new(member.peer_id.clone());
+        let join = member_join(&member);
+        writer
+            .insert_accepted_event(accept_event(&join, &[], &context, 1_000).unwrap(), 1_000)
+            .unwrap();
+        writer.conn.execute_batch("BEGIN IMMEDIATE; INSERT INTO local_state(key, value_json) VALUES ('pending', 'true');").unwrap();
+        // The writer stays open until after these reads. Any schema setup that
+        // needs the writer lock would time out, rather than pass on a fast CPU.
+        let reader =
+            Store::open(&path).expect("initialized store opens beside an active WAL writer");
+        assert_eq!(reader.room_events(GOVERNANCE_ROOM_ID).unwrap(), vec![join]);
+        assert_eq!(reader.local_fact_high_water().unwrap(), 1);
+        let pending: Option<bool> = reader.local_state("pending").unwrap();
+        assert_eq!(pending, None);
+        writer.conn.execute_batch("COMMIT").unwrap();
+        let committed: Option<bool> = reader.local_state("pending").unwrap();
+        assert_eq!(committed, Some(true));
+    }
+
+    #[test]
     fn related_reads_exclude_facts_committed_between_them() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("snapshot.sqlite");

@@ -752,6 +752,17 @@ while also exhausting event-stream slots. All four handlers return 429 with the
 retry header, and snapshot reads recover after capacity is released. All 16 daemon
 tests and strict daemon Clippy pass. Local daemon verification remains separate from Thimble's Linux installation and native use.
 
+## Initialized-store Contention Check — UX-024
+
+A regression test opens a second connection through the real `Store::open` path
+while the first holds `BEGIN IMMEDIATE` with an uncommitted local-state write.
+The new connection reads accepted membership and the fact sequence, excludes the
+pending value, and observes it after commit. The writer stays open until those
+reads finish, so the test does not depend on a short scheduling window. This
+rules out repeated schema setup blocking such reads in the locally tested
+initialized-store case. Production behavior is unchanged; it does not diagnose
+Thimble's HTTP 500 or cover corruption, filesystem errors, or every writer path.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI
