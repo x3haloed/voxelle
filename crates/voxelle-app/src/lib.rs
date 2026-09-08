@@ -12921,15 +12921,47 @@ mod tests {
             None
         };
         eprintln!("private_room={}", room.is_some());
+        let setup_started = std::time::Instant::now();
+        let mut send_us = Vec::with_capacity(messages);
         for index in 0..messages {
+            let started = std::time::Instant::now();
             host.home
                 .send_message(
                     &format!("retained history message {index}"),
                     room.as_deref(),
                 )
                 .unwrap();
+            send_us.push(started.elapsed().as_micros());
         }
         eprintln!("retained_messages={messages}");
+        eprintln!(
+            "history_creation_ms={}",
+            setup_started.elapsed().as_millis()
+        );
+        if !send_us.is_empty() {
+            let last_send_us = *send_us.last().unwrap();
+            send_us.sort_unstable();
+            eprintln!("send_p50_us={}", send_us[(send_us.len() - 1) / 2]);
+            eprintln!("send_p95_us={}", send_us[(send_us.len() - 1) * 95 / 100]);
+            eprintln!("last_send_us={last_send_us}");
+        }
+        // Measure real retained meaning, rather than timing a projection that
+        // might silently omit encrypted history. Reopen the same isolated home.
+        let selected_room = room
+            .clone()
+            .unwrap_or_else(|| host.home.load_config().unwrap().space.default_room_id);
+        let reopened = VoxelleHome::new(host.home.root.clone());
+        let retained = reopened.decrypted_room_events(&selected_room).unwrap();
+        let texts: Vec<_> = retained
+            .iter()
+            .filter(|event| event.kind == "MSG_POST")
+            .map(|event| event.body["text"].as_str().unwrap())
+            .collect();
+        assert_eq!(texts.len(), messages);
+        for (index, text) in texts.iter().enumerate() {
+            assert_eq!(*text, format!("retained history message {index}"));
+        }
+        eprintln!("reopened_messages_verified={}", texts.len());
         macro_rules! measure {
             ($label:expr, $operation:expr) => {{
                 let started = std::time::Instant::now();

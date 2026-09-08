@@ -617,6 +617,29 @@ manual probe, three-sample local debug snapshots average 147 ms versus UX-016's
 Measurement ran after builds finished. This does not establish larger-history,
 multi-member, native lived, or independent Linux performance.
 
+## Larger Private-history Measurement — UX-018
+
+The manual probe now records message-creation duration, median/95th-percentile
+send latency, and final-send latency separately from read projections. It reopens
+the isolated home and checks every retained message's plaintext before reporting
+read timings. This changes measurement only; admission, storage, encryption,
+networking, and production profile behavior remain unchanged.
+
+At 1000 real private messages on the local debug/test-file-vault probe, fixture
+creation took 118.2 seconds. Send latency was 115 ms median, 212 ms at the 95th
+percentile, and 223 ms for the final message. All 1000 messages were reconstructed
+with their expected text after reopening. Three-sample snapshots averaged 622 ms;
+an earlier run of the same 1000-message fixture measured 603 ms. No build ran
+concurrently with either measurement. Strict app Clippy passes.
+
+The larger fixture contradicts any claim that the 147 ms / 100-message result
+establishes general responsiveness. Each send reconstructs private history for
+semantic validation. Each snapshot separately reconstructs room history for
+unread counts, notifications, coordination, and its selected timeline. Future
+consolidation must preserve creation-time validation and bound decrypted-memory
+lifetime. These are one-member local measurements, not native lived, multi-member,
+Linux, network delivery, or crash-recovery performance evidence.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

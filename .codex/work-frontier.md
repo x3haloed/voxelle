@@ -79,6 +79,16 @@ platform, accessibility, agent, and release evidence.
   100-message private snapshot now averages ~147ms; 176 workspace tests, strict
   Clippy, and the native build pass. Larger/multi-member histories and native/Linux
   evidence remain pending.
+  UX-018's first 1000-message private probe averages ~603ms per snapshot and
+  takes 122s including fixture creation/measurement. The instrumented rerun
+  verifies all 1000 texts after reopening: snapshot ~622ms, sends median115ms,
+  p95 212ms, final223ms; history creation118s. The read path reconstructs
+  each accessible room separately for unread counts, notifications, and the
+  coordination frontier, plus selected timeline reconstruction. The send path
+  reconstructs prior private meaning for semantic validation on every send.
+  Next work should measure these separately and consolidate per-room projection
+  inputs without retaining all decrypted histories across operations or weakening
+  creation-time validation. The smaller fixture alone does not prove scaling.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
 - Thimble measured ~3-second local reads before stale peer import on Linux
