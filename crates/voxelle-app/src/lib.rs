@@ -2115,8 +2115,10 @@ impl VoxelleHome {
             .find(|channel| channel.selected)
             .map(|channel| channel.room_id.clone())
             .unwrap_or_else(|| config.space.default_room_id.clone());
-        let mut projected_messages =
-            project_messages(self.decrypted_room_events(&selected_room)?, projection_ms);
+        let selected_events = self.decrypted_room_events(&selected_room)?;
+        let call = project_call(&selected_room, &selected_events, projection_ms);
+        let mut projected_messages = project_messages(selected_events, projection_ms);
+        let notifications = self.notifications_for_channels(&channels)?;
         let coordination_frontier = self.coordination_frontier(&channels, projection_ms)?;
         if let Some(event_id) = selected_message_event_id {
             if let Some(index) = projected_messages
@@ -2151,9 +2153,9 @@ impl VoxelleHome {
             channels,
             roles: self.roles()?,
             profiles,
-            notifications: self.notifications()?,
+            notifications,
             coordination_frontier,
-            call: self.call_view(&selected_room)?,
+            call,
             room: RoomTimelineView {
                 room_id: selected_room.clone(),
                 messages: projected_messages,
@@ -3168,10 +3170,17 @@ impl VoxelleHome {
     }
 
     pub fn notifications(&self) -> Result<Vec<NotificationView>> {
+        self.notifications_for_channels(&self.channels(None)?)
+    }
+
+    fn notifications_for_channels(
+        &self,
+        channels: &[ChannelView],
+    ) -> Result<Vec<NotificationView>> {
         let identity = self.load_identity()?;
         let read_state = self.read_state()?;
         let mut notifications = Vec::new();
-        for channel in self.channels(None)? {
+        for channel in channels {
             let mut events = self.decrypted_room_events(&channel.room_id)?;
             events.sort_by(|left, right| {
                 left.created_ms
@@ -3554,11 +3563,9 @@ impl VoxelleHome {
         for channel in state.channels.values() {
             updates.extend(
                 store
-                    .room_events(&channel.room_id)?
+                    .room_events_of_kind(&channel.room_id, "PROFILE_UPDATE")?
                     .into_iter()
-                    .filter(|event| {
-                        event.kind == "PROFILE_UPDATE" && principals.contains(&event.author_peer_id)
-                    }),
+                    .filter(|event| principals.contains(&event.author_peer_id)),
             );
         }
         updates.sort_by(|left, right| {
@@ -3638,102 +3645,11 @@ impl VoxelleHome {
     }
 
     pub fn call_view(&self, room_id: &str) -> Result<CallView> {
-        let call_id = room_call_id(room_id);
-        let mut events = self.decrypted_room_events(room_id)?;
-        events.sort_by(|left, right| {
-            left.created_ms
-                .cmp(&right.created_ms)
-                .then(left.event_id.cmp(&right.event_id))
-        });
-        let now = now_ms();
-        let mut last_seen = BTreeMap::new();
-        let mut participant_video = BTreeMap::new();
-        for event in &events {
-            if event
-                .body
-                .get("call_id")
-                .and_then(serde_json::Value::as_str)
-                != Some(call_id.as_str())
-            {
-                continue;
-            }
-            if event.kind == "CALL_JOIN" {
-                last_seen.insert(event.author_peer_id.clone(), event.created_ms);
-                if let Some(video) = event.body.get("video").and_then(serde_json::Value::as_bool) {
-                    participant_video.insert(event.author_peer_id.clone(), video);
-                }
-            } else if event.kind == "CALL_HEARTBEAT" {
-                last_seen.insert(event.author_peer_id.clone(), event.created_ms);
-            } else if event.kind == "CALL_MEDIA" {
-                if last_seen.contains_key(&event.author_peer_id) {
-                    if let Some(video) =
-                        event.body.get("video").and_then(serde_json::Value::as_bool)
-                    {
-                        participant_video.insert(event.author_peer_id.clone(), video);
-                    }
-                }
-            } else if event.kind == "CALL_LEAVE" {
-                last_seen.remove(&event.author_peer_id);
-                participant_video.remove(&event.author_peer_id);
-            }
-        }
-        let participants: Vec<String> = last_seen
-            .into_iter()
-            .filter(|(_, seen_ms)| now.saturating_sub(*seen_ms) <= CALL_LIVENESS_MS)
-            .map(|(peer_id, _)| peer_id)
-            .take(4)
-            .collect();
-        participant_video.retain(|peer_id, _| participants.contains(peer_id));
-        let signals = if participants.is_empty() {
-            Vec::new()
-        } else {
-            events
-                .into_iter()
-                .filter(|event| {
-                    event.kind.starts_with("CALL_")
-                        && now.saturating_sub(event.created_ms) <= CALL_LIVENESS_MS
-                        && event
-                            .body
-                            .get("call_id")
-                            .and_then(serde_json::Value::as_str)
-                            == Some(call_id.as_str())
-                })
-                .map(|event| CallSignalView {
-                    event_id: event.event_id,
-                    kind: event.kind,
-                    call_id: call_id.clone(),
-                    author_peer_id: event.author_peer_id,
-                    target_peer_id: event
-                        .body
-                        .get("target_peer_id")
-                        .and_then(serde_json::Value::as_str)
-                        .map(ToOwned::to_owned),
-                    video: event.body.get("video").and_then(serde_json::Value::as_bool),
-                    sdp: event
-                        .body
-                        .get("sdp")
-                        .and_then(serde_json::Value::as_str)
-                        .map(ToOwned::to_owned),
-                    candidate: event
-                        .body
-                        .get("candidate")
-                        .and_then(serde_json::Value::as_str)
-                        .map(ToOwned::to_owned),
-                    created_ms: event.created_ms,
-                })
-                .rev()
-                .take(MAX_PROJECTED_CALL_SIGNALS)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-                .collect()
-        };
-        Ok(CallView {
-            call_id,
-            participants,
-            participant_video,
-            signals,
-        })
+        Ok(project_call(
+            room_id,
+            &self.decrypted_room_events(room_id)?,
+            now_ms(),
+        ))
     }
 
     pub fn join_call(&self, request: &CallJoinRequest) -> Result<EventV1> {
@@ -8413,6 +8329,102 @@ impl RuntimeStatusView {
     }
 }
 
+fn project_call(room_id: &str, room_events: &[EventV1], now: i64) -> CallView {
+    let call_id = room_call_id(room_id);
+    let mut events: Vec<_> = room_events.iter().collect();
+    events.sort_by(|left, right| {
+        left.created_ms
+            .cmp(&right.created_ms)
+            .then(left.event_id.cmp(&right.event_id))
+    });
+    let mut last_seen = BTreeMap::new();
+    let mut participant_video = BTreeMap::new();
+    for event in &events {
+        if event
+            .body
+            .get("call_id")
+            .and_then(serde_json::Value::as_str)
+            != Some(call_id.as_str())
+        {
+            continue;
+        }
+        if event.kind == "CALL_JOIN" {
+            last_seen.insert(event.author_peer_id.clone(), event.created_ms);
+            if let Some(video) = event.body.get("video").and_then(serde_json::Value::as_bool) {
+                participant_video.insert(event.author_peer_id.clone(), video);
+            }
+        } else if event.kind == "CALL_HEARTBEAT" {
+            last_seen.insert(event.author_peer_id.clone(), event.created_ms);
+        } else if event.kind == "CALL_MEDIA" {
+            if last_seen.contains_key(&event.author_peer_id) {
+                if let Some(video) = event.body.get("video").and_then(serde_json::Value::as_bool) {
+                    participant_video.insert(event.author_peer_id.clone(), video);
+                }
+            }
+        } else if event.kind == "CALL_LEAVE" {
+            last_seen.remove(&event.author_peer_id);
+            participant_video.remove(&event.author_peer_id);
+        }
+    }
+    let participants: Vec<String> = last_seen
+        .into_iter()
+        .filter(|(_, seen_ms)| now.saturating_sub(*seen_ms) <= CALL_LIVENESS_MS)
+        .map(|(peer_id, _)| peer_id)
+        .take(4)
+        .collect();
+    participant_video.retain(|peer_id, _| participants.contains(peer_id));
+    let signals = if participants.is_empty() {
+        Vec::new()
+    } else {
+        events
+            .into_iter()
+            .filter(|event| {
+                event.kind.starts_with("CALL_")
+                    && now.saturating_sub(event.created_ms) <= CALL_LIVENESS_MS
+                    && event
+                        .body
+                        .get("call_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(call_id.as_str())
+            })
+            .map(|event| CallSignalView {
+                event_id: event.event_id.clone(),
+                kind: event.kind.clone(),
+                call_id: call_id.clone(),
+                author_peer_id: event.author_peer_id.clone(),
+                target_peer_id: event
+                    .body
+                    .get("target_peer_id")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
+                video: event.body.get("video").and_then(serde_json::Value::as_bool),
+                sdp: event
+                    .body
+                    .get("sdp")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
+                candidate: event
+                    .body
+                    .get("candidate")
+                    .and_then(serde_json::Value::as_str)
+                    .map(ToOwned::to_owned),
+                created_ms: event.created_ms,
+            })
+            .rev()
+            .take(MAX_PROJECTED_CALL_SIGNALS)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
+    };
+    CallView {
+        call_id,
+        participants,
+        participant_video,
+        signals,
+    }
+}
+
 fn connection_display_name(
     peer_id: &str,
     local_label: Option<&str>,
@@ -12808,6 +12820,20 @@ mod tests {
         host.init_home(InitHomeRequest { default_room: None })
             .unwrap();
         host.stop_service().unwrap();
+        let messages: usize = std::env::var("VOXELLE_PROFILE_MESSAGES")
+            .ok()
+            .map(|value| value.parse().expect("message count must be an integer"))
+            .unwrap_or(0);
+        assert!(
+            messages <= 1000,
+            "manual probe supports at most 1000 messages"
+        );
+        for index in 0..messages {
+            host.home
+                .send_message(&format!("retained history message {index}"), None)
+                .unwrap();
+        }
+        eprintln!("retained_messages={messages}");
         macro_rules! measure {
             ($label:expr, $operation:expr) => {{
                 let started = std::time::Instant::now();
@@ -12818,7 +12844,7 @@ mod tests {
             }};
         }
         eprintln!(
-            "events={}",
+            "governance_events={}",
             host.home
                 .open_store()
                 .unwrap()
@@ -12828,6 +12854,9 @@ mod tests {
         );
         measure!("identity", host.home.load_identity());
         measure!("config", host.home.load_config());
+        measure!("channels", host.home.channels(None));
+        measure!("profiles", host.home.profiles());
+        measure!("notifications", host.home.notifications());
         measure!("home_view", host.home.home_screen_view(None));
         measure!("network_health", host.home.network_health_view(None));
         measure!("snapshot", host.snapshot());
@@ -14695,6 +14724,9 @@ mod tests {
         let alice = VoxelleHome::new(dir.path().join("alice"));
         let bob = VoxelleHome::new(dir.path().join("bob"));
         alice.init(DEFAULT_ROOM_ID).unwrap();
+        alice
+            .send_message("ordinary history is not a profile update", None)
+            .unwrap();
         alice
             .update_profile(&ProfileUpdateRequest {
                 display_name: "Alice".to_string(),

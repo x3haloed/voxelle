@@ -77,8 +77,9 @@ impl Store {
                     accepted_at_ms INTEGER NOT NULL
                 );
 
-                CREATE INDEX IF NOT EXISTS idx_accepted_events_room_id
-                ON accepted_events(room_id);
+                CREATE INDEX IF NOT EXISTS idx_accepted_events_room_kind
+                ON accepted_events(room_id, json_extract(event_json, '$.kind'), accepted_at_ms, event_id);
+                DROP INDEX IF EXISTS idx_accepted_events_room_id;
 
                 CREATE TABLE IF NOT EXISTS identity_heads (
                     peer_id TEXT PRIMARY KEY NOT NULL,
@@ -259,6 +260,15 @@ impl Store {
             events.push(serde_json::from_str(&json).context("parse stored room event")?);
         }
         Ok(events)
+    }
+
+    /// Select a projection's event family from authoritative retained events.
+    pub fn room_events_of_kind(&self, room_id: &str, kind: &str) -> Result<Vec<EventV1>> {
+        let mut statement = self.conn.prepare(
+            "SELECT event_json FROM accepted_events WHERE room_id = ?1 AND json_extract(event_json, '$.kind') = ?2 ORDER BY accepted_at_ms ASC, event_id ASC"
+        )?;
+        let rows = statement.query_map(params![room_id, kind], |row| row.get::<_, String>(0))?;
+        rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 
     pub fn local_fact_high_water(&self) -> Result<u64> {

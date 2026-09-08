@@ -68,6 +68,9 @@ platform, accessibility, agent, and release evidence.
   the shared command gate. Explicit peer sync now releases ordinary command serialization while a
   home-transition gate protects its store/identity lifetime (UX-009). Join and
   recovery still await network completion under shared command serialization.
+  UX-014 measures retained public history: 1000-message local debug snapshots
+  improve from ~328ms to ~221ms by reusing snapshot inputs and indexing profile
+  updates. Private-history/50-member/Linux performance still needs measurement.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
 - Thimble measured ~3-second local reads before stale peer import on Linux

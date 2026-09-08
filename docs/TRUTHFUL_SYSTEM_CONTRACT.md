@@ -510,6 +510,36 @@ both the connection and failure label before preserving an explicit local name.
 No identity, membership, routing, or command authority changes. Native visual
 verification remains pending while Computer Use is unavailable on the locked Mac.
 
+## Retained-history Snapshot Cost — UX-014
+
+Preserve **One Admission Truth**, **Private-room Confidentiality And Validation**,
+and the **Live-media Boundary** while removing redundant reads in one home
+projection. Notifications reuse that snapshot's admitted channel selection;
+call projection reuses the selected room's fully decrypted/validated events,
+before the visible message window is truncated, and its projection timestamp.
+Standalone commands load through the same existing paths and delegate to the
+same projection helpers. No cache survives the snapshot or bypasses validation.
+
+Profiles now select only `PROFILE_UPDATE` events from retained history, retaining
+the existing principal filter and deterministic projection ordering. A SQLite
+expression index on room, event kind and retained ordering replaces the former
+room-only index. This index remains reconstructible from authoritative event
+JSON; it adds no decision authority or independent retained fact representation.
+The wider index trades storage/write work for reduced reads; this is a measured
+read-latency improvement, not a claim of lower total physical resource use.
+
+The manual profiler accepts `VOXELLE_PROFILE_MESSAGES` (0–1000), admitting real
+messages before measurement. Three-sample local debug/test-vault means were
+about 100 ms per snapshot at 100 messages and 328 ms at 1000 before these changes.
+Afterward, the 1000-message snapshot averaged 221 ms; profile projection fell
+from about 40 ms to 3 ms. The final probe ran after builds/tests completed. These
+are one-machine measurements, not a 50-member, private-history, or Linux budget.
+The full workspace suite passes, including private recovery, public workflows,
+media projection and coordination; strict Clippy and native/CLI builds pass.
+Inspection of a fresh CLI-created SQLite artifact confirms only the new room/kind
+index exists and the profile query uses it. The Mac remains unavailable for native
+visual rehearsal, and independent Linux measurements are pending.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI
