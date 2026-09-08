@@ -522,7 +522,7 @@ impl QuicNode {
         &self,
         source: &Store,
         context: &RoomContext,
-        now_ms: i64,
+        clock: impl Fn() -> i64,
     ) -> Result<ServedPeerRequest> {
         let authenticated = self.accept_one().await?;
         let (mut send, recv) =
@@ -531,6 +531,8 @@ impl QuicNode {
                 .context("accept peer request stream timed out")?
                 .context("accept peer request stream")?;
         let request: serde_json::Value = recv_json(recv, MAX_SYNC_BYTES).await?;
+
+        let now_ms = clock();
 
         if request.get("nonce").is_some() {
             let ping: DiagnosticPingV1 =
@@ -1261,6 +1263,53 @@ mod tests {
         store
             .insert_accepted_event(accepted, now_ms)
             .expect("insert");
+    }
+
+    #[tokio::test]
+    async fn request_validation_clock_is_sampled_after_request_arrives() -> Result<()> {
+        let server = QuicNode::bind_ipv6_loopback(PeerIdentity::generate()?)?;
+        let endpoint = server.peer_endpoint(server.local_addr()?)?;
+        let certificate = server.certificate_der();
+        let store = Store::open_in_memory()?;
+        let context = RoomContext::for_space("peer:authority", "space:test:governance");
+        let samples = std::cell::Cell::new(0);
+        let serve = server.serve_peer_request_once(&store, &context, || {
+            samples.set(samples.get() + 1);
+            2_000
+        });
+        let probe = async {
+            let client = QuicNode::bind_ipv6_loopback(PeerIdentity::generate()?)?;
+            let connected = client
+                .connect(
+                    endpoint.addr,
+                    certificate,
+                    &endpoint.peer_id,
+                    &endpoint.device_id,
+                )
+                .await?;
+            let (mut send, recv) = connected.connection.open_bi().await?;
+            assert_eq!(
+                samples.get(),
+                0,
+                "waiting/handshake must not freeze validation time"
+            );
+            send_json(
+                &mut send,
+                &DiagnosticPingV1 {
+                    v: 1,
+                    nonce: "clock-probe".to_string(),
+                },
+            )
+            .await?;
+            let pong: DiagnosticPongV1 = recv_json(recv, MAX_SYNC_BYTES).await?;
+            assert!(pong.reachable);
+            assert_eq!(samples.get(), 1);
+            Ok::<_, anyhow::Error>(())
+        };
+        let (served, probed) = tokio::join!(serve, probe);
+        served?;
+        probed?;
+        Ok(())
     }
 
     #[test]

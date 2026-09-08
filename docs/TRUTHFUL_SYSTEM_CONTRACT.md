@@ -304,6 +304,35 @@ reads during pending diagnostics. Linux verification remains pending. This bug
 is a candidate explanation for Thimble's connection closure and interrupted
 invite preflight, not proof that all reported failures share this cause.
 
+The request clock is sampled after the authenticated request arrives, rather
+than before the server waits. A live QUIC test verifies that no clock sample is
+taken during connection establishment and that the request triggers one sample.
+This preserves current-time membership/revocation interpretation during long idle
+periods; creation-time event validation remains unchanged.
+
+## Development Snapshot Cost — UX-005
+
+The same signature, identity, governance, and admission checks remain binding.
+Development builds now optimize only `curve25519-dalek`, `ed25519-dalek`, and
+`sha2`; Voxelle code retains the normal development profile. No validation is
+removed, cached, or bypassed, and no release-profile or protocol revision is
+introduced. This addresses the real development-native/daemon workflow without
+claiming release performance or sufficient performance for large histories.
+
+The ignored manual probe `profile_small_home_snapshot_cost` initializes a real
+two-governance-event home, stops the service, and measures three local operations
+per stage. On this Mac, the original dev snapshot mean was 163365 microseconds
+(home view 145311); curve optimization measured 80706; all three dependencies
+optimized measured 62940 (home view 57498). Identity loading was 1768 microseconds
+before and 831 afterward, so vault access alone did not explain local latency.
+These are small-sample local observations, not a cross-platform latency promise.
+Thimble's two-event EPYC Linux dev-profile measurements remain the independent
+verification target. Repeated projection work and history scaling still require
+measurement and improvement. The full workspace test suite and strict Clippy
+for application, inhabitant, and transport crates pass. The rebuilt disposable
+macOS bundle reopened retained messages and admitted/rendered a new message via
+Computer Use; this test-file-vault smoke check is not production vault evidence.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

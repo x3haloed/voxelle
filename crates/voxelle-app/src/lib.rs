@@ -8350,7 +8350,7 @@ impl PeerServer {
         let store = self.home.open_store()?;
         let context = self.home.load_config()?.room_context();
         self.node
-            .serve_peer_request_once(&store, &context, now_ms())
+            .serve_peer_request_once(&store, &context, now_ms)
             .await
     }
 
@@ -12523,6 +12523,39 @@ mod tests {
             .views
             .iter()
             .any(|view| view.id == "network.health"));
+    }
+
+    #[test]
+    #[ignore = "manual local snapshot cost measurement"]
+    fn profile_small_home_snapshot_cost() {
+        let dir = tempdir().unwrap();
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        host.init_home(InitHomeRequest { default_room: None })
+            .unwrap();
+        host.stop_service().unwrap();
+        macro_rules! measure {
+            ($label:expr, $operation:expr) => {{
+                let started = std::time::Instant::now();
+                for _ in 0..3 {
+                    std::hint::black_box($operation.unwrap());
+                }
+                eprintln!("{} mean_us={}", $label, started.elapsed().as_micros() / 3);
+            }};
+        }
+        eprintln!(
+            "events={}",
+            host.home
+                .open_store()
+                .unwrap()
+                .room_events(&host.home.load_config().unwrap().space.governance_room_id)
+                .unwrap()
+                .len()
+        );
+        measure!("identity", host.home.load_identity());
+        measure!("config", host.home.load_config());
+        measure!("home_view", host.home.home_screen_view(None));
+        measure!("network_health", host.home.network_health_view(None));
+        measure!("snapshot", host.snapshot());
     }
 
     #[tokio::test]

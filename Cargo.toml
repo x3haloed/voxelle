@@ -12,3 +12,15 @@ members = [
   "crates/voxelle-release",
 ]
 resolver = "2"
+
+# Native development builds exercise the real cryptographic admission/projection
+# path. Keep curve arithmetic optimized so debug stepping in Voxelle does not
+# turn routine local reads into multi-second operations on slower CPUs.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
