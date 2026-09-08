@@ -763,6 +763,24 @@ rules out repeated schema setup blocking such reads in the locally tested
 initialized-store case. Production behavior is unchanged; it does not diagnose
 Thimble's HTTP 500 or cover corruption, filesystem errors, or every writer path.
 
+## Last-channel Restoration — UX-025
+
+Native rehearsal exposed restart returning to general after private-channel use.
+Selection, channel creation, and opening a message now persist a per-home local
+navigation preference. Startup restores it only if the ordinary current channel
+list exposes it; stale, foreign, or unavailable selections fall back to default.
+This preference is not replicated governance and grants no membership or posting
+rights. Message selection itself is not restored. Existing protocol admission
+continues to validate sends independently.
+
+The regression covers private creation/restart, sending to the restored channel,
+explicit navigation, message opening, and foreign/missing-room fallback. Full
+workspace tests, strict Clippy, and native build pass. The rebuilt disposable
+native app now reopens directly into the private channel and displays both retained
+key-epoch messages with the composer targeting that room. Protected communicating
+apps and production Keychain authorization remain unchanged; Linux verification
+is pending.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

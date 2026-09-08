@@ -97,10 +97,12 @@ sent PRIVATE-NATIVE-e7917b3-2, and reopened. Both messages remain readable after
 reselecting the private channel. This does not establish excluded-peer delivery,
 production Keychain behavior, or multi-member native recovery.
 
-New observed UX friction: restart returned to #general instead of preserving the
-last selected private channel. Next fix should restore a valid accessible last
-selection per home, with safe fallback when unavailable, without restoring stale
-membership authority or mixing profile state. Protected communicating apps remain
+UX-025 fixes the observed restart-to-general friction. Channel selection, creation,
+and opening a message save a local per-home room preference; startup checks the
+current accessible channel list before restoring it, otherwise using the default.
+Tests cover routing a new message after restart, navigation, and foreign/missing
+room fallback. Native disposable rehearsal now reopens directly into the selected
+private channel with both epoch messages and correctly targeted composer. Protected communicating apps remain
 unchanged; Thimble checkpoint remote receipt remains unverified.
 
 ## Prediction errors

@@ -47,6 +47,7 @@ const KNOWN_PEERS_STATE: &str = "peers.known";
 const READ_STATE: &str = "rooms.read";
 const ROOM_KEYS_STATE: &str = "rooms.keys.encrypted";
 const UI_PREFERENCES_STATE: &str = "ui.preferences";
+const SELECTED_ROOM_STATE: &str = "ui.selected_room";
 const RECOVERY_HEALTH_STATE: &str = "identity.recovery_health";
 const DEVICE_NAMES_STATE: &str = "identity.device_names";
 const DEVICE_LINK_PENDING_FILE: &str = "device-link-pending.json";
@@ -6442,13 +6443,24 @@ impl VoxelleCommandHost {
                 "failed".to_string()
             }
         };
+        let home = VoxelleHome::new(root);
+        // A local navigation preference never supplies membership authority.
+        // Ignore stale/unavailable preferences and retain the ordinary default.
+        let selected_room_id = home
+            .local_state::<String>(SELECTED_ROOM_STATE)
+            .ok()
+            .flatten()
+            .filter(|room| {
+                home.channels(Some(room))
+                    .is_ok_and(|channels| channels.iter().any(|channel| channel.room_id == *room))
+            });
         Self {
-            home: VoxelleHome::new(root),
+            home,
             service: None,
             activity: Vec::new(),
             next_activity_id: 1,
             last_space_invite_json: None,
-            selected_room_id: None,
+            selected_room_id,
             selected_message_event_id: None,
             search_results: Vec::new(),
             snapshot_invalidated,
@@ -7482,6 +7494,12 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
+    fn remember_selected_room(&mut self, room_id: String) -> Result<()> {
+        self.home.put_local_state(SELECTED_ROOM_STATE, &room_id)?;
+        self.selected_room_id = Some(room_id);
+        Ok(())
+    }
+
     pub fn select_channel(&mut self, request: SelectChannelRequest) -> Result<ShellSnapshotView> {
         if !self
             .home
@@ -7491,7 +7509,7 @@ impl VoxelleCommandHost {
         {
             anyhow::bail!("channel is unknown or inaccessible");
         }
-        self.selected_room_id = Some(request.room_id);
+        self.remember_selected_room(request.room_id)?;
         self.selected_message_event_id = None;
         self.snapshot()
     }
@@ -7513,7 +7531,7 @@ impl VoxelleCommandHost {
         {
             anyhow::bail!("message is unknown or inaccessible in this channel");
         }
-        self.selected_room_id = Some(request.room_id);
+        self.remember_selected_room(request.room_id)?;
         self.selected_message_event_id = Some(request.event_id);
         self.snapshot()
     }
@@ -7532,11 +7550,12 @@ impl VoxelleCommandHost {
         request: CreateChannelRequest,
     ) -> Result<ShellSnapshotView> {
         let event = self.home.create_channel(&request)?;
-        self.selected_room_id = event
+        let room_id = event
             .body
             .get("room_id")
             .and_then(serde_json::Value::as_str)
-            .map(ToOwned::to_owned);
+            .context("created channel has no room ID")?;
+        self.remember_selected_room(room_id.to_string())?;
         self.selected_message_event_id = None;
         self.request_sync();
         self.snapshot()
@@ -12926,6 +12945,111 @@ mod tests {
         )]);
         assert_eq!(host.peer_health_failures.len(), 1);
         assert_eq!(host.sync_evidence.state, SyncEvidenceState::Unreachable);
+    }
+
+    #[tokio::test]
+    async fn last_channel_restores_per_home_and_routes_messages_after_restart() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("first");
+        let mut host = VoxelleCommandHost::new(&root);
+        host.init_home(InitHomeRequest { default_room: None })
+            .unwrap();
+        host.stop_service().unwrap();
+        let peer_id = host.home.load_identity().unwrap().peer_id;
+        let created = host
+            .create_channel(CreateChannelRequest {
+                name: "remember private".to_string(),
+                topic: String::new(),
+                private_members: vec![peer_id],
+            })
+            .await
+            .unwrap();
+        let private_room = created.home.unwrap().room.room_id;
+        drop(host);
+        let mut reopened = VoxelleCommandHost::new(&root);
+        assert_eq!(
+            reopened.snapshot().unwrap().home.unwrap().room.room_id,
+            private_room
+        );
+        let sent = reopened
+            .send_message(SendMessageRequest {
+                text: "send to restored channel".to_string(),
+                room: None,
+                mentions: vec![],
+                addressed_origin_session_ids: vec![],
+                thread_root_event_id: None,
+                in_reply_to_event_id: None,
+                client_request_id: Some("restored-channel-send-1".to_string()),
+            })
+            .await
+            .unwrap()
+            .home
+            .unwrap();
+        assert_eq!(sent.room.room_id, private_room);
+        let message_id = sent.room.messages[0].event_id.clone();
+        let default_room = reopened.home.load_config().unwrap().space.default_room_id;
+        reopened
+            .select_channel(SelectChannelRequest {
+                room_id: default_room.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            VoxelleCommandHost::new(&root)
+                .snapshot()
+                .unwrap()
+                .home
+                .unwrap()
+                .room
+                .room_id,
+            default_room
+        );
+        reopened
+            .open_message(OpenMessageRequest {
+                room_id: private_room.clone(),
+                event_id: message_id,
+            })
+            .unwrap();
+        assert_eq!(
+            VoxelleCommandHost::new(&root)
+                .snapshot()
+                .unwrap()
+                .home
+                .unwrap()
+                .room
+                .room_id,
+            private_room
+        );
+        let other_root = directory.path().join("second");
+        let other = VoxelleHome::new(&other_root);
+        other.init(DEFAULT_ROOM_ID).unwrap();
+        other
+            .put_local_state(SELECTED_ROOM_STATE, &private_room)
+            .unwrap();
+        let other_default = other.load_config().unwrap().space.default_room_id;
+        assert_eq!(
+            VoxelleCommandHost::new(&other_root)
+                .snapshot()
+                .unwrap()
+                .home
+                .unwrap()
+                .room
+                .room_id,
+            other_default
+        );
+        reopened
+            .home
+            .put_local_state(SELECTED_ROOM_STATE, &"room:missing")
+            .unwrap();
+        assert_eq!(
+            VoxelleCommandHost::new(&root)
+                .snapshot()
+                .unwrap()
+                .home
+                .unwrap()
+                .room
+                .room_id,
+            default_room
+        );
     }
 
     #[test]
