@@ -381,6 +381,27 @@ contract/ontology check, all 146 web tests, native build, and strict application
 Clippy pass. The test uses disposable debug vaults and same-machine peers; it is
 not proof of remote reachability or automatic endpoint discovery.
 
+## Endpoint-relative Health Evidence — UX-008
+
+Preserve **Claim/Evidence Honesty** and the **Trust And Authority** distinction
+between routing availability and membership. After successful replacement of a
+known peer record, diagnostic/sync failures for that previous record no longer
+characterize the replacement, and aggregate sync evidence becomes unknown.
+Background reports apply only while their complete peer record still matches
+current stored availability. A delayed result for an old record cannot restore
+its stale failure or confirmation. This changes disposable health projection,
+not accepted facts, replication admission, or transport authority.
+
+A focused test records old diagnostic/sync failures, imports a replacement,
+applies a delayed old timeout, and verifies that only a current-record timeout
+can mark the replacement unreachable. All 76 application and 15 inhabitant
+tests pass locally (manual performance probe ignored), strict Clippy passes,
+and the native host builds. Computer Use replaced a retained silent test record
+with its current public record; the obsolete failure disappeared and the new
+address appeared without a fabricated success claim. An initial malformed
+clipboard paste was not imported; a fresh copy/paste produced the complete
+validated record. This is local projection evidence, not remote delivery proof.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

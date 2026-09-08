@@ -7665,7 +7665,17 @@ impl VoxelleCommandHost {
             .label
             .clone()
             .unwrap_or_else(|| short_peer_label(&peer_record.endpoint.peer_id));
-        self.home.import_peer_record(peer_record)?;
+        let previous = self.home.known_peers()?.into_iter().find(|peer| {
+            peer.endpoint.peer_id == peer_record.endpoint.peer_id
+                && peer.endpoint.device_id == peer_record.endpoint.device_id
+        });
+        self.home.import_peer_record(peer_record.clone())?;
+        if previous.as_ref().is_some_and(|old| old != &peer_record) {
+            self.clear_peer_health_failure(&peer_record, PeerHealthOperation::Diagnose);
+            self.clear_peer_health_failure(&peer_record, PeerHealthOperation::Sync);
+            // Aggregate evidence included an endpoint that is no longer current.
+            self.sync_evidence = SyncEvidenceView::default();
+        }
         self.request_sync();
         self.push_activity(ServiceActivityLevel::Info, format!("imported peer {label}"));
         self.snapshot()
@@ -7823,6 +7833,23 @@ impl VoxelleCommandHost {
         &mut self,
         reports: Vec<(PeerRecord, std::result::Result<PeerSyncReport, String>)>,
     ) {
+        let current_peers = match self.home.known_peers() {
+            Ok(peers) => peers,
+            Err(error) => {
+                self.push_activity(
+                    ServiceActivityLevel::Error,
+                    format!("could not reconcile sync evidence with current peers: {error:#}"),
+                );
+                return;
+            }
+        };
+        let reports = reports
+            .into_iter()
+            .filter(|(peer, _)| current_peers.contains(peer))
+            .collect::<Vec<_>>();
+        if reports.is_empty() {
+            return;
+        }
         let peers_attempted = reports.len();
         let mut peers_reached = 0;
         let mut events_received = 0;
@@ -12555,6 +12582,46 @@ mod tests {
             .views
             .iter()
             .any(|view| view.id == "network.health"));
+    }
+
+    #[test]
+    fn replacing_peer_record_discards_old_failure_and_delayed_sync_evidence() {
+        let dir = tempdir().unwrap();
+        let mut host = VoxelleCommandHost::new(dir.path().join("home"));
+        let initial = host
+            .init_home(InitHomeRequest { default_room: None })
+            .unwrap();
+        let mut old = initial.home.unwrap().invite.unwrap().peer_record;
+        host.stop_service().unwrap();
+        let old_socket = std::net::UdpSocket::bind("[::1]:0").unwrap();
+        old.endpoint.addr = old_socket.local_addr().unwrap();
+        host.import_peer_record(ImportPeerRecordRequest {
+            peer_record_json: serde_json::to_string(&old).unwrap(),
+        })
+        .unwrap();
+        host.apply_sync_reports(vec![(old.clone(), Err("old endpoint timeout".to_string()))]);
+        host.record_peer_health_failure(&old, PeerHealthOperation::Diagnose);
+        assert_eq!(host.peer_health_failures.len(), 2);
+        assert_eq!(host.sync_evidence.state, SyncEvidenceState::Unreachable);
+        let replacement_socket = std::net::UdpSocket::bind("[::1]:0").unwrap();
+        let mut replacement = old.clone();
+        replacement.endpoint.addr = replacement_socket.local_addr().unwrap();
+        let imported = host
+            .import_peer_record(ImportPeerRecordRequest {
+                peer_record_json: serde_json::to_string(&replacement).unwrap(),
+            })
+            .unwrap();
+        assert!(host.peer_health_failures.is_empty());
+        assert_eq!(imported.sync_evidence.state, SyncEvidenceState::Unknown);
+        host.apply_sync_reports(vec![(old, Err("late old timeout".to_string()))]);
+        assert!(host.peer_health_failures.is_empty());
+        assert_eq!(host.sync_evidence, imported.sync_evidence);
+        host.apply_sync_reports(vec![(
+            replacement,
+            Err("current endpoint timeout".to_string()),
+        )]);
+        assert_eq!(host.peer_health_failures.len(), 1);
+        assert_eq!(host.sync_evidence.state, SyncEvidenceState::Unreachable);
     }
 
     #[test]
