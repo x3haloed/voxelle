@@ -59,6 +59,29 @@ the request only after verifying the replacement's signed release manifest.
 Declining leaves the encrypted identity unreadable to that build; an offline
 `.voxrecover` kit remains the supported recovery path on a fresh home.
 
+### Rebuilding during local development
+
+An ad-hoc signature does not provide a stable signer across native rebuilds.
+A stable bundle name, installation path, or bundle identifier alone does not
+preserve Keychain authorization. Repeated native rebuilds against the same
+protected home therefore may require approval for the new executable.
+
+For repeated development signing, use a dedicated code-signing identity with
+an unchanged signing requirement across builds. This can be a local development
+identity; it does not require a paid distribution account and does not provide
+notarization or recipient trust. Inspect available identities with
+`security find-identity -p codesigning -v` and inspect the actual artifact with
+`codesign -dvvv /path/to/Voxelle.app`. Moving from an ad-hoc build to a stable
+signer may still require one Keychain authorization; signing is not permission
+to access an existing protected item.
+
+Until that identity and authorization are established, keep a known working
+communicating build and use isolated disposable homes with the documented
+debug-only test-file vault for rebuild testing. Never change a continuing
+identity's vault backend, broaden its Keychain access policy, or copy its unlock
+secret just to suppress prompts. Production Keychain behavior must be verified
+separately from disposable-profile smoke tests.
+
 ## Windows
 
 1. Download the NSIS `.exe`, `VOXELLE-RELEASE.json`, and optional

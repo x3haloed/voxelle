@@ -2343,7 +2343,7 @@ function inviteExchangeView(snapshot) {
       element(
         "p",
         "summary",
-        `Your friend needs the Voxelle installer as well as this signed invite. Send both privately. After opening Voxelle, they choose Join with an invite, expand Paste invite JSON instead, paste the invite, and choose Join Space. It expires ${expiry}.`,
+        `Your friend needs the Voxelle installer as well as this signed invite. Send both privately. After opening Voxelle, they paste your message into Invitation message under Join with an invite, review the destination, and choose Join Space. It expires ${expiry}.`,
       ),
       commandButton("invite.handoff.copy"),
     );

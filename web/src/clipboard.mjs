@@ -25,7 +25,7 @@ export function inviteHandoffText(signedInvite) {
     "",
     "1. Install and open Voxelle using the installer I sent you.",
     "2. On the first screen, choose \"Join with an invite.\"",
-    "3. Expand \"Paste invite JSON instead,\" paste the signed invite below, then choose \"Join Space.\"",
+    "3. Paste this complete message into \"Invitation message\", review the destination, then choose \"Join Space.\"",
     "",
     "Keep this invite private. Anyone holding it may attempt to join until it expires or is revoked.",
     "",
