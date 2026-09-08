@@ -553,6 +553,37 @@ routing-cache boundary in addition to the event-admission boundary. The focused
 local test passes; independent Linux/native verification remains outstanding.
 No production behavior changes in this evidence checkpoint.
 
+## Private-history Reconstruction Cost — UX-016
+
+Preserve **One Admission Truth**, **Governance Meaning**, and **Private-room
+Confidentiality And Validation**. Governance derivation now performs its existing
+room-identity exclusion before cryptographic validation of each sorted fact.
+Facts outside the governance room still cannot govern the space; actual
+governance facts still receive the same full validation. Ordering is unchanged.
+This removes repeated cryptographic work on irrelevant room-history facts during
+private semantic reconstruction, not a required event-admission check.
+
+Private reconstruction reuses the room-key bundle returned by its existing key
+import for the duration of that reconstruction. Each epoch is looked up in that
+bundle, each ciphertext is authenticated/decrypted as before, and each resulting
+semantic event is still validated at creation time against governance and prior
+accepted meaning. The key bundle is not cached across operations, and no vault,
+root/device/recovery capability, ciphertext format, or retained artifact changes.
+
+The manual profiler now supports `VOXELLE_PROFILE_PRIVATE=1`. With 100 real private
+messages, three-sample local debug/test-vault snapshots averaged 11,016 ms before
+and 787 ms afterward (about 14x faster). Channel projection fell from 2739 ms to
+192 ms. The fixture plus measurement run fell from 187 seconds to 18 seconds.
+Both probes completed without competing builds during measurement. This is
+one-member private-room evidence; larger histories and multi-member private
+performance remain unproven, and 787 ms still leaves responsiveness work.
+
+The full workspace suite passes, including private confidentiality/recovery and
+public/identity/network preservation paths. A focused core regression confirms
+that a room-scoped ban and a forged governance ban do not change membership,
+while the authentic governance-room ban does. Strict Clippy and the native build
+pass. Native lived verification and independent Linux timing remain pending.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

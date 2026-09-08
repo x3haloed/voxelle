@@ -1505,11 +1505,14 @@ pub fn derive_governance_state(
         if event.created_ms > now_ms {
             continue;
         }
-        let required_scope = required_scope_for_kind(&event.kind);
-        if validate_event_at(event, required_scope, event.created_ms).is_err() {
+        // Room events cannot govern the space. Discard them before expensive
+        // cryptographic validation; actual governance facts still take the
+        // complete existing validation path below.
+        if event.room_id != context.governance_room_id {
             continue;
         }
-        if event.room_id != context.governance_room_id {
+        let required_scope = required_scope_for_kind(&event.kind);
+        if validate_event_at(event, required_scope, event.created_ms).is_err() {
             continue;
         }
 
@@ -4107,6 +4110,39 @@ mod tests {
 
         accept_event(&event, &[space.genesis], &context, 1_100)
             .expect("space authority is an implicit member");
+    }
+
+    #[test]
+    fn governance_ignores_room_facts_but_still_authenticates_governance() {
+        let authority = PeerIdentity::generate().unwrap();
+        let member = PeerIdentity::generate().unwrap();
+        let context = RoomContext::new(authority.peer_id.clone());
+        let join = member_join(&member);
+        let room_ban = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:governance".to_string()]),
+            "room:general",
+            1_050,
+            "MEMBER_BAN",
+            vec![],
+            json!({"peer_id": member.peer_id}),
+        )
+        .unwrap();
+        let valid_ban = authority_governance_event(
+            &authority,
+            1_050,
+            "MEMBER_BAN",
+            json!({"peer_id": member.peer_id}),
+        );
+        let mut forged_ban = valid_ban.clone();
+        forged_ban.sig.push('x');
+        let ignored =
+            derive_governance_state(&[join.clone(), room_ban, forged_ban], &context, 1_100);
+        assert!(ignored.members.contains(&member.peer_id));
+        assert!(!ignored.banned.contains(&member.peer_id));
+        let admitted = derive_governance_state(&[join, valid_ban], &context, 1_100);
+        assert!(admitted.banned.contains(&member.peer_id));
+        assert!(!admitted.members.contains(&member.peer_id));
     }
 
     #[test]

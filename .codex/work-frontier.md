@@ -71,6 +71,11 @@ platform, accessibility, agent, and release evidence.
   UX-014 measures retained public history: 1000-message local debug snapshots
   improve from ~328ms to ~221ms by reusing snapshot inputs and indexing profile
   updates. Private-history/50-member/Linux performance still needs measurement.
+  UX-016 found a severe private-history regression: 100 private messages took
+  ~11s per snapshot. Skipping irrelevant-room crypto in governance derivation
+  and reusing one imported key bundle per reconstruction reduces this to ~787ms.
+  Full validation remains; larger/multi-member private histories and the remaining
+  latency still require work. Native/Linux evidence remains pending.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
 - Thimble measured ~3-second local reads before stale peer import on Linux

@@ -778,6 +778,21 @@ struct PrivateEventPlaintext {
     body: serde_json::Value,
 }
 
+impl RoomKeysV1 {
+    fn key(&self, room_id: &str, epoch: u64) -> Result<[u8; 32]> {
+        let encoded = self
+            .keys
+            .get(room_id)
+            .and_then(|epochs| epochs.get(&epoch))
+            .ok_or_else(|| anyhow::anyhow!("private room key epoch {epoch} is unavailable"))?;
+        base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .context("decode private room key")?
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("private room key must be 32 bytes"))
+    }
+}
+
 impl Default for RoomKeysV1 {
     fn default() -> Self {
         Self {
@@ -3777,7 +3792,7 @@ impl VoxelleHome {
             .get(room)
             .ok_or_else(|| anyhow::anyhow!("room is not a current channel"))?;
         let event = if channel.visibility == ChannelVisibility::Private {
-            self.import_private_room_keys()?;
+            let keys = self.import_private_room_keys()?;
             let mut accepted = governance;
             accepted.extend(self.decrypted_room_events(room)?);
             validate_room_event_semantics(
@@ -3787,7 +3802,7 @@ impl VoxelleHome {
                 created_ms,
             )
             .map_err(|error| anyhow::anyhow!("private event semantics rejected: {error:?}"))?;
-            let key = self.room_key(room, channel.key_epoch)?;
+            let key = keys.key(room, channel.key_epoch)?;
             let cipher = XChaCha20Poly1305::new((&key).into());
             let mut nonce = [0_u8; 24];
             rand::rngs::OsRng.fill_bytes(&mut nonce);
@@ -3841,7 +3856,8 @@ impl VoxelleHome {
     }
 
     fn decrypted_room_events_with_sequence(&self, room_id: &str) -> Result<Vec<SequencedEvent>> {
-        self.import_private_room_keys()?;
+        // This key snapshot is local to one reconstruction, never a shared cache.
+        let keys = self.import_private_room_keys()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
         let governance = store.room_events(&config.space.governance_room_id)?;
@@ -3875,7 +3891,7 @@ impl VoxelleHome {
             else {
                 continue;
             };
-            let Ok(key) = self.room_key(room_id, epoch) else {
+            let Ok(key) = keys.key(room_id, epoch) else {
                 continue;
             };
             let Some(nonce_b64) = raw
@@ -4168,21 +4184,7 @@ impl VoxelleHome {
         self.write_room_keys(&keys)
     }
 
-    fn room_key(&self, room_id: &str, epoch: u64) -> Result<[u8; 32]> {
-        let keys = self.room_keys()?;
-        let encoded = keys
-            .keys
-            .get(room_id)
-            .and_then(|epochs| epochs.get(&epoch))
-            .ok_or_else(|| anyhow::anyhow!("private room key epoch {epoch} is unavailable"))?;
-        base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .context("decode private room key")?
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("private room key must be 32 bytes"))
-    }
-
-    fn import_private_room_keys(&self) -> Result<()> {
+    fn import_private_room_keys(&self) -> Result<RoomKeysV1> {
         let identity = self.load_identity()?;
         let config = self.load_config()?;
         let governance = self
@@ -4236,7 +4238,7 @@ impl VoxelleHome {
         if changed {
             self.write_room_keys(&keys)?;
         }
-        Ok(())
+        Ok(keys)
     }
 
     pub fn recovery_kit(&self) -> Result<RecoveryKitV1> {
@@ -12907,9 +12909,32 @@ mod tests {
             messages <= 1000,
             "manual probe supports at most 1000 messages"
         );
+        let room = if std::env::var("VOXELLE_PROFILE_PRIVATE").as_deref() == Ok("1") {
+            let peer_id = host.home.load_identity().unwrap().peer_id;
+            let event = host
+                .home
+                .create_channel(&CreateChannelRequest {
+                    name: "private measurement".to_string(),
+                    topic: String::new(),
+                    private_members: vec![peer_id],
+                })
+                .unwrap();
+            let room = event.body["room_id"].as_str().unwrap().to_string();
+            host.select_channel(SelectChannelRequest {
+                room_id: room.clone(),
+            })
+            .unwrap();
+            Some(room)
+        } else {
+            None
+        };
+        eprintln!("private_room={}", room.is_some());
         for index in 0..messages {
             host.home
-                .send_message(&format!("retained history message {index}"), None)
+                .send_message(
+                    &format!("retained history message {index}"),
+                    room.as_deref(),
+                )
                 .unwrap();
         }
         eprintln!("retained_messages={messages}");
@@ -12936,7 +12961,11 @@ mod tests {
         measure!("channels", host.home.channels(None));
         measure!("profiles", host.home.profiles());
         measure!("notifications", host.home.notifications());
-        measure!("home_view", host.home.home_screen_view(None));
+        measure!(
+            "home_view",
+            host.home
+                .home_screen_view_for_room_and_message(None, room.as_deref(), None)
+        );
         measure!("network_health", host.home.network_health_view(None));
         measure!("snapshot", host.snapshot());
     }
