@@ -1,5 +1,23 @@
 # Work Frontier
 
+## Current checkpoint: UX-026 keyboard return focus
+
+- Native Connection & sync closed on Escape but left focus on the HTML document.
+  Rendering replaced the saved invoking element. The first repaired native build
+  restored the composer fallback; macOS pointer activation had not focused its
+  launcher. Connection and utility launchers now explicitly supply their return
+  action, and connection uses a stable action key independent of health text.
+- Focus restoration resolves the replacement action after rendering, falls back
+  to the composer when unavailable, and does not steal focus from another surface.
+  This preserves UI ontology keyboard predictability without changing semantic
+  commands, docking, admission, membership, or transport authority.
+- 147 web tests and native build pass. The replaced-element regression includes
+  opening another surface before scheduled restoration. Logs are in
+  target/local/ux-026-{web,build}.log. Final native launcher-return verification
+  is pending: the Mac locked before the second disposable rebuild restart.
+  The installed disposable app has the first fallback repair; protected apps
+  and homes remain unchanged. Thimble notification is pending GUI access.
+
 ## Outcome
 
 Voxelle is ready for a credible beta when people and agents can install or

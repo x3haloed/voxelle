@@ -49,13 +49,13 @@ export class FocusSurfaceCoordinator {
     this.document = document;
     this.schedule = schedule;
     this.returnElement = null;
+    this.returnFallback = () => null;
     this.surface = "";
   }
 
-  rememberReturnElement() {
-    if (this.document.activeElement?.focus) {
-      this.returnElement = this.document.activeElement;
-    }
+  rememberReturnElement(fallback = () => null) {
+    this.returnElement = this.currentElement();
+    this.returnFallback = fallback;
   }
 
   currentElement() {
@@ -89,12 +89,14 @@ export class FocusSurfaceCoordinator {
       this.schedule(() => {
         if (this.surface === surface) initialTarget()?.focus();
       });
-    } else if (previousSurface && this.returnElement) {
+    } else if (previousSurface) {
       const target = this.returnElement;
+      const fallback = this.returnFallback;
       this.schedule(() => {
-        if (!this.surface && target.isConnected) {
-          target.focus();
+        if (!this.surface) {
+          (target?.isConnected ? target : fallback())?.focus();
           this.returnElement = null;
+          this.returnFallback = () => null;
         }
       });
     }

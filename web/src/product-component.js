@@ -448,12 +448,13 @@ function header(snapshot) {
 function connectionCenterButton(snapshot) {
   const status = connectionHeaderState(snapshot);
   const button = actionButton(status.label, () => {
-    if (!uiState.connectionOpen) rememberFocusReturn();
+    if (!uiState.connectionOpen) rememberFocusReturn(button);
     uiState.utilityOpen = "";
     uiState.connectionOpen = !uiState.connectionOpen;
     render();
   }, status.help);
   button.classList.add("connection-button");
+  button.dataset.actionKey = "action:connection-center";
   button.dataset.status = status.tone;
   button.setAttribute("aria-expanded", String(uiState.connectionOpen));
   button.setAttribute("aria-controls", "connection-center");
@@ -497,7 +498,7 @@ function headerMore(snapshot) {
 
 function utilityButton(kind, label) {
   const button = actionButton(label, () => {
-    if (uiState.utilityOpen !== kind) rememberFocusReturn();
+    if (uiState.utilityOpen !== kind) rememberFocusReturn(button);
     uiState.connectionOpen = false;
     uiState.utilityFocusSelector = "";
     uiState.utilityOpen = uiState.utilityOpen === kind ? "" : kind;
@@ -5113,8 +5114,20 @@ function globalStatusBanner() {
   return banner;
 }
 
-function rememberFocusReturn() {
-  focusCoordinator.rememberReturnElement();
+function rememberFocusReturn(origin = focusCoordinator.currentElement()) {
+  const controls = origin?.getAttribute("aria-controls");
+  const actionKey = origin?.dataset?.actionKey;
+  // Rendering replaces controls; resolve the same action in the new document.
+  focusCoordinator.rememberReturnElement(() =>
+    (actionKey
+      ? [...app.querySelectorAll("[data-action-key]")]
+        .find((candidate) => candidate.dataset.actionKey === actionKey)
+      : controls
+        ? [...app.querySelectorAll("[aria-controls]")]
+          .find((candidate) => candidate.getAttribute("aria-controls") === controls)
+        : null)
+    ?? app.querySelector(".message-input")
+    ?? app.querySelector(".app-header button"));
 }
 
 function compactTransientModal() {

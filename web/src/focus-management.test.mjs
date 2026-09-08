@@ -191,3 +191,28 @@ test("document roots are not treated as useful command origins", () => {
   document.activeElement = button;
   assert.equal(coordinator.currentElement(), button);
 });
+
+
+test("closing a surface resolves its replaced invoking control", () => {
+  const frames = [];
+  const origin = { isConnected: true, focus() { throw new Error("old control"); } };
+  const replacement = { count: 0, focus() { this.count += 1; } };
+  const coordinator = new FocusSurfaceCoordinator(
+    { activeElement: origin }, (callback) => frames.push(callback),
+  );
+  coordinator.rememberReturnElement(() => replacement);
+  coordinator.synchronize("connection", () => null);
+  frames.shift()();
+  origin.isConnected = false;
+  coordinator.synchronize("", () => null);
+  frames.shift()();
+  assert.equal(replacement.count, 1);
+
+  coordinator.rememberReturnElement(() => replacement);
+  coordinator.synchronize("connection", () => null);
+  frames.shift()();
+  coordinator.synchronize("", () => null);
+  coordinator.synchronize("palette", () => null);
+  for (const frame of frames.splice(0)) frame();
+  assert.equal(replacement.count, 1, "pending restoration must not steal new surface focus");
+});
