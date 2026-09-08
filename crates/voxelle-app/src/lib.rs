@@ -12046,6 +12046,32 @@ mod tests {
             .expect("bob joins and stores alice history");
         assert_eq!(initial_replication.peers_reached, 1);
         assert!(initial_replication.events_received >= 2);
+        let lost_identity = alice.load_identity().unwrap();
+        let routing_context = bob.load_config().unwrap().room_context();
+        let old_claim = voxelle_net::EndpointClaimV1::create(
+            &lost_identity,
+            alice_service.online().endpoint.clone(),
+            routing_context.governance_room_id.clone(),
+            now_ms(),
+        )
+        .unwrap();
+        let routing_store = bob.open_store().unwrap();
+        old_claim
+            .validate(&routing_store, &routing_context, now_ms())
+            .unwrap();
+        voxelle_net::retain_endpoint_claims(
+            &routing_store,
+            &routing_context,
+            now_ms(),
+            vec![old_claim.clone()],
+        )
+        .unwrap();
+        assert!(
+            voxelle_net::endpoint_claims(&routing_store, &routing_context, now_ms())
+                .unwrap()
+                .iter()
+                .any(|claim| claim.endpoint.device_id == lost_identity.device.id)
+        );
         alice_service.stop().expect("alice offline");
 
         let bob_service = bob
@@ -12080,6 +12106,59 @@ mod tests {
             recovered.read_state().expect("recovered read state"),
             lost_read_state
         );
+        // Routing claims carry no identity proof and cannot restore the lost
+        // device after ordinary recovery synchronization advances Bob's head.
+        let error = old_claim
+            .validate(&routing_store, &routing_context, now_ms())
+            .unwrap_err();
+        assert!(error.to_string().contains("revoked"), "{error:#}");
+        let freshly_signed_by_lost_device = voxelle_net::EndpointClaimV1::create(
+            &lost_identity,
+            old_claim.endpoint.clone(),
+            routing_context.governance_room_id.clone(),
+            now_ms(),
+        )
+        .unwrap();
+        assert!(freshly_signed_by_lost_device
+            .validate(&routing_store, &routing_context, now_ms())
+            .is_err());
+        voxelle_net::retain_endpoint_claims(
+            &routing_store,
+            &routing_context,
+            now_ms(),
+            vec![old_claim, freshly_signed_by_lost_device],
+        )
+        .unwrap();
+        let recovered_node = QuicNode::bind_ipv6_loopback_with_certificate(
+            recovered.load_identity().unwrap(),
+            recovered.load_certificate().unwrap(),
+        )
+        .unwrap();
+        let recovered_claim = voxelle_net::EndpointClaimV1::create(
+            &recovered.load_identity().unwrap(),
+            recovered_node
+                .peer_endpoint(recovered_node.local_addr().unwrap())
+                .unwrap(),
+            routing_context.governance_room_id.clone(),
+            now_ms(),
+        )
+        .unwrap();
+        recovered_claim
+            .validate(&routing_store, &routing_context, now_ms())
+            .unwrap();
+        voxelle_net::retain_endpoint_claims(
+            &routing_store,
+            &routing_context,
+            now_ms(),
+            vec![recovered_claim.clone()],
+        )
+        .unwrap();
+        let routes =
+            voxelle_net::endpoint_claims(&routing_store, &routing_context, now_ms()).unwrap();
+        assert!(routes
+            .iter()
+            .all(|claim| claim.endpoint.device_id != old_device_id));
+        assert!(routes.contains(&recovered_claim));
         bob_service.stop().expect("bob service stop");
 
         alice

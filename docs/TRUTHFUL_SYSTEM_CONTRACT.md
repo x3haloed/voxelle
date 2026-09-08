@@ -540,6 +540,19 @@ Inspection of a fresh CLI-created SQLite artifact confirms only the new room/kin
 index exists and the profile query uses it. The Mac remains unavailable for native
 visual rehearsal, and independent Linux measurements are pending.
 
+## Routing Authority After Recovery — UX-015
+
+The real `fresh_home_recovery_resyncs_history_and_revokes_the_lost_device`
+preservation test now retains a valid old-device endpoint claim before recovery.
+After the ordinary retaining peer admits the recovered identity, it rejects both
+that cached claim and a fresh signature from the still-partitioned lost device.
+It accepts the replacement device's claim for the same principal. The existing
+history/read-state recovery and rejection of a lost-device message remain in the
+same test. This verifies **Identity Continuity And Capability Separation** at the
+routing-cache boundary in addition to the event-admission boundary. The focused
+local test passes; independent Linux/native verification remains outstanding.
+No production behavior changes in this evidence checkpoint.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI
