@@ -296,7 +296,9 @@ or manufacture new sync evidence. `shell.refresh` is also observational.
 Locally admitted mutations request a coalesced background sync and return their
 local projection without awaiting peers; success does not assert remote receipt.
 Startup and peer import also request a pass. Explicit `peer.sync` still awaits
-its requested peer and reports the resulting evidence. `peer.diagnose` captures
+its requested peer and reports the resulting evidence, while ordinary local
+commands and reads can proceed. A shell home-transition gate prevents sync from
+racing home replacement or runtime lifecycle changes. `peer.diagnose` captures
 its known endpoint/device under the shell lock, releases command serialization
 during transport, and discards its health result if that record or local device
 changed while it ran. Local commands and reads can proceed during that wait.

@@ -7,6 +7,7 @@ use voxelle_core::OriginSurfaceProtocolV1;
 use voxelle_update::TrustedReleaseKey;
 
 pub struct ShellState {
+    home_transition_gate: Mutex<()>,
     host: Mutex<VoxelleCommandHost>,
 }
 
@@ -136,6 +137,7 @@ impl ShellState {
 
     pub fn new(home_root: impl Into<PathBuf>) -> Self {
         Self {
+            home_transition_gate: Mutex::new(()),
             host: Mutex::new(VoxelleCommandHost::new(home_root)),
         }
     }
@@ -145,6 +147,7 @@ impl ShellState {
         snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
     ) -> Self {
         Self {
+            home_transition_gate: Mutex::new(()),
             host: Mutex::new(VoxelleCommandHost::new_with_notifier(
                 home_root,
                 snapshot_invalidated,
@@ -157,6 +160,7 @@ impl ShellState {
         trusted_update_keys: Vec<TrustedReleaseKey>,
     ) -> Self {
         Self {
+            home_transition_gate: Mutex::new(()),
             host: Mutex::new(VoxelleCommandHost::new_with_notifier_and_update_keys(
                 home_root,
                 Arc::new(|| {}),
@@ -264,8 +268,7 @@ impl ShellState {
         command_id: &str,
         payload: serde_json::Value,
     ) -> ShellResult<ShellSnapshotView> {
-        self.execute_serialized_command_inner(command_id, payload, None)
-            .await
+        Box::pin(self.execute_serialized_command_inner(command_id, payload, None)).await
     }
 
     pub async fn execute_serialized_command_with_origin(
@@ -274,8 +277,7 @@ impl ShellState {
         payload: serde_json::Value,
         origin: OriginContext,
     ) -> ShellResult<ShellSnapshotView> {
-        self.execute_serialized_command_inner(command_id, payload, Some(origin))
-            .await
+        Box::pin(self.execute_serialized_command_inner(command_id, payload, Some(origin))).await
     }
 
     async fn execute_serialized_command_inner(
@@ -284,6 +286,42 @@ impl ShellState {
         payload: serde_json::Value,
         origin: Option<OriginContext>,
     ) -> ShellResult<ShellSnapshotView> {
+        // Transport may admit facts without the UI lock, but must not race a
+        // replacement of the home whose store and identity it uses.
+        let _home_transition = if matches!(
+            command_id,
+            "peer.sync"
+                | "runtime.goOffline"
+                | "runtime.goOnline"
+                | "home.init"
+                | "home.archiveForRecovery"
+                | "space.join"
+                | "identity.recovery.restore"
+                | "identity.device.request"
+                | "identity.device.accept"
+        ) {
+            Some(self.home_transition_gate.lock().await)
+        } else {
+            None
+        };
+        if command_id == "peer.sync" {
+            let request: crate::PeerCommandRequest = parse_request(payload)?;
+            let (home, peer) = {
+                let host = self.host.lock().await;
+                let peer = host
+                    .find_known_peer(&request.peer_id, &request.device_id)
+                    .map_err(|error| ShellError::for_command(command_id, error))?;
+                (host.home.clone(), peer)
+            };
+            // Keep this large transport future off the command dispatch stack.
+            let result = Box::pin(home.sync_peer(&peer, request.max_events.unwrap_or(64))).await;
+            return self
+                .host
+                .lock()
+                .await
+                .finish_peer_sync(&peer, result)
+                .map_err(|error| ShellError::for_command(command_id, error));
+        }
         if command_id == "peer.diagnose" {
             let request = parse_request(payload)?;
             let (node, peer, device_id) = self
@@ -415,7 +453,6 @@ impl ShellState {
             "member.unban" => host.ban_member(parse_request(payload)?, false).await,
             "message.search" => host.search_messages(parse_request(payload)?),
             "peer.import" => host.import_peer_record(parse_request(payload)?),
-            "peer.sync" => host.sync_peer(parse_request(payload)?).await,
             "ui.preference.set" => host.set_ui_preference(parse_request(payload)?),
             "ui.preferences.reset" => host.reset_all_ui_preferences(),
             "workbench.layout.save" => host.set_workbench_layout(parse_request(payload)?),
@@ -1392,6 +1429,61 @@ mod tests {
                 .len(),
             3
         );
+    }
+
+    #[tokio::test]
+    async fn manual_sync_allows_messages_but_serializes_lifecycle_transitions() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = Arc::new(ShellState::new(dir.path().join("home")));
+        let initial = shell
+            .execute_serialized_command("home.init", serde_json::json!({}))
+            .await
+            .unwrap();
+        let mut peer = initial.home.unwrap().invite.unwrap().peer_record;
+        shell
+            .execute_serialized_command("runtime.goOffline", serde_json::Value::Null)
+            .await
+            .unwrap();
+        let blackhole = tokio::net::UdpSocket::bind("[::1]:0").await.unwrap();
+        peer.endpoint.addr = blackhole.local_addr().unwrap();
+        shell
+            .execute_serialized_command(
+                "peer.import",
+                serde_json::json!({"peer_record_json":serde_json::to_string(&peer).unwrap()}),
+            )
+            .await
+            .unwrap();
+        let syncing_shell = shell.clone();
+        let sync = tokio::spawn(async move {
+            syncing_shell.execute_serialized_command("peer.sync", serde_json::json!({"peer_id":peer.endpoint.peer_id,"device_id":peer.endpoint.device_id})).await
+        });
+        let mut packet = [0u8; 2048];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            blackhole.recv_from(&mut packet),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(shell.home_transition_gate.try_lock().is_err());
+        let offline =
+            shell.execute_serialized_command("runtime.goOffline", serde_json::Value::Null);
+        tokio::pin!(offline);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut offline)
+                .await
+                .is_err(),
+            "offline must wait for existing manual transport"
+        );
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(1), shell.execute_serialized_command("message.send", serde_json::json!({"text":"local during manual sync","client_request_id":"manual-sync-local"}))).await.expect("local message remains usable").unwrap();
+        assert_eq!(
+            sent.home.unwrap().room.messages[0].text,
+            "local during manual sync"
+        );
+        assert!(!sync.is_finished());
+        assert!(sync.await.unwrap().is_err());
+        offline.await.unwrap();
+        assert!(shell.home_transition_gate.try_lock().is_ok());
     }
 
     #[tokio::test]

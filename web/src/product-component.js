@@ -19,7 +19,7 @@ if (!(app instanceof HTMLElement)) {
 
 const uiState = {
   busyCommand: "",
-  diagnosticPending: false,
+  pendingPeerOperation: "",
   error: "",
   errorRecovery: "",
   errorDetail: "",
@@ -2299,7 +2299,7 @@ function isPeerOperation(command) {
 }
 
 function peerOperationVerb(command) {
-  if (command === "peer.diagnose" && uiState.diagnosticPending) return "Diagnosing";
+  if (uiState.pendingPeerOperation === command) return command === "peer.diagnose" ? "Diagnosing" : "Synchronizing";
   return command === "peer.diagnose" ? "Diagnose" : "Sync";
 }
 
@@ -4303,10 +4303,10 @@ function commandButton(command, payload) {
   if (definition?.shortcut) {
     button.title = `${definition.description} (${definition.shortcut})`;
   }
-  const diagnosticPending = command === "peer.diagnose" && uiState.diagnosticPending;
-  button.setAttribute("aria-busy", String(diagnosticPending || uiState.busyCommand === command));
-  button.disabled = uiState.busyCommand !== "" || diagnosticPending;
-  if (uiState.busyCommand === command || diagnosticPending) {
+  const peerOperationPending = isPeerOperation(command) && uiState.pendingPeerOperation === command;
+  button.setAttribute("aria-busy", String(peerOperationPending || uiState.busyCommand === command));
+  button.disabled = uiState.busyCommand !== "" || (isPeerOperation(command) && Boolean(uiState.pendingPeerOperation));
+  if (uiState.busyCommand === command || peerOperationPending) {
     button.textContent = commandProgress(
       command,
       currentSnapshot.ui_ontology.commands,
@@ -4394,17 +4394,17 @@ function submitButton(command) {
  * @param {unknown} [payload]
  */
 async function runCommand(command, payload) {
-  if (command === "peer.diagnose") {
-    if (uiState.diagnosticPending) return;
-    uiState.diagnosticPending = true;
+  if (isPeerOperation(command)) {
+    if (uiState.pendingPeerOperation) return;
+    uiState.pendingPeerOperation = command;
     render();
     try {
       // The backend captures the endpoint before releasing its command lock.
       // Refresh current state afterward instead of applying an older response
-      // over a message or selection changed while the diagnostic was running.
+      // over a message or selection changed while the peer operation was running.
       await shell.execute(command, payload ?? firstPeerRequest());
     } finally {
-      uiState.diagnosticPending = false;
+      uiState.pendingPeerOperation = "";
       await publishRefresh();
       render();
     }
@@ -4647,14 +4647,6 @@ async function runCommand(command, payload) {
         }
         return;
       }
-      case "peer.sync":
-        currentSnapshot = await shell.execute(
-          command,
-          /** @type {import("./shell-contract").PeerCommandRequest} */ (
-            payload ?? firstPeerRequest()
-          ),
-        );
-        return;
       case "message.send": {
         const text = payload?.text ?? uiState.messageDraft;
         const clientRequestId = payload?.client_request_id
@@ -5016,7 +5008,8 @@ function commandCompletionFocusTarget(command) {
 
 /** @param {unknown} error */
 function reportError(error) {
-  uiState.busyCommand = "";
+  // The owning command clears its own busy state; background peer errors must
+  // not enable controls belonging to a different in-flight local command.
   rememberNoticeReturn();
   clearValidation();
   const presentation = presentShellError(error);

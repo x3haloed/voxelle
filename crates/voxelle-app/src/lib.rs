@@ -7781,12 +7781,35 @@ impl VoxelleCommandHost {
 
     pub async fn sync_peer(&mut self, request: PeerCommandRequest) -> Result<ShellSnapshotView> {
         let peer = self.find_known_peer(&request.peer_id, &request.device_id)?;
+        let result = self
+            .home
+            .sync_peer(&peer, request.max_events.unwrap_or(64))
+            .await;
+        self.finish_peer_sync(&peer, result)
+    }
+
+    fn finish_peer_sync(
+        &mut self,
+        peer: &PeerRecord,
+        result: Result<PeerSyncReport>,
+    ) -> Result<ShellSnapshotView> {
+        if self
+            .find_known_peer(&peer.endpoint.peer_id, &peer.endpoint.device_id)
+            .ok()
+            .as_ref()
+            != Some(peer)
+        {
+            self.push_activity(
+                ServiceActivityLevel::Info,
+                "discarded sync evidence for replaced peer record",
+            );
+            return self.snapshot();
+        }
         let label = peer
             .label
             .clone()
             .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
-        let max_events = request.max_events.unwrap_or(64);
-        let report = match self.home.sync_peer(&peer, max_events).await {
+        let report = match result {
             Ok(report) => report,
             Err(error) => {
                 self.sync_evidence = SyncEvidenceView {
@@ -7795,7 +7818,7 @@ impl VoxelleCommandHost {
                     peers_attempted: 1,
                     ..SyncEvidenceView::default()
                 };
-                self.record_peer_health_failure(&peer, PeerHealthOperation::Sync);
+                self.record_peer_health_failure(peer, PeerHealthOperation::Sync);
                 self.push_activity(
                     ServiceActivityLevel::Error,
                     format!("sync could not reach {label}: {error:#}"),
@@ -7812,7 +7835,7 @@ impl VoxelleCommandHost {
             events_received: report.governance.accepted + report.room.accepted,
             events_pushed: report.governance.remote_accepted + report.room.remote_accepted,
         };
-        self.clear_peer_health_failure(&peer, PeerHealthOperation::Sync);
+        self.clear_peer_health_failure(peer, PeerHealthOperation::Sync);
         self.push_activity(
             ServiceActivityLevel::Info,
             format!(

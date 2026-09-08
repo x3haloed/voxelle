@@ -402,6 +402,29 @@ address appeared without a fabricated success claim. An initial malformed
 clipboard paste was not imported; a fresh copy/paste produced the complete
 validated record. This is local projection evidence, not remote delivery proof.
 
+## Manual Sync Responsiveness — UX-009
+
+Preserve **One Admission Truth**, **Durable Convergence**, and **Complete User
+Causal Paths**: explicit synchronization uses the existing `home.sync_peer`
+admission path while ordinary local commands remain available during transport.
+The shell captures the home and peer under its host lock, releases that lock
+for transport, then applies health evidence only for the still-current record.
+A home-transition gate serializes sync with home replacement and runtime
+lifecycle operations; it is scheduling protection, not another admission authority.
+The HTTP command gate and frontend foreground-busy state no longer cover this
+network wait. Peer actions show their own pending state and refresh current
+projection on completion.
+
+Real UDP-blackhole tests observe a request before proving local message admission
+and HTTP reads/mutations complete during the pending sync. A queued offline
+transition waits until sync finishes. All 77 application and 15 inhabitant tests
+pass (one manual performance probe ignored), alongside strict Clippy, 146 web
+tests, and a native host build. Boxing the command-dispatch future fixes a stack
+overflow exposed by the public-workflow regression on the normal test stack.
+Native Computer Use confirmed message rendering and timeout handling, but its
+observation returned after timeout; precise native concurrency remains unobserved.
+Join and recovery still await their own network work under command serialization.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

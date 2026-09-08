@@ -602,9 +602,10 @@ async fn command(
     } else {
         None
     };
-    // Diagnostics capture their identity and endpoint under the shell lock, then
-    // perform read-only transport work. Do not serialize local commands behind it.
-    let command_guard = if command_id == "peer.diagnose" {
+    // Peer operations perform transport outside the shell lock. The shell
+    // separately guards sync against home transitions; local reads/mutations
+    // must not wait behind this HTTP gate during peer I/O.
+    let command_guard = if matches!(command_id.as_str(), "peer.diagnose" | "peer.sync") {
         drop(command_guard);
         None
     } else {
@@ -1740,97 +1741,116 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stalled_diagnostic_does_not_block_local_http_commands_or_reads() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let home = dir.path().join("home");
-        let shell = Arc::new(ShellState::new(&home));
-        let initialized = shell
-            .execute_serialized_command("home.init", serde_json::json!({}))
-            .await
-            .expect("initialize");
-        let mut peer = initialized.home.unwrap().invite.unwrap().peer_record;
-        shell
-            .execute_serialized_command("runtime.goOffline", Value::Null)
-            .await
-            .unwrap();
-        let blackhole = tokio::net::UdpSocket::bind("[::1]:0").await.unwrap();
-        peer.endpoint.addr = blackhole.local_addr().unwrap();
-        shell
-            .execute_serialized_command(
-                "peer.import",
-                serde_json::json!({
-                    "peer_record_json": serde_json::to_string(&peer).unwrap()
-                }),
-            )
-            .await
-            .unwrap();
-        let (snapshot_changes, _) = snapshot_change_channel();
-        let state = Arc::new(AppState {
-            shell: shell.clone(),
-            discovery: DiscoveryView::new(home.clone(), "http://127.0.0.1:1".to_string(), "test"),
-            bearer_token: Arc::from("test"),
-            request_slots: Arc::new(Semaphore::new(8)),
-            command_gate: Arc::new(Mutex::new(())),
-            event_slots: Arc::new(Semaphore::new(8)),
-            snapshot_changes,
-            origin_registry_path: home.join(ORIGIN_REGISTRY_FILE),
-        });
-        let diagnostic_state = state.clone();
-        let diagnostic = tokio::spawn(async move {
-            command(
-                State(diagnostic_state),
-                Path("peer.diagnose".to_string()),
-                HeaderMap::new(),
-                Json(serde_json::json!({
-                    "peer_id": peer.endpoint.peer_id, "device_id": peer.endpoint.device_id
-                })),
-            )
-            .await
-            .into_response()
-        });
-        let mut packet = [0u8; 2048];
-        time::timeout(Duration::from_secs(1), blackhole.recv_from(&mut packet))
-            .await
-            .expect("diagnostic must actually reach the UDP endpoint")
-            .unwrap();
-        for command_id in ["shell.refresh", "ui.preferences.reset"] {
-            let response = time::timeout(
-                Duration::from_secs(1),
-                command(
-                    State(state.clone()),
-                    Path(command_id.to_string()),
-                    HeaderMap::new(),
-                    Json(Value::Null),
+    async fn stalled_peer_operations_do_not_block_local_http_commands_or_reads() {
+        for operation in ["peer.diagnose", "peer.sync"] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let home = dir.path().join("home");
+            let shell = Arc::new(ShellState::new(&home));
+            let initialized = shell
+                .execute_serialized_command("home.init", serde_json::json!({}))
+                .await
+                .expect("initialize");
+            let mut peer = initialized.home.unwrap().invite.unwrap().peer_record;
+            shell
+                .execute_serialized_command("runtime.goOffline", Value::Null)
+                .await
+                .unwrap();
+            let blackhole = tokio::net::UdpSocket::bind("[::1]:0").await.unwrap();
+            peer.endpoint.addr = blackhole.local_addr().unwrap();
+            shell
+                .execute_serialized_command(
+                    "peer.import",
+                    serde_json::json!({
+                        "peer_record_json": serde_json::to_string(&peer).unwrap()
+                    }),
+                )
+                .await
+                .unwrap();
+            let (snapshot_changes, _) = snapshot_change_channel();
+            let state = Arc::new(AppState {
+                shell: shell.clone(),
+                discovery: DiscoveryView::new(
+                    home.clone(),
+                    "http://127.0.0.1:1".to_string(),
+                    "test",
                 ),
-            )
-            .await
-            .expect("local command must not await diagnostic")
-            .into_response();
-            assert_eq!(response.status(), StatusCode::OK);
-        }
-        for response in [
-            time::timeout(Duration::from_secs(1), snapshot(State(state.clone())))
+                bearer_token: Arc::from("test"),
+                request_slots: Arc::new(Semaphore::new(8)),
+                command_gate: Arc::new(Mutex::new(())),
+                event_slots: Arc::new(Semaphore::new(8)),
+                snapshot_changes,
+                origin_registry_path: home.join(ORIGIN_REGISTRY_FILE),
+            });
+            let diagnostic_state = state.clone();
+            let diagnostic = tokio::spawn(async move {
+                command(
+                    State(diagnostic_state),
+                    Path(operation.to_string()),
+                    HeaderMap::new(),
+                    Json(serde_json::json!({
+                        "peer_id": peer.endpoint.peer_id, "device_id": peer.endpoint.device_id
+                    })),
+                )
                 .await
-                .unwrap()
-                .into_response(),
-            time::timeout(Duration::from_secs(1), coordination_snapshot(State(state)))
+                .into_response()
+            });
+            let mut packet = [0u8; 2048];
+            time::timeout(Duration::from_secs(1), blackhole.recv_from(&mut packet))
                 .await
-                .unwrap()
-                .into_response(),
-        ] {
-            assert_eq!(response.status(), StatusCode::OK);
+                .expect("diagnostic must actually reach the UDP endpoint")
+                .unwrap();
+            for command_id in ["shell.refresh", "ui.preferences.reset"] {
+                let response = time::timeout(
+                    Duration::from_secs(1),
+                    command(
+                        State(state.clone()),
+                        Path(command_id.to_string()),
+                        HeaderMap::new(),
+                        Json(Value::Null),
+                    ),
+                )
+                .await
+                .expect("local command must not await diagnostic")
+                .into_response();
+                assert_eq!(response.status(), StatusCode::OK);
+            }
+            for response in [
+                time::timeout(Duration::from_secs(1), snapshot(State(state.clone())))
+                    .await
+                    .unwrap()
+                    .into_response(),
+                time::timeout(Duration::from_secs(1), coordination_snapshot(State(state)))
+                    .await
+                    .unwrap()
+                    .into_response(),
+            ] {
+                assert_eq!(response.status(), StatusCode::OK);
+            }
+            assert!(
+                !diagnostic.is_finished(),
+                "checks must finish while QUIC is still pending"
+            );
+            let response = diagnostic.await.unwrap();
+            assert_eq!(
+                response.status(),
+                if operation == "peer.sync" {
+                    StatusCode::BAD_REQUEST
+                } else {
+                    StatusCode::OK
+                }
+            );
+            let snapshot = shell.observational_snapshot().await.unwrap();
+            assert!(snapshot
+                .service_activity
+                .iter()
+                .any(
+                    |item| item.summary.starts_with(if operation == "peer.sync" {
+                        "sync could not reach"
+                    } else {
+                        "diagnostic failed"
+                    })
+                ));
         }
-        assert!(
-            !diagnostic.is_finished(),
-            "checks must finish while QUIC is still pending"
-        );
-        let response = diagnostic.await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let snapshot = shell.observational_snapshot().await.unwrap();
-        assert!(snapshot
-            .service_activity
-            .iter()
-            .any(|item| item.summary.starts_with("diagnostic failed")));
     }
 
     #[tokio::test]

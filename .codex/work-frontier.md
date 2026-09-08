@@ -65,8 +65,9 @@ platform, accessibility, agent, and release evidence.
 
 - Native use exposed multi-second send/refresh stalls and Linux HTTP 429 under
   stale peer endpoints. Ordinary snapshot GET initiated sync under
-  the shared command gate. Explicit peer sync, join, and recovery still
-  await network completion under shared command serialization.
+  the shared command gate. Explicit peer sync now releases ordinary command serialization while a
+  home-transition gate protects its store/identity lifetime (UX-009). Join and
+  recovery still await network completion under shared command serialization.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
 - Thimble measured ~3-second local reads before stale peer import on Linux
