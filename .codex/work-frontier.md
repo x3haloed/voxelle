@@ -114,6 +114,12 @@ platform, accessibility, agent, and release evidence.
   reuse needs a freshness guarantee for background admission, not an assumption
   that the first lookup remains current. Larger token-bearing histories remain
   an evaluation gap.
+  UX-022 fixes mixed governance/room reads during background admission: one short
+  SQLite read transaction now captures both retained inputs before decryption.
+  A two-connection interleaving test fails without the boundary and passes with
+  it; subsequent reads see newly committed facts and error paths release it.
+  This is not yet a freshness mechanism for reuse across send/admission stages,
+  and does not make every snapshot/key-import read atomic.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
 - Thimble measured ~3-second local reads before stale peer import on Linux

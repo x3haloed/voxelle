@@ -3899,13 +3899,17 @@ impl VoxelleHome {
         let keys = self.import_private_room_keys()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
-        let governance = store.room_events(&config.space.governance_room_id)?;
+        let (governance, mut raw_events) = store.read_snapshot(|snapshot| {
+            Ok((
+                snapshot.room_events(&config.space.governance_room_id)?,
+                snapshot.room_events_with_sequence(room_id)?,
+            ))
+        })?;
         let state = derive_governance_state(&governance, &config.room_context(), now_ms());
         let private = state
             .channels
             .get(room_id)
             .is_some_and(|channel| channel.visibility == ChannelVisibility::Private);
-        let mut raw_events = store.room_events_with_sequence(room_id)?;
         raw_events.sort_by(|left, right| {
             left.event
                 .created_ms

@@ -712,6 +712,32 @@ pending. Reusing semantic history across command stages still requires a freshne
 guarantee because background sync can admit facts during a command; this change
 does not introduce such reuse or claim that problem solved.
 
+## Consistent Governance/Room Reads — UX-022
+
+Preserve **One Admission Truth**, **Governance Meaning**, **Durable Convergence**,
+and **Private-room Confidentiality And Validation** (RFC §§7.5–7.6 and §11).
+Private reconstruction previously loaded governance and room facts through
+separate SQLite snapshots. A background admission between those reads could
+pair older governance with newer room facts. Both retained inputs now come from
+one short read transaction using the existing store queries. The transaction ends
+before governance derivation and private decryption/semantic validation; ordinary
+WAL writers may continue committing during the read. No authority, admission,
+key capability, retained schema, wire format, or cache is added or revised.
+
+A deterministic two-connection test commits real accepted membership and message
+facts between the governance query and room query. Without the read transaction,
+the test fails because only the newer room fact enters the result. With it, both
+queries see the earlier state, and a subsequent read sees both committed facts.
+An error-path check verifies that a failed projection releases the transaction.
+This establishes consistent retained inputs, not an atomic entire UI snapshot or
+permission to reuse history indefinitely across send/admission stages. Key-import
+reads and other projections remain outside this transaction.
+
+All 177 workspace tests, strict Clippy, and the native build pass. The 100-message
+private token-bearing probe verifies retained text and idempotent command retries
+across reopening; local snapshot/send timings remain about 85/152 ms. Native
+lived and independent Linux verification remain pending.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

@@ -237,6 +237,18 @@ impl Store {
             .transpose()
     }
 
+    /// Compose related reads against one SQLite snapshot. The closure must
+    /// only read this store; independent WAL writers may continue committing.
+    pub fn read_snapshot<T>(&self, read: impl FnOnce(&Self) -> Result<T>) -> Result<T> {
+        let transaction = self
+            .conn
+            .unchecked_transaction()
+            .context("begin store read snapshot")?;
+        let result = read(self)?;
+        transaction.commit().context("finish store read snapshot")?;
+        Ok(result)
+    }
+
     pub fn room_events(&self, room_id: &str) -> Result<Vec<EventV1>> {
         let mut stmt = self
             .conn
@@ -794,6 +806,55 @@ mod tests {
             json!({ "text": "hello" }),
         )
         .expect("message")
+    }
+
+    #[test]
+    fn related_reads_exclude_facts_committed_between_them() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("snapshot.sqlite");
+        let reader = Store::open(&path).unwrap();
+        let writer = Store::open(&path).unwrap();
+        let member = PeerIdentity::generate().unwrap();
+        let context = RoomContext::new(member.peer_id.clone());
+        let join = member_join(&member);
+        let post = message(&member, 1_100, vec![]);
+        let (governance, room) = reader
+            .read_snapshot(|snapshot| {
+                let governance = snapshot.room_events(GOVERNANCE_ROOM_ID)?;
+                // A separate WAL connection admits real authenticated facts after
+                // governance was read but before the room history query.
+                writer.insert_accepted_event(
+                    accept_event(&join, &[], &context, 1_000).unwrap(),
+                    1_000,
+                )?;
+                writer.insert_accepted_event(
+                    accept_event(&post, std::slice::from_ref(&join), &context, 1_100).unwrap(),
+                    1_100,
+                )?;
+                Ok((
+                    governance,
+                    snapshot.room_events_with_sequence("room:general")?,
+                ))
+            })
+            .unwrap();
+        assert!(governance.is_empty());
+        assert!(
+            room.is_empty(),
+            "room facts must not be newer than the governance snapshot"
+        );
+        assert_eq!(reader.room_events(GOVERNANCE_ROOM_ID).unwrap(), vec![join]);
+        assert_eq!(reader.room_events("room:general").unwrap(), vec![post]);
+        let failed: Result<()> = reader.read_snapshot(|snapshot| {
+            snapshot.room_events(GOVERNANCE_ROOM_ID)?;
+            anyhow::bail!("projection failed")
+        });
+        assert!(failed.is_err());
+        assert_eq!(
+            reader
+                .read_snapshot(|snapshot| snapshot.local_fact_high_water())
+                .unwrap(),
+            2
+        );
     }
 
     #[test]
