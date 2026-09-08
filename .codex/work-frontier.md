@@ -1,6 +1,22 @@
 # Work Frontier
 
-## Current checkpoint: UX-026 keyboard return focus
+## Current checkpoint: UX-027 abrupt-process retry recovery
+
+- A real daemon subprocess accepts a resident message over HTTP while its sender
+  leaves the response unread. A separate read confirms admission before forced
+  termination. Restart preserves the fact and authenticated caller origin; two
+  retries and another forced restart retain the same event exactly once.
+- All 17 inhabitant daemon tests and strict Clippy pass; logs are in
+  target/local/ux-027-{crash,daemon,clippy}.log.
+- This adds process-death evidence to the graceful/in-process reopen coverage.
+  It is local macOS/test-file-vault evidence, not power loss, local disk loss,
+  private-room recovery, Keychain, remote delivery, or Linux verification.
+- Native access remains locked. There are still zero valid local signing
+  identities (`security find-identity -p codesigning -v`); no protected home or
+  signing policy was changed. UX-026 final native check and Thimble notification
+  remain pending. Avoid speculative fixes for Thimble's unobserved HTTP 500.
+
+## Pending native checkpoint: UX-026 keyboard return focus
 
 - Native Connection & sync closed on Escape but left focus on the HTML document.
   Rendering replaced the saved invoking element. The first repaired native build

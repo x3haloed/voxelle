@@ -781,6 +781,24 @@ key-epoch messages with the composer targeting that room. Protected communicatin
 apps and production Keychain authorization remain unchanged; Linux verification
 is pending.
 
+## Abrupt-process Retry Recovery — UX-027
+
+The defended durability and idempotent-retry claims now have a real daemon
+process-death test in addition to in-process reopen evidence. A disposable
+home receives an authenticated resident message through loopback HTTP. The
+sender does not consume its response; a separate snapshot establishes local
+admission. The test forcibly terminates the daemon without graceful shutdown,
+starts a new process on the same home, and observes the identical event and
+certified origin. Reopening the same caller session preserves its origin ID;
+two identical retries preserve the event ID and exactly one projected message.
+A second forced termination and restart retain that result. The process bearer
+rotates independently of the persistent caller origin.
+
+This test uses the debug-only test-file vault and was exercised on macOS. It
+changes no production authority or behavior. It does not establish power-loss
+or disk-loss recovery, production Keychain authorization, private-room recovery,
+remote propagation, or Linux/Windows execution. Those remain separate gates.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI
