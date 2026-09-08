@@ -89,6 +89,14 @@ platform, accessibility, agent, and release evidence.
   Next work should measure these separately and consolidate per-room projection
   inputs without retaining all decrypted histories across operations or weakening
   creation-time validation. The smaller fixture alone does not prove scaling.
+  UX-019 reuses the selected room's validated history from unread counting for
+  timeline/call, notifications, and coordination within the current snapshot.
+  Other rooms remain individually reconstructed; no decrypted cache survives a
+  refresh. Independent projection comparisons cover private/default/missing-room
+  selections; 176 workspace tests, strict Clippy, and native build pass. The
+  1000-message private probe improves snapshot622ms ->208ms and verifies all
+  retained text after reopening. Sends remain median116ms/p95 214ms; private-send
+  reconstruction and many-room scaling remain separate outstanding work.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
 - Thimble measured ~3-second local reads before stale peer import on Linux

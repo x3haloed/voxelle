@@ -2124,17 +2124,22 @@ impl VoxelleHome {
         let runtime = online
             .map(RuntimeStatusView::online)
             .unwrap_or_else(RuntimeStatusView::offline);
-        let channels = self.channels(selected_room)?;
+        let (channels, selected_history) = self.channels_with_selected_history(selected_room)?;
         let selected_room = channels
             .iter()
             .find(|channel| channel.selected)
             .map(|channel| channel.room_id.clone())
             .unwrap_or_else(|| config.space.default_room_id.clone());
-        let selected_events = self.decrypted_room_events(&selected_room)?;
+        let selected_events = match selected_history {
+            Some(events) => events,
+            None => self.decrypted_room_events(&selected_room)?,
+        };
+        let selected_history = Some((selected_room.as_str(), selected_events.as_slice()));
         let call = project_call(&selected_room, &selected_events, projection_ms);
+        let notifications = self.notifications_for_channels(&channels, selected_history)?;
+        let coordination_frontier =
+            self.coordination_frontier_with_history(&channels, projection_ms, selected_history)?;
         let mut projected_messages = project_messages(selected_events, projection_ms);
-        let notifications = self.notifications_for_channels(&channels)?;
-        let coordination_frontier = self.coordination_frontier(&channels, projection_ms)?;
         if let Some(event_id) = selected_message_event_id {
             if let Some(index) = projected_messages
                 .iter()
@@ -2945,6 +2950,13 @@ impl VoxelleHome {
     }
 
     pub fn channels(&self, selected_room: Option<&str>) -> Result<Vec<ChannelView>> {
+        Ok(self.channels_with_selected_history(selected_room)?.0)
+    }
+
+    fn channels_with_selected_history(
+        &self,
+        selected_room: Option<&str>,
+    ) -> Result<(Vec<ChannelView>, Option<Vec<EventV1>>)> {
         let identity = self.load_identity()?;
         let config = self.load_config()?;
         let store = self.open_store()?;
@@ -2952,16 +2964,21 @@ impl VoxelleHome {
         let state = derive_governance_state(&governance, &config.room_context(), now_ms());
         let read_state = self.read_state()?;
         let mut unread_counts = BTreeMap::new();
+        let mut selected_history = None;
         for channel in state.channels.values() {
             if voxelle_core::channel_allows_peer(channel, &identity.peer_id) {
+                let mut events = self.decrypted_room_events(&channel.room_id)?;
                 unread_counts.insert(
                     channel.room_id.clone(),
                     unread_count(
-                        self.decrypted_room_events(&channel.room_id)?,
+                        &mut events,
                         read_state.last_read_event_ids.get(&channel.room_id),
                         &identity.peer_id,
                     ),
                 );
+                if selected_room.unwrap_or(&config.space.default_room_id) == channel.room_id {
+                    selected_history = Some(events);
+                }
             }
         }
         let mut channels: Vec<ChannelView> = state
@@ -2992,7 +3009,7 @@ impl VoxelleHome {
                 .cmp(&right.name)
                 .then(left.room_id.cmp(&right.room_id))
         });
-        Ok(channels)
+        Ok((channels, selected_history))
     }
 
     pub fn open_resident_observation(
@@ -3185,18 +3202,19 @@ impl VoxelleHome {
     }
 
     pub fn notifications(&self) -> Result<Vec<NotificationView>> {
-        self.notifications_for_channels(&self.channels(None)?)
+        self.notifications_for_channels(&self.channels(None)?, None)
     }
 
     fn notifications_for_channels(
         &self,
         channels: &[ChannelView],
+        selected_history: Option<(&str, &[EventV1])>,
     ) -> Result<Vec<NotificationView>> {
         let identity = self.load_identity()?;
         let read_state = self.read_state()?;
         let mut notifications = Vec::new();
         for channel in channels {
-            let mut events = self.decrypted_room_events(&channel.room_id)?;
+            let mut events = self.room_events_for_projection(&channel.room_id, selected_history)?;
             events.sort_by(|left, right| {
                 left.created_ms
                     .cmp(&right.created_ms)
@@ -3240,10 +3258,31 @@ impl VoxelleHome {
         Ok(notifications)
     }
 
+    #[cfg(test)]
     fn coordination_frontier(
         &self,
         channels: &[ChannelView],
         projection_ms: i64,
+    ) -> Result<CoordinationFrontierView> {
+        self.coordination_frontier_with_history(channels, projection_ms, None)
+    }
+
+    fn room_events_for_projection(
+        &self,
+        room_id: &str,
+        selected_history: Option<(&str, &[EventV1])>,
+    ) -> Result<Vec<EventV1>> {
+        match selected_history {
+            Some((selected, events)) if selected == room_id => Ok(events.to_vec()),
+            _ => self.decrypted_room_events(room_id),
+        }
+    }
+
+    fn coordination_frontier_with_history(
+        &self,
+        channels: &[ChannelView],
+        projection_ms: i64,
+        selected_history: Option<(&str, &[EventV1])>,
     ) -> Result<CoordinationFrontierView> {
         let local_peer_id = self.load_identity()?.peer_id;
         let read_state = self.read_state()?;
@@ -3251,7 +3290,7 @@ impl VoxelleHome {
         let mut next_projection_change_ms: Option<i64> = None;
 
         for channel in channels {
-            let mut events = self.decrypted_room_events(&channel.room_id)?;
+            let mut events = self.room_events_for_projection(&channel.room_id, selected_history)?;
             events.sort_by(|left, right| {
                 left.created_ms
                     .cmp(&right.created_ms)
@@ -5331,7 +5370,7 @@ fn finalize_coordination_frontier(
 }
 
 fn unread_count(
-    mut events: Vec<EventV1>,
+    events: &mut [EventV1],
     last_read_event_id: Option<&String>,
     local_peer_id: &str,
 ) -> usize {
@@ -5340,9 +5379,9 @@ fn unread_count(
             .cmp(&right.created_ms)
             .then(left.event_id.cmp(&right.event_id))
     });
-    let start = unread_start(&events, last_read_event_id);
+    let start = unread_start(events, last_read_event_id);
     events
-        .into_iter()
+        .iter()
         .skip(start)
         .filter(|event| {
             event.author_peer_id != local_peer_id
@@ -13570,6 +13609,40 @@ mod tests {
         assert!(frontier.items[0].target_summary.ends_with('…'));
         assert!(frontier.items[0].target_summary_truncated);
         assert_eq!(frontier.items[0].target_summary_original_chars, 188);
+
+        // Reusing selected history must preserve independent projections and
+        // must not leak one room's facts into another selection or fallback.
+        for selected in [Some(room_id.as_str()), None, Some("room:missing")] {
+            let at = now_ms();
+            let view = host
+                .home
+                .home_screen_view_for_room_message_at(None, selected, None, at)
+                .unwrap();
+            let channels = host.home.channels(selected).unwrap();
+            assert_eq!(
+                serde_json::to_value(&view.channels).unwrap(),
+                serde_json::to_value(&channels).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&view.notifications).unwrap(),
+                serde_json::to_value(
+                    host.home
+                        .notifications_for_channels(&channels, None)
+                        .unwrap()
+                )
+                .unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(&view.coordination_frontier).unwrap(),
+                serde_json::to_value(host.home.coordination_frontier(&channels, at).unwrap())
+                    .unwrap()
+            );
+            let events = host.home.decrypted_room_events(&view.room.room_id).unwrap();
+            assert_eq!(
+                serde_json::to_value(&view.room.messages).unwrap(),
+                serde_json::to_value(project_messages(events, at)).unwrap()
+            );
+        }
 
         let result_event_id = host
             .send_message(SendMessageRequest {

@@ -640,6 +640,39 @@ consolidation must preserve creation-time validation and bound decrypted-memory
 lifetime. These are one-member local measurements, not native lived, multi-member,
 Linux, network delivery, or crash-recovery performance evidence.
 
+## Selected-room Snapshot Inputs — UX-019
+
+Preserve **Central Truth**, **One Admission Truth**, **Private-room Confidentiality
+And Validation**, and **Topology Preservation**: devices propose authenticated
+facts, ordinary peers retain accepted meaning, and snapshots only project it.
+RFC §§7.5–7.6 and §11 continue to govern admission and private semantics. No
+meaning, envelope, key capability, wire format, or admission authority changes.
+
+Previously unread counts, selected timeline/call, notifications, and coordination
+each reconstructed the selected room independently during a home snapshot. The
+selected room's already validated history from unread counting now survives only
+until that snapshot's remaining projections finish. This removes three repeated
+selected-room reconstructions. Other room histories remain individually loaded;
+there is no all-room decrypted cache or cache surviving an operation. Temporary
+owned projection inputs may copy the selected facts, but authentication and
+semantic reconstruction have one existing authority. Standalone reads use the
+same projection helpers without supplied history. Persisted/transmitted artifacts
+are unchanged.
+
+The private coordination workflow compares reused projections with independent
+reads at the same projection time for private selection, default selection, and
+an unknown-room fallback. Channels, notifications, coordination, and messages
+must match. The existing continuation deadline, private recovery/confidentiality,
+public sync, and identity tests remain preservation gates. All 176 workspace
+tests, strict Clippy, and the native build pass.
+
+The same 1000-message private probe verifies all 1000 retained texts after
+reopening. Three-sample snapshots average 208 ms versus UX-018's 622 ms (about
+3x faster); home projection averages 194 ms versus 603 ms. Median/p95 send
+latency remains 116/214 ms and fixture creation remains 119 seconds, consistent
+with the unchanged send path. Builds finished before measurement. Many-room,
+multi-member, native lived, and independent Linux checks remain pending.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI
