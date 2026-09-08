@@ -610,6 +610,7 @@ function connectionCenter(snapshot) {
   heading.append(copy, close);
   const body = element("div", "connection-center-body");
   body.append(
+    connectionRecordSharing(snapshot),
     serviceOptions(),
     peerTargetView(snapshot, true),
     peerImportDisclosure(snapshot),
@@ -2045,6 +2046,25 @@ function cancelProductConfirmation() {
   window.requestAnimationFrame(() => {
     app.querySelector(`[data-command="${command}"]`)?.focus();
   });
+}
+
+function connectionRecordSharing(snapshot) {
+  const section = element("section", "peer-record-sharing");
+  const copy = commandButton("peer.record.copy");
+  copy.disabled ||= !snapshot.home?.invite?.peer_record_json;
+  section.append(
+    element("h3", "", "Help an existing member connect"),
+    element("p", "summary", "Share your connection record when another member cannot reach this device. It includes your public address and certificate, never private keys. It does not grant membership."),
+    copy,
+  );
+  if (!snapshot.home?.invite?.peer_record_json) {
+    section.append(element("p", "muted", "Bring this device online to share its current connection record."));
+  } else {
+    const details = element("details", "advanced-details");
+    details.append(disclosureSummary("Connection record details"), element("pre", "invite-json", snapshot.home.invite.peer_record_json));
+    section.append(details);
+  }
+  return section;
 }
 
 function serviceOptions() {
@@ -4845,6 +4865,17 @@ async function runCommand(command, payload) {
         currentSnapshot = await shell.execute(command, payload);
         uiState.banningPeerId = "";
         focusProfileRow(payload.peer_id);
+        return;
+      }
+      case "peer.record.copy": {
+        if (shell.mode === "preview") {
+          throw new Error("Preview only; launch the desktop app to copy a usable connection record.");
+        }
+        // Copy the current backend projection within the browser's user gesture.
+        const record = currentSnapshot.home?.invite?.peer_record_json;
+        if (!record) throw new Error("Bring this device online before copying its connection record.");
+        await copyTextToClipboard(navigator.clipboard, record, "connection record", "Connection record details");
+        uiState.status = "Connection record copied. Send it to an existing member; it does not grant membership.";
         return;
       }
       case "invite.copy":

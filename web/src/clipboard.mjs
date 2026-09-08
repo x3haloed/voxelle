@@ -1,9 +1,9 @@
-export async function copyTextToClipboard(clipboard, text) {
+export async function copyTextToClipboard(clipboard, text, subject = "signed invite", detailsLabel = "Signed invite details") {
   if (!clipboard || typeof clipboard.writeText !== "function") {
     throw {
       message: "Voxelle cannot access the clipboard in this installation.",
       recovery: "needs_human",
-      recovery_message: "Open Signed invite details, select the complete JSON, and copy it manually.",
+      recovery_message: `Open ${detailsLabel}, select the complete JSON, and copy it manually.`,
       detail: "Clipboard API writeText is unavailable.",
     };
   }
@@ -11,9 +11,9 @@ export async function copyTextToClipboard(clipboard, text) {
     await clipboard.writeText(text);
   } catch (error) {
     throw {
-      message: "Voxelle could not copy the signed invite.",
+      message: `Voxelle could not copy the ${subject}.`,
       recovery: "needs_human",
-      recovery_message: "Allow clipboard access if your system asks, or copy the complete JSON from Signed invite details.",
+      recovery_message: `Allow clipboard access if your system asks, or copy the complete JSON from ${detailsLabel}.`,
       detail: `Clipboard write failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }

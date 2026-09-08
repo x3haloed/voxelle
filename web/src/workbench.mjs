@@ -65,6 +65,7 @@ const HOME_COMMANDS = new Set([
   "runtime.goOffline",
   "space.invite.create",
   "invite.copy",
+  "peer.record.copy",
   "identity.recovery.export",
   "identity.device.approve",
   "identity.device.revoke",
@@ -119,6 +120,9 @@ export function paletteCommandAvailability(commandId, context) {
       available: false,
       reason: "The peer service is already online; use Connection & sync to reconfigure it",
     };
+  }
+  if (commandId === "peer.record.copy" && !context.runtimeOnline) {
+    return { available: false, reason: "Bring this device online first" };
   }
   if (commandId === "invite.copy" && !context.hasInvite) {
     return { available: false, reason: "Create a signed invite first" };

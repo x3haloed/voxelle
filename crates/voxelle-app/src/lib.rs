@@ -9449,6 +9449,13 @@ fn default_commands() -> Vec<UiCommand> {
             None,
             true,
         ),
+        frontend_command(
+            "peer.record.copy",
+            "Copy My Connection Record",
+            "Copy this device's complete public address and certificate for an existing space member",
+            None,
+            true,
+        ),
         shell_command(
             "peer.import",
             "Import Peer",

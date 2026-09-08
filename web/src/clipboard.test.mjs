@@ -41,3 +41,11 @@ test("friend handoff includes install, join, privacy, and signed invite context"
   assert.match(handoff, /Keep this invite private/);
   assert.match(handoff, /\{"signed":"invite"\}$/);
 });
+
+test("connection-record clipboard failure points to its own manual recovery", async () => {
+  await assert.rejects(
+    copyTextToClipboard({ async writeText() { throw new Error("denied"); } }, "record", "connection record", "Connection record details"),
+    (error) => error.message === "Voxelle could not copy the connection record."
+      && error.recovery_message.includes("Connection record details"),
+  );
+});

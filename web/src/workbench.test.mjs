@@ -101,6 +101,8 @@ test("palette availability explains causal prerequisites without changing comman
   assert.equal(paletteCommandAvailability("space.join", active).available, false);
   assert.equal(paletteCommandAvailability("identity.recovery.restore", active).available, false);
   assert.equal(paletteCommandAvailability("invite.copy", active).reason, "Create a signed invite first");
+  assert.equal(paletteCommandAvailability("peer.record.copy", active).available, true);
+  assert.equal(paletteCommandAvailability("peer.record.copy", { ...active, runtimeOnline: false }).reason, "Bring this device online first");
   assert.equal(
     paletteCommandAvailability("peer.diagnose", { ...active, hasKnownPeer: false }).reason,
     "Join with an invite or import peer availability first",

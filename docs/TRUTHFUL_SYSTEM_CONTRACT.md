@@ -359,6 +359,28 @@ showed that exact message and two members without manual sync or record exchange
 This is same-machine native restart/recovery evidence, not non-loopback Linux
 reachability evidence.
 
+## Public Connection Record Sharing — UX-007
+
+Preserve **UI Ontology And Authority Boundary** and **Trust And Authority**:
+`peer.record.copy` is a frontend clipboard command in the shared ontology and
+palette. It copies the complete public record already supplied by the Rust
+snapshot (including the QUIC certificate), not a reconstructed frontend record
+or a membership invite. Connection & sync exposes the action and expandable
+manual-copy details; offline/preview states cannot claim to copy a usable record.
+The copy stays inside the browser user gesture: awaiting a refresh first caused
+an actual WebKit clipboard rejection in native testing. Normal snapshot updates
+supply the observed address, and the recipient still validates through the same
+peer import authority. Private keys never enter this record.
+
+Computer Use copied from one disposable native profile, pasted into another
+member's peer-import form, and successfully imported the complete certificate
+and address. Palette availability permits copying without creating an invite
+and requires an online home. Clipboard errors identify connection-record details
+instead of incorrectly directing the user to signed-invite details. The generated
+contract/ontology check, all 146 web tests, native build, and strict application
+Clippy pass. The test uses disposable debug vaults and same-machine peers; it is
+not proof of remote reachability or automatic endpoint discovery.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI
