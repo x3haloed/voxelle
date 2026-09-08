@@ -12960,15 +12960,22 @@ mod tests {
             None
         };
         eprintln!("private_room={}", room.is_some());
+        let request_ids = std::env::var("VOXELLE_PROFILE_REQUEST_IDS").as_deref() == Ok("1");
+        eprintln!("history_request_ids={request_ids}");
         let setup_started = std::time::Instant::now();
         let mut send_us = Vec::with_capacity(messages);
         for index in 0..messages {
             let started = std::time::Instant::now();
             host.home
-                .send_message(
-                    &format!("retained history message {index}"),
-                    room.as_deref(),
-                )
+                .send_message_with_metadata(SendMessageRequest {
+                    text: format!("retained history message {index}"),
+                    room: room.clone(),
+                    mentions: Vec::new(),
+                    addressed_origin_session_ids: Vec::new(),
+                    thread_root_event_id: None,
+                    in_reply_to_event_id: None,
+                    client_request_id: request_ids.then(|| format!("profile-history-{index:08}")),
+                })
                 .unwrap();
             send_us.push(started.elapsed().as_micros());
         }

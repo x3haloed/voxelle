@@ -107,6 +107,13 @@ platform, accessibility, agent, and release evidence.
   command takes586ms; retries354–356ms return the same event and exactly one new
   retained message. These timings supersede low-level send times for claims
   about local command responsiveness.
+  UX-021 removes duplicate-token comparison allocations and adds optional
+  token-bearing fixture history (VOXELLE_PROFILE_REQUEST_IDS=1). Private100
+  command148/151ms and snapshot86/84ms before/after do not establish a speedup;
+  retained-text/retry checks and 176 workspace tests pass. Full-command history
+  reuse needs a freshness guarantee for background admission, not an assumption
+  that the first lookup remains current. Larger token-bearing histories remain
+  an evaluation gap.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
 - Thimble measured ~3-second local reads before stale peer import on Linux

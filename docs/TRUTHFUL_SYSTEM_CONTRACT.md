@@ -693,6 +693,25 @@ identity, payload conflict detection, creation-time semantics, and durable
 admission when reducing that work. Native and independent Linux checks remain
 pending.
 
+## Retry-token Validation Allocation — UX-021
+
+Duplicate message/continuation token checks now compare borrowed JSON strings
+instead of allocating owned strings for both sides of every candidate comparison.
+Room, principal, device, event kind, and token equality predicates are unchanged;
+no history validation or admission decision is skipped. The profiler accepts
+`VOXELLE_PROFILE_REQUEST_IDS=1` so retained fixture messages carry retry tokens,
+as GUI messages do, instead of measuring only a tokenless history.
+
+The 100-message private token-bearing probe verifies all retained text and three
+same-token command retries producing exactly one new event after reopen. Before
+and after local command timings (148/151 ms) and snapshots (86/84 ms) do not
+establish a latency improvement. This is an allocation cleanup with a more
+representative fixture. All 176 workspace tests, strict Clippy, and the native
+build pass. Larger token-bearing, native, and independent Linux evidence remains
+pending. Reusing semantic history across command stages still requires a freshness
+guarantee because background sync can admit facts during a command; this change
+does not introduce such reuse or claim that problem solved.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

@@ -2137,8 +2137,11 @@ fn validate_room_event_body(
                         && candidate.author_peer_id == event.author_peer_id
                         && candidate.delegation.device_id == event.delegation.device_id
                         && candidate.kind == "MSG_POST"
-                        && string_body_field(candidate, "client_request_id")
-                            == Some(client_request_id.clone())
+                        && candidate
+                            .body
+                            .get("client_request_id")
+                            .and_then(serde_json::Value::as_str)
+                            == Some(client_request_id.as_str())
                 }) {
                     return Err(AcceptError::Invalid(
                         "MSG_POST client_request_id was already admitted".to_string(),
@@ -2316,8 +2319,11 @@ fn validate_room_event_body(
                     && candidate.author_peer_id == event.author_peer_id
                     && candidate.delegation.device_id == event.delegation.device_id
                     && candidate.kind == "MSG_CONTINUATION"
-                    && string_body_field(candidate, "client_request_id")
-                        == Some(client_request_id.clone())
+                    && candidate
+                        .body
+                        .get("client_request_id")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(client_request_id.as_str())
             }) {
                 return Err(AcceptError::Invalid(
                     "MSG_CONTINUATION client_request_id was already admitted".to_string(),
