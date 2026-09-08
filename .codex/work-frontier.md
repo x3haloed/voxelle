@@ -75,6 +75,12 @@ platform, accessibility, agent, and release evidence.
   test also crossed a 60-second lease when run alone; its machine-dependent clock
   assumption needs investigation. Result sends returned HTTP 500 without verified
   delivery; retain uncertain-delivery handling while obtaining the concrete cause.
+- Linux `14c8ebe` public-workflow sync closed and revoked-invite preflight
+  occasionally succeeded (focused rerun passed). Address-monitor cancellation of
+  active requests is now independently reproduced and fixed; whether it explains
+  those Linux failures remains unverified. Preflight tolerates unavailable peers,
+  so transport success/failure and authoritative revocation evidence must stay
+  distinct during diagnosis.
 - One concurrent test run could not rebind a saved listener port after stop;
   isolated and full reruns passed. Port reuse versus incomplete socket teardown
   remains unresolved; passing reruns do not prove stable restart reliability.

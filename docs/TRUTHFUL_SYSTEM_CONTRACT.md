@@ -281,6 +281,29 @@ because its Voxelle send returned HTTP 500. Local speed evidence does not establ
 Linux responsiveness or resolve that HTTP 500. Exact test and runtime timing
 context have been requested; `14c8ebe` Linux review is pending.
 
+## Peer Request Lifetime — UX-004
+
+Preserve **Durable Convergence**, **Complete User Causal Paths**, and IPv6
+specification §§8–9: ordinary-peer exchanges must survive unrelated address
+monitoring. The service previously selected directly between a complete request
+future and its fifteen-second address timer. A timer tick dropped the request,
+including an already authenticated connection/stream. The same service now pins
+one complete request across monitor ticks, replacing it only after completion;
+explicit service shutdown still cancels it. Address observations remain separate
+availability evidence and do not acquire admission authority. No wire, storage,
+identity, or governance change is accepted here.
+
+A real-QUIC regression spans several accelerated monitor ticks with an incomplete
+authenticated request. Restoring the old select branch fails with
+`ConnectionLost(ApplicationClosed)`; the fixed branch returns the matching
+nonce and reachability response. All 74 application and 15 inhabitant tests pass
+locally, as does strict Clippy. The snapshot-GET regression now stops the service
+before measuring unchanged evidence, isolating read behavior from legitimate
+background results; separate tests still cover live background delivery and
+reads during pending diagnostics. Linux verification remains pending. This bug
+is a candidate explanation for Thimble's connection closure and interrupted
+invite preflight, not proof that all reported failures share this cause.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

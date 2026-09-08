@@ -8492,6 +8492,7 @@ fn run_service_thread(
         run_service_loop(
             server,
             binding.mode == ServiceBindingMode::Automatic,
+            AUTOMATIC_ADDRESS_POLL_INTERVAL,
             sync_requested,
             stop_rx,
             event_tx,
@@ -8531,8 +8532,9 @@ async fn synchronize_known_peers(
 }
 
 async fn run_service_loop(
-    mut server: PeerServer,
+    server: PeerServer,
     monitor_automatic_address: bool,
+    address_poll_interval: std::time::Duration,
     sync_requested: Arc<tokio::sync::Notify>,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::SyncSender<VoxelleServiceEvent>,
@@ -8561,66 +8563,70 @@ async fn run_service_loop(
             }
         }
     });
-    let mut address_poll = tokio::time::interval(AUTOMATIC_ADDRESS_POLL_INTERVAL);
+    let mut address_poll = tokio::time::interval(address_poll_interval);
     address_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     address_poll.tick().await;
-    loop {
-        tokio::select! {
-            _ = &mut stop_rx => break,
-            _ = address_poll.tick(), if monitor_automatic_address => {
-                let previous = match server.online.endpoint.addr.ip() {
-                    IpAddr::V6(address) => Some(address),
-                    IpAddr::V4(_) => None,
-                };
-                match interface_address_candidates() {
-                    Ok(candidates) => {
-                        let selected = select_automatic_ipv6_address(
-                            &candidates,
-                            previous,
-                            preferred_route_source_ipv6(),
-                        )
-                        .unwrap_or(Ipv6Addr::LOCALHOST);
-                        let advertised = SocketAddr::new(
-                            IpAddr::V6(selected),
-                            server.online.endpoint.addr.port(),
-                        );
-                        if advertised != server.online.endpoint.addr
-                            && event_tx
-                                .try_send(VoxelleServiceEvent::AutomaticAddressChanged(advertised))
-                                .is_ok()
-                        {
-                            server.online.endpoint.addr = advertised;
-                            server.online.local_report = local_reachability_report(
-                                server.online.local_report.listen_addr,
-                                advertised,
+    let mut observed_address = server.online.endpoint.addr;
+    'serving: loop {
+        // Keep the complete accepted request alive when the monitor wakes.
+        // Dropping this future after a handshake closes the peer's stream.
+        let request = server.serve_next_request();
+        tokio::pin!(request);
+        loop {
+            tokio::select! {
+                _ = &mut stop_rx => break 'serving,
+                _ = address_poll.tick(), if monitor_automatic_address => {
+                    let previous = match observed_address.ip() {
+                        IpAddr::V6(address) => Some(address),
+                        IpAddr::V4(_) => None,
+                    };
+                    match interface_address_candidates() {
+                        Ok(candidates) => {
+                            let selected = select_automatic_ipv6_address(
+                                &candidates,
+                                previous,
+                                preferred_route_source_ipv6(),
+                            )
+                            .unwrap_or(Ipv6Addr::LOCALHOST);
+                            let advertised = SocketAddr::new(
+                                IpAddr::V6(selected),
+                                observed_address.port(),
                             );
-                            snapshot_invalidated();
+                            if advertised != observed_address
+                                && event_tx
+                                    .try_send(VoxelleServiceEvent::AutomaticAddressChanged(advertised))
+                                    .is_ok()
+                            {
+                                observed_address = advertised;
+                                snapshot_invalidated();
+                            }
                         }
-                    }
-                    Err(error) => {
-                        if event_tx
-                            .try_send(VoxelleServiceEvent::Failed(format!(
-                                "automatic IPv6 address discovery failed: {error:#}"
-                            )))
-                            .is_ok()
-                        {
-                            snapshot_invalidated();
+                        Err(error) => {
+                            if event_tx
+                                .try_send(VoxelleServiceEvent::Failed(format!(
+                                    "automatic IPv6 address discovery failed: {error:#}"
+                                )))
+                                .is_ok()
+                            {
+                                snapshot_invalidated();
+                            }
                         }
                     }
                 }
-            }
-            result = server.serve_next_request() => {
-                match result {
-                    Ok(served) => {
-                        if event_tx.try_send(VoxelleServiceEvent::Served(Box::new(served))).is_ok() {
-                            snapshot_invalidated();
+                result = &mut request => {
+                    match result {
+                        Ok(served) => {
+                            if event_tx.try_send(VoxelleServiceEvent::Served(Box::new(served))).is_ok() {
+                                snapshot_invalidated();
+                            }
+                        }
+                        Err(error) => {
+                            if event_tx.try_send(VoxelleServiceEvent::Failed(format!("{error:#}"))).is_ok() {
+                                snapshot_invalidated();
+                            }
                         }
                     }
-                    Err(error) => {
-                        if event_tx.try_send(VoxelleServiceEvent::Failed(format!("{error:#}"))).is_ok() {
-                            snapshot_invalidated();
-                        }
-                    }
+                    break;
                 }
             }
         }
@@ -12517,6 +12523,58 @@ mod tests {
             .views
             .iter()
             .any(|view| view.id == "network.health"));
+    }
+
+    #[tokio::test]
+    async fn address_monitor_does_not_cancel_an_in_flight_peer_request() {
+        let dir = tempdir().unwrap();
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).unwrap();
+        let server = PeerServer::start(home, "[::1]:0".parse().unwrap(), None).unwrap();
+        let endpoint = server.online.endpoint.clone();
+        let certificate = server.node.certificate_der();
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        let (event_tx, _events) = mpsc::sync_channel(128);
+        let runtime = run_service_loop(
+            server,
+            true,
+            std::time::Duration::from_millis(20),
+            Arc::new(tokio::sync::Notify::new()),
+            stop_rx,
+            event_tx,
+            Arc::new(|| {}),
+        );
+        let probe = async {
+            let client = QuicNode::bind_ipv6_loopback(PeerIdentity::generate().unwrap()).unwrap();
+            let connected = client
+                .connect(
+                    endpoint.addr,
+                    certificate,
+                    &endpoint.peer_id,
+                    &endpoint.device_id,
+                )
+                .await
+                .unwrap();
+            let (mut send, mut recv) = connected.connection.open_bi().await.unwrap();
+            send.write_all(br#"{"v":1,"#).await.unwrap();
+            // Deliberately span several address-monitor ticks with an incomplete
+            // request on a real authenticated QUIC stream.
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            send.write_all(br#""nonce":"monitor-survival"}"#)
+                .await
+                .unwrap();
+            send.finish().unwrap();
+            let response =
+                tokio::time::timeout(std::time::Duration::from_secs(2), recv.read_to_end(4096))
+                    .await
+                    .unwrap()
+                    .expect("monitor must not close the active stream");
+            let pong: serde_json::Value = serde_json::from_slice(&response).unwrap();
+            assert_eq!(pong["nonce"], "monitor-survival");
+            assert_eq!(pong["reachable"], true);
+            stop_tx.send(()).unwrap();
+        };
+        tokio::join!(runtime, probe);
     }
 
     #[tokio::test]

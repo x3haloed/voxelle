@@ -1686,6 +1686,12 @@ mod tests {
             .execute_serialized_command("home.init", serde_json::json!({}))
             .await
             .expect("initialize");
+        // Isolate read behavior from the independently scheduled service: its
+        // legitimate sync results may otherwise change evidence during a GET.
+        shell
+            .execute_serialized_command("runtime.goOffline", Value::Null)
+            .await
+            .expect("stop automatic synchronization");
         let mut stale = initialized
             .home
             .expect("home")
