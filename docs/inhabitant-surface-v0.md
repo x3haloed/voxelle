@@ -296,7 +296,10 @@ or manufacture new sync evidence. `shell.refresh` is also observational.
 Locally admitted mutations request a coalesced background sync and return their
 local projection without awaiting peers; success does not assert remote receipt.
 Startup and peer import also request a pass. Explicit `peer.sync` still awaits
-its requested peer and reports the resulting evidence.
+its requested peer and reports the resulting evidence. `peer.diagnose` captures
+its known endpoint/device under the shell lock, releases command serialization
+during transport, and discards its health result if that record or local device
+changed while it ran. Local commands and reads can proceed during that wait.
 Its `current_sequence` covers admitted or invalidated state, while
 `projected_at_ms` timestamps time-derived fields; heartbeat is not evidence of
 a semantic transition. A handled acknowledgement is completion evidence and

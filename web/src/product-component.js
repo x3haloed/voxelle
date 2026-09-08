@@ -19,6 +19,7 @@ if (!(app instanceof HTMLElement)) {
 
 const uiState = {
   busyCommand: "",
+  diagnosticPending: false,
   error: "",
   errorRecovery: "",
   errorDetail: "",
@@ -2278,6 +2279,7 @@ function isPeerOperation(command) {
 }
 
 function peerOperationVerb(command) {
+  if (command === "peer.diagnose" && uiState.diagnosticPending) return "Diagnosing";
   return command === "peer.diagnose" ? "Diagnose" : "Sync";
 }
 
@@ -4281,8 +4283,10 @@ function commandButton(command, payload) {
   if (definition?.shortcut) {
     button.title = `${definition.description} (${definition.shortcut})`;
   }
-  button.disabled = uiState.busyCommand !== "";
-  if (uiState.busyCommand === command) {
+  const diagnosticPending = command === "peer.diagnose" && uiState.diagnosticPending;
+  button.setAttribute("aria-busy", String(diagnosticPending || uiState.busyCommand === command));
+  button.disabled = uiState.busyCommand !== "" || diagnosticPending;
+  if (uiState.busyCommand === command || diagnosticPending) {
     button.textContent = commandProgress(
       command,
       currentSnapshot.ui_ontology.commands,
@@ -4370,6 +4374,22 @@ function submitButton(command) {
  * @param {unknown} [payload]
  */
 async function runCommand(command, payload) {
+  if (command === "peer.diagnose") {
+    if (uiState.diagnosticPending) return;
+    uiState.diagnosticPending = true;
+    render();
+    try {
+      // The backend captures the endpoint before releasing its command lock.
+      // Refresh current state afterward instead of applying an older response
+      // over a message or selection changed while the diagnostic was running.
+      await shell.execute(command, payload ?? firstPeerRequest());
+    } finally {
+      uiState.diagnosticPending = false;
+      await publishRefresh();
+      render();
+    }
+    return;
+  }
   if (command === "space.join" && !payload) {
     focusInviteJoin();
     return;
@@ -4604,7 +4624,6 @@ async function runCommand(command, payload) {
         }
         return;
       }
-      case "peer.diagnose":
       case "peer.sync":
         currentSnapshot = await shell.execute(
           command,

@@ -7682,41 +7682,66 @@ impl VoxelleCommandHost {
         &mut self,
         request: PeerCommandRequest,
     ) -> Result<ShellSnapshotView> {
+        let (node, peer, device_id) = self.prepare_peer_diagnostic(&request)?;
+        let report = node.diagnose_peer(&peer.endpoint).await;
+        self.finish_peer_diagnostic(&peer, &device_id, report)
+    }
+
+    fn prepare_peer_diagnostic(
+        &self,
+        request: &PeerCommandRequest,
+    ) -> Result<(QuicNode, PeerRecord, String)> {
         let peer = self.find_known_peer(&request.peer_id, &request.device_id)?;
+        peer.validate()?;
+        let identity = self.home.load_identity()?;
+        let device_id = identity.device.id.clone();
+        let node =
+            QuicNode::bind_ipv6_loopback_with_certificate(identity, self.home.load_certificate()?)?;
+        Ok((node, peer, device_id))
+    }
+
+    fn finish_peer_diagnostic(
+        &mut self,
+        peer: &PeerRecord,
+        device_id: &str,
+        report: PeerReachabilityReport,
+    ) -> Result<ShellSnapshotView> {
+        // Network observations apply only to the identity and endpoint probed.
+        // Import/recovery may have replaced either while the request was in flight.
+        if self.home.load_identity()?.device.id != device_id
+            || self
+                .find_known_peer(&peer.endpoint.peer_id, &peer.endpoint.device_id)
+                .ok()
+                .as_ref()
+                != Some(peer)
+        {
+            self.push_activity(
+                ServiceActivityLevel::Info,
+                "discarded diagnostic for replaced identity or peer record",
+            );
+            return self.snapshot();
+        }
         let label = peer
             .label
             .clone()
             .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
-        match self.home.diagnose_peer(&peer).await {
-            Ok(report) if report.reachable => {
-                self.clear_peer_health_failure(&peer, PeerHealthOperation::Diagnose);
-                self.push_activity(
-                    ServiceActivityLevel::Info,
-                    format!("diagnostic reached {label}"),
-                );
-                self.snapshot()
-            }
-            Ok(report) => {
-                self.record_peer_health_failure(&peer, PeerHealthOperation::Diagnose);
-                self.push_activity(
-                    ServiceActivityLevel::Error,
-                    format!(
-                        "diagnostic failed for {label}: {}",
-                        report.error.as_deref().unwrap_or("no error detail")
-                    ),
-                );
-                self.snapshot()
-            }
-            Err(error) => {
-                self.record_peer_health_failure(&peer, PeerHealthOperation::Diagnose);
-                self.push_activity(
-                    ServiceActivityLevel::Error,
-                    format!("diagnostic could not reach {label}: {error:#}"),
-                );
-                (self.snapshot_invalidated)();
-                Err(error)
-            }
+        if report.reachable {
+            self.clear_peer_health_failure(peer, PeerHealthOperation::Diagnose);
+            self.push_activity(
+                ServiceActivityLevel::Info,
+                format!("diagnostic reached {label}"),
+            );
+        } else {
+            self.record_peer_health_failure(peer, PeerHealthOperation::Diagnose);
+            self.push_activity(
+                ServiceActivityLevel::Error,
+                format!(
+                    "diagnostic failed for {label}: {}",
+                    report.error.as_deref().unwrap_or("no error detail")
+                ),
+            );
         }
+        self.snapshot()
     }
 
     pub async fn sync_peer(&mut self, request: PeerCommandRequest) -> Result<ShellSnapshotView> {

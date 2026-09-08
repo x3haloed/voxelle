@@ -243,6 +243,44 @@ home with its previous message retained, then admitted and rendered a second
 message through Computer Use and cleared the composer. This is a local native
 smoke check; the nonresponding-peer latency evidence comes from the Rust test.
 
+## Diagnostic Responsiveness — UX-003
+
+Preserve **Causal Claims**, **Trust And Authority**, and **Topology Preservation**:
+a diagnostic is authenticated transport evidence, never membership or admission.
+The shared shell captures the known record and local device under its existing
+lock, performs the diagnostic outside that lock, then applies its result under
+the lock only if that device and complete peer record still match. The HTTP
+command gate likewise releases for this read-only transport operation. Local
+commands retain their existing serialization and authority path; sync, join, and
+recovery still need a separate concurrency treatment. No protocol or storage
+contract changes. This removes a network wait from the local command critical
+section, not a security boundary or a retained-state authority.
+
+The native product tracks diagnostic progress independently of its foreground
+command busy state. It can close the connection panel and send while a diagnostic
+is pending. Completion requests a fresh local projection, avoiding replacement
+of newer UI state with an older diagnostic response. Duplicate GUI diagnostics
+are suppressed while one is pending.
+
+Local evidence: 73 application and 15 inhabitant tests pass, including a real
+silent UDP endpoint receiving the diagnostic packet before local HTTP commands
+and both reads complete within one second; the diagnostic remains pending until
+its timeout is reported. A second real-transport test sends during a diagnostic,
+replaces the endpoint, and verifies that the old timeout does not poison the new
+record. Strict Clippy passes. Computer Use on the rebuilt macOS disposable-profile
+bundle verified an enabled composer/send after starting a pending diagnostic,
+rendered message, cleared composer, and subsequent connection failure. This uses
+the debug test-file vault and does not substantiate production Keychain behavior.
+
+Remote counterevidence remains binding: Thimble reported exact `61b98ee` Linux
+reads around three seconds even before stale peer import, three HTTP 429 out of
+six paired reads, and a continuation-frontier test crossing its 60-second lease
+(also failing alone). Linux background-only delivery and reopen passed; build,
+strict Clippy, and 14 inhabitant tests passed. The report was relayed by Chad
+because its Voxelle send returned HTTP 500. Local speed evidence does not establish
+Linux responsiveness or resolve that HTTP 500. Exact test and runtime timing
+context have been requested; `14c8ebe` Linux review is pending.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

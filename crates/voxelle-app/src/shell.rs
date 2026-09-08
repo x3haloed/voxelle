@@ -284,6 +284,22 @@ impl ShellState {
         payload: serde_json::Value,
         origin: Option<OriginContext>,
     ) -> ShellResult<ShellSnapshotView> {
+        if command_id == "peer.diagnose" {
+            let request = parse_request(payload)?;
+            let (node, peer, device_id) = self
+                .host
+                .lock()
+                .await
+                .prepare_peer_diagnostic(&request)
+                .map_err(|error| ShellError::for_command(command_id, error))?;
+            let report = node.diagnose_peer(&peer.endpoint).await;
+            return self
+                .host
+                .lock()
+                .await
+                .finish_peer_diagnostic(&peer, &device_id, report)
+                .map_err(|error| ShellError::for_command(command_id, error));
+        }
         if command_id == "product.update.check" {
             let manager = {
                 let host = self.host.lock().await;
@@ -399,7 +415,6 @@ impl ShellState {
             "member.unban" => host.ban_member(parse_request(payload)?, false).await,
             "message.search" => host.search_messages(parse_request(payload)?),
             "peer.import" => host.import_peer_record(parse_request(payload)?),
-            "peer.diagnose" => host.diagnose_peer(parse_request(payload)?).await,
             "peer.sync" => host.sync_peer(parse_request(payload)?).await,
             "ui.preference.set" => host.set_ui_preference(parse_request(payload)?),
             "ui.preferences.reset" => host.reset_all_ui_preferences(),
@@ -1376,6 +1391,80 @@ mod tests {
                 .messages
                 .len(),
             3
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostic_allows_send_and_discards_result_after_peer_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let shell = std::sync::Arc::new(ShellState::new(dir.path().join("home")));
+        let initial = shell
+            .execute_serialized_command("home.init", serde_json::json!({}))
+            .await
+            .unwrap();
+        let mut peer = initial.home.unwrap().invite.unwrap().peer_record;
+        shell
+            .execute_serialized_command("runtime.goOffline", serde_json::Value::Null)
+            .await
+            .unwrap();
+        let blackhole = tokio::net::UdpSocket::bind("[::1]:0").await.unwrap();
+        peer.endpoint.addr = blackhole.local_addr().unwrap();
+        shell
+            .execute_serialized_command(
+                "peer.import",
+                serde_json::json!({
+                    "peer_record_json": serde_json::to_string(&peer).unwrap()
+                }),
+            )
+            .await
+            .unwrap();
+        let diagnostic_shell = shell.clone();
+        let request = serde_json::json!({"peer_id":peer.endpoint.peer_id, "device_id":peer.endpoint.device_id});
+        let diagnostic = tokio::spawn(async move {
+            diagnostic_shell
+                .execute_serialized_command("peer.diagnose", request)
+                .await
+        });
+        let mut packet = [0u8; 2048];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            blackhole.recv_from(&mut packet),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let sent = tokio::time::timeout(std::time::Duration::from_secs(1), shell.execute_serialized_command(
+            "message.send", serde_json::json!({"text":"send during diagnostic", "client_request_id":"diagnostic-concurrency"})
+        )).await.expect("send must complete while diagnostic is in flight").unwrap();
+        assert_eq!(
+            sent.home.unwrap().room.messages[0].text,
+            "send during diagnostic"
+        );
+        let replacement = std::net::UdpSocket::bind("[::1]:0").unwrap();
+        peer.endpoint.addr = replacement.local_addr().unwrap();
+        shell
+            .execute_serialized_command(
+                "peer.import",
+                serde_json::json!({
+                    "peer_record_json": serde_json::to_string(&peer).unwrap()
+                }),
+            )
+            .await
+            .unwrap();
+        assert!(!diagnostic.is_finished());
+        let finished = diagnostic.await.unwrap().unwrap();
+        assert!(finished
+            .service_activity
+            .iter()
+            .any(|item| item.summary.starts_with("discarded diagnostic")));
+        let host = shell.host.lock().await;
+        assert!(
+            host.peer_health_failures.is_empty(),
+            "old timeout must not poison replacement endpoint"
+        );
+        assert_eq!(
+            host.home.known_peers().unwrap()[0].endpoint.addr,
+            peer.endpoint.addr
         );
     }
 

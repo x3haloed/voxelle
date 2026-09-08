@@ -65,10 +65,16 @@ platform, accessibility, agent, and release evidence.
 
 - Native use exposed multi-second send/refresh stalls and Linux HTTP 429 under
   stale peer endpoints. Ordinary snapshot GET initiated sync under
-  the shared command gate. Explicit peer sync/diagnose, join, and recovery still
+  the shared command gate. Explicit peer sync, join, and recovery still
   await network completion under shared command serialization.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
+- Thimble measured ~3-second local reads before stale peer import on Linux
+  `61b98ee`, with three of six paired reads returning HTTP 429. Removing network
+  waits alone does not prove responsive local projection. The continuation-frontier
+  test also crossed a 60-second lease when run alone; its machine-dependent clock
+  assumption needs investigation. Result sends returned HTTP 500 without verified
+  delivery; retain uncertain-delivery handling while obtaining the concrete cause.
 - One concurrent test run could not rebind a saved listener port after stop;
   isolated and full reruns passed. Port reuse versus incomplete socket teardown
   remains unresolved; passing reruns do not prove stable restart reliability.
