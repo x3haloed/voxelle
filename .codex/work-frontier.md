@@ -65,9 +65,13 @@ platform, accessibility, agent, and release evidence.
 
 - Native use exposed multi-second send/refresh stalls and Linux HTTP 429 under
   stale peer endpoints. Ordinary snapshot GET initiated sync under
-  the shared command gate; explicit commands still await network completion.
+  the shared command gate. Explicit peer sync/diagnose, join, and recovery still
+  await network completion under shared command serialization.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
+- One concurrent test run could not rebind a saved listener port after stop;
+  isolated and full reruns passed. Port reuse versus incomplete socket teardown
+  remains unresolved; passing reruns do not prove stable restart reliability.
 - Native connection setup required relaying raw certificates and manually
   replacing a changed port. A globally addressed runtime and an "Online"
   label did not establish peer connectivity. Profile names were known but

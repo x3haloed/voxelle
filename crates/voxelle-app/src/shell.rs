@@ -333,7 +333,7 @@ impl ShellState {
         let mut host = self.host.lock().await;
         host.drain_service_events();
         let result = match command_id {
-            "shell.refresh" => host.refresh_and_sync().await,
+            "shell.refresh" => host.refresh(),
             "home.init" => host.init_home(parse_request(payload)?),
             "home.archiveForRecovery" => host.archive_unusable_home(),
             "runtime.goOnline" => host.start_service_and_sync(parse_request(payload)?).await,
@@ -1315,6 +1315,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_send_and_refresh_do_not_wait_for_unreachable_peers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let shell = ShellState::new(dir.path().join("home"));
+        let initial = shell
+            .execute_serialized_command("home.init", serde_json::json!({}))
+            .await
+            .expect("initialize");
+        let mut peer = initial.home.unwrap().invite.unwrap().peer_record;
+        let blackhole = std::net::UdpSocket::bind("[::1]:0").expect("blackhole");
+        peer.endpoint.addr = blackhole.local_addr().unwrap();
+        shell
+            .execute_serialized_command(
+                "peer.import",
+                serde_json::json!({
+                    "peer_record_json": serde_json::to_string(&peer).unwrap()
+                }),
+            )
+            .await
+            .expect("import unreachable peer");
+        for index in 0..3 {
+            let started = std::time::Instant::now();
+            let sent = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                shell.execute_serialized_command(
+                    "message.send",
+                    serde_json::json!({
+                        "text": format!("local message {index}"),
+                        "client_request_id": format!("local-latency-{index}")
+                    }),
+                ),
+            )
+            .await
+            .expect("local admission must not wait for handshake")
+            .expect("send");
+            assert_eq!(sent.home.unwrap().room.messages.len(), index + 1);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                shell.execute_serialized_command("shell.refresh", serde_json::json!({})),
+            )
+            .await
+            .expect("refresh must stay local")
+            .expect("refresh");
+            eprintln!("send + refresh {} ms", started.elapsed().as_millis());
+        }
+        shell
+            .execute_serialized_command("runtime.goOffline", serde_json::json!({}))
+            .await
+            .expect("stop with pending sync");
+        drop(shell);
+        let reopened = ShellState::new(dir.path().join("home"));
+        assert_eq!(
+            reopened
+                .observational_snapshot()
+                .await
+                .unwrap()
+                .home
+                .unwrap()
+                .room
+                .messages
+                .len(),
+            3
+        );
+    }
+
+    async fn wait_for_snapshot(
+        shell: &ShellState,
+        ready: impl Fn(&ShellSnapshotView) -> bool,
+    ) -> ShellSnapshotView {
+        tokio::time::timeout(std::time::Duration::from_secs(25), async {
+            loop {
+                let snapshot = shell
+                    .observational_snapshot()
+                    .await
+                    .expect("local observation");
+                if ready(&snapshot) {
+                    return snapshot;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            }
+        })
+        .await
+        .expect("background propagation must converge")
+    }
+
+    async fn synchronize_then_observe(
+        syncing: &ShellState,
+        observing: &ShellState,
+    ) -> ShellResult<ShellSnapshotView> {
+        let peers = syncing
+            .host
+            .lock()
+            .await
+            .home
+            .known_peers()
+            .expect("known peers");
+        assert!(!peers.is_empty());
+        for peer in peers {
+            syncing
+                .execute_serialized_command(
+                    "peer.sync",
+                    serde_json::json!({
+                        "peer_id": peer.endpoint.peer_id,
+                        "device_id": peer.endpoint.device_id,
+                        "max_events": 4096
+                    }),
+                )
+                .await?;
+        }
+        observing.observational_snapshot().await
+    }
+
+    #[tokio::test]
     async fn shell_state_drives_two_home_network_workflow() {
         let dir = tempfile::tempdir().expect("tempdir");
         let alice = ShellState::new(dir.path().join("alice"));
@@ -1391,10 +1503,13 @@ mod tests {
         )
         .await
         .expect("bob acknowledges");
-        let acknowledged = alice
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
-            .await
-            .expect("alice receives acknowledgement");
+        let acknowledged = wait_for_snapshot(&alice, |snapshot| {
+            snapshot.home.as_ref().unwrap().room.messages[0]
+                .acknowledgements
+                .iter()
+                .any(|ack| ack.state == crate::MessageAcknowledgementState::Handled)
+        })
+        .await;
         assert_eq!(
             acknowledged.home.expect("alice home").room.messages[0].acknowledgements[0].state,
             crate::MessageAcknowledgementState::Handled
@@ -1407,10 +1522,17 @@ mod tests {
             )
             .await
             .expect("alice sends again");
-        let bob_refreshed = bob
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
-            .await
-            .expect("online refresh performs anti-entropy");
+        let bob_refreshed = wait_for_snapshot(&bob, |snapshot| {
+            snapshot
+                .home
+                .as_ref()
+                .unwrap()
+                .room
+                .messages
+                .iter()
+                .any(|message| message.text == "arrives without manual sync")
+        })
+        .await;
         assert!(bob_refreshed
             .home
             .expect("bob home")
@@ -1429,13 +1551,23 @@ mod tests {
             )
             .await
             .expect("send while bob offline");
-        let bob_reconnected = bob
-            .execute_serialized_command(
-                "runtime.goOnline",
-                serde_json::json!({ "bind": null, "advertise": null }),
-            )
-            .await
-            .expect("reconnect catches up");
+        bob.execute_serialized_command(
+            "runtime.goOnline",
+            serde_json::json!({ "bind": null, "advertise": null }),
+        )
+        .await
+        .expect("restart local service");
+        let bob_reconnected = wait_for_snapshot(&bob, |snapshot| {
+            snapshot
+                .home
+                .as_ref()
+                .unwrap()
+                .room
+                .messages
+                .iter()
+                .any(|message| message.text == "catch up on reconnect")
+        })
+        .await;
         assert!(bob_reconnected
             .home
             .expect("bob home")
@@ -1450,10 +1582,17 @@ mod tests {
         )
         .await
         .expect("bob sends and pushes");
-        let alice_refreshed = alice
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
-            .await
-            .expect("alice refresh");
+        let alice_refreshed = wait_for_snapshot(&alice, |snapshot| {
+            snapshot
+                .home
+                .as_ref()
+                .unwrap()
+                .room
+                .messages
+                .iter()
+                .any(|message| message.text == "pushes automatically")
+        })
+        .await;
         assert!(alice_refreshed
             .home
             .expect("alice home")
@@ -1703,7 +1842,7 @@ mod tests {
             )
             .await
             .expect("alice joins call");
-        bob.execute_serialized_command("shell.refresh", serde_json::json!({}))
+        synchronize_then_observe(&bob, &bob)
             .await
             .expect("bob sees alice call");
         let bob_call = bob
@@ -1720,8 +1859,7 @@ mod tests {
         assert_eq!(bob_call.participant_video.get(&alice_peer_id), Some(&false));
         assert_eq!(bob_call.participant_video.get(&bob_peer_id), Some(&true));
         let call_id = bob_call.call_id.clone();
-        alice
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+        synchronize_then_observe(&bob, &alice)
             .await
             .expect("alice sees bob call");
         alice
@@ -1738,8 +1876,7 @@ mod tests {
             )
             .await
             .expect("signed offer signal");
-        let bob_signaled = bob
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+        let bob_signaled = synchronize_then_observe(&bob, &bob)
             .await
             .expect("bob receives offer");
         assert!(bob_signaled
@@ -1775,8 +1912,7 @@ mod tests {
         )
         .await
         .expect("bob turns camera off");
-        let alice_after_media = alice
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+        let alice_after_media = synchronize_then_observe(&bob, &alice)
             .await
             .expect("alice sees bob camera state");
         assert_eq!(
@@ -1794,8 +1930,7 @@ mod tests {
         )
         .await
         .expect("bob leaves call");
-        let alice_after_leave = alice
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+        let alice_after_leave = synchronize_then_observe(&bob, &alice)
             .await
             .expect("alice sees bob leave");
         let call_after_leave = alice_after_leave.home.expect("alice home").call;
@@ -1824,7 +1959,7 @@ mod tests {
             .find(|channel| channel.name == "Engineering")
             .expect("new channel")
             .room_id;
-        bob.execute_serialized_command("shell.refresh", serde_json::json!({}))
+        synchronize_then_observe(&bob, &bob)
             .await
             .expect("bob pulls channel");
         bob.execute_serialized_command(
@@ -1847,8 +1982,7 @@ mod tests {
             .await
             .expect("alice post");
         let root_id = posted.home.expect("home").room.messages[0].event_id.clone();
-        let bob_received = bob
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+        let bob_received = synchronize_then_observe(&bob, &bob)
             .await
             .expect("bob pulls post");
         let bob_received_home = bob_received.home.expect("home");
@@ -1925,8 +2059,7 @@ mod tests {
         )
         .await
         .expect("bob replies");
-        let alice_thread = alice
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+        let alice_thread = synchronize_then_observe(&bob, &alice)
             .await
             .expect("alice pulls thread");
         let root = alice_thread
@@ -2012,7 +2145,7 @@ mod tests {
             )
             .await
             .expect("grant role");
-        bob.execute_serialized_command("shell.refresh", serde_json::json!({}))
+        synchronize_then_observe(&bob, &bob)
             .await
             .expect("bob pulls final state");
         bob.execute_serialized_command(
@@ -2025,8 +2158,7 @@ mod tests {
         .await
         .expect("moderator redacts another member message");
 
-        let final_snapshot = alice
-            .execute_serialized_command("shell.refresh", serde_json::json!({}))
+        let final_snapshot = synchronize_then_observe(&bob, &alice)
             .await
             .expect("alice final refresh");
         let final_home = final_snapshot.home.expect("home");

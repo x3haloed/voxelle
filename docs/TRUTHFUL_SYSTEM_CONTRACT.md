@@ -204,9 +204,12 @@ At most four automatic peer requests run concurrently. Background work is
 canceled with the service and uses the same admission/store/projection path.
 No new process, database, secret, wire format, or authority is introduced.
 
-This changes timing, not authorization or retained meaning. Explicit refresh,
-sync, and post-mutation sync remain blocking for this first milestone; their
-latency is still an open lane. Periodic retry currently runs every fifteen
+This changes timing, not authorization or retained meaning. The second milestone
+also removes command-to-network waits after local admission: mutations request
+a coalesced pass from the same service worker and return the local projection.
+Service startup and peer import request synchronization; `shell.refresh` only
+projects local state. Explicit peer sync/diagnose, join, and recovery still await
+network work and remain an open responsiveness lane. Periodic retry currently runs every fifteen
 seconds with missed ticks skipped; per-peer backoff and endpoint healing remain
 open. Physical benefits are removal of read-triggered network fan-out and a
 bound on concurrent automatic socket work. Engineering and cross-platform
@@ -225,6 +228,20 @@ admitted/projected `UX-001 native smoke` through Computer Use. That bundle used
 the explicit debug test-file vault; it is not production Keychain replacement
 or remote Linux verification. Linux review by Thimble and removing remaining
 command-held network waits are pending.
+
+Second-milestone verification: 72 application and 14 inhabitant tests pass,
+including automatic two-home message delivery and catch-up on reconnect. A bound
+nonresponding UDP peer cannot hold local send/refresh beyond the one-second test
+bound (three isolated samples measured 323–327 ms); all three messages survive
+reopen. Public-family convergence tests explicitly synchronize at remote-observation
+boundaries, preserving their semantic assertions; the separate automatic-delivery
+tests exercise the scheduler. Strict Clippy passes. One earlier concurrent suite
+run failed to rebind a saved listener port with address-in-use; isolated and full
+reruns passed. The cause is unresolved, so this is not evidence of flawless restart
+reliability. The rebuilt native macOS test bundle reopened the same disposable
+home with its previous message retained, then admitted and rendered a second
+message through Computer Use and cleared the composer. This is a local native
+smoke check; the nonresponding-peer latency evidence comes from the Rust test.
 
 ## Evidence Horizon
 

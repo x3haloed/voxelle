@@ -1306,6 +1306,7 @@ struct PeerServer {
 pub struct VoxelleService {
     online: OnlineHome,
     binding_mode: ServiceBindingMode,
+    sync_requested: Arc<tokio::sync::Notify>,
     events: mpsc::Receiver<VoxelleServiceEvent>,
     stop: Option<tokio::sync::oneshot::Sender<()>>,
     thread: Option<thread::JoinHandle<()>>,
@@ -6944,7 +6945,7 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         self.start_service(request)?;
         if self.home.local_state_exists(HOME_SELECTION_STATE)? {
-            self.sync_known_peers(256).await?;
+            self.request_sync();
         }
         self.snapshot()
     }
@@ -7027,7 +7028,7 @@ impl VoxelleCommandHost {
             ServiceActivityLevel::Info,
             format!("revoked signed space invite {}", request.invite_id),
         );
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7132,7 +7133,7 @@ impl VoxelleCommandHost {
                 short_peer_label(&package.request_id)
             ),
         );
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7175,7 +7176,7 @@ impl VoxelleCommandHost {
                 short_peer_label(&request.device_id)
             ),
         );
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7240,7 +7241,7 @@ impl VoxelleCommandHost {
             ServiceActivityLevel::Info,
             format!("sent message {}", event.event_id),
         );
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.selected_message_event_id = None;
         self.snapshot()
     }
@@ -7316,7 +7317,7 @@ impl VoxelleCommandHost {
                 target_event_id, request.state, result
             ),
         );
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7410,7 +7411,7 @@ impl VoxelleCommandHost {
             ServiceActivityLevel::Info,
             format!("updated message continuation {}", event.event_id),
         );
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7470,7 +7471,7 @@ impl VoxelleCommandHost {
             .and_then(serde_json::Value::as_str)
             .map(ToOwned::to_owned);
         self.selected_message_event_id = None;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7479,7 +7480,7 @@ impl VoxelleCommandHost {
         request: RotateChannelKeyRequest,
     ) -> Result<ShellSnapshotView> {
         self.home.rotate_channel_key(&request)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7492,7 +7493,7 @@ impl VoxelleCommandHost {
             })?;
         }
         self.home.join_call(&request)?;
-        self.sync_known_peers(512).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7502,7 +7503,7 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.signal_call(&request)?;
-        self.sync_known_peers(512).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7512,7 +7513,7 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.update_call_media(&request)?;
-        self.sync_known_peers(512).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7522,14 +7523,14 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.heartbeat_call(&request)?;
-        self.sync_known_peers(512).await?;
+        self.request_sync();
         self.snapshot()
     }
 
     pub async fn leave_call(&mut self, mut request: CallLeaveRequest) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.leave_call(&request)?;
-        self.sync_known_peers(512).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7539,7 +7540,7 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.edit_message(&request)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7549,7 +7550,7 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.redact_message(&request)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7560,7 +7561,7 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.set_reaction(&request, add)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7571,7 +7572,7 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.set_pin(&request, add)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7581,7 +7582,7 @@ impl VoxelleCommandHost {
     ) -> Result<ShellSnapshotView> {
         request.room = request.room.or_else(|| self.selected_room_id.clone());
         self.home.add_attachment(&request)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7590,13 +7591,13 @@ impl VoxelleCommandHost {
         request: ProfileUpdateRequest,
     ) -> Result<ShellSnapshotView> {
         self.home.update_profile(&request)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
     pub async fn create_role(&mut self, request: CreateRoleRequest) -> Result<ShellSnapshotView> {
         self.home.create_role(&request)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7606,7 +7607,7 @@ impl VoxelleCommandHost {
         grant: bool,
     ) -> Result<ShellSnapshotView> {
         self.home.assign_role(&request, grant)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7616,7 +7617,7 @@ impl VoxelleCommandHost {
         ban: bool,
     ) -> Result<ShellSnapshotView> {
         self.home.ban_member(&request, ban)?;
-        self.sync_known_peers(256).await?;
+        self.request_sync();
         self.snapshot()
     }
 
@@ -7625,10 +7626,7 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
-    pub async fn refresh_and_sync(&mut self) -> Result<ShellSnapshotView> {
-        if self.service.is_some() && self.home.local_state_exists(HOME_SELECTION_STATE)? {
-            self.sync_known_peers(256).await?;
-        }
+    pub fn refresh(&mut self) -> Result<ShellSnapshotView> {
         self.snapshot()
     }
 
@@ -7643,6 +7641,7 @@ impl VoxelleCommandHost {
             .clone()
             .unwrap_or_else(|| short_peer_label(&peer_record.endpoint.peer_id));
         self.home.import_peer_record(peer_record)?;
+        self.request_sync();
         self.push_activity(ServiceActivityLevel::Info, format!("imported peer {label}"));
         self.snapshot()
     }
@@ -7764,10 +7763,10 @@ impl VoxelleCommandHost {
         self.snapshot()
     }
 
-    async fn sync_known_peers(&mut self, max_events: usize) -> Result<()> {
-        let reports = synchronize_known_peers(&self.home, max_events).await?;
-        self.apply_sync_reports(reports);
-        Ok(())
+    fn request_sync(&self) {
+        if let Some(service) = &self.service {
+            service.sync_requested.notify_one();
+        }
     }
 
     fn apply_sync_reports(
@@ -8360,6 +8359,8 @@ impl VoxelleService {
         binding: ResolvedServiceBinding,
         snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
     ) -> Result<Self> {
+        let sync_requested = Arc::new(tokio::sync::Notify::new());
+        let worker_sync_requested = sync_requested.clone();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let (event_tx, events) = mpsc::sync_channel(SERVICE_EVENT_QUEUE_CAPACITY);
         let (startup_tx, startup_rx) = mpsc::sync_channel(1);
@@ -8370,6 +8371,7 @@ impl VoxelleService {
                     home,
                     binding,
                     startup_tx,
+                    worker_sync_requested,
                     stop_rx,
                     event_tx,
                     snapshot_invalidated,
@@ -8391,6 +8393,7 @@ impl VoxelleService {
         Ok(Self {
             online,
             binding_mode: binding.mode,
+            sync_requested,
             events,
             stop: Some(stop_tx),
             thread: Some(thread),
@@ -8435,6 +8438,7 @@ fn run_service_thread(
     home: VoxelleHome,
     binding: ResolvedServiceBinding,
     startup_tx: mpsc::SyncSender<std::result::Result<OnlineHome, String>>,
+    sync_requested: Arc<tokio::sync::Notify>,
     stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::SyncSender<VoxelleServiceEvent>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
@@ -8463,6 +8467,7 @@ fn run_service_thread(
         run_service_loop(
             server,
             binding.mode == ServiceBindingMode::Automatic,
+            sync_requested,
             stop_rx,
             event_tx,
             snapshot_invalidated,
@@ -8503,6 +8508,7 @@ async fn synchronize_known_peers(
 async fn run_service_loop(
     mut server: PeerServer,
     monitor_automatic_address: bool,
+    sync_requested: Arc<tokio::sync::Notify>,
     mut stop_rx: tokio::sync::oneshot::Receiver<()>,
     event_tx: mpsc::SyncSender<VoxelleServiceEvent>,
     snapshot_invalidated: Arc<dyn Fn() + Send + Sync>,
@@ -8515,10 +8521,12 @@ async fn run_service_loop(
     let sync_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(AUTOMATIC_SYNC_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        interval.tick().await;
         loop {
-            interval.tick().await;
-            let event = match synchronize_known_peers(&sync_home, 256).await {
+            tokio::select! {
+                _ = interval.tick() => {},
+                _ = sync_requested.notified() => {},
+            }
+            let event = match synchronize_known_peers(&sync_home, 512).await {
                 Ok(reports) if reports.is_empty() => continue,
                 Ok(reports) => VoxelleServiceEvent::AutomaticSync(reports),
                 Err(error) => VoxelleServiceEvent::Failed(format!("background sync: {error:#}")),
