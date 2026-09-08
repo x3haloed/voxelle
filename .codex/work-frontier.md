@@ -97,6 +97,16 @@ platform, accessibility, agent, and release evidence.
   1000-message private probe improves snapshot622ms ->208ms and verifies all
   retained text after reopening. Sends remain median116ms/p95 214ms; private-send
   reconstruction and many-room scaling remain separate outstanding work.
+  UX-020 identified a measurement gap: prior send timings covered low-level
+  event creation, excluding the command host's retry-token lookup and response
+  snapshot. The probe now measures the complete local command and three retries,
+  verifies their shared event ID, and checks exactly one new message after reopen.
+  Retry lookup itself reconstructs private history before the send path does it
+  again. These local command timings still exclude native bridge/rendering and
+  remote delivery, which require their own evidence. At private1000, the full
+  command takes586ms; retries354–356ms return the same event and exactly one new
+  retained message. These timings supersede low-level send times for claims
+  about local command responsiveness.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
 - Thimble measured ~3-second local reads before stale peer import on Linux

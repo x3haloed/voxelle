@@ -13031,6 +13031,70 @@ mod tests {
         );
         measure!("network_health", host.home.network_health_view(None));
         measure!("snapshot", host.snapshot());
+
+        // A GUI send includes idempotency lookup and the resulting snapshot,
+        // unlike the low-level fixture-creation measurements above.
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let request = SendMessageRequest {
+            text: "measured command round trip".to_string(),
+            room: room.clone(),
+            mentions: Vec::new(),
+            addressed_origin_session_ids: Vec::new(),
+            thread_root_event_id: None,
+            in_reply_to_event_id: None,
+            client_request_id: Some("profile-command-retry-0001".to_string()),
+        };
+        let started = std::time::Instant::now();
+        let sent = runtime
+            .block_on(host.send_message(request.clone()))
+            .unwrap();
+        eprintln!("command_send_us={}", started.elapsed().as_micros());
+        let sent_id = sent
+            .home
+            .unwrap()
+            .room
+            .messages
+            .iter()
+            .find(|message| message.text == request.text)
+            .unwrap()
+            .event_id
+            .clone();
+        for attempt in 1..=3 {
+            let started = std::time::Instant::now();
+            let retried = runtime
+                .block_on(host.send_message(request.clone()))
+                .unwrap();
+            eprintln!(
+                "command_retry_{attempt}_us={}",
+                started.elapsed().as_micros()
+            );
+            let retried = retried.home.unwrap();
+            let matching: Vec<_> = retried
+                .room
+                .messages
+                .iter()
+                .filter(|message| message.text == request.text)
+                .collect();
+            assert_eq!(matching.len(), 1);
+            assert_eq!(matching[0].event_id, sent_id);
+        }
+        let reopened = VoxelleHome::new(host.home.root.clone());
+        let events = reopened.decrypted_room_events(&selected_room).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "MSG_POST")
+                .count(),
+            messages + 1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_id == sent_id)
+                .count(),
+            1
+        );
+        eprintln!("command_retry_verified=one_retained_event");
     }
 
     #[tokio::test]

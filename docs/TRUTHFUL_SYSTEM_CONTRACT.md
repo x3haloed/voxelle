@@ -673,6 +673,26 @@ latency remains 116/214 ms and fixture creation remains 119 seconds, consistent
 with the unchanged send path. Builds finished before measurement. Many-room,
 multi-member, native lived, and independent Linux checks remain pending.
 
+## Complete Local Send Measurement — UX-020
+
+Earlier send-latency probes measured low-level event creation. They did not
+include the command host's retry-token lookup or response snapshot, so they do
+not establish GUI-command latency. The manual profiler now executes one ordinary
+command-host send with a retry token, repeats it three times, verifies each
+snapshot returns the same event ID, and reopens the home to confirm exactly one
+new retained message. This changes measurement only, not production semantics.
+
+At 1000 private messages, the full local send command took 586 ms. Three retries
+took 354, 356, and 355 ms. Retry correctness and all original retained texts pass;
+the accompanying snapshot average is 209 ms. This is one-member debug/test-vault
+local command evidence without competing builds, native bridge/rendering, or
+remote-delivery timing. Strict app Clippy passes. The gap from low-level send
+latency exposes further repeated private-history reconstruction: retry lookup,
+semantic creation, and response projection each read history. Preserve retry
+identity, payload conflict detection, creation-time semantics, and durable
+admission when reducing that work. Native and independent Linux checks remain
+pending.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI
