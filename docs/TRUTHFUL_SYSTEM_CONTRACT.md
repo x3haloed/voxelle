@@ -425,6 +425,19 @@ Native Computer Use confirmed message rendering and timeout handling, but its
 observation returned after timeout; precise native concurrency remains unobserved.
 Join and recovery still await their own network work under command serialization.
 
+## Coordination Lease Verification — UX-010
+
+The continuation-frontier persistence test no longer assumes its real command
+sequence completes within the minimum 60-second lease. It still creates and
+admits the facts through host commands, marks rooms read, changes selection,
+and reopens the retained home. It projects those same retained facts at explicit
+instants immediately before and exactly at expiry, comparing both projections
+across restart. It verifies active becomes overdue/unknown and the next deadline
+clears. This strengthens evidence for time-derived recovery behavior without
+extending leases or changing production clocks, admission, or user semantics.
+The three local coordination-frontier tests pass; independent Linux confirmation
+of the formerly failing test remains outstanding.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

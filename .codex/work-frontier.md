@@ -73,8 +73,10 @@ platform, accessibility, agent, and release evidence.
 - Thimble measured ~3-second local reads before stale peer import on Linux
   `61b98ee`, with three of six paired reads returning HTTP 429. Removing network
   waits alone does not prove responsive local projection. The continuation-frontier
-  test also crossed a 60-second lease when run alone; its machine-dependent clock
-  assumption needs investigation. Result sends returned HTTP 500 without verified
+  test also crossed a 60-second lease when run alone. UX-010 removes that
+  machine-speed assumption: retained events are projected immediately before
+  and exactly at expiry across selection and restart, checking active/overdue
+  semantics and the next projection deadline. Linux confirmation is pending. Result sends returned HTTP 500 without verified
   delivery; retain uncertain-delivery handling while obtaining the concrete cause.
 - Linux `14c8ebe` public-workflow sync closed and revoked-invite preflight
   occasionally succeeded (focused rerun passed). Address-monitor cancellation of

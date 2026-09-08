@@ -13100,15 +13100,28 @@ mod tests {
             .find(|message| message.text == "human follow-up after handled")
             .expect("follow-up message")
             .event_id;
-        let general_snapshot = host
-            .mark_read(MarkReadRequest {
-                room_id: Some(general_room.clone()),
-            })
-            .expect("read general");
-        let general_frontier = general_snapshot
+        host.mark_read(MarkReadRequest {
+            room_id: Some(general_room.clone()),
+        })
+        .expect("read general");
+        // Compare the same logical instant across selection and restart. Real
+        // command execution can exceed the lease on a slow machine; that must
+        // not turn a persistence assertion into a wall-clock speed requirement.
+        let continuation = host
             .home
-            .expect("general home")
-            .coordination_frontier;
+            .decrypted_room_events(&ops_room)
+            .expect("retained ops events")
+            .into_iter()
+            .find(|event| event.kind == "MSG_CONTINUATION")
+            .expect("retained continuation");
+        let expires_ms = continuation.created_ms + MIN_CONTINUATION_LEASE_MS as i64;
+        let project_at = |host: &VoxelleCommandHost, instant| {
+            let channels = host.home.channels(None).expect("channels");
+            host.home
+                .coordination_frontier(&channels, instant)
+                .expect("frontier")
+        };
+        let general_frontier = project_at(&host, expires_ms - 1);
         assert_eq!(general_frontier.matching_count, 2);
         let ops_item = general_frontier
             .items
@@ -13156,23 +13169,38 @@ mod tests {
             .iter()
             .all(|item| !item.target_after_local_read_cursor));
 
-        let ops_frontier = host
-            .select_channel(SelectChannelRequest { room_id: ops_room })
-            .expect("select ops")
-            .home
-            .expect("ops home")
-            .coordination_frontier;
-        assert_eq!(ops_frontier, general_frontier);
+        host.select_channel(SelectChannelRequest { room_id: ops_room })
+            .expect("select ops");
+        assert_eq!(project_at(&host, expires_ms - 1), general_frontier);
+
+        let overdue_frontier = project_at(&host, expires_ms);
+        let overdue_ops = overdue_frontier
+            .items
+            .iter()
+            .find(|item| item.target_event_id == ops_target)
+            .expect("overdue ops item");
+        assert!(overdue_ops
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ContinuationOverdue));
+        assert!(!overdue_ops
+            .relevance
+            .contains(&CoordinationFrontierRelevance::ContinuationActive));
+        assert_eq!(
+            overdue_ops
+                .local_actionability
+                .as_ref()
+                .expect("expired actionability")
+                .state,
+            MessageParticipantActionabilityState::Unknown
+        );
+        assert_eq!(general_frontier.next_projection_change_ms, Some(expires_ms));
+        assert_eq!(overdue_frontier.next_projection_change_ms, None);
 
         drop(host);
-        let restarted = VoxelleCommandHost::new(&home_root)
-            .snapshot()
-            .expect("restart snapshot")
-            .home
-            .expect("restart home")
-            .coordination_frontier;
-        assert_eq!(restarted.items, general_frontier.items);
-        assert_eq!(restarted.matching_count, 2);
+        let mut restarted = VoxelleCommandHost::new(&home_root);
+        restarted.snapshot().expect("restart snapshot");
+        assert_eq!(project_at(&restarted, expires_ms - 1), general_frontier);
+        assert_eq!(project_at(&restarted, expires_ms), overdue_frontier);
     }
 
     #[tokio::test]
