@@ -64,10 +64,14 @@ platform, accessibility, agent, and release evidence.
 ## Current orientation
 
 The local performance and consistency work is progress, but native evidence is
-still behind main. The protected communicating apps remain unchanged while the
-Mac is locked; stable development signing and actual Keychain authorization are
-unverified. Pending Thimble READY handoffs are UNSENT in the external coordination
-journal. Resume GUI coordination and native rehearsals as soon as access returns.
+still behind main. Native access has returned; protected communicating apps remain
+unchanged and stable development signing/Keychain authorization remain unverified.
+Read THIMBLE-UX011-BOUNDARY-1 in the GUI and sent consolidated checkpoint
+CODEX-ec1bc77-READY-1, superseding the unsent UX012–024 drafts. It is visible in
+local room history; remote receipt remains unverified. GUI diagnosis fails for
+Thimble's stored [2601:205:4b04:6520:ec4:7aff:fee6:b402]:45152 endpoint and sync
+reports both known peers failed. Recover peer reachability without blind resend,
+and resume disposable native rehearsals before changing the protected build.
 Do not treat local private-history timings as completing onboarding, network
 healing, cross-platform durability, or easy/predictable native UX.
 
