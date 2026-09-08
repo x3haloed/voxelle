@@ -1329,6 +1329,7 @@ pub struct VoxelleCommandHost {
     update_phase: String,
     peer_health_failures: BTreeMap<(String, String, PeerHealthOperation), PeerHealthFailure>,
     sync_evidence: SyncEvidenceView,
+    sync_evidence_peers: Vec<PeerRecord>,
     resident_page_progress: BTreeMap<(String, String), ResidentPageProgress>,
     resident_commit_tokens: BTreeMap<String, (String, String, u64, Vec<String>)>,
 }
@@ -1348,6 +1349,7 @@ enum PeerHealthOperation {
 
 #[derive(Debug, Clone)]
 struct PeerHealthFailure {
+    endpoint: PeerEndpoint,
     label: String,
 }
 
@@ -1371,6 +1373,9 @@ impl VoxelleServiceEvent {
     pub fn summary(&self) -> String {
         match self {
             VoxelleServiceEvent::Served(served) => match served.as_ref() {
+                ServedPeerRequest::EndpointExchange => {
+                    "exchanged authenticated endpoint hints".to_string()
+                }
                 ServedPeerRequest::Diagnostic(report) if report.reachable => {
                     let remote = report
                         .remote
@@ -1421,6 +1426,7 @@ pub struct OnlineHome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerSyncReport {
+    pub endpoint_exchange_error: Option<String>,
     pub governance: SyncStats,
     pub room: SyncStats,
 }
@@ -4056,7 +4062,24 @@ impl VoxelleHome {
 
     pub fn import_peer_record(&self, record: PeerRecord) -> Result<()> {
         record.validate()?;
-        let mut peers = self.known_peers()?;
+        let mut peers = match self.local_state::<KnownPeersFile>(KNOWN_PEERS_STATE)? {
+            Some(file) if file.v == 1 => file.peers,
+            Some(file) => anyhow::bail!("unsupported known peers version {}", file.v),
+            None => Vec::new(),
+        };
+        if peers.len() >= MAX_KNOWN_PEERS && !peers.iter().any(|peer| peer.same_peer(&record)) {
+            anyhow::bail!("known peer records are limited to {MAX_KNOWN_PEERS}");
+        }
+        let store = self.open_store()?;
+        voxelle_net::note_manual_endpoint(
+            &store,
+            &RoomContext::for_space(
+                record.authority_peer_id.clone(),
+                record.governance_room_id.clone(),
+            ),
+            &record.endpoint,
+            now_ms(),
+        )?;
         if let Some(existing) = peers.iter_mut().find(|peer| peer.same_peer(&record)) {
             *existing = record;
         } else {
@@ -4075,16 +4098,69 @@ impl VoxelleHome {
     }
 
     pub fn known_peers(&self) -> Result<Vec<PeerRecord>> {
-        let Some(file): Option<KnownPeersFile> = self.local_state(KNOWN_PEERS_STATE)? else {
-            return Ok(Vec::new());
+        let mut peers = match self.local_state::<KnownPeersFile>(KNOWN_PEERS_STATE)? {
+            Some(file) if file.v == 1 => file.peers,
+            Some(file) => anyhow::bail!("unsupported known peers version {}", file.v),
+            None => Vec::new(),
         };
-        if file.v != 1 {
-            anyhow::bail!("unsupported known peers version {}", file.v);
-        }
-        for record in &file.peers {
+        for record in &peers {
             record.validate()?;
         }
-        Ok(file.peers)
+        if !self.local_state_exists(HOME_SELECTION_STATE)? {
+            return Ok(peers);
+        }
+        let config = self.load_config()?;
+        let claims =
+            voxelle_net::endpoint_claims(&self.open_store()?, &config.room_context(), now_ms())?;
+        if claims.is_empty() {
+            return Ok(peers);
+        }
+        let identity = self.load_identity()?;
+        for claim in claims {
+            if claim.endpoint.peer_id == identity.peer_id
+                && claim.endpoint.device_id == identity.device.id
+            {
+                continue;
+            }
+            if let Some(existing) = peers.iter_mut().find(|peer| {
+                peer.endpoint.peer_id == claim.endpoint.peer_id
+                    && peer.endpoint.device_id == claim.endpoint.device_id
+            }) {
+                existing.endpoint = claim.endpoint;
+            } else if peers.len() < MAX_KNOWN_PEERS {
+                peers.push(PeerRecord {
+                    v: 1,
+                    label: None,
+                    space_id: config.space.space_id.clone(),
+                    governance_room_id: config.space.governance_room_id.clone(),
+                    default_room: config.space.default_room_id.clone(),
+                    authority_peer_id: config.space.authority_peer_id.clone(),
+                    endpoint: claim.endpoint,
+                });
+            }
+        }
+        peers.sort_by(|a, b| {
+            a.label
+                .cmp(&b.label)
+                .then(a.endpoint.peer_id.cmp(&b.endpoint.peer_id))
+                .then(a.endpoint.device_id.cmp(&b.endpoint.device_id))
+        });
+        Ok(peers)
+    }
+
+    fn publish_endpoint_claim(&self, endpoint: PeerEndpoint) -> Result<()> {
+        let identity = self.load_identity()?;
+        let context = self.load_config()?.room_context();
+        let instant = now_ms();
+        let claim = voxelle_net::EndpointClaimV1::create(
+            &identity,
+            endpoint,
+            context.governance_room_id.clone(),
+            instant,
+        )?;
+        let store = self.open_store()?;
+        claim.validate(&store, &context, instant)?;
+        voxelle_net::retain_endpoint_claims(&store, &context, instant, vec![claim])
     }
 
     fn read_state(&self) -> Result<ReadStateFile> {
@@ -5042,7 +5118,18 @@ impl VoxelleHome {
             merge_stats(&mut room, next);
         }
 
-        Ok(PeerSyncReport { governance, room })
+        // Routing exchange is subordinate to successful fact synchronization.
+        // Its failure cannot undo admission or claim that message sync failed.
+        let endpoint_exchange_error = node
+            .exchange_endpoints(endpoint, &mut store, &context, now_ms())
+            .await
+            .err()
+            .map(|error| format!("{error:#}"));
+        Ok(PeerSyncReport {
+            governance,
+            room,
+            endpoint_exchange_error,
+        })
     }
 
     fn load_identity(&self) -> Result<PeerIdentity> {
@@ -6418,6 +6505,7 @@ impl VoxelleCommandHost {
             update_phase,
             peer_health_failures: BTreeMap::new(),
             sync_evidence: SyncEvidenceView::default(),
+            sync_evidence_peers: Vec::new(),
             resident_page_progress: BTreeMap::new(),
             resident_commit_tokens: BTreeMap::new(),
         }
@@ -7039,7 +7127,7 @@ impl VoxelleCommandHost {
             .home
             .join_space_from_invite(&invite, request.max_events.unwrap_or(4096))
             .await?;
-        self.sync_evidence = SyncEvidenceView {
+        self.set_sync_evidence(SyncEvidenceView {
             state: if report.peers_reached == 0 {
                 SyncEvidenceState::Unreachable
             } else if report.peers_reached < report.peers_attempted {
@@ -7052,7 +7140,7 @@ impl VoxelleCommandHost {
             peers_reached: report.peers_reached,
             events_received: report.events_received,
             events_pushed: report.events_pushed,
-        };
+        });
         for error in &report.peer_errors {
             self.push_activity(
                 ServiceActivityLevel::Error,
@@ -7674,7 +7762,7 @@ impl VoxelleCommandHost {
             self.clear_peer_health_failure(&peer_record, PeerHealthOperation::Diagnose);
             self.clear_peer_health_failure(&peer_record, PeerHealthOperation::Sync);
             // Aggregate evidence included an endpoint that is no longer current.
-            self.sync_evidence = SyncEvidenceView::default();
+            self.set_sync_evidence(SyncEvidenceView::default());
         }
         self.request_sync();
         self.push_activity(ServiceActivityLevel::Info, format!("imported peer {label}"));
@@ -7812,12 +7900,12 @@ impl VoxelleCommandHost {
         let report = match result {
             Ok(report) => report,
             Err(error) => {
-                self.sync_evidence = SyncEvidenceView {
+                self.set_sync_evidence(SyncEvidenceView {
                     state: SyncEvidenceState::Unreachable,
                     attempted_ms: Some(now_ms()),
                     peers_attempted: 1,
                     ..SyncEvidenceView::default()
-                };
+                });
                 self.record_peer_health_failure(peer, PeerHealthOperation::Sync);
                 self.push_activity(
                     ServiceActivityLevel::Error,
@@ -7827,14 +7915,20 @@ impl VoxelleCommandHost {
                 return Err(error);
             }
         };
-        self.sync_evidence = SyncEvidenceView {
+        if let Some(error) = &report.endpoint_exchange_error {
+            self.push_activity(
+                ServiceActivityLevel::Error,
+                format!("messages synchronized; endpoint exchange unavailable: {error}"),
+            );
+        }
+        self.set_sync_evidence(SyncEvidenceView {
             state: SyncEvidenceState::PeerConfirmed,
             attempted_ms: Some(now_ms()),
             peers_attempted: 1,
             peers_reached: 1,
             events_received: report.governance.accepted + report.room.accepted,
             events_pushed: report.governance.remote_accepted + report.room.remote_accepted,
-        };
+        });
         self.clear_peer_health_failure(peer, PeerHealthOperation::Sync);
         self.push_activity(
             ServiceActivityLevel::Info,
@@ -7885,6 +7979,12 @@ impl VoxelleCommandHost {
                 .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id));
             match sync {
                 Ok(report) => {
+                    if let Some(error) = &report.endpoint_exchange_error {
+                        self.push_activity(
+                            ServiceActivityLevel::Error,
+                            format!("endpoint exchange with {label} unavailable: {error}"),
+                        );
+                    }
                     peers_reached += 1;
                     self.clear_peer_health_failure(&peer, PeerHealthOperation::Sync);
                     let received = report.governance.accepted + report.room.accepted;
@@ -7909,7 +8009,7 @@ impl VoxelleCommandHost {
                 }
             }
         }
-        self.sync_evidence = SyncEvidenceView {
+        self.set_sync_evidence(SyncEvidenceView {
             state: if peers_attempted == 0 {
                 SyncEvidenceState::Unknown
             } else if peers_reached == 0 {
@@ -7924,7 +8024,7 @@ impl VoxelleCommandHost {
             peers_reached,
             events_received,
             events_pushed,
-        };
+        });
     }
 
     fn snapshot_without_drain(&self) -> Result<ShellSnapshotView> {
@@ -7948,7 +8048,8 @@ impl VoxelleCommandHost {
             Err(_) => (None, None),
         };
         let mut network_health = self.home.network_health_view(online)?;
-        self.apply_peer_health_failures(&mut network_health);
+        let current_peers = self.home.known_peers()?;
+        self.apply_peer_health_failures(&mut network_health, &current_peers);
         let preferences = self.home.ui_preferences()?;
         let ui_ontology = match &self.product_generation {
             Some(active) => apply_ui_preferences(active.generation.ontology.clone(), preferences),
@@ -7981,7 +8082,11 @@ impl VoxelleCommandHost {
             product_component,
             service_activity: self.activity.clone(),
             search_results: self.search_results.clone(),
-            sync_evidence: self.sync_evidence.clone(),
+            sync_evidence: if current_peers == self.sync_evidence_peers {
+                self.sync_evidence.clone()
+            } else {
+                SyncEvidenceView::default()
+            },
         })
     }
 
@@ -8091,6 +8196,11 @@ impl VoxelleCommandHost {
         }
     }
 
+    fn set_sync_evidence(&mut self, evidence: SyncEvidenceView) {
+        self.sync_evidence_peers = self.home.known_peers().unwrap_or_default();
+        self.sync_evidence = evidence;
+    }
+
     fn record_peer_health_failure(&mut self, peer: &PeerRecord, operation: PeerHealthOperation) {
         self.peer_health_failures.insert(
             (
@@ -8099,6 +8209,7 @@ impl VoxelleCommandHost {
                 operation,
             ),
             PeerHealthFailure {
+                endpoint: peer.endpoint.clone(),
                 label: peer
                     .label
                     .clone()
@@ -8115,7 +8226,7 @@ impl VoxelleCommandHost {
         ));
     }
 
-    fn apply_peer_health_failures(&self, health: &mut NetworkHealthView) {
+    fn apply_peer_health_failures(&self, health: &mut NetworkHealthView, peers: &[PeerRecord]) {
         for (operation, row_id, command, noun) in [
             (
                 PeerHealthOperation::Diagnose,
@@ -8133,7 +8244,10 @@ impl VoxelleCommandHost {
             let failures = self
                 .peer_health_failures
                 .iter()
-                .filter(|((_, _, candidate), _)| *candidate == operation)
+                .filter(|((_, _, candidate), failure)| {
+                    *candidate == operation
+                        && peers.iter().any(|peer| peer.endpoint == failure.endpoint)
+                })
                 .collect::<Vec<_>>();
             let Some(((peer_id, device_id, _), first)) = failures.first() else {
                 continue;
@@ -8617,6 +8731,7 @@ async fn run_service_loop(
 ) {
     // The service, not a polling consumer, owns eventual synchronization. This
     // task never holds the command host lock and is canceled with this runtime.
+    let (endpoint_tx, endpoint_rx) = tokio::sync::watch::channel(server.online.endpoint.clone());
     let sync_home = server.home.clone();
     let sync_events = event_tx.clone();
     let sync_notify = snapshot_invalidated.clone();
@@ -8627,6 +8742,12 @@ async fn run_service_loop(
             tokio::select! {
                 _ = interval.tick() => {},
                 _ = sync_requested.notified() => {},
+            }
+            let advertised = endpoint_rx.borrow().clone();
+            if let Err(error) = sync_home.publish_endpoint_claim(advertised) {
+                let _ = sync_events.try_send(VoxelleServiceEvent::Failed(format!(
+                    "publish endpoint hint: {error:#}"
+                )));
             }
             let event = match synchronize_known_peers(&sync_home, 512).await {
                 Ok(reports) if reports.is_empty() => continue,
@@ -8667,13 +8788,15 @@ async fn run_service_loop(
                                 IpAddr::V6(selected),
                                 observed_address.port(),
                             );
-                            if advertised != observed_address
-                                && event_tx
-                                    .try_send(VoxelleServiceEvent::AutomaticAddressChanged(advertised))
-                                    .is_ok()
-                            {
-                                observed_address = advertised;
-                                snapshot_invalidated();
+                            if advertised != observed_address {
+                                // Routing refresh must not depend on a UI consumer draining telemetry.
+                                let mut endpoint = server.online.endpoint.clone();
+                                endpoint.addr = advertised;
+                                endpoint_tx.send_replace(endpoint);
+                                if event_tx.try_send(VoxelleServiceEvent::AutomaticAddressChanged(advertised)).is_ok() {
+                                    observed_address = advertised;
+                                    snapshot_invalidated();
+                                }
                             }
                         }
                         Err(error) => {
@@ -14579,6 +14702,233 @@ mod tests {
             .expect_err("an endpoint record is not a membership capability");
         assert!(sync_error.to_string().contains("active home authority"));
         service.stop().expect("stop service");
+    }
+
+    #[tokio::test]
+    async fn signed_endpoint_hints_repair_routes_through_an_ordinary_peer() {
+        let dir = tempdir().unwrap();
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+        let carol = VoxelleHome::new(dir.path().join("carol"));
+        alice.init(DEFAULT_ROOM_ID).unwrap();
+        let alice_service = alice
+            .start_service("[::1]:0".parse().unwrap(), None)
+            .unwrap();
+        let old_alice = alice_service.online().peer_record(None, None).unwrap();
+        let invite = alice
+            .create_space_invite(alice_service.online(), now_ms() + 120_000)
+            .unwrap();
+        bob.join_space_from_invite(&invite, 64).await.unwrap();
+        carol.join_space_from_invite(&invite, 64).await.unwrap();
+        let bob_service = bob.start_service("[::1]:0".parse().unwrap(), None).unwrap();
+        let carol_service = carol
+            .start_service("[::1]:0".parse().unwrap(), None)
+            .unwrap();
+        let carol_record = carol_service.online().peer_record(None, None).unwrap();
+        // Establish the ordinary retaining peer before the partition/address move.
+        alice.import_peer_record(carol_record.clone()).unwrap();
+        bob.import_peer_record(carol_record).unwrap();
+        let mut observer = VoxelleCommandHost::new(&carol.root);
+        observer.apply_sync_reports(vec![(
+            old_alice.clone(),
+            Err("old endpoint failed".to_string()),
+        )]);
+        bob_service.stop().unwrap();
+        alice_service.stop().unwrap();
+        let _old_port = tokio::net::UdpSocket::bind(old_alice.endpoint.addr)
+            .await
+            .unwrap();
+        let alice_service = alice
+            .start_service("[::1]:0".parse().unwrap(), None)
+            .unwrap();
+        let new_alice = alice_service.online().peer_record(None, None).unwrap();
+        assert_ne!(old_alice.endpoint.addr, new_alice.endpoint.addr);
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if carol
+                    .known_peers()
+                    .unwrap()
+                    .iter()
+                    .any(|peer| peer.endpoint == new_alice.endpoint)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("Carol learns Alice's new listener");
+        let repaired_health = observer.snapshot().unwrap();
+        assert_ne!(
+            network_health_status(&repaired_health.network_health, "sync"),
+            NetworkHealthStatus::Broken
+        );
+        assert_eq!(
+            repaired_health.sync_evidence.state,
+            SyncEvidenceState::Unknown
+        );
+
+        let bob_service = bob.start_service("[::1]:0".parse().unwrap(), None).unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if bob
+                    .known_peers()
+                    .unwrap()
+                    .iter()
+                    .any(|peer| peer.endpoint == new_alice.endpoint)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("Bob learns Alice's signed replacement through Carol");
+        carol_service.stop().unwrap();
+        let message = bob
+            .send_message("direct delivery after retaining peer stops", None)
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if alice
+                    .read_messages(None)
+                    .unwrap()
+                    .iter()
+                    .any(|item| item.event_id == message.event_id)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await
+        .expect("delivery through repaired direct route without Carol");
+        bob_service.stop().unwrap();
+        alice_service.stop().unwrap();
+        let reopened = VoxelleHome::new(dir.path().join("alice"));
+        assert!(reopened
+            .read_messages(None)
+            .unwrap()
+            .iter()
+            .any(|item| item.event_id == message.event_id));
+    }
+
+    #[tokio::test]
+    async fn endpoint_exchange_does_not_disclose_hints_to_a_nonmember() {
+        let dir = tempdir().unwrap();
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).unwrap();
+        let service = home
+            .start_service("[::1]:0".parse().unwrap(), None)
+            .unwrap();
+        let remote = service.online().endpoint.clone();
+        let context = home.load_config().unwrap().room_context();
+        // The test supplies the server's admitted facts to the client's local
+        // validator, but the stranger's authenticated identity is still excluded.
+        let mut client_store = home.open_store().unwrap();
+        let stranger = QuicNode::bind_ipv6_loopback(PeerIdentity::generate().unwrap()).unwrap();
+        assert!(stranger
+            .exchange_endpoints(&remote, &mut client_store, &context, now_ms())
+            .await
+            .is_err());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if std::iter::from_fn(|| service.try_recv_event()).any(|event|
+                    matches!(event, VoxelleServiceEvent::Failed(error) if error.contains("current space membership"))) { break; }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("server rejects the authenticated stranger before returning hints");
+        service.stop().unwrap();
+    }
+
+    #[tokio::test]
+    async fn endpoint_claim_validation_rejects_tampering_expiry_and_nonmembers() {
+        use voxelle_net::{endpoint_claims, retain_endpoint_claims, EndpointClaimV1};
+        let dir = tempdir().unwrap();
+        let home = VoxelleHome::new(dir.path().join("home"));
+        home.init(DEFAULT_ROOM_ID).unwrap();
+        let identity = home.load_identity().unwrap();
+        let node = QuicNode::bind_ipv6_loopback_with_certificate(
+            identity.clone(),
+            home.load_certificate().unwrap(),
+        )
+        .unwrap();
+        let endpoint = node.peer_endpoint(node.local_addr().unwrap()).unwrap();
+        let context = home.load_config().unwrap().room_context();
+        let store = home.open_store().unwrap();
+        let instant = now_ms();
+        let claim = EndpointClaimV1::create(
+            &identity,
+            endpoint.clone(),
+            context.governance_room_id.clone(),
+            instant,
+        )
+        .unwrap();
+        claim.validate(&store, &context, instant).unwrap();
+        let mut tampered = claim.clone();
+        tampered
+            .endpoint
+            .addr
+            .set_port(endpoint.addr.port().saturating_add(1));
+        assert!(tampered.validate(&store, &context, instant).is_err());
+        assert!(claim.validate(&store, &context, claim.expires_ms).is_err());
+        assert!(claim.validate(&store, &context, instant - 30_001).is_err());
+        let other = PeerIdentity::generate().unwrap();
+        let other_node = QuicNode::bind_ipv6_loopback(other.clone()).unwrap();
+        let other_claim = EndpointClaimV1::create(
+            &other,
+            other_node
+                .peer_endpoint(other_node.local_addr().unwrap())
+                .unwrap(),
+            context.governance_room_id.clone(),
+            instant,
+        )
+        .unwrap();
+        assert!(other_claim.validate(&store, &context, instant).is_err());
+        let mut new_endpoint = endpoint;
+        new_endpoint
+            .addr
+            .set_port(new_endpoint.addr.port().saturating_add(2));
+        let newer = EndpointClaimV1::create(
+            &identity,
+            new_endpoint,
+            context.governance_room_id.clone(),
+            instant + 1,
+        )
+        .unwrap();
+        retain_endpoint_claims(
+            &store,
+            &context,
+            instant + 1,
+            vec![newer.clone(), claim.clone(), tampered, other_claim],
+        )
+        .unwrap();
+        assert_eq!(
+            endpoint_claims(&store, &context, instant + 1).unwrap(),
+            vec![newer.clone()]
+        );
+        assert!(retain_endpoint_claims(&store, &context, instant, vec![claim; 129]).is_err());
+        voxelle_net::note_manual_endpoint(&store, &context, &newer.endpoint, instant + 2).unwrap();
+        assert!(endpoint_claims(&store, &context, instant + 2)
+            .unwrap()
+            .is_empty());
+        assert!(endpoint_claims(&store, &context, newer.expires_ms)
+            .unwrap()
+            .is_empty());
+        let cross_space = RoomContext::for_space(identity.peer_id.clone(), "s:other:governance");
+        assert!(newer.validate(&store, &cross_space, instant + 1).is_err());
+        home.create_governance_event(
+            "DEVICE_REVOKE",
+            serde_json::json!({
+                "peer_id": identity.peer_id, "device_id": identity.device.id
+            }),
+        )
+        .unwrap();
+        assert!(newer.validate(&store, &context, now_ms()).is_err());
+        retain_endpoint_claims(&store, &context, now_ms(), vec![newer]).unwrap();
+        assert!(endpoint_claims(&store, &context, now_ms())
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test]

@@ -303,7 +303,14 @@ LAN discovery must only advertise limited device reachability data and must not 
 
 Connected peers exchange known endpoint records for peers/devices they are authorized to discuss.
 
-Endpoint gossip must be bounded, expiring, signed where possible, and treated as hints.
+Endpoint gossip must be bounded, expiring, device-signed, and treated as hints.
+The native implementation's versioned exchange and signature bytes are specified
+in P2P RFC §10.3.1. It follows ordinary fact synchronization and checks keys,
+membership and revocation against admitted local state. Signed hints update the
+same peer selection used by automatic synchronization; they do not grant membership.
+A returning peer can learn a changed listener through an ordinary retaining peer
+and continue directly after that retaining peer stops. A surviving route is still
+required: this is not global discovery or a universal connectivity claim.
 
 ### 6.4 User-Operated Stable Peers
 

@@ -295,7 +295,11 @@ with up to four automatic peer requests in flight. Polling local state must not 
 or manufacture new sync evidence. `shell.refresh` is also observational.
 Locally admitted mutations request a coalesced background sync and return their
 local projection without awaiting peers; success does not assert remote receipt.
-Startup and peer import also request a pass. Explicit `peer.sync` still awaits
+Startup and peer import also request a pass. Online peers publish expiring signed
+listener hints and exchange them after ordinary fact synchronization. Valid hints
+refresh routing selection using admitted membership/device keys; they do not
+assert reachability or confer authority. A failed hint exchange is reported
+separately from successful message synchronization. Explicit `peer.sync` still awaits
 its requested peer and reports the resulting evidence, while ordinary local
 commands and reads can proceed. A shell home-transition gate prevents sync from
 racing home replacement or runtime lifecycle changes. `peer.diagnose` captures

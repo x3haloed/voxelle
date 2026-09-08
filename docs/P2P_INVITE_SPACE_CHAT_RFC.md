@@ -899,6 +899,56 @@ accepted-event set and the monotonic identity head atomically. Retrying an
 already accepted event must be able to repair a missing head without creating a
 second interpretation of the event.
 
+### 10.3.1 Device-signed endpoint exchange (UX-012)
+
+After ordinary governance and room synchronization, members exchange disposable
+routing claims on a separate authenticated QUIC request. Request and response
+use the same JSON shape, with at most 128 claims and 512 KiB encoded bytes:
+
+```json
+{"endpoint_exchange":1,"governance_room_id":"s:…:governance","claims":[]}
+```
+
+Each claim has fields in this signing order: `v` (1), `governance_room_id`,
+`endpoint`, `issued_ms`, `expires_ms`, `sig`. `endpoint` uses the existing public
+PeerEndpoint shape (`v`, `addr`, `peer_id`, `device_id`, `quic_cert_der_b64`,
+`quic_cert_fingerprint`), in that field order. Signing bytes are UTF-8
+`voxelle.endpoint-claim.v1` followed by one zero byte and compact JSON of the
+claim with `sig` set to the empty string. The authorized device signs those
+bytes using its existing Ed25519 device capability. No root, recovery,
+encryption, private QUIC key, or private-room information is included.
+
+A receiver MUST validate the signature using the device key in its current
+admitted identity head and require current space membership, device authority,
+and absence of space revocation. Claims cannot introduce an identity proof or
+membership fact. Unknown/new authority must first arrive through ordinary fact
+admission. The authenticated exchange participant must satisfy the same current
+membership/device checks before receiving any hints. The claim's governance
+room must match the receiver's accepted space context.
+
+Canonical claim encodings are at most 4 KiB, name a concrete nonzero-port IPv6 unicast listener,
+reject interface-scoped/link-local addresses, and bind the certificate fingerprint to the public certificate. The maximum
+lifetime is fifteen minutes; claims issued more than thirty seconds in the
+receiver's future or expired at observation are ignored. The online service
+refreshes its own claim through its existing periodic sync loop. Ephemeral
+outbound source ports are never advertised as listeners. Loopback claims are
+not transferred over a non-loopback connection.
+
+The bounded local cache retains one newest claim per principal/device, ordered
+by `(issued_ms, sig)` for deterministic ties. Its replay high-water mark remains
+through the maximum claim lifetime plus clock allowance, even if a particular
+claim expires earlier. Expired claims are never used as routes. The cache is
+disposable routing state, not accepted-event history; atomic local-state updates
+prevent concurrent exchanges from losing newer claims. Explicit record imports
+suppress claims issued before the local import, while later signed claims may
+refresh the route. Every use rechecks current authority and expiry.
+
+Failure of the optional routing exchange is reported independently of successful
+message synchronization; it cannot roll back admitted events or manufacture a
+failed message send. This adds one versioned request type, without replacing
+identity, event, room-sync, or cryptographic admission contracts. It does not
+provide discovery when no saved route or ordinary retaining peer is reachable.
+
 ### 10.4 Anti-Abuse at Transport Layer
 
 Peers **MUST** implement:

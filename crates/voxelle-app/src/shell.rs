@@ -1631,7 +1631,7 @@ mod tests {
         let alice_online = alice
             .execute_serialized_command(
                 "runtime.goOnline",
-                serde_json::json!({ "bind": null, "advertise": null }),
+                serde_json::json!({ "bind": "[::1]:0", "advertise": null }),
             )
             .await
             .expect("alice online");
@@ -1832,17 +1832,43 @@ mod tests {
             .iter()
             .any(|message| message.text == "pushes automatically"));
 
+        tokio::time::timeout(std::time::Duration::from_secs(25), async {
+            loop {
+                if alice
+                    .host
+                    .lock()
+                    .await
+                    .home
+                    .known_peers()
+                    .unwrap()
+                    .iter()
+                    .any(|peer| peer.endpoint == new_bob_record.endpoint)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("endpoint exchange completes after message admission");
+        let alice_host = alice.host.lock().await;
+        assert!(alice_host
+            .home
+            .local_state::<crate::KnownPeersFile>(crate::KNOWN_PEERS_STATE)
+            .expect("manual records")
+            .expect("records")
+            .peers
+            .contains(&old_bob_record));
         assert!(
-            alice
-                .host
-                .lock()
-                .await
+            alice_host
                 .home
                 .known_peers()
-                .expect("alice records")
-                .contains(&old_bob_record),
-            "delivery must not depend on refreshing the stale record"
+                .expect("effective records")
+                .iter()
+                .any(|peer| peer.endpoint == new_bob_record.endpoint),
+            "signed exchange must repair the effective address without manual import"
         );
+        drop(alice_host);
 
         let alice_after_serving = alice
             .execute_serialized_command("shell.refresh", serde_json::json!({}))

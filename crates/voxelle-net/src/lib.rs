@@ -1,3 +1,8 @@
+mod endpoint_exchange;
+pub use endpoint_exchange::{
+    endpoint_claims, note_manual_endpoint, retain_endpoint_claims, EndpointClaimV1,
+};
+
 use anyhow::{anyhow, bail, Context, Result};
 use base64::Engine;
 use quinn_proto::crypto::rustls::{QuicClientConfig, QuicServerConfig};
@@ -192,6 +197,7 @@ pub struct ServedRoomSync {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServedPeerRequest {
+    EndpointExchange,
     Diagnostic(PeerReachabilityReport),
     RoomSync(ServedRoomSync),
 }
@@ -533,6 +539,12 @@ impl QuicNode {
         let request: serde_json::Value = recv_json(recv, MAX_SYNC_BYTES).await?;
 
         let now_ms = clock();
+
+        if request.get("endpoint_exchange").is_some() {
+            return self
+                .serve_endpoint_exchange(source, context, now_ms, authenticated, send, request)
+                .await;
+        }
 
         if request.get("nonce").is_some() {
             let ping: DiagnosticPingV1 =

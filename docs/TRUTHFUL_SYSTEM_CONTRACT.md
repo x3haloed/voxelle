@@ -458,6 +458,46 @@ outbound sockets, preserve admission/revocation checks and membership privacy,
 and handle stale/replayed hints without making routing an authority. No new wire
 contract or endpoint authority is introduced by this test.
 
+## Signed Endpoint Healing — UX-012
+
+Preserve **Central Truth**, **Trust And Authority**, **Durable Convergence**, and
+**Complete User Causal Paths** while implementing IPv6 specification §6.3. Existing
+accepted governance and identity heads remain the only authority for membership
+and device keys. The network layer signs and validates bounded, expiring listener
+claims; ordinary retaining peers forward them without acquiring authority. The
+existing service publishes its own current listener and exchanges hints after
+fact synchronization. The application's existing peer selector overlays valid
+claims onto manually imported routes, retaining manual-import precedence over
+older claims. This removes manual record handoff from the exercised changed-port
+recovery path; it does not introduce a second event admission path or a service.
+
+Routing claims occupy bounded disposable SQLite local state, updated atomically.
+Neither authoritative history nor private-room key custody changes. The service's
+current advertised endpoint reaches its publisher even if UI telemetry cannot be
+drained. Health failure and aggregate sync projections are scoped to the records
+actually tested, so learned replacements do not inherit old-address evidence.
+The wire extension, bounds, expiry and signature bytes are in RFC §10.3.1.
+
+Real tests exercise one-sided port repair and three-peer recovery: Carol learns
+Alice's replacement listener, returning Bob learns that signed hint from Carol,
+Carol stops, and Bob's new message reaches Alice directly and survives reopen.
+Adversarial checks reject tampering, expired/future claims, cross-space claims,
+nonmembers, excessive count, and revoked devices; older replay cannot replace a
+newer retained claim. A real nonmember QUIC exchange fails before hints are
+returned. Concurrent local-state updates preserve every committed update and
+rollback rejected updates. Existing public, private/recovery, offline-inviter,
+and command-surface preservation tests pass locally.
+
+The full local workspace suite passes (80 application tests, one manual probe
+ignored), as does strict workspace Clippy. A two-event debug-home snapshot probe
+measured about 72 ms; this does not establish full-space performance.
+Native build verification is available, but the changed native flow is not yet
+verified: Computer Use reported the Mac locked and unable to unlock. Linux and
+physical non-loopback endpoint-healing evidence are also pending. No live protected
+profile has been rebuilt for this change. Receipt of gossip is not proof of the
+advertised endpoint's reachability; a subsequent authenticated sync supplies that
+evidence. Loss of every reachable saved route still requires another introduction.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

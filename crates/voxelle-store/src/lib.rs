@@ -593,6 +593,33 @@ impl Store {
             .transpose()
     }
 
+    /// Atomically update disposable local state without losing concurrent writes.
+    pub fn update_local_state<T: Serialize + DeserializeOwned>(
+        &self,
+        key: &str,
+        update: impl FnOnce(Option<T>) -> Result<T>,
+    ) -> Result<()> {
+        let transaction = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
+        let previous: Option<String> = transaction
+            .query_row(
+                "SELECT value_json FROM local_state WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let value = update(
+            previous
+                .map(|json| serde_json::from_str(&json))
+                .transpose()?,
+        )?;
+        transaction.execute(
+            "INSERT INTO local_state (key, value_json) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+            params![key, serde_json::to_string(&value)?],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     pub fn put_local_state<T: Serialize>(&self, key: &str, value: &T) -> Result<()> {
         let json =
             serde_json::to_string(value).with_context(|| format!("serialize local state {key}"))?;
@@ -1134,6 +1161,34 @@ mod tests {
             store.room_heads("room:general").expect("heads"),
             vec![child.event_id]
         );
+    }
+
+    #[test]
+    fn atomic_local_state_updates_preserve_concurrent_writers_and_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("store.sqlite3");
+        let store = Store::open(&path).unwrap();
+        store.put_local_state("counter", &0u64).unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let path = &path;
+                scope.spawn(move || {
+                    let store = Store::open(path).unwrap();
+                    for _ in 0..10 {
+                        store
+                            .update_local_state("counter", |value: Option<u64>| {
+                                Ok(value.unwrap() + 1)
+                            })
+                            .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(store.local_state::<u64>("counter").unwrap(), Some(40));
+        assert!(store
+            .update_local_state("counter", |_: Option<u64>| anyhow::bail!("reject update"))
+            .is_err());
+        assert_eq!(store.local_state::<u64>("counter").unwrap(), Some(40));
     }
 
     #[test]

@@ -76,7 +76,7 @@ platform, accessibility, agent, and release evidence.
   test also crossed a 60-second lease when run alone. UX-010 removes that
   machine-speed assumption: retained events are projected immediately before
   and exactly at expiry across selection and restart, checking active/overdue
-  semantics and the next projection deadline. Linux confirmation is pending. Result sends returned HTTP 500 without verified
+  semantics and the next projection deadline. Thimble confirmed all three frontier tests on Linux f227bdc. Result sends returned HTTP 500 without verified
   delivery; retain uncertain-delivery handling while obtaining the concrete cause.
 - Linux `14c8ebe` public-workflow sync closed and revoked-invite preflight
   occasionally succeeded (focused rerun passed). Address-monitor cancellation of
@@ -92,11 +92,11 @@ platform, accessibility, agent, and release evidence.
   label did not establish peer connectivity. Profile names were known but
   manual connection controls still used opaque peer IDs. UX-011 proves automatic
   bidirectional catch-up after one peer changes port while the other retains its
-  stale record, provided a surviving outbound route exists. Current transport
-  has no advertised endpoint exchange; IPv6 spec §6.3 remains unimplemented.
-  Next endpoint work needs authenticated, bounded, expiring listening-address
-  claims and a real three-peer stale-route recovery test; incoming ephemeral
-  socket addresses cannot be substituted for listeners.
+  stale record, provided a surviving outbound route exists. UX-012 adds device-signed, bounded, expiring listener exchange through current
+  admitted space/device authority. A three-peer real-QUIC test learns the changed
+  address through Carol, then delivers directly after Carol stops. Incoming
+  ephemeral ports are not listener evidence. Native rehearsal is pending because
+  Computer Use reports the Mac locked; Linux/non-loopback confirmation is pending.
 - Rebuilding an ad-hoc macOS artifact changes Keychain identity. Disposable
   test homes can use the documented debug-only test vault; continuing homes
   must retain production protection and an explicit replacement/recovery path.
