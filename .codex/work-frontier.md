@@ -74,8 +74,11 @@ platform, accessibility, agent, and release evidence.
   UX-016 found a severe private-history regression: 100 private messages took
   ~11s per snapshot. Skipping irrelevant-room crypto in governance derivation
   and reusing one imported key bundle per reconstruction reduces this to ~787ms.
-  Full validation remains; larger/multi-member private histories and the remaining
-  latency still require work. Native/Linux evidence remains pending.
+  UX-017 reuses creation-time governance within one core-owned semantic replay,
+  with full derivation for incomplete dependencies and boundary changes. The same
+  100-message private snapshot now averages ~147ms; 176 workspace tests, strict
+  Clippy, and the native build pass. Larger/multi-member histories and native/Linux
+  evidence remain pending.
   Local acceptance must stay responsive independently of unreachable peers,
   while durable propagation and truthful peer-relative evidence remain intact.
 - Thimble measured ~3-second local reads before stale peer import on Linux

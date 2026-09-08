@@ -2612,6 +2612,72 @@ fn active_call_participants(
         .collect()
 }
 
+/// Semantic replay of decrypted room facts within one retained-history read.
+/// Envelope authentication and durable admission remain the caller's responsibility.
+/// No state survives this replay or bypasses the ordinary semantic validator.
+pub struct RoomSemanticReplay {
+    accepted: Vec<EventV1>,
+    context: RoomContext,
+    governance_ids: HashSet<String>,
+    boundaries: Vec<i64>,
+    reusable: bool,
+    cached: Option<(usize, GovernanceState)>,
+}
+
+impl RoomSemanticReplay {
+    pub fn new(governance: Vec<EventV1>, context: RoomContext) -> Self {
+        let governance_ids: HashSet<_> = governance.iter().map(|e| e.event_id.clone()).collect();
+        // Added room facts cannot change governance ordering only when every
+        // governance dependency is already in this closed graph. Preserve the
+        // general derivation for incomplete, mixed-room, or duplicate-ID input.
+        let reusable = governance_ids.len() == governance.len()
+            && governance.iter().all(|e| {
+                e.room_id == context.governance_room_id
+                    && e.parents.iter().all(|id| governance_ids.contains(id))
+            });
+        let mut boundaries: Vec<_> = governance.iter().map(|e| e.created_ms).collect();
+        boundaries.sort_unstable();
+        boundaries.dedup();
+        Self {
+            accepted: governance,
+            context,
+            governance_ids,
+            boundaries,
+            reusable,
+            cached: None,
+        }
+    }
+
+    pub fn validate_and_append(&mut self, event: &EventV1, now_ms: i64) -> AcceptResult<()> {
+        let cutoff = self
+            .boundaries
+            .partition_point(|created| *created <= now_ms);
+        if !self.reusable || self.cached.as_ref().is_none_or(|(at, _)| *at != cutoff) {
+            self.cached = Some((
+                cutoff,
+                derive_governance_state(&self.accepted, &self.context, now_ms),
+            ));
+        }
+        let state = &self.cached.as_ref().expect("derived governance").1;
+        validate_room_event_semantics_in_state(
+            event,
+            &self.accepted,
+            &self.context,
+            now_ms,
+            state,
+        )?;
+        // This API is also safe on unexpected governance facts or ID collisions:
+        // subsequent decisions use the original complete derivation.
+        if event.room_id == self.context.governance_room_id
+            || self.governance_ids.contains(&event.event_id)
+        {
+            self.reusable = false;
+        }
+        self.accepted.push(event.clone());
+        Ok(())
+    }
+}
+
 pub fn validate_room_event_semantics(
     event: &EventV1,
     accepted_events: &[EventV1],
@@ -2619,6 +2685,16 @@ pub fn validate_room_event_semantics(
     now_ms: i64,
 ) -> AcceptResult<()> {
     let state = derive_governance_state(accepted_events, context, now_ms);
+    validate_room_event_semantics_in_state(event, accepted_events, context, now_ms, &state)
+}
+
+fn validate_room_event_semantics_in_state(
+    event: &EventV1,
+    accepted_events: &[EventV1],
+    context: &RoomContext,
+    now_ms: i64,
+    state: &GovernanceState,
+) -> AcceptResult<()> {
     if context.require_invite {
         if state.banned.contains(&event.author_peer_id) {
             return Err(AcceptError::Banned);
@@ -2634,7 +2710,7 @@ pub fn validate_room_event_semantics(
             return Err(AcceptError::PrivateRoom);
         }
     }
-    validate_room_event_body(event, accepted_events, &state, context, now_ms)
+    validate_room_event_body(event, accepted_events, state, context, now_ms)
 }
 
 fn validate_mentions(event: &EventV1) -> AcceptResult<()> {
@@ -4110,6 +4186,73 @@ mod tests {
 
         accept_event(&event, &[space.genesis], &context, 1_100)
             .expect("space authority is an implicit member");
+    }
+
+    #[test]
+    fn semantic_replay_matches_full_validation_across_time_and_incomplete_graphs() {
+        let authority = PeerIdentity::generate_at(900).unwrap();
+        let space = create_space(&authority, "Replay", "general", 1_000).unwrap();
+        let context = RoomContext::for_space(&authority.peer_id, &space.governance_room_id);
+        let ban = create_event(
+            &authority,
+            delegation_for(&authority, vec!["room:governance".to_string()]),
+            &space.governance_room_id,
+            1_200,
+            "MEMBER_BAN",
+            vec![space.genesis.event_id.clone()],
+            json!({"peer_id": authority.peer_id}),
+        )
+        .unwrap();
+        for incomplete in [false, true] {
+            let mut governance = vec![space.genesis.clone(), ban.clone()];
+            if incomplete {
+                // Authenticated governance with an as-yet absent room dependency
+                // must retain the general topological derivation path.
+                governance[1] = create_event(
+                    &authority,
+                    delegation_for(&authority, vec!["room:governance".to_string()]),
+                    &space.governance_room_id,
+                    1_200,
+                    "MEMBER_BAN",
+                    vec!["e:missing-room-parent".to_string()],
+                    json!({"peer_id": authority.peer_id}),
+                )
+                .unwrap();
+            }
+            let mut full = governance.clone();
+            let mut replay = RoomSemanticReplay::new(governance, context.clone());
+            for (i, at) in [999, 1_100, 1_150, 1_200, 1_300, 1_199, 1_201]
+                .into_iter()
+                .enumerate()
+            {
+                let event = create_event(
+                    &authority,
+                    delegation_for(&authority, vec!["room:post".to_string()]),
+                    &space.default_room_id,
+                    at,
+                    "MSG_POST",
+                    vec![],
+                    json!({"text": format!("message {i}")}),
+                )
+                .unwrap();
+                let expected = validate_room_event_semantics(&event, &full, &context, at);
+                if at < 1_000 {
+                    assert_eq!(expected, Err(AcceptError::NotMember));
+                } else if at >= 1_200 {
+                    assert_eq!(expected, Err(AcceptError::Banned));
+                } else {
+                    assert!(expected.is_ok());
+                }
+                assert_eq!(replay.validate_and_append(&event, at), expected);
+                if expected.is_ok() {
+                    full.push(event);
+                }
+            }
+            assert_eq!(
+                replay.accepted, full,
+                "rejected facts must not enter replay"
+            );
+        }
     }
 
     #[test]

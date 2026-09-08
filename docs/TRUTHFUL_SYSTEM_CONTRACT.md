@@ -584,6 +584,39 @@ that a room-scoped ban and a forged governance ban do not change membership,
 while the authentic governance-room ban does. Strict Clippy and the native build
 pass. Native lived verification and independent Linux timing remain pending.
 
+## Creation-time Semantic Replay — UX-017
+
+Preserve **One Admission Truth**, **Governance Meaning**, **Private-room
+Confidentiality And Validation**, and **Topology Preservation**, including RFC
+§§7.5–7.6 and §11. Authenticated devices still propose facts; retained governance
+still determines membership and permissions; decrypting a private event still
+requires semantic validation against prior accepted meaning at creation time.
+There is no envelope revision, new authority, retained cache, or wire change.
+
+The removed category is repeated governance derivation for every decrypted fact
+between the same governance timestamps within one history reconstruction. A
+core-owned `RoomSemanticReplay` owns that reconstruction's accepted facts and
+reuses the ordinary derived state only when the initial governance dependency
+graph is closed and has unique IDs. Added room facts then cannot change relative
+governance ordering. Incomplete/mixed graphs, appended governance, and governance
+ID collisions retain the full derivation path. Timestamp changes in either
+direction across a governance boundary cause fresh derivation. Both replay and
+the existing public validator call the same semantic decision function; only
+successful decisions append facts. Ciphertext authentication and epoch-key
+selection remain unchanged. The state and ID/timestamp indexes live only for one
+reconstruction; there is no cross-operation invalidation mechanism.
+
+A differential core test exercises membership before genesis, the exact ban
+boundary, backward timestamps, incomplete dependencies, and rejection without
+history pollution against the original full derivation. The full workspace suite
+passes (176 tests, one manual profiler ignored), including private recovery,
+identity revocation, public workflows, and network preservation. Strict Clippy
+and the native build pass. On the same one-member, 100-message private-room
+manual probe, three-sample local debug snapshots average 147 ms versus UX-016's
+787 ms (about 5.4x faster); channel projection averages 29 ms versus 192 ms.
+Measurement ran after builds finished. This does not establish larger-history,
+multi-member, native lived, or independent Linux performance.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

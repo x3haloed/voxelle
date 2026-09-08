@@ -3876,7 +3876,7 @@ impl VoxelleHome {
         if !private {
             return Ok(raw_events);
         }
-        let mut accepted = governance;
+        let mut replay = voxelle_core::RoomSemanticReplay::new(governance, config.room_context());
         let mut decrypted = Vec::new();
         for sequenced in raw_events {
             let sequence = sequenced.local_fact_sequence;
@@ -3936,15 +3936,7 @@ impl VoxelleHome {
             event.kind = inner.kind;
             event.origin = inner.origin;
             event.body = inner.body;
-            if validate_room_event_semantics(
-                &event,
-                &accepted,
-                &config.room_context(),
-                event.created_ms,
-            )
-            .is_ok()
-            {
-                accepted.push(event.clone());
+            if replay.validate_and_append(&event, event.created_ms).is_ok() {
                 decrypted.push(SequencedEvent {
                     local_fact_sequence: sequence,
                     event,
