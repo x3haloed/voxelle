@@ -87,6 +87,22 @@ other contention paths, or Linux-specific behavior.
 Further private-send reuse needs a proven freshness boundary; repeated timing
 fixtures and allocation cleanups alone do not close that UX gap.
 
+## Native catch-up findings
+
+Current e7917b3 native host was rebuilt into the disposable UX Test app, whose
+Info.plist points to ux-001-test-home with test-file vault. GUI public send/reopen
+passes. GUI created private native-private-check with only the local member,
+sent PRIVATE-NATIVE-e7917b3-1, rotated to epoch2 through the confirmation flow,
+sent PRIVATE-NATIVE-e7917b3-2, and reopened. Both messages remain readable after
+reselecting the private channel. This does not establish excluded-peer delivery,
+production Keychain behavior, or multi-member native recovery.
+
+New observed UX friction: restart returned to #general instead of preserving the
+last selected private channel. Next fix should restore a valid accessible last
+selection per home, with safe fallback when unavailable, without restoring stale
+membership authority or mixing profile state. Protected communicating apps remain
+unchanged; Thimble checkpoint remote receipt remains unverified.
+
 ## Prediction errors
 
 - Native use exposed multi-second send/refresh stalls and Linux HTTP 429 under
