@@ -90,7 +90,9 @@ platform, accessibility, agent, and release evidence.
 - Native connection setup required relaying raw certificates and manually
   replacing a changed port. A globally addressed runtime and an "Online"
   label did not establish peer connectivity. Profile names were known but
-  manual connection controls still used opaque peer IDs. UX-011 proves automatic
+  unlabeled connection controls used opaque peer IDs. UX-013 now reuses shared
+  profile names for these controls and health errors while retaining explicit
+  local labels; native visual confirmation remains pending. UX-011 proves automatic
   bidirectional catch-up after one peer changes port while the other retains its
   stale record, provided a surviving outbound route exists. UX-012 adds device-signed, bounded, expiring listener exchange through current
   admitted space/device authority. A three-peer real-QUIC test learns the changed

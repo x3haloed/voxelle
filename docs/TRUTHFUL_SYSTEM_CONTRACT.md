@@ -498,6 +498,18 @@ profile has been rebuilt for this change. Receipt of gossip is not proof of the
 advertised endpoint's reachability; a subsequent authenticated sync supplies that
 evidence. Loss of every reachable saved route still requires another introduction.
 
+## Recognizable Connection Names — UX-013
+
+Unlabeled connection controls and peer-health failures use the already projected
+shared profile name. Explicit nonblank local connection labels remain local
+choices; unknown profiles fall back to the stable short principal ID. The home
+projection reuses its existing profile result instead of re-reading profile facts
+for each connection. A real two-home test replicates a profile, imports an
+unlabeled record, replicates a rename, reopens the receiving home, and verifies
+both the connection and failure label before preserving an explicit local name.
+No identity, membership, routing, or command authority changes. Native visual
+verification remains pending while Computer Use is unavailable on the locked Mac.
+
 ## Evidence Horizon
 
 Locally inspectable evidence includes Rust unit/integration tests, Node UI

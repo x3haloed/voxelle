@@ -1350,7 +1350,7 @@ enum PeerHealthOperation {
 #[derive(Debug, Clone)]
 struct PeerHealthFailure {
     endpoint: PeerEndpoint,
-    label: String,
+    label: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2130,6 +2130,7 @@ impl VoxelleHome {
         } else {
             retain_latest(&mut projected_messages, MAX_PROJECTED_MESSAGES);
         }
+        let profiles = self.profiles()?;
         Ok(HomeScreenView {
             space: SpaceSummaryView {
                 space_id: config.space.space_id.clone(),
@@ -2145,11 +2146,11 @@ impl VoxelleHome {
             peers: self
                 .known_peers()?
                 .into_iter()
-                .map(PeerListItemView::from_peer_record)
+                .map(|record| PeerListItemView::from_peer_record(record, &profiles))
                 .collect(),
             channels,
             roles: self.roles()?,
-            profiles: self.profiles()?,
+            profiles,
             notifications: self.notifications()?,
             coordination_frontier,
             call: self.call_view(&selected_room)?,
@@ -8049,7 +8050,13 @@ impl VoxelleCommandHost {
         };
         let mut network_health = self.home.network_health_view(online)?;
         let current_peers = self.home.known_peers()?;
-        self.apply_peer_health_failures(&mut network_health, &current_peers);
+        self.apply_peer_health_failures(
+            &mut network_health,
+            &current_peers,
+            home.as_ref()
+                .map(|view| view.profiles.as_slice())
+                .unwrap_or(&[]),
+        );
         let preferences = self.home.ui_preferences()?;
         let ui_ontology = match &self.product_generation {
             Some(active) => apply_ui_preferences(active.generation.ontology.clone(), preferences),
@@ -8210,10 +8217,7 @@ impl VoxelleCommandHost {
             ),
             PeerHealthFailure {
                 endpoint: peer.endpoint.clone(),
-                label: peer
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| short_peer_label(&peer.endpoint.peer_id)),
+                label: peer.label.clone(),
             },
         );
     }
@@ -8226,7 +8230,12 @@ impl VoxelleCommandHost {
         ));
     }
 
-    fn apply_peer_health_failures(&self, health: &mut NetworkHealthView, peers: &[PeerRecord]) {
+    fn apply_peer_health_failures(
+        &self,
+        health: &mut NetworkHealthView,
+        peers: &[PeerRecord],
+        profiles: &[ProfileView],
+    ) {
         for (operation, row_id, command, noun) in [
             (
                 PeerHealthOperation::Diagnose,
@@ -8253,7 +8262,10 @@ impl VoxelleCommandHost {
                 continue;
             };
             let summary = if failures.len() == 1 {
-                format!("Voxelle could not complete {noun} with {}.", first.label)
+                format!(
+                    "Voxelle could not complete {noun} with {}.",
+                    connection_display_name(peer_id, first.label.as_deref(), profiles)
+                )
             } else {
                 format!(
                     "Voxelle could not complete {noun} with {} peers.",
@@ -8401,13 +8413,31 @@ impl RuntimeStatusView {
     }
 }
 
+fn connection_display_name(
+    peer_id: &str,
+    local_label: Option<&str>,
+    profiles: &[ProfileView],
+) -> String {
+    local_label
+        .filter(|label| !label.trim().is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            profiles
+                .iter()
+                .find(|profile| profile.peer_id == peer_id)
+                .map(|profile| profile.display_name.clone())
+        })
+        .unwrap_or_else(|| short_peer_label(peer_id))
+}
+
 impl PeerListItemView {
-    fn from_peer_record(record: PeerRecord) -> Self {
+    fn from_peer_record(record: PeerRecord, profiles: &[ProfileView]) -> Self {
         Self {
-            label: record
-                .label
-                .clone()
-                .unwrap_or_else(|| short_peer_label(&record.endpoint.peer_id)),
+            label: connection_display_name(
+                &record.endpoint.peer_id,
+                record.label.as_deref(),
+                profiles,
+            ),
             peer_id: record.endpoint.peer_id,
             device_id: record.endpoint.device_id,
             addr: record.endpoint.addr,
@@ -14657,6 +14687,79 @@ mod tests {
             Some("peer.sync")
         );
         peer_service.stop().expect("stop peer service");
+    }
+
+    #[tokio::test]
+    async fn connection_labels_follow_shared_profiles_without_replacing_local_names() {
+        let dir = tempdir().unwrap();
+        let alice = VoxelleHome::new(dir.path().join("alice"));
+        let bob = VoxelleHome::new(dir.path().join("bob"));
+        alice.init(DEFAULT_ROOM_ID).unwrap();
+        alice
+            .update_profile(&ProfileUpdateRequest {
+                display_name: "Alice".to_string(),
+                about: String::new(),
+            })
+            .unwrap();
+        let service = alice
+            .start_service("[::1]:0".parse().unwrap(), None)
+            .unwrap();
+        let invite = alice
+            .create_space_invite(service.online(), now_ms() + 60_000)
+            .unwrap();
+        bob.join_space_from_invite(&invite, 64).await.unwrap();
+        let mut record = service.online().peer_record(None, None).unwrap();
+        bob.import_peer_record(record.clone()).unwrap();
+        let view = bob
+            .home_screen_view_for_room_and_message(None, None, None)
+            .unwrap();
+        assert_eq!(
+            view.peers
+                .iter()
+                .find(|peer| peer.peer_id == record.endpoint.peer_id)
+                .unwrap()
+                .label,
+            "Alice"
+        );
+        alice
+            .update_profile(&ProfileUpdateRequest {
+                display_name: "Alice Renamed".to_string(),
+                about: String::new(),
+            })
+            .unwrap();
+        bob.sync_peer(&record, 64).await.unwrap();
+        let reopened = VoxelleHome::new(dir.path().join("bob"));
+        let view = reopened
+            .home_screen_view_for_room_and_message(None, None, None)
+            .unwrap();
+        assert_eq!(
+            view.peers
+                .iter()
+                .find(|peer| peer.peer_id == record.endpoint.peer_id)
+                .unwrap()
+                .label,
+            "Alice Renamed"
+        );
+        let mut host = VoxelleCommandHost::new(&bob.root);
+        host.record_peer_health_failure(&record, PeerHealthOperation::Sync);
+        let failed = host.snapshot().unwrap();
+        assert!(network_health_row(&failed.network_health, "sync")
+            .summary
+            .contains("Alice Renamed"));
+        record.label = Some("Office computer".to_string());
+        bob.import_peer_record(record.clone()).unwrap();
+        let view = bob
+            .home_screen_view_for_room_and_message(None, None, None)
+            .unwrap();
+        assert_eq!(
+            view.peers
+                .iter()
+                .find(|peer| peer.peer_id == record.endpoint.peer_id)
+                .unwrap()
+                .label,
+            "Office computer"
+        );
+        service.stop().unwrap();
     }
 
     #[tokio::test]
